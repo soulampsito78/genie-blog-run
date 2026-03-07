@@ -10,7 +10,6 @@ logger = logging.getLogger("genie-blog-run")
 
 app = FastAPI(title="genie-blog-run")
 
-# 실제 값 하드코딩
 PROJECT_ID = "gen-lang-client-0667098249"
 VERTEX_LOCATION = "global"
 VERTEX_MODEL = "gemini-1.5-pro"
@@ -23,9 +22,6 @@ class Job(BaseModel):
 def get_model() -> GenerativeModel:
     if not PROJECT_ID:
         raise RuntimeError("PROJECT_ID가 비어 있습니다.")
-
-    if PROJECT_ID == "YOUR_PROJECT_ID":
-        raise RuntimeError("PROJECT_ID가 아직 YOUR_PROJECT_ID placeholder 상태입니다.")
 
     vertexai.init(
         project=PROJECT_ID,
@@ -52,10 +48,8 @@ async def run_job(job: Job):
 
         if job.type == "today_genie":
             prompt = "오늘 블로그 글을 작성해줘"
-
         elif job.type == "tomorrow_genie":
             prompt = "내일 트렌드 예측 블로그 글을 작성해줘"
-
         else:
             raise HTTPException(
                 status_code=400,
@@ -76,7 +70,6 @@ async def run_job(job: Job):
 
     except HTTPException:
         raise
-
     except Exception as e:
         logger.exception("run_job failed")
         raise HTTPException(
