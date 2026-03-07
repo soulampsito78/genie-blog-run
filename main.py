@@ -12,7 +12,7 @@ app = FastAPI(title="genie-blog-run")
 
 PROJECT_ID = "gen-lang-client-0667098249"
 VERTEX_LOCATION = "global"
-VERTEX_MODEL = "gemini-2.5-pro"
+VERTEX_MODEL = "gemini-2.5-flash"
 
 
 class Job(BaseModel):
