@@ -1,2 +1,2 @@
 # genie-blog-run
-블로그
+블로그.
