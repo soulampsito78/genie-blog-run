@@ -4,7 +4,11 @@ app = FastAPI()
 
 @app.post("/")
 async def run_job(request: Request):
-    data = await request.json()
+
+    try:
+        data = await request.json()
+    except:
+        data = {}
 
     job_type = data.get("type")
 
