@@ -1,38 +1,85 @@
-from fastapi import FastAPI
+import logging
+
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import vertexai
 from vertexai.generative_models import GenerativeModel
 
-app = FastAPI()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("genie-blog-run")
 
-vertexai.init(
-    project="YOUR_PROJECT_ID",
-    location="asia-northeast3"
-)
+app = FastAPI(title="genie-blog-run")
 
-model = GenerativeModel("gemini-1.5-pro")
+# 실제 값 하드코딩
+PROJECT_ID = "gen-lang-client-0667098249"
+VERTEX_LOCATION = "global"
+VERTEX_MODEL = "gemini-1.5-pro"
+
 
 class Job(BaseModel):
     type: str
 
+
+def get_model() -> GenerativeModel:
+    if not PROJECT_ID:
+        raise RuntimeError("PROJECT_ID가 비어 있습니다.")
+
+    if PROJECT_ID == "YOUR_PROJECT_ID":
+        raise RuntimeError("PROJECT_ID가 아직 YOUR_PROJECT_ID placeholder 상태입니다.")
+
+    vertexai.init(
+        project=PROJECT_ID,
+        location=VERTEX_LOCATION
+    )
+
+    return GenerativeModel(VERTEX_MODEL)
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "project_id": PROJECT_ID,
+        "location": VERTEX_LOCATION,
+        "model": VERTEX_MODEL,
+    }
+
+
 @app.post("/")
 async def run_job(job: Job):
-    job_type = job.type
+    try:
+        model = get_model()
 
-    if job_type == "today_genie":
-        response = model.generate_content("오늘 블로그 글을 작성해줘")
+        if job.type == "today_genie":
+            prompt = "오늘 블로그 글을 작성해줘"
+
+        elif job.type == "tomorrow_genie":
+            prompt = "내일 트렌드 예측 블로그 글을 작성해줘"
+
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"지원하지 않는 type입니다: {job.type}"
+            )
+
+        response = model.generate_content(prompt)
+        content = getattr(response, "text", None)
+
+        if not content:
+            raise RuntimeError(f"Vertex AI 응답 text가 비어 있습니다. raw={response}")
+
         return {
             "status": "ok",
-            "type": "today_genie",
-            "content": response.text
+            "type": job.type,
+            "content": content
         }
 
-    elif job_type == "tomorrow_genie":
-        response = model.generate_content("내일 트렌드 예측 블로그 글을 작성해줘")
-        return {
-            "status": "ok",
-            "type": "tomorrow_genie",
-            "content": response.text
-        }
+    except HTTPException:
+        raise
 
-    return {"status": "ok"}
+    except Exception as e:
+        logger.exception("run_job failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"{type(e).__name__}: {str(e)}"
+        )
