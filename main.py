@@ -29,7 +29,7 @@ SUPPORTED_MODES = ["today_genie", "tomorrow_genie"]
 # WEATHER API (사용자가 입력 필요)
 # --------------------------------------------------
 
-WEATHER_API_KEY = "YOUR_WEATHER_API_KEY"
+WEATHER_API_KEY = "657ae8a89b6e8db019070e95e4305d75"
 WEATHER_CITY = "Seoul"
 
 # --------------------------------------------------
