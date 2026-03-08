@@ -1,61 +1,121 @@
-# main.py
 from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict
+import re
+from datetime import datetime
+from typing import Any, Dict, List
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from prompts import build_full_prompt
+from renderers import render_email_html, render_naver_body_html, render_web_html
 from validators import validate_today_genie, validate_tomorrow_genie
 
-app = FastAPI()
+# Vertex AI SDK
+# 설치 필요:
+# pip install google-cloud-aiplatform vertexai fastapi uvicorn
+import vertexai
+from vertexai.generative_models import GenerationConfig, GenerativeModel
 
-PROJECT_ID = os.getenv("PROJECT_ID", "gen-lang-client-0667098249")
+app = FastAPI(title="Genie Project API")
+
+PROJECT_ID = os.getenv("PROJECT_ID", "")
 VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "global")
 VERTEX_MODEL = os.getenv("VERTEX_MODEL", "gemini-2.5-flash")
 
 SUPPORTED_MODES = ["today_genie", "tomorrow_genie"]
 
+
 class JobRequest(BaseModel):
-    type: str
+    type: str = Field(..., description="today_genie or tomorrow_genie")
+
+
+def init_vertex() -> None:
+    if not PROJECT_ID:
+        raise RuntimeError("PROJECT_ID environment variable is required.")
+    vertexai.init(project=PROJECT_ID, location=VERTEX_LOCATION)
+
+
+def get_model() -> GenerativeModel:
+    return GenerativeModel(VERTEX_MODEL)
+
 
 def build_runtime_input(mode: str) -> Dict[str, Any]:
-    # 실제 구현에서는 market_service.py / weather_service.py에서 가져와야 함
-    # 여기서는 스키마 틀만 제시
+    now_kst = datetime.now().isoformat()
+
     if mode == "today_genie":
         return {
-            "target_date": "2026-03-08",
+            "target_date": now_kst[:10],
             "briefing_time_kst": "06:30",
             "purpose": "장전 금융 브리핑",
-            "overnight_us_market": {},
-            "macro_indicators": {},
-            "top_market_news": [],
-            "risk_factors": [],
+            # TODO: 실제 데이터 소스로 교체
+            "overnight_us_market": {
+                "status": "placeholder",
+                "note": "실데이터 연결 필요"
+            },
+            "macro_indicators": {
+                "status": "placeholder",
+                "note": "실데이터 연결 필요"
+            },
+            "top_market_news": [
+                {
+                    "status": "placeholder",
+                    "note": "실데이터 연결 필요"
+                }
+            ],
+            "risk_factors": [
+                {
+                    "status": "placeholder",
+                    "note": "실데이터 연결 필요"
+                }
+            ],
             "editor_note": "사실/해석/추정 구분. 입력 부족 시 보수적으로 축약."
         }
 
     if mode == "tomorrow_genie":
         return {
-            "target_date": "2026-03-09",
+            "target_date": now_kst[:10],
             "target_city": "서울",
-            "forecast_reference_datetime_kst": "2026-03-09T06:00:00+09:00",
-            "weather_context": {},
-            "image_context": {},
+            "forecast_reference_datetime_kst": now_kst,
+            # TODO: OpenWeather 실제 연동으로 교체
+            "weather_context": {
+                "status": "placeholder",
+                "note": "실데이터 연결 필요"
+            },
+            "image_context": {
+                "city": "서울",
+                "season_hint": "auto"
+            },
             "writing_goal": "다정한 마무리, 생활정보 중심, 준비형 브리핑"
         }
 
     raise ValueError(f"Unsupported mode: {mode}")
 
-def call_gemini(prompt: str) -> str:
-    # 실제 Vertex AI 호출부로 교체
-    raise NotImplementedError
+
+def extract_json_object(raw_text: str) -> str:
+    raw_text = raw_text.strip()
+
+    if raw_text.startswith("{") and raw_text.endswith("}"):
+        return raw_text
+
+    codeblock_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw_text, re.DOTALL)
+    if codeblock_match:
+        return codeblock_match.group(1).strip()
+
+    first_brace = raw_text.find("{")
+    last_brace = raw_text.rfind("}")
+    if first_brace != -1 and last_brace != -1 and first_brace < last_brace:
+        return raw_text[first_brace:last_brace + 1]
+
+    return raw_text
+
 
 def parse_model_json(raw_text: str) -> Dict[str, Any]:
+    candidate = extract_json_object(raw_text)
     try:
-        return json.loads(raw_text)
+        return json.loads(candidate)
     except json.JSONDecodeError as e:
         raise HTTPException(
             status_code=500,
@@ -63,56 +123,53 @@ def parse_model_json(raw_text: str) -> Dict[str, Any]:
                 "status": "failed",
                 "reason": "json_parse_error",
                 "message": str(e),
-                "raw_preview": raw_text[:1000],
+                "raw_preview": raw_text[:1200],
             },
         )
 
-def render_web_html(mode: str, data: Dict[str, Any]) -> str:
-    if mode == "today_genie":
-        return f"""
-        <html><body>
-        <h1>{data['title']}</h1>
-        <p>{data['summary']}</p>
-        <h2>시장 셋업</h2><p>{data['market_setup']}</p>
-        </body></html>
-        """.strip()
 
-    return f"""
-    <html><body>
-    <h1>{data['title']}</h1>
-    <p>{data['summary']}</p>
-    <h2>내일 날씨</h2><p>{data['weather_briefing']}</p>
-    </body></html>
-    """.strip()
+def call_gemini(prompt: str) -> str:
+    init_vertex()
+    model = get_model()
 
-def render_email_html(mode: str, data: Dict[str, Any]) -> str:
-    # 웹 HTML을 재사용하지 않고 단순 구조로 별도 생성
-    return f"""
-    <div>
-      <h1>{data['title']}</h1>
-      <p>{data['summary']}</p>
-      <p>{data['closing_message']}</p>
-    </div>
-    """.strip()
+    generation_config = GenerationConfig(
+        temperature=0.3,
+        top_p=0.9,
+        max_output_tokens=8192,
+        response_mime_type="application/json",
+    )
 
-def render_naver_body_html(mode: str, data: Dict[str, Any]) -> str:
-    if mode == "today_genie":
-        return f"""
-        <h2>{data['title']}</h2>
-        <p>{data['summary']}</p>
-        <h3>오늘 장 셋업</h3>
-        <p>{data['market_setup']}</p>
-        """.strip()
+    response = model.generate_content(
+        prompt,
+        generation_config=generation_config,
+    )
 
-    return f"""
-    <h2>{data['title']}</h2>
-    <p>{data['summary']}</p>
-    <h3>내일 날씨</h3>
-    <p>{data['weather_briefing']}</p>
-    """.strip()
+    text = getattr(response, "text", None)
+    if not text:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "status": "failed",
+                "reason": "empty_model_response",
+                "message": "Gemini returned empty text response.",
+            },
+        )
+    return text
+
+
+def response_issues(issues: List[Any]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "code": issue.code,
+            "message": issue.message,
+            "severity": issue.severity,
+        }
+        for issue in issues
+    ]
+
 
 @app.get("/health")
-def health():
+def health() -> Dict[str, Any]:
     return {
         "status": "ok",
         "project_id": PROJECT_ID,
@@ -121,8 +178,9 @@ def health():
         "supported_modes": SUPPORTED_MODES,
     }
 
+
 @app.post("/")
-def generate(job: JobRequest):
+def generate(job: JobRequest) -> Dict[str, Any]:
     mode = job.type
     if mode not in SUPPORTED_MODES:
         raise HTTPException(status_code=400, detail=f"Unsupported type: {mode}")
@@ -141,10 +199,10 @@ def generate(job: JobRequest):
         raise HTTPException(
             status_code=500,
             detail={
-                "status": "review_required" if mode == "tomorrow_genie" else "failed",
+                "status": "failed" if mode == "today_genie" else "review_required",
                 "reason": "validation_block",
-                "issues": [issue.__dict__ for issue in validation.issues],
-                "raw_preview": raw_text[:1000],
+                "issues": response_issues(validation.issues),
+                "raw_preview": raw_text[:1200],
             },
         )
 
@@ -152,20 +210,22 @@ def generate(job: JobRequest):
     email_html = render_email_html(mode, data)
     naver_body_html = render_naver_body_html(mode, data)
 
-    response_data = {
-        **data,
-        "rendered_channels": {
-            "html_page": web_html,
-            "email_body_html": email_html,
-            "naver_blog_body_html": naver_body_html,
-        },
+    rendered = {
+        "html_page": web_html,
+        "email_body_html": email_html,
+        "naver_blog_body_html": naver_body_html,
     }
+
+    workflow_status = "validated" if validation.result == "pass" else "review_required"
 
     return {
         "status": "ok",
         "type": mode,
-        "workflow_status": "validated" if validation.result == "pass" else "review_required",
+        "workflow_status": workflow_status,
         "validation_result": validation.result,
-        "issues": [issue.__dict__ for issue in validation.issues],
-        "data": response_data,
+        "issues": response_issues(validation.issues),
+        "data": {
+            **data,
+            "rendered_channels": rendered,
+        },
     }
