@@ -56,7 +56,7 @@ class Job(BaseModel):
 
 def fetch_weather():
 
-    if WEATHER_API_KEY == "657ae8a89b6e8db019070e95e4305d75":
+    if WEATHER_API_KEY == "YOUR_WEATHER_API_KEY":
         logger.warning("Weather API key not configured")
         return "weather data unavailable"
 
@@ -97,7 +97,7 @@ temperature_min: {min(temps)}
 temperature_max: {max(temps)}
 """.strip()
 
-    except Exception as e:
+    except Exception:
         logger.exception("Weather fetch failed")
         return "weather data unavailable"
 
@@ -188,9 +188,9 @@ def validate_ai_output(content: str):
     parsed = safe_json_load(content)
 
     required_keys = [
-        "web_html",
-        "email_html",
-        "naver_blog_body"
+        "html_page",
+        "email_body_html",
+        "naver_blog_body_html"
     ]
 
     for key in required_keys:
