@@ -256,12 +256,25 @@ async def run_job(job: Job):
             }
         )
 
-        content = getattr(response, "text", None)
+content = getattr(response, "text", None)
 
-        if not content:
-            raise RuntimeError("Vertex AI 응답 text가 비어 있습니다.")
+if not content:
+    raise RuntimeError("Vertex AI 응답 text가 비어 있습니다.")
 
-        validated = validate_ai_output(content)
+try:
+    validated = validate_ai_output(content)
+except Exception:
+    return {
+        "status": "generated_raw",
+        "type": job.type,
+        "raw": content
+    }
+
+return {
+    "status": "generated",
+    "type": job.type,
+    "content": validated
+}
 
         return {
             "status": "generated",
