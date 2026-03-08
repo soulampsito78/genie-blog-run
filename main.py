@@ -253,8 +253,7 @@ async def run_job(job: Job):
             generation_config={
                 "temperature": 0.3,
                 "max_output_tokens": 8192
-            },
-            response_mime_type="application/json"
+            }
         )
 
         content = getattr(response, "text", None)
