@@ -26,16 +26,10 @@ VERTEX_MODEL = "gemini-2.5-flash"
 SUPPORTED_MODES = ["today_genie", "tomorrow_genie"]
 
 # --------------------------------------------------
-# WEATHER API (사용자가 입력 필요)
-# --------------------------------------------------
-
-# --------------------------------------------------
 # WEATHER API
 # --------------------------------------------------
 
-import os
-
-WEATHER_API_KEY = os.environ.get("657ae8a89b6e8db019070e95e4305d75")
+WEATHER_API_KEY = "657ae8a89b6e8db019070e95e4305d75"
 WEATHER_CITY = "Seoul"
 
 # --------------------------------------------------
@@ -61,10 +55,6 @@ class Job(BaseModel):
 # --------------------------------------------------
 
 def fetch_weather():
-
-    if WEATHER_API_KEY == "YOUR_WEATHER_API_KEY":
-        logger.warning("Weather API key not configured")
-        return "weather data unavailable"
 
     url = "https://api.openweathermap.org/data/2.5/forecast"
 
@@ -256,31 +246,30 @@ async def run_job(job: Job):
             }
         )
 
-content = getattr(response, "text", None)
+        content = getattr(response, "text", None)
 
-if not content:
-    raise RuntimeError("Vertex AI 응답 text가 비어 있습니다.")
+        if not content:
+            raise RuntimeError("Vertex AI 응답 text가 비어 있습니다.")
 
-try:
-    validated = validate_ai_output(content)
-except Exception:
-    return {
-        "status": "generated_raw",
-        "type": job.type,
-        "raw": content
-    }
+        try:
 
-return {
-    "status": "generated",
-    "type": job.type,
-    "content": validated
-}
+            validated = validate_ai_output(content)
 
-        return {
-            "status": "generated",
-            "type": job.type,
-            "content": validated
-        }
+            return {
+                "status": "generated",
+                "type": job.type,
+                "content": validated
+            }
+
+        except Exception:
+
+            logger.warning("JSON parsing failed, returning raw output")
+
+            return {
+                "status": "generated_raw",
+                "type": job.type,
+                "raw": content
+            }
 
     except HTTPException:
         raise
