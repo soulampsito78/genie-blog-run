@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List
+
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -18,12 +20,21 @@ from validators import validate_today_genie, validate_tomorrow_genie
 # pip install google-cloud-aiplatform vertexai fastapi uvicorn
 import vertexai
 from vertexai.generative_models import GenerationConfig, GenerativeModel
+import urllib.error
+import urllib.parse
+import urllib.request
 
 app = FastAPI(title="Genie Project API")
 
 PROJECT_ID = os.getenv("PROJECT_ID", "")
 VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "global")
 VERTEX_MODEL = os.getenv("VERTEX_MODEL", "gemini-2.5-flash")
+
+OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "")
+OPENWEATHER_CITY = os.getenv("OPENWEATHER_CITY", "Seoul,KR")
+OPENWEATHER_BASE_URL = os.getenv(
+    "OPENWEATHER_BASE_URL", "https://api.openweathermap.org/data/2.5/forecast"
+)
 
 SUPPORTED_MODES = ["today_genie", "tomorrow_genie"]
 
@@ -42,48 +53,132 @@ def get_model() -> GenerativeModel:
     return GenerativeModel(VERTEX_MODEL)
 
 
+def _load_json_env(env_name: str, default: Any) -> Any:
+    raw = os.getenv(env_name)
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return default
+
+
+def fetch_seoul_weather_forecast(forecast_date: str) -> Dict[str, Any]:
+    """
+    Fetch OpenWeather 5-day / 3-hour forecast and extract a daily summary
+    for the given forecast_date (YYYY-MM-DD) in metric units.
+    """
+    if not OPENWEATHER_API_KEY:
+        return {}
+
+    query = urllib.parse.urlencode(
+        {
+            "q": OPENWEATHER_CITY,
+            "units": "metric",
+            "appid": OPENWEATHER_API_KEY,
+        }
+    )
+    url = f"{OPENWEATHER_BASE_URL}?{query}"
+
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            if resp.status != 200:
+                return {}
+            raw = resp.read()
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+        return {}
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+    city_info = payload.get("city", {})
+    entries = payload.get("list", [])
+
+    day_entries: List[Dict[str, Any]] = []
+    for item in entries:
+        dt_txt = item.get("dt_txt")
+        if isinstance(dt_txt, str) and dt_txt.startswith(forecast_date):
+            day_entries.append(item)
+
+    if not day_entries:
+        return {}
+
+    temps = []
+    feels_like = []
+    descriptions = set()
+    precipitation_prob = []
+
+    for item in day_entries:
+        main = item.get("main", {})
+        if "temp" in main:
+            temps.append(main["temp"])
+        if "feels_like" in main:
+            feels_like.append(main["feels_like"])
+        weather_list = item.get("weather", [])
+        if weather_list and isinstance(weather_list, list):
+            desc = weather_list[0].get("description")
+            if isinstance(desc, str):
+                descriptions.add(desc)
+        pop = item.get("pop")
+        if isinstance(pop, (int, float)):
+            precipitation_prob.append(pop)
+
+    if not temps:
+        return {}
+
+    summary: Dict[str, Any] = {
+        "temp_min": min(temps),
+        "temp_max": max(temps),
+    }
+    if feels_like:
+        summary["feels_like_avg"] = sum(feels_like) / len(feels_like)
+    if descriptions:
+        summary["conditions"] = sorted(descriptions)
+    if precipitation_prob:
+        summary["precipitation_probability_max"] = max(precipitation_prob)
+
+    return {
+        "provider": "openweather",
+        "city": city_info.get("name") or "Seoul",
+        "country": city_info.get("country") or "KR",
+        "units": "metric",
+        "forecast_date": forecast_date,
+        "summary": summary,
+    }
+
+
 def build_runtime_input(mode: str) -> Dict[str, Any]:
-    now_kst = datetime.now().isoformat()
+    kst_now = datetime.now(ZoneInfo("Asia/Seoul"))
+    now_kst = kst_now.isoformat()
 
     if mode == "today_genie":
+        overnight_us_market = _load_json_env("TODAY_GENIE_OVERNIGHT_US_MARKET_JSON", {})
+        macro_indicators = _load_json_env("TODAY_GENIE_MACRO_INDICATORS_JSON", {})
+        top_market_news = _load_json_env("TODAY_GENIE_TOP_MARKET_NEWS_JSON", [])
+        risk_factors = _load_json_env("TODAY_GENIE_RISK_FACTORS_JSON", [])
+
         return {
-            "target_date": now_kst[:10],
+            "target_date": kst_now.date().isoformat(),
             "briefing_time_kst": "06:30",
             "purpose": "장전 금융 브리핑",
-            # TODO: 실제 데이터 소스로 교체
-            "overnight_us_market": {
-                "status": "placeholder",
-                "note": "실데이터 연결 필요"
-            },
-            "macro_indicators": {
-                "status": "placeholder",
-                "note": "실데이터 연결 필요"
-            },
-            "top_market_news": [
-                {
-                    "status": "placeholder",
-                    "note": "실데이터 연결 필요"
-                }
-            ],
-            "risk_factors": [
-                {
-                    "status": "placeholder",
-                    "note": "실데이터 연결 필요"
-                }
-            ],
+            "overnight_us_market": overnight_us_market,
+            "macro_indicators": macro_indicators,
+            "top_market_news": top_market_news,
+            "risk_factors": risk_factors,
             "editor_note": "사실/해석/추정 구분. 입력 부족 시 보수적으로 축약."
         }
 
     if mode == "tomorrow_genie":
+        forecast_date = (kst_now + timedelta(days=1)).date().isoformat()
+        weather_context = fetch_seoul_weather_forecast(forecast_date)
+
         return {
-            "target_date": now_kst[:10],
+            "target_date": kst_now.date().isoformat(),
             "target_city": "서울",
             "forecast_reference_datetime_kst": now_kst,
-            # TODO: OpenWeather 실제 연동으로 교체
-            "weather_context": {
-                "status": "placeholder",
-                "note": "실데이터 연결 필요"
-            },
+            "weather_context": weather_context,
             "image_context": {
                 "city": "서울",
                 "season_hint": "auto"

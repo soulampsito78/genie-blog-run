@@ -195,3 +195,4 @@ def render_naver_body_html(mode: str, data: Dict[str, Any]) -> str:
 <ul>{lifestyle_notes}</ul>
 <p>{closing}</p>
 """.strip()
+

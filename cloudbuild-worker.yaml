@@ -1,0 +1,11 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args:
+    - 'build'
+    - '-f'
+    - 'Dockerfile.worker'
+    - '-t'
+    - 'asia-northeast3-docker.pkg.dev/gen-lang-client-0667098249/genie/genie-orchestrator:v1'
+    - '.'
+images:
+- 'asia-northeast3-docker.pkg.dev/gen-lang-client-0667098249/genie/genie-orchestrator:v1'
