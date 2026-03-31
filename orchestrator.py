@@ -115,7 +115,8 @@ def run_genie_job(mode: str) -> OrchestrationResult:
         # Defensive: if API omits validation_result, infer from workflow_status (v2 contract)
         if validation_result not in ("pass", "draft_only"):
             validation_result = "draft_only" if workflow_status == "review_required" else "pass"
-        runtime_input = None  # API does not return runtime_input; policy treats as conservative
+        ri = data.get("runtime_input")
+        runtime_input = ri if isinstance(ri, dict) else None
         decision = decide_publishing_actions(
             mode, validation_result, workflow_status, issues, runtime_input
         )

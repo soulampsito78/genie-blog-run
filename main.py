@@ -319,6 +319,7 @@ def generate(job: JobRequest) -> Dict[str, Any]:
         "workflow_status": workflow_status,
         "validation_result": validation.result,
         "issues": response_issues(validation.issues),
+        "runtime_input": runtime_input,
         "data": {
             **data,
             "rendered_channels": rendered,
