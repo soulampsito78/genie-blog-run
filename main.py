@@ -320,6 +320,32 @@ def response_issues(issues: List[Any]) -> List[Dict[str, Any]]:
     ]
 
 
+def _email_operational_meta(
+    mode: str,
+    validation_result: str,
+    workflow_status: str,
+    runtime_input: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Server-owned fields for deterministic email operational box (not model-generated)."""
+    kst_now = datetime.now(ZoneInfo("Asia/Seoul"))
+    exec_ts = kst_now.strftime("%Y-%m-%d %H:%M:%S KST")
+    if mode == "today_genie":
+        ifs = runtime_input.get("input_feed_status")
+        result_line = f"검증={validation_result}; 입력피드={ifs if ifs is not None else 'n/a'}"
+    else:
+        result_line = f"검증={validation_result}"
+    return {
+        "mode": mode,
+        "validation_result": validation_result,
+        "workflow_status": workflow_status,
+        "execution_time_kst": exec_ts,
+        "result_summary_line": result_line,
+        "email_send_status_note": (
+            "API 생성 단계 산출물입니다. 실제 SMTP 발송·수신 여부는 오케스트레이터 실행 시 결정됩니다."
+        ),
+    }
+
+
 @app.get("/health")
 def health() -> Dict[str, Any]:
     return {
@@ -366,7 +392,11 @@ def generate(job: JobRequest) -> Dict[str, Any]:
         )
 
     web_html = render_web_html(mode, data)
-    email_html = render_email_html(mode, data)
+    workflow_status = "validated" if validation.result == "pass" else "review_required"
+    op_meta = _email_operational_meta(
+        mode, validation.result, workflow_status, runtime_input
+    )
+    email_html = render_email_html(mode, data, op_meta)
     naver_body_html = render_naver_body_html(mode, data)
 
     rendered = {
@@ -374,8 +404,6 @@ def generate(job: JobRequest) -> Dict[str, Any]:
         "email_body_html": email_html,
         "naver_blog_body_html": naver_body_html,
     }
-
-    workflow_status = "validated" if validation.result == "pass" else "review_required"
 
     return {
         "status": "ok",
