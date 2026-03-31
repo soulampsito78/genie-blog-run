@@ -8,7 +8,7 @@ Operational plan for first controlled production deployment. No architecture or 
 
 - [ ] **Secrets**: Create Secret Manager secrets; map to worker env / `*_FILE` (see §2).
 - [ ] **Genie API**: Deploy API service (existing Dockerfile); set PROJECT_ID, VERTEX_*, OPENWEATHER_API_KEY, TODAY_GENIE_*_JSON (or placeholders).
-- [ ] **Worker image**: Build and deploy orchestrator/worker (separate image with Playwright if Naver draft is used); set GENIE_API_URL and all worker env (see §2, §4).
+- [ ] **Worker image**: Build and deploy orchestrator/worker with an **immutable commit-SHA image tag** (see `cloudbuild-worker.yaml`, `DEPLOY.md` §3); separate image with Playwright if Naver draft is used; set GENIE_API_URL and all worker env (see §2, §4).
 - [ ] **First manual runs**: Run `run_orchestrator.py` once for `today_genie`, once for `tomorrow_genie`; verify logs and outcomes (see §5).
 - [ ] **Scheduler**: Configure two schedules (or one parameterized job) for daily runs at recommended KST times (see §3).
 - [ ] **Monitoring**: Confirm exit codes and summary log line are visible; set alert on exit 1.
@@ -126,7 +126,7 @@ Execute in this order for the first safe rollout.
    - Create `genie-smtp-password` and `genie-naver-password` in Secret Manager; grant the worker’s service account access.
 
 3. **Deploy worker**  
-   - Build worker image (with Playwright if using Naver draft).  
+   - Build worker image (with Playwright if using Naver draft). Use an **immutable image tag that includes the full Git commit SHA** (see `cloudbuild-worker.yaml` and `DEPLOY.md` §3); configure Cloud Run Jobs with that SHA-tagged image, not a floating tag alone.  
    - Configure env: GENIE_API_URL (pointing to the API), SMTP_*, EMAIL_*, NAVER_*; set SMTP_PASSWORD_FILE and NAVER_PASSWORD_FILE to the secret mount paths.  
    - Do **not** enable the scheduler yet.
 

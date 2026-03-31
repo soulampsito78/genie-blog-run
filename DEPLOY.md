@@ -35,23 +35,53 @@ So: same code and dependencies; only the **default command** is different. The w
 
 Run this from the **project root** (the folder that contains `Dockerfile.worker` and `run_orchestrator.py`).
 
+### Worker image identity (read-only verification)
+
+- **Source of truth:** the image tag that includes the **full 40-character Git commit SHA** (same form as the Genie API image tag), e.g.  
+  `.../genie-orchestrator:c562f2d65d72a65532501b86d920c3746f289262`.
+- **Not sufficient for commit proof:** floating tags such as `latest-worker` or `:v1` / `:v2` — they may point at the correct digest but **GCP job config alone cannot prove** which Git revision they were built from unless you also record the SHA tag.
+- The repo’s `cloudbuild-worker.yaml` builds **two** tags: the immutable SHA tag (required) and an optional convenience tag (`latest-worker` by default). **Configure Cloud Run Jobs with the SHA-tagged image** when you need audit alignment with Git.
+
 Replace:
 - `YOUR_PROJECT_ID` with your GCP project ID.
 - `YOUR_REGION` with your region (e.g. `us-central1` or `asia-northeast3`).
+- In `cloudbuild-worker.yaml`, `_WORKER_IMAGE` if your Artifact Registry path differs.
 
-**Build the worker image:**
-
-```bash
-gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/genie-worker --file Dockerfile.worker .
-```
-
-Example:
+**Recommended build (immutable SHA + optional convenience tag):**
 
 ```bash
-gcloud builds submit --tag gcr.io/my-project-123/genie-worker --file Dockerfile.worker .
+gcloud builds submit --config=cloudbuild-worker.yaml \
+  --substitutions=_COMMIT_SHA=$(git rev-parse HEAD) \
+  --project=YOUR_PROJECT_ID .
 ```
 
-This builds the worker image and pushes it to Google Container Registry. Use this image for both Cloud Run Jobs below.
+This pushes e.g. `.../genie-orchestrator:<full-sha>` and `.../genie-orchestrator:latest-worker` (same digest). **Use the `:<full-sha>` reference** in `gcloud run jobs create` / `update`.
+
+**Alternative (single tag to Artifact Registry / GCR):**
+
+```bash
+COMMIT=$(git rev-parse HEAD)
+gcloud builds submit --tag REGION-docker.pkg.dev/YOUR_PROJECT_ID/YOUR_REPO/genie-orchestrator:${COMMIT} \
+  --file Dockerfile.worker .
+```
+
+---
+
+## 3b. Point Cloud Run Jobs at the SHA-tagged image
+
+When creating or updating jobs, set `--image` to the **commit-SHA tag**, not `latest-worker` alone:
+
+```text
+--image REGION-docker.pkg.dev/PROJECT/REPO/genie-orchestrator:FULL_GIT_COMMIT_SHA
+```
+
+Example (placeholders):
+
+```bash
+gcloud run jobs update genie-orchestrator-today \
+  --region YOUR_REGION \
+  --image asia-northeast3-docker.pkg.dev/YOUR_PROJECT_ID/genie/genie-orchestrator:c562f2d65d72a65532501b86d920c3746f289262
+```
 
 ---
 
@@ -61,6 +91,7 @@ Replace:
 - `YOUR_PROJECT_ID` with your GCP project ID.
 - `YOUR_REGION` with your region.
 - `https://YOUR-GENIE-API-URL.run.app` with the real URL of your deployed Genie API.
+- `FULL_GIT_COMMIT_SHA` with the same 40-character Git revision you used when building the worker image (e.g. output of `git rev-parse HEAD` at build time).
 
 You will also need to add SMTP and email env vars (and optionally secrets). The commands below create the jobs with the **minimum** needed to run; you must add your API URL and email settings.
 
@@ -68,7 +99,7 @@ You will also need to add SMTP and email env vars (and optionally secrets). The 
 
 ```bash
 gcloud run jobs create genie-today-genie \
-  --image gcr.io/YOUR_PROJECT_ID/genie-worker \
+  --image REGION-docker.pkg.dev/YOUR_PROJECT_ID/genie/genie-orchestrator:FULL_GIT_COMMIT_SHA \
   --region YOUR_REGION \
   --set-env-vars "GENIE_MODE=today_genie,GENIE_API_URL=https://YOUR-GENIE-API-URL.run.app" \
   --set-env-vars "SMTP_HOST=YOUR_SMTP_HOST,SMTP_PORT=587,SMTP_USER=YOUR_SMTP_USER,EMAIL_FROM=YOUR_FROM,EMAIL_TO=YOUR_TO" \
@@ -79,7 +110,7 @@ gcloud run jobs create genie-today-genie \
 
 ```bash
 gcloud run jobs create genie-tomorrow-genie \
-  --image gcr.io/YOUR_PROJECT_ID/genie-worker \
+  --image REGION-docker.pkg.dev/YOUR_PROJECT_ID/genie/genie-orchestrator:FULL_GIT_COMMIT_SHA \
   --region YOUR_REGION \
   --set-env-vars "GENIE_MODE=tomorrow_genie,GENIE_API_URL=https://YOUR-GENIE-API-URL.run.app" \
   --set-env-vars "SMTP_HOST=YOUR_SMTP_HOST,SMTP_PORT=587,SMTP_USER=YOUR_SMTP_USER,EMAIL_FROM=YOUR_FROM,EMAIL_TO=YOUR_TO" \
@@ -91,13 +122,13 @@ gcloud run jobs create genie-tomorrow-genie \
 ```bash
 # today_genie (with password in env – only for testing)
 gcloud run jobs create genie-today-genie \
-  --image gcr.io/YOUR_PROJECT_ID/genie-worker \
+  --image REGION-docker.pkg.dev/YOUR_PROJECT_ID/genie/genie-orchestrator:FULL_GIT_COMMIT_SHA \
   --region YOUR_REGION \
   --set-env-vars "GENIE_MODE=today_genie,GENIE_API_URL=https://YOUR-GENIE-API-URL.run.app,SMTP_HOST=...,SMTP_PORT=587,SMTP_USER=...,SMTP_PASSWORD=...,EMAIL_FROM=...,EMAIL_TO=..."
 
 # tomorrow_genie (same, with GENIE_MODE=tomorrow_genie)
 gcloud run jobs create genie-tomorrow-genie \
-  --image gcr.io/YOUR_PROJECT_ID/genie-worker \
+  --image REGION-docker.pkg.dev/YOUR_PROJECT_ID/genie/genie-orchestrator:FULL_GIT_COMMIT_SHA \
   --region YOUR_REGION \
   --set-env-vars "GENIE_MODE=tomorrow_genie,GENIE_API_URL=https://YOUR-GENIE-API-URL.run.app,SMTP_HOST=...,SMTP_PORT=587,SMTP_USER=...,SMTP_PASSWORD=...,EMAIL_FROM=...,EMAIL_TO=..."
 ```
@@ -128,17 +159,19 @@ gcloud run jobs create genie-tomorrow-genie \
 
 ### Commands to run first (in order)
 
-1. **Build the worker image** (from project root):
+1. **Build the worker image** (from project root; produces immutable `:<full-sha>` tag):
 
    ```bash
-   gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/genie-worker --file Dockerfile.worker .
+   gcloud builds submit --config=cloudbuild-worker.yaml \
+     --substitutions=_COMMIT_SHA=$(git rev-parse HEAD) \
+     --project=YOUR_PROJECT_ID .
    ```
 
-2. **Create the today_genie job** (fill in placeholders):
+2. **Create the today_genie job** (fill in placeholders; `--image` must use the **commit-SHA** tag):
 
    ```bash
    gcloud run jobs create genie-today-genie \
-     --image gcr.io/YOUR_PROJECT_ID/genie-worker \
+     --image REGION-docker.pkg.dev/YOUR_PROJECT_ID/genie/genie-orchestrator:FULL_GIT_COMMIT_SHA \
      --region YOUR_REGION \
      --set-env-vars "GENIE_MODE=today_genie,GENIE_API_URL=https://YOUR-API-URL.run.app,SMTP_HOST=...,SMTP_PORT=587,SMTP_USER=...,SMTP_PASSWORD=...,EMAIL_FROM=...,EMAIL_TO=..."
    ```
@@ -147,7 +180,7 @@ gcloud run jobs create genie-tomorrow-genie \
 
    ```bash
    gcloud run jobs create genie-tomorrow-genie \
-     --image gcr.io/YOUR_PROJECT_ID/genie-worker \
+     --image REGION-docker.pkg.dev/YOUR_PROJECT_ID/genie/genie-orchestrator:FULL_GIT_COMMIT_SHA \
      --region YOUR_REGION \
      --set-env-vars "GENIE_MODE=tomorrow_genie,GENIE_API_URL=https://YOUR-API-URL.run.app,SMTP_HOST=...,SMTP_PORT=587,SMTP_USER=...,SMTP_PASSWORD=...,EMAIL_FROM=...,EMAIL_TO=..."
    ```

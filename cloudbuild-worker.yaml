@@ -1,3 +1,19 @@
+# Worker image build (Dockerfile.worker).
+#
+# Proof tag (required): full Git commit SHA — use this for Cloud Run Jobs and audits.
+# Convenience tag (optional): same image digest; NOT sufficient alone to prove which commit is deployed.
+#
+# Build (from repo root, after commit exists):
+#   gcloud builds submit --config=cloudbuild-worker.yaml \
+#     --substitutions=_COMMIT_SHA=$(git rev-parse HEAD) \
+#     --project=YOUR_PROJECT_ID .
+#
+# Override _CONVENIENCE_TAG if you need a different secondary tag; jobs should still reference :$_COMMIT_SHA for audits.
+substitutions:
+  _WORKER_IMAGE: 'asia-northeast3-docker.pkg.dev/gen-lang-client-0667098249/genie/genie-orchestrator'
+  _COMMIT_SHA: 'must-pass-_COMMIT_SHA-use-git-rev-parse'
+  _CONVENIENCE_TAG: 'latest-worker'
+
 steps:
 - name: 'gcr.io/cloud-builders/docker'
   args:
@@ -5,7 +21,11 @@ steps:
     - '-f'
     - 'Dockerfile.worker'
     - '-t'
-    - 'asia-northeast3-docker.pkg.dev/gen-lang-client-0667098249/genie/genie-orchestrator:v1'
+    - '$_WORKER_IMAGE:$_COMMIT_SHA'
+    - '-t'
+    - '$_WORKER_IMAGE:$_CONVENIENCE_TAG'
     - '.'
+
 images:
-- 'asia-northeast3-docker.pkg.dev/gen-lang-client-0667098249/genie/genie-orchestrator:v1'
+- '$_WORKER_IMAGE:$_COMMIT_SHA'
+- '$_WORKER_IMAGE:$_CONVENIENCE_TAG'
