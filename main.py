@@ -176,6 +176,15 @@ def build_runtime_input(mode: str) -> Dict[str, Any]:
     if mode == "tomorrow_genie":
         forecast_date = (kst_now + timedelta(days=1)).date().isoformat()
         weather_context = fetch_seoul_weather_forecast(forecast_date)
+        # When OpenWeather is unset or returns no rows, keep a non-empty object so
+        # the model is not blocked on weather_input_missing and can write conservatively.
+        if not weather_context:
+            weather_context = {
+                "provider": "unavailable",
+                "forecast_date": forecast_date,
+                "summary": {},
+                "note": "OpenWeather 미구성 또는 해당 일자 데이터 없음. 수치·지역 특화 예보를 만들지 말고 보수적으로 서술.",
+            }
 
         return {
             "target_date": kst_now.date().isoformat(),
