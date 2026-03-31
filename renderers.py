@@ -169,8 +169,8 @@ def _email_img_block(absolute_url: str, alt: str) -> str:
 
 def email_image_slots_html(mode: str, public_base_url: str) -> tuple[str, str]:
     """
-    Locked reference assets under /static/email/ (served by API).
-    Same file URL may be used twice (studio vs outdoor) with different alt text — identity locked per mode.
+    Email-purpose images under /static/email/ (served by API).
+    today_genie: separate derived top/bottom assets; tomorrow_genie: same ref file, distinct alts.
     Returns (top_slot_html, bottom_slot_html); empty strings if no base URL.
     """
     base = (public_base_url or "").strip().rstrip("/")
@@ -178,14 +178,18 @@ def email_image_slots_html(mode: str, public_base_url: str) -> tuple[str, str]:
         return "", ""
 
     if mode == "today_genie":
-        path = "static/email/GENIE_REF_today_genie_master_v1.jpg"
+        top_path = "static/email/GENIE_EMAIL_today_genie_top_v1.jpg"
+        bot_path = "static/email/GENIE_EMAIL_today_genie_bottom_v1.jpg"
         top_alt = "Genie — 스튜디오 인사 컷 (장전 브리핑)"
         bot_alt = "Genie — 야외 편안한 휴식 컷 (장전 브리핑, 동일 인물)"
-    else:
-        path = "static/email/GENIE_REF_tomorrow_genie_master_v1.jpg"
-        top_alt = "Genie — 스튜디오 인사 컷 (내일 준비)"
-        bot_alt = "Genie — 야외 OOTD·편안한 휴식 컷 (내일 준비)"
+        return (
+            _email_img_block(f"{base}/{top_path}", top_alt),
+            _email_img_block(f"{base}/{bot_path}", bot_alt),
+        )
 
+    path = "static/email/GENIE_REF_tomorrow_genie_master_v1.jpg"
+    top_alt = "Genie — 스튜디오 인사 컷 (내일 준비)"
+    bot_alt = "Genie — 야외 OOTD·편안한 휴식 컷 (내일 준비)"
     url = f"{base}/{path}"
     return _email_img_block(url, top_alt), _email_img_block(url, bot_alt)
 
