@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from datetime import datetime, timedelta
@@ -25,6 +26,8 @@ import urllib.parse
 import urllib.request
 
 app = FastAPI(title="Genie Project API")
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ID = os.getenv("PROJECT_ID", "")
 VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "global")
@@ -207,11 +210,16 @@ def extract_json_object(raw_text: str) -> str:
     return raw_text
 
 
-def parse_model_json(raw_text: str) -> Dict[str, Any]:
+def parse_model_json(raw_text: str, mode: str) -> Dict[str, Any]:
     candidate = extract_json_object(raw_text)
     try:
         return json.loads(candidate)
     except json.JSONDecodeError as e:
+        logger.error(
+            "genie_api failure mode=%s reason=json_parse_error message=%s",
+            mode,
+            str(e),
+        )
         raise HTTPException(
             status_code=500,
             detail={
@@ -223,24 +231,40 @@ def parse_model_json(raw_text: str) -> Dict[str, Any]:
         )
 
 
-def call_gemini(prompt: str) -> str:
-    init_vertex()
-    model = get_model()
+def call_gemini(prompt: str, mode: str) -> str:
+    try:
+        init_vertex()
+        model = get_model()
 
-    generation_config = GenerationConfig(
-        temperature=0.3,
-        top_p=0.9,
-        max_output_tokens=8192,
-        response_mime_type="application/json",
-    )
+        generation_config = GenerationConfig(
+            temperature=0.3,
+            top_p=0.9,
+            max_output_tokens=8192,
+            response_mime_type="application/json",
+        )
 
-    response = model.generate_content(
-        prompt,
-        generation_config=generation_config,
-    )
+        response = model.generate_content(
+            prompt,
+            generation_config=generation_config,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "genie_api failure mode=%s internal_reason=vertex_path_unhandled exc_type=%s message=%s",
+            mode,
+            type(e).__name__,
+            str(e),
+            exc_info=True,
+        )
+        raise
 
     text = getattr(response, "text", None)
     if not text:
+        logger.error(
+            "genie_api failure mode=%s reason=empty_model_response",
+            mode,
+        )
         raise HTTPException(
             status_code=500,
             detail={
@@ -282,8 +306,8 @@ def generate(job: JobRequest) -> Dict[str, Any]:
 
     runtime_input = build_runtime_input(mode)
     prompt = build_full_prompt(mode, runtime_input)
-    raw_text = call_gemini(prompt)
-    data = parse_model_json(raw_text)
+    raw_text = call_gemini(prompt, mode)
+    data = parse_model_json(raw_text, mode)
 
     if mode == "today_genie":
         validation = validate_today_genie(data, runtime_input)
@@ -291,6 +315,13 @@ def generate(job: JobRequest) -> Dict[str, Any]:
         validation = validate_tomorrow_genie(data, runtime_input)
 
     if validation.result == "block":
+        issue_codes = [i.code for i in validation.issues[:8]]
+        logger.error(
+            "genie_api failure mode=%s reason=validation_block issue_count=%s issue_codes=%s",
+            mode,
+            len(validation.issues),
+            issue_codes,
+        )
         raise HTTPException(
             status_code=500,
             detail={
