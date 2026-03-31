@@ -5,11 +5,13 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List
 
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from prompts import build_full_prompt
@@ -26,6 +28,10 @@ import urllib.parse
 import urllib.request
 
 app = FastAPI(title="Genie Project API")
+
+_static_dir = Path(__file__).resolve().parent / "static"
+if _static_dir.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 logger = logging.getLogger(__name__)
 
@@ -396,7 +402,10 @@ def generate(job: JobRequest) -> Dict[str, Any]:
     op_meta = _email_operational_meta(
         mode, validation.result, workflow_status, runtime_input
     )
-    email_html = render_email_html(mode, data, op_meta)
+    email_base = os.getenv("GENIE_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    email_html = render_email_html(
+        mode, data, op_meta, email_asset_base_url=email_base
+    )
     naver_body_html = render_naver_body_html(mode, data)
 
     rendered = {

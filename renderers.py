@@ -147,14 +147,47 @@ def render_web_html(mode: str, data: Dict[str, Any]) -> str:
 </html>"""
 
 
-def _email_wrapper_inner(content: str) -> str:
+def _email_wrapper_inner(content: str, footer_html: str = "") -> str:
     """Conservative mobile-first email body wrapper (no external CSS)."""
     return (
         '<div style="max-width:600px;margin:0 auto;font-family:system-ui,Segoe UI,Helvetica,Arial,sans-serif;'
         'font-size:16px;line-height:1.55;color:#1a1a1a;">'
-        f"{content}"
+        f"{content}{footer_html}"
         "</div>"
     )
+
+
+def _email_img_block(absolute_url: str, alt: str) -> str:
+    """Single email-safe image block; absolute URL required for clients."""
+    return (
+        '<div style="margin:0 0 18px 0;text-align:center;">'
+        f'<img src="{_safe(absolute_url)}" alt="{_safe(alt)}" width="560" '
+        'style="max-width:100%;height:auto;display:block;margin:0 auto;border:0;outline:none;" />'
+        "</div>"
+    )
+
+
+def email_image_slots_html(mode: str, public_base_url: str) -> tuple[str, str]:
+    """
+    Locked reference assets under /static/email/ (served by API).
+    Same file URL may be used twice (studio vs outdoor) with different alt text — identity locked per mode.
+    Returns (top_slot_html, bottom_slot_html); empty strings if no base URL.
+    """
+    base = (public_base_url or "").strip().rstrip("/")
+    if not base:
+        return "", ""
+
+    if mode == "today_genie":
+        path = "static/email/GENIE_REF_today_genie_master_v1.jpg"
+        top_alt = "Genie — 스튜디오 인사 컷 (장전 브리핑)"
+        bot_alt = "Genie — 야외 편안한 휴식 컷 (장전 브리핑, 동일 인물)"
+    else:
+        path = "static/email/GENIE_REF_tomorrow_genie_master_v1.jpg"
+        top_alt = "Genie — 스튜디오 인사 컷 (내일 준비)"
+        bot_alt = "Genie — 야외 OOTD·편안한 휴식 컷 (내일 준비)"
+
+    url = f"{base}/{path}"
+    return _email_img_block(url, top_alt), _email_img_block(url, bot_alt)
 
 
 def render_email_operational_box(meta: Dict[str, Any]) -> str:
@@ -196,6 +229,7 @@ def render_email_html(
     mode: str,
     data: Dict[str, Any],
     operational_meta: Optional[Dict[str, Any]] = None,
+    email_asset_base_url: str = "",
 ) -> str:
     title = _safe(data.get("title", ""))
     summary = _safe(data.get("summary", ""))
@@ -280,10 +314,13 @@ def render_email_html(
 <section style="margin-top:18px;"><p style="margin:0;">{closing}</p></section>
 """.strip()
 
-    inner = _email_wrapper_inner(editorial)
-    if operational_meta:
-        inner = inner.replace("</div>", f"{render_email_operational_box(operational_meta)}</div>", 1)
-    return inner
+    top_img, bottom_img = email_image_slots_html(mode, email_asset_base_url)
+    # Order: top image → editorial → bottom image → operational box (append via footer; never use
+    # string replace on </div> — img blocks contain inner </div> and would break order).
+    op_footer = (
+        render_email_operational_box(operational_meta) if operational_meta else ""
+    )
+    return _email_wrapper_inner(f"{top_img}{editorial}{bottom_img}", op_footer)
 
 
 def render_naver_body_html(mode: str, data: Dict[str, Any]) -> str:
