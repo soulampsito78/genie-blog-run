@@ -183,6 +183,19 @@ def build_full_prompt(mode: str, runtime_input: Dict[str, Any]) -> str:
 
     system_prompt = TODAY_SYSTEM_PROMPT if mode == "today_genie" else TOMORROW_SYSTEM_PROMPT
 
+    feed_alert = ""
+    if mode == "today_genie":
+        status = runtime_input.get("input_feed_status")
+        if status in ("none", "partial"):
+            feed_alert = dedent(f"""
+            [INPUT_FEED_ALERT]
+            input_feed_status={status}.
+            핵심 시장 입력이 일부 또는 전부 비어 있다. 구체적 시세·지수·종목명·뉴스 헤드라인·일정을 생성하지 마라.
+            market_snapshot, key_watchpoints, opportunities, risk_check 배열은 근거 데이터가 없으면 비어 있어도 된다.
+            title, summary, greeting, market_setup, closing_message는 짧은 '입력 미구성·브리핑 최소화' 안내 중심으로만 작성한다.
+            일반적인 투자 응원 문구만으로 장을 채우지 말고, 데이터 없이 풍성한 장전 브리핑인 것처럼 읽히지 않게 한다.
+            """).strip()
+
     return dedent(f"""
     [COMMON_CHARACTER_BIBLE]
     {COMMON_CHARACTER_BIBLE}
@@ -201,6 +214,7 @@ def build_full_prompt(mode: str, runtime_input: Dict[str, Any]) -> str:
     [RUNTIME_INPUT]
     아래 입력값만 근거로 사용한다.
     {json.dumps(runtime_input, ensure_ascii=False, indent=2)}
+    {feed_alert}
 
     [FINAL_INSTRUCTION]
     JSON 객체 1개만 반환하라.

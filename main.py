@@ -162,6 +162,29 @@ def build_runtime_input(mode: str) -> Dict[str, Any]:
         top_market_news = _load_json_env("TODAY_GENIE_TOP_MARKET_NEWS_JSON", [])
         risk_factors = _load_json_env("TODAY_GENIE_RISK_FACTORS_JSON", [])
 
+        def _feed_nonempty(val: Any) -> bool:
+            if val is None:
+                return False
+            if isinstance(val, dict):
+                return len(val) > 0
+            if isinstance(val, list):
+                return len(val) > 0
+            return True
+
+        feed_pairs = [
+            ("overnight_us_market", overnight_us_market),
+            ("macro_indicators", macro_indicators),
+            ("top_market_news", top_market_news),
+            ("risk_factors", risk_factors),
+        ]
+        missing_feeds = [name for name, v in feed_pairs if not _feed_nonempty(v)]
+        if not missing_feeds:
+            input_feed_status = "full"
+        elif len(missing_feeds) == len(feed_pairs):
+            input_feed_status = "none"
+        else:
+            input_feed_status = "partial"
+
         return {
             "target_date": kst_now.date().isoformat(),
             "briefing_time_kst": "06:30",
@@ -170,6 +193,7 @@ def build_runtime_input(mode: str) -> Dict[str, Any]:
             "macro_indicators": macro_indicators,
             "top_market_news": top_market_news,
             "risk_factors": risk_factors,
+            "input_feed_status": input_feed_status,
             "editor_note": "사실/해석/추정 구분. 입력 부족 시 보수적으로 축약."
         }
 
