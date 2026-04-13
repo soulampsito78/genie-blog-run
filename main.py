@@ -326,29 +326,57 @@ def response_issues(issues: List[Any]) -> List[Dict[str, Any]]:
     ]
 
 
-def _email_operational_meta(
+def _email_operational_handoff_meta(
     mode: str,
     validation_result: str,
-    workflow_status: str,
-    runtime_input: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Server-owned fields for deterministic email operational box (not model-generated)."""
+    """
+    Server-owned, customer-facing labels for the email 운영 안내 block only.
+    No raw internal state strings (e.g. draft_only, validated) are exposed here.
+    """
     kst_now = datetime.now(ZoneInfo("Asia/Seoul"))
     exec_ts = kst_now.strftime("%Y-%m-%d %H:%M:%S KST")
+
     if mode == "today_genie":
-        ifs = runtime_input.get("input_feed_status")
-        result_line = f"검증={validation_result}; 입력피드={ifs if ifs is not None else 'n/a'}"
+        mode_label = "오늘의 지니 장전 브리핑"
+    elif mode == "tomorrow_genie":
+        mode_label = "내일의 지니 브리핑"
     else:
-        result_line = f"검증={validation_result}"
+        mode_label = "지니 브리핑"
+
+    if validation_result == "pass":
+        status_label = "기본 검수 통과"
+        result_summary = "초안 생성과 기본 검수를 통과했습니다."
+        email_delivery_label = "이메일 발송 완료"
+    elif validation_result == "draft_only":
+        status_label = "운영 검토 필요"
+        result_summary = (
+            "초안은 생성되었지만, 운영 검토 후 전달하는 편이 안전합니다."
+        )
+        email_delivery_label = "이메일 미발송"
+    else:
+        status_label = "자동 진행 불가"
+        result_summary = "이번 실행은 자동 진행보다 확인이 우선입니다."
+        email_delivery_label = "이메일 미발송"
+
+    raw_href = os.getenv("GENIE_REREQUEST_URL", "").strip()
+    rerequest_url = raw_href if raw_href else "#"
+
+    # revision_request: policy-gated / review-first (today_genie); not immediate rerun.
+    # Placeholder POST target — bind GENIE_REVISION_REQUEST_POST_URL to your API when ready.
+    revision_post = os.getenv("GENIE_REVISION_REQUEST_POST_URL", "").strip()
+    if not revision_post:
+        revision_post = "https://placeholder.genie-revision.bind-later.invalid/v1/revision-request"
+
     return {
-        "mode": mode,
-        "validation_result": validation_result,
-        "workflow_status": workflow_status,
+        "mode_label": mode_label,
+        "status_label": status_label,
         "execution_time_kst": exec_ts,
-        "result_summary_line": result_line,
-        "email_send_status_note": (
-            "API 생성 단계 산출물입니다. 실제 SMTP 발송·수신 여부는 오케스트레이터 실행 시 결정됩니다."
-        ),
+        "result_summary": result_summary,
+        "email_delivery_label": email_delivery_label,
+        "rerequest_url": rerequest_url,
+        "mode_code": mode,
+        "revision_request_post_url": revision_post,
     }
 
 
@@ -399,9 +427,7 @@ def generate(job: JobRequest) -> Dict[str, Any]:
 
     web_html = render_web_html(mode, data)
     workflow_status = "validated" if validation.result == "pass" else "review_required"
-    op_meta = _email_operational_meta(
-        mode, validation.result, workflow_status, runtime_input
-    )
+    op_meta = _email_operational_handoff_meta(mode, validation.result)
     email_base = os.getenv("GENIE_PUBLIC_BASE_URL", "").strip().rstrip("/")
     email_html = render_email_html(
         mode, data, op_meta, email_asset_base_url=email_base

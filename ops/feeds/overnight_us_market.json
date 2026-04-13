@@ -1,0 +1,10 @@
+{
+  "as_of": "2026-04-10",
+  "session": "US cash close (Friday)",
+  "indices": {
+    "SPX": {"close": 6816.89, "change_pts": -7.77, "change_pct": -0.1},
+    "NASDAQ": {"close": 22902.89, "change_pts": 80.48, "change_pct": 0.4},
+    "DJI": {"close": 47916.57, "change_pts": -269.23, "change_pct": -0.6}
+  },
+  "summary": "Mixed US finish: Nasdaq +0.4% with tech support; Dow -0.6%; S&P 500 -0.1%. Choppy session tied to March CPI reaction and Middle East ceasefire headlines in weekend press."
+}
