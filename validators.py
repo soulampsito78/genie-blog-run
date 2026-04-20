@@ -359,21 +359,31 @@ def _is_functional_watchpoint(item: Dict[str, Any]) -> bool:
     return True
 
 
+_SHORT_CRITICAL_TOKENS = frozenset({"cpi", "fed", "imf", "gdp", "oil", "ust"})
+
+
 def _significant_tokens(text: str) -> List[str]:
     n = _norm_text(text).lower()
     n = re.sub(r"[^0-9a-z가-힣\s]", " ", n)
-    return [t for t in n.split() if len(t) >= 4]
+    tokens = [t for t in n.split() if len(t) >= 4]
+    for t in n.split():
+        if t in _SHORT_CRITICAL_TOKENS and t not in tokens:
+            tokens.append(t)
+    return tokens
 
 
 def _watchpoint_covers_news_headline(news_headline: str, wp_head: str, wp_detail: str) -> bool:
     blob = (_norm_text(wp_head) + " " + _norm_text(wp_detail)).lower()
     nh = _norm_text(news_headline).lower()
-    if len(nh) >= 14:
-        compact = re.sub(r"\s+", " ", nh).strip()
-        for ln in (50, 36, 24):
-            frag = compact[:ln].strip()
-            if len(frag) >= 12 and frag in blob:
-                return True
+    for candidate in (
+        re.sub(r"\s+", " ", nh).strip(),
+        re.sub(r"\s+", " ", re.sub(r"[^\w\s가-힣]", " ", nh)).strip(),
+    ):
+        if len(candidate) >= 14:
+            for ln in (50, 36, 24):
+                frag = candidate[:ln].strip()
+                if len(frag) >= 12 and frag in blob:
+                    return True
     tokens = _significant_tokens(news_headline)
     if not tokens:
         return len(nh) >= 10 and nh[: min(24, len(nh))] in blob
@@ -385,10 +395,12 @@ def _watchpoint_covers_news_headline(news_headline: str, wp_head: str, wp_detail
 def _detail_has_what_and_why_today(detail: str) -> bool:
     """TOP3 item: both 'what happened' and 'why it matters today' (not keyword-only)."""
     d = _norm_text(detail)
-    if len(d) < 72:
+    if len(d) < 66:
         return False
     sents = _split_sentences(d)
     if len(sents) < 2:
+        return False
+    if len(d) < 72 and len(sents) < 3:
         return False
     dl = d.lower()
     todayish = _has_any(
@@ -481,7 +493,13 @@ def _watchpoint_topic_aligns_news_headline(news_headline: str, wp: Dict[str, Any
             or "인플레" in blob
             or "inflation" in blob
         )
-    if "index" in nh or "fared" in nh or "indexes" in nh:
+    if (
+        "index" in nh
+        or "fared" in nh
+        or "indexes" in nh
+        or "stock" in nh
+        or "mixed" in nh
+    ):
         return (
             "지수" in blob
             or "나스닥" in blob
@@ -494,6 +512,8 @@ def _watchpoint_topic_aligns_news_headline(news_headline: str, wp: Dict[str, Any
             or "sp500" in blob
             or "index" in blob
             or "indices" in blob
+            or "혼조" in blob
+            or "미국" in blob
         )
     if "ceasefire" in nh or "iran" in nh or "geopolit" in nh or "middle east" in nh:
         return (
@@ -505,6 +525,70 @@ def _watchpoint_topic_aligns_news_headline(news_headline: str, wp: Dict[str, Any
             or "geopolit" in blob
             or "ceasefire" in blob
         )
+    return False
+
+
+def _soft_image_news_anchor(news_headline: str, blob: str) -> bool:
+    """Topic-shaped rescue when headline/detail token overlap is thin but story theme matches."""
+    nh = _norm_text(news_headline).lower()
+    b = blob.lower()
+    if not nh:
+        return False
+    bundles = (
+        (
+            ("cpi", "inflation", "consumer price"),
+            ("cpi", "inflation", "물가", "인플레"),
+        ),
+        (
+            (
+                "nasdaq",
+                "dow",
+                "s&p",
+                "sp500",
+                "stock",
+                "index",
+                "indexes",
+                "fared",
+                "mixed",
+            ),
+            (
+                "nasdaq",
+                "dow",
+                "sp500",
+                "s&p",
+                "index",
+                "indices",
+                "지수",
+                "나스닥",
+                "다우",
+                "증시",
+                "혼조",
+                "스펜",
+            ),
+        ),
+        (
+            ("ceasefire", "iran", "geopolit", "middle east"),
+            (
+                "ceasefire",
+                "geopolit",
+                "middle east",
+                "중동",
+                "지정학",
+                "휴전",
+                "외교",
+                "oil",
+                "유가",
+            ),
+        ),
+        (
+            ("yield", "treasury", "bond", "rate"),
+            ("yield", "treasury", "rate", "금리", "채권", "국채"),
+        ),
+    )
+    for nh_keys, blob_keys in bundles:
+        if any(k in nh for k in nh_keys):
+            if any(k in b for k in blob_keys):
+                return True
     return False
 
 
@@ -591,8 +675,10 @@ def _validate_image_prompts_news_anchoring(
         nh = item.get("headline", "")
         if not isinstance(nh, str) or not nh.strip():
             continue
-        if _text_blob_aligns_news_headline(nh, blob) or _watchpoint_topic_aligns_news_headline(
-            nh, {"headline": "", "detail": blob}
+        if (
+            _text_blob_aligns_news_headline(nh, blob)
+            or _watchpoint_topic_aligns_news_headline(nh, {"headline": "", "detail": blob})
+            or _soft_image_news_anchor(nh, blob)
         ):
             continue
         weak.append(i + 1)
@@ -1061,12 +1147,20 @@ def _domestic_index_divergence_narrative_issues(
 def _forbidden_surface_cliche_issues(data: Dict[str, Any]) -> List[ValidationIssue]:
     """Block dominant generic closer in customer-facing editorial fields (success HTML surface)."""
     issues: List[ValidationIssue] = []
-    bad = "신중한 접근이 필요합니다"
+    bad_phrases = (
+        "신중한 접근이 필요합니다",
+        "신중한 접근이 필요하다",
+        "신중한 접근이 필요해",
+    )
+
+    def _has_bad(s: str) -> bool:
+        return any(b in s for b in bad_phrases)
+
     for label, text in (
         ("summary", data.get("summary")),
         ("market_setup", data.get("market_setup")),
     ):
-        if isinstance(text, str) and bad in text:
+        if isinstance(text, str) and _has_bad(text):
             issues.append(
                 ValidationIssue(
                     "forbidden_surface_cliche_phrase",
@@ -1076,7 +1170,7 @@ def _forbidden_surface_cliche_issues(data: Dict[str, Any]) -> List[ValidationIss
             )
     for idx, w in enumerate([w for w in data.get("key_watchpoints", []) if isinstance(w, dict)][:3]):
         d = w.get("detail", "")
-        if isinstance(d, str) and bad in d:
+        if isinstance(d, str) and _has_bad(d):
             issues.append(
                 ValidationIssue(
                     "forbidden_surface_cliche_phrase",
@@ -1086,7 +1180,7 @@ def _forbidden_surface_cliche_issues(data: Dict[str, Any]) -> List[ValidationIss
             )
     for idx, r in enumerate([r for r in data.get("risk_check", []) if isinstance(r, dict)][:8]):
         d = r.get("detail", "")
-        if isinstance(d, str) and bad in d:
+        if isinstance(d, str) and _has_bad(d):
             issues.append(
                 ValidationIssue(
                     "forbidden_surface_cliche_phrase",

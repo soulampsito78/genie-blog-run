@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from prompts import build_full_prompt
+from prompts import build_full_prompt, today_genie_json_recovery_suffix
 from renderers import (
     TODAY_GENIE_LEGAL_DISCLAIMER,
     finalize_today_genie_hashtag_list,
@@ -355,36 +355,88 @@ def extract_json_object(raw_text: str) -> str:
     return raw_text
 
 
+def _normalize_json_candidate(candidate: str) -> str:
+    s = candidate.lstrip("\ufeff")
+    return (
+        s.replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+    )
+
+
+def _strip_trailing_commas_json(candidate: str) -> str:
+    s = candidate
+    prev: str | None = None
+    while prev != s:
+        prev = s
+        s = re.sub(r",(\s*[\]}])", r"\1", s)
+    return s
+
+
+def _json_parse_candidate_variants(raw_text: str) -> List[str]:
+    base = extract_json_object(raw_text)
+    seen: set[str] = set()
+    out: List[str] = []
+
+    def add(x: str) -> None:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+
+    add(base)
+    norm = _normalize_json_candidate(base)
+    add(norm)
+    add(_strip_trailing_commas_json(base))
+    add(_strip_trailing_commas_json(norm))
+    return out
+
+
+def try_parse_model_json(raw_text: str) -> tuple[Dict[str, Any] | None, str]:
+    """Try local repairs (quotes, trailing commas) before declaring parse failure."""
+    errs: List[str] = []
+    for i, cand in enumerate(_json_parse_candidate_variants(raw_text)):
+        try:
+            val = json.loads(cand)
+            if isinstance(val, dict):
+                logger.info("model_json_parse_ok variant_index=%s", i)
+                return val, ""
+            errs.append(f"v{i}:not_a_json_object")
+        except json.JSONDecodeError as e:
+            errs.append(f"v{i}:{e}")
+    return None, "; ".join(errs[:5])
+
+
 def parse_model_json(raw_text: str, mode: str) -> Dict[str, Any]:
-    candidate = extract_json_object(raw_text)
-    try:
-        return json.loads(candidate)
-    except json.JSONDecodeError as e:
-        logger.error(
-            "genie_api failure mode=%s reason=json_parse_error message=%s",
-            mode,
-            str(e),
-        )
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "status": "failed",
-                "reason": "json_parse_error",
-                "message": str(e),
-                "raw_preview": raw_text[:1200],
-            },
-        )
+    data, err = try_parse_model_json(raw_text)
+    if data is not None:
+        return data
+    logger.error(
+        "genie_api failure mode=%s reason=json_parse_error repairs_exhausted detail=%s",
+        mode,
+        err[:800],
+    )
+    raise HTTPException(
+        status_code=500,
+        detail={
+            "status": "failed",
+            "reason": "json_parse_error",
+            "message": err[:1200],
+            "raw_preview": raw_text[:1200],
+        },
+    )
 
 
 def call_gemini(prompt: str, mode: str) -> str:
     try:
         init_vertex()
         model = get_model()
+        max_out = int(os.getenv("GENIE_MAX_OUTPUT_TOKENS", "12288"))
 
         generation_config = GenerationConfig(
             temperature=0.3,
             top_p=0.9,
-            max_output_tokens=8192,
+            max_output_tokens=max_out,
             response_mime_type="application/json",
         )
 
@@ -524,7 +576,15 @@ def generate(job: JobRequest) -> Dict[str, Any]:
 
     prompt = build_full_prompt(mode, runtime_input)
     raw_text = call_gemini(prompt, mode)
-    data = parse_model_json(raw_text, mode)
+    try:
+        data = parse_model_json(raw_text, mode)
+    except HTTPException as e:
+        det = e.detail if isinstance(e.detail, dict) else {}
+        if det.get("reason") == "json_parse_error" and mode == "today_genie":
+            raw_text = call_gemini(prompt + today_genie_json_recovery_suffix(), mode)
+            data = parse_model_json(raw_text, mode)
+        else:
+            raise
     if mode == "today_genie":
         data["hashtags"] = finalize_today_genie_hashtag_list(data, runtime_input)
         validation = validate_today_genie(data, runtime_input)

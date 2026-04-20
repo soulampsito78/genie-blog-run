@@ -20,6 +20,10 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException
 
 _REPO = Path(__file__).resolve().parents[1]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+
+from prompts import today_genie_json_recovery_suffix
 _FEED_FILES = [
     ("TODAY_GENIE_OVERNIGHT_US_MARKET_JSON", "overnight_us_market.json"),
     ("TODAY_GENIE_MACRO_INDICATORS_JSON", "macro_indicators.json"),
@@ -258,6 +262,7 @@ def main() -> int:
     ri: dict[str, object] = {}
     data: dict[str, object] = {}
     val = None
+    raw: str | None = None
 
     t = time.perf_counter()
     ri = build_runtime_input(mode)
@@ -299,6 +304,7 @@ def main() -> int:
             image_run=image_run,
             stage_timings_sec=prof,
             wall_start=t_wall,
+            raw_text=None,
         )
         print(
             json.dumps(
@@ -325,7 +331,20 @@ def main() -> int:
         raw = call_gemini(prompt, mode)
         prof["model_inference_sec"] = round(time.perf_counter() - t, 4)
         t = time.perf_counter()
-        data = parse_model_json(raw, mode)
+        try:
+            data = parse_model_json(raw, mode)
+        except HTTPException as e_parse:
+            det = e_parse.detail if isinstance(e_parse.detail, dict) else {}
+            if det.get("reason") == "json_parse_error":
+                t_rec = time.perf_counter()
+                raw = call_gemini(prompt + today_genie_json_recovery_suffix(), mode)
+                prof["model_inference_recovery_sec"] = round(time.perf_counter() - t_rec, 4)
+                prof["json_recovery_second_call"] = True
+                data = parse_model_json(raw, mode)
+            else:
+                raise
+        else:
+            prof["json_recovery_second_call"] = False
         data["hashtags"] = finalize_today_genie_hashtag_list(data, ri)
         val = validate_today_genie(data, ri)
         prof["parse_finalize_validate_sec"] = round(time.perf_counter() - t, 4)
@@ -374,6 +393,7 @@ def main() -> int:
                 validation_result=val.result,
                 stage_timings_sec=prof,
                 wall_start=t_wall,
+                raw_text=raw,
             )
             print(
                 json.dumps(
@@ -436,6 +456,7 @@ def main() -> int:
                 validation_result=val.result,
                 stage_timings_sec=prof,
                 wall_start=t_wall,
+                raw_text=raw,
             )
             print(
                 json.dumps(
@@ -484,6 +505,11 @@ def main() -> int:
             encoding="utf-8",
         )
         status["html"] = "success"
+        raw_blob = raw
+        if raw_blob is None and isinstance(e.detail, dict):
+            rp = e.detail.get("raw_preview")
+            if isinstance(rp, str):
+                raw_blob = rp
         _write_fail_proof(
             proof_html,
             run_id,
@@ -502,6 +528,7 @@ def main() -> int:
             validation_result=getattr(val, "result", None) if val else None,
             stage_timings_sec=prof,
             wall_start=t_wall,
+            raw_text=raw_blob,
         )
         print(
             json.dumps(
@@ -567,6 +594,7 @@ def main() -> int:
             validation_result=getattr(val, "result", None) if val else None,
             stage_timings_sec=prof,
             wall_start=t_wall,
+            raw_text=raw,
         )
         print(
             json.dumps(
@@ -638,6 +666,7 @@ def main() -> int:
             validation_result=val.result,
             stage_timings_sec=prof,
             wall_start=t_wall,
+            raw_text=raw,
         )
         print(
             json.dumps(
@@ -1435,6 +1464,132 @@ def _format_risks(rks: object) -> str:
     return "".join(parts)
 
 
+def _read_json_string_value(blob: str, key: str) -> str | None:
+    """Read a JSON string value for key from possibly truncated/invalid JSON (best-effort)."""
+    m = re.search(rf'"{re.escape(key)}"\s*:\s*"', blob)
+    if not m:
+        return None
+    i = m.end()
+    out: list[str] = []
+    while i < len(blob):
+        c = blob[i]
+        if c == '"':
+            return "".join(out)
+        if c == "\\" and i + 1 < len(blob):
+            nxt = blob[i + 1]
+            if nxt == "n":
+                out.append("\n")
+            elif nxt == "t":
+                out.append("\t")
+            elif nxt == '"':
+                out.append('"')
+            elif nxt == "\\":
+                out.append("\\")
+            elif nxt == "/":
+                out.append("/")
+            else:
+                out.append(nxt)
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _scrape_json_string_fields(blob: str, keys: tuple[str, ...]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not blob or not blob.strip():
+        return out
+    for key in keys:
+        val = _read_json_string_value(blob, key)
+        if val is not None and val.strip():
+            out[key] = val.strip()
+    return out
+
+
+def _failure_merge_display_fields(display_data: dict[str, object], raw_text: str) -> None:
+    scraped = _scrape_json_string_fields(
+        raw_text,
+        ("title", "summary", "greeting", "market_setup", "closing_message"),
+    )
+    for k, v in scraped.items():
+        cur = display_data.get(k)
+        if not isinstance(cur, str) or not cur.strip():
+            display_data[k] = v
+
+
+def _format_watchpoints_with_feed_fallback(wps: object, ri: dict[str, object]) -> str:
+    base = _format_watchpoints(wps)
+    nonempty = 0
+    if isinstance(wps, list):
+        for w in wps:
+            if isinstance(w, dict) and (
+                str(w.get("headline", "")).strip() or str(w.get("detail", "")).strip()
+            ):
+                nonempty += 1
+    if nonempty > 0:
+        return base
+    news = ri.get("top_market_news")
+    if not isinstance(news, list) or not news:
+        return (
+            base
+            + '<p class="muted"><strong>초안 상태</strong> TOP3 배열이 비어 있거나 복구되지 않았고, '
+            "입력 <code>top_market_news</code>도 없습니다.</p>"
+        )
+    lines: list[str] = [
+        '<p class="muted"><strong>초안 상태</strong> 구조화된 TOP3를 표시할 수 없습니다. '
+        "아래는 <strong>입력 피드</strong> 상위 뉴스 헤드라인 인용입니다(모델 확정 산출물이 아님).</p>",
+        "<ul>",
+    ]
+    for item in news[:5]:
+        if isinstance(item, dict):
+            h = str(item.get("headline", "")).strip()
+            if h:
+                lines.append(f"<li>{html.escape(h)}</li>")
+    lines.append("</ul>")
+    return base + "".join(lines)
+
+
+def _format_risks_with_feed_fallback(rks: object, ri: dict[str, object]) -> str:
+    base = _format_risks(rks)
+    nonempty = 0
+    if isinstance(rks, list):
+        for r in rks:
+            if isinstance(r, dict) and (
+                str(r.get("risk", "")).strip() or str(r.get("detail", "")).strip()
+            ):
+                nonempty += 1
+    if nonempty > 0:
+        return base
+    rf = ri.get("risk_factors")
+    if not isinstance(rf, list) or not rf:
+        return (
+            base
+            + '<p class="muted"><strong>초안 상태</strong> risk_check가 비어 있고, 입력 <code>risk_factors</code>도 없습니다.</p>'
+        )
+    lines: list[str] = [
+        '<p class="muted"><strong>초안 상태</strong> 리스크 블록을 표시할 수 없습니다. '
+        "아래는 <strong>입력 피드</strong> <code>risk_factors</code> 인용입니다(모델 확정 산출물이 아님).</p>",
+        "<ul>",
+    ]
+    for item in rf[:6]:
+        if isinstance(item, dict):
+            t = str(item.get("risk", "") or item.get("title", "")).strip()
+            d = str(item.get("detail", "") or item.get("summary", "")).strip()
+            if t or d:
+                lines.append(
+                    "<li><strong>"
+                    + html.escape(t or "(제목 없음)")
+                    + "</strong> — "
+                    + html.escape(d)
+                    + "</li>"
+                )
+        elif isinstance(item, str) and item.strip():
+            lines.append(f"<li>{html.escape(item.strip())}</li>")
+    lines.append("</ul>")
+    return base + "".join(lines)
+
+
 READER_REASON_PLACEHOLDER = (
     "독자용 증빙에서는 운영·디버그 성격의 세부 정보를 표시하지 않습니다. "
     "미리보기 JSON 또는 증빙 HTML과 같은 이름의 `.operator.txt` 파일을 확인하세요."
@@ -1599,17 +1754,28 @@ def _write_fail_proof(
     validation_result: object | None = None,
     stage_timings_sec: dict[str, float] | None = None,
     wall_start: float | None = None,
+    raw_text: str | None = None,
 ) -> None:
     from renderers import finalize_today_genie_hashtag_list
 
     data = dict(data or {})
     data["hashtags"] = finalize_today_genie_hashtag_list(data, ri)
-    title = (data.get("title") or "").strip()
-    summary = (data.get("summary") or "").strip()
-    mood = (data.get("image_briefing_mood_state") or "").strip()
-    basis = (data.get("image_mood_basis") or "").strip()
-    p_studio = (data.get("image_prompt_studio") or "").strip()
-    p_out = (data.get("image_prompt_outdoor") or "").strip()
+    display = dict(data)
+    if raw_text:
+        _failure_merge_display_fields(display, raw_text)
+    title = (display.get("title") or "").strip()
+    summary = (display.get("summary") or "").strip()
+    if not title:
+        title = "[구조화 본문 미확보] 참고 초안"
+    if not summary:
+        summary = (
+            "이번 실행에서 게시 확정용 전체 JSON을 끝까지 확보하지 못했거나 검증 전 단계에서 중단되었습니다. "
+            "아래 TOP3·리스크 칸의 피드 인용, 보완 사유, 미리보기 JSON을 함께 확인하세요."
+        )
+    mood = (display.get("image_briefing_mood_state") or "").strip()
+    basis = (display.get("image_mood_basis") or "").strip()
+    p_studio = (display.get("image_prompt_studio") or "").strip()
+    p_out = (display.get("image_prompt_outdoor") or "").strip()
     if image_run is None:
         image_run = _image_run_skipped_both("unspecified_proof_path", top_img, bot_img)
     body = _proof_html_body(
@@ -1617,10 +1783,10 @@ def _write_fail_proof(
         ri=ri,
         eyebrow_line=_briefing_eyebrow_line(ri, run_id),
         val=None,
-        title=title or "없음",
-        summary=summary or "없음",
-        wp_html=_format_watchpoints(data.get("key_watchpoints") or []),
-        rk_html=_format_risks(data.get("risk_check") or []),
+        title=title,
+        summary=summary,
+        wp_html=_format_watchpoints_with_feed_fallback(display.get("key_watchpoints"), ri),
+        rk_html=_format_risks_with_feed_fallback(display.get("risk_check"), ri),
         mood=mood,
         basis=basis,
         p_studio=p_studio or "없음",
@@ -1634,9 +1800,9 @@ def _write_fail_proof(
         roulette_reasons=roulette_reasons or err,
         extra_errors=err,
         image_run=image_run,
-        hashtag_block=_proof_hashtag_html(data.get("hashtags"), omit_muted_label=True),
+        hashtag_block=_proof_hashtag_html(display.get("hashtags"), omit_muted_label=True),
         failure_mode=True,
-        handoff_data=data,
+        handoff_data=display,
         validation_result=validation_result,
     )
     _write_proof_bundle(

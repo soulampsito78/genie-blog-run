@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 from textwrap import dedent
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 COMMON_CHARACTER_BIBLE = dedent("""
 지니는 동일 인물이다.
@@ -307,6 +308,128 @@ OUTPUT_SCHEMA = {
 }
 
 
+def _collect_top_market_news_headlines(runtime_input: Dict[str, Any]) -> List[str]:
+    raw = runtime_input.get("top_market_news")
+    out: List[str] = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw[:3]:
+        if isinstance(item, dict):
+            h = item.get("headline")
+            if isinstance(h, str) and h.strip():
+                out.append(h.strip())
+    return out
+
+
+def _anchor_hint_blob(runtime_input: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    for item in (runtime_input.get("top_market_news") or [])[:5]:
+        if isinstance(item, dict):
+            parts.append(str(item.get("headline") or ""))
+    ov = runtime_input.get("overnight_us_market")
+    if isinstance(ov, dict):
+        parts.append(str(ov.get("summary") or ""))
+        idx = ov.get("indices")
+        if isinstance(idx, dict):
+            parts.extend(str(k) for k in idx.keys())
+    return " ".join(parts).lower()
+
+
+def _english_image_anchor_hints(runtime_input: Dict[str, Any]) -> List[str]:
+    """Map input text to stable English labels for image prompts (no fabricated themes)."""
+    blob = _anchor_hint_blob(runtime_input)
+    hints: List[str] = []
+    seen: set[str] = set()
+
+    def push(label: str) -> None:
+        if label.lower() not in seen:
+            hints.append(label)
+            seen.add(label.lower())
+
+    if "cpi" in blob:
+        push("CPI inflation")
+    if "inflation" in blob:
+        push("US inflation")
+    if "nasdaq" in blob:
+        push("Nasdaq")
+    if "dow jones" in blob or re.search(r"\bdow\b", blob):
+        push("Dow Jones")
+    if "s&p" in blob or "sp500" in blob or "s&p 500" in blob:
+        push("S&P 500")
+    if "stock" in blob or "indexes" in blob or "fared" in blob or "mixed" in blob:
+        push("US equities")
+    if "geopolit" in blob:
+        push("geopolitical risk")
+    if "middle east" in blob:
+        push("Middle East")
+    if "ceasefire" in blob:
+        push("ceasefire")
+    if re.search(r"\biran\b", blob):
+        push("Iran")
+    if re.search(r"\boil\b", blob) or "crude" in blob:
+        push("oil")
+    if "yield" in blob or "treasury" in blob or re.search(r"\bust\b", blob):
+        push("Treasury yields")
+    if re.search(r"\bfed\b", blob):
+        push("Fed")
+    if "gold" in blob:
+        push("gold")
+    return hints[:10]
+
+
+def _today_genie_convergence_blocks(runtime_input: Dict[str, Any]) -> str:
+    """Runtime injection: TOP3 slot discipline, image/news anchors, surface closer steer."""
+    headlines = _collect_top_market_news_headlines(runtime_input)
+    hints = _english_image_anchor_hints(runtime_input)
+    hints_line = ", ".join(hints) if hints else "(헤드라인·야간 요약의 고유명사·지표명을 영어로 직접 인용)"
+
+    steer = dedent("""
+    [SURFACE_CLOSER_STEER]
+    summary·market_setup·key_watchpoints detail·risk_check detail에서 금지 맺음('신중한 접근이 필요합니다' 등) 대신,
+    입력에 있는 원인 변수명(예: CPI·환율·외국인 수급·지정학 이슈)과 오늘 먼저 확인할 가격·시간·체크포인트를 한 덩어리 문장으로 묶어 마무리한다.
+    다음 표현은 고객 표면 어디에도 쓰지 않는다(검증 차단과 동일): '방향성을 가늠', '가늠해야 합니다', 막연한 '가늠'만으로 끝내는 문장.
+    JSON 객체에서 key_watchpoints는 길이가 정확히 3인 배열이며, 각 원소의 headline·detail은 빈 문자열이면 안 된다.
+    risk_check 각 항목의 risk 필드는 고객 표면용으로 한글 명사구로 쓴다(영문 단독 라벨·티커만 넣지 말 것).
+    """).strip()
+
+    if not headlines:
+        return steer
+
+    numbered = "\n".join(f"  {i}. {h}" for i, h in enumerate(headlines, start=1))
+    slot = dedent(f"""
+    [TOP3_SLOT_LOCK — binding]
+    입력 top_market_news 상위 항목은 아래 순서로 고정이다. key_watchpoints[0]·[1]·[2]는 각각 슬롯 1·2·3과 **동일 이슈**여야 한다(순서 바꿈·다른 날 이슈 끌어오기 금지).
+    {numbered}
+    슬롯별 계약:
+    - headline: 해당 슬롯 헤드라인을 한국어 한 줄로 재작성(영어 헤드라인 통째 복붙 금지; CPI·나스닥 등 고유 표기는 유지 가능).
+    - detail: 최소 **3문장**(권장 4문장). (1) 슬롯 헤드라인이 말하는 사실을 한국어로 서술하되, 헤드라인의 **식별 앵커**(지표명·%·기관·지수명·지정학 키워드)를 그대로 드러내어 입력과의 연결을 분명히 한다. (2) 오늘 장전에 왜 중요한지. (3) 국내(코스피·코스닥·원/달러·외국인·기관 중 하나 이상)에서 무엇을 먼저 볼지. (4) 마지막 문장은 우선 확인할 변수로 끝낸다.
+    - 다른 슬롯 이슈를 섞지 말 것.
+    """).strip()
+
+    img = dedent(f"""
+    [IMAGE_PROMPT_NEWS_ANCHOR_LOCK — binding]
+    image_prompt_studio와 image_prompt_outdoor **각각**에 아래 후보 중 입력에 실제로 해당하는 영어 명명 앵커를 **최소 2개** 이상 포함한다(단순 날씨·카페 묘사만으로 끝내지 말 것).
+    오늘 우선 후보: {hints_line}
+    하단(image_prompt_outdoor)은 runtime_input.image_weather_context 반응 규칙을 유지하되, 금융 앵커 단어는 문장 안에 반드시 남긴다.
+    """).strip()
+
+    return "\n\n".join([slot, img, steer])
+
+
+def today_genie_json_recovery_suffix() -> str:
+    """Appended to the primary prompt after a json_parse_error to request a full re-emission."""
+    return dedent("""
+
+    [EMERGENCY_JSON_REPAIR_PASS — today_genie]
+    직전 응답이 잘리거나 JSON이 깨져 파싱에 실패했다. **전체 스키마를 처음부터** 다시 출력하라.
+    - 코드블록·서문·후문 없이 **단일 JSON 객체 하나만** 출력한다.
+    - **마지막 닫는 중괄호 `}`까지** 반드시 완성한다(중간 출력 중단 금지).
+    - JSON 문자열 값 안에 **raw 줄바꿈을 넣지 않는다**. 줄바꿈이 필요하면 `\\n`으로 이스케이프하거나 문장을 한 줄로 이어 쓴다.
+    - 토큰이 부족하면 문장을 짧게 줄이되, `mode`, `title`, `summary`, `key_watchpoints`(정확히 3개), `market_snapshot`, `risk_check` 등 필수 필드는 가능한 한 유지한다.
+    - `market_snapshot` 배열의 각 원소는 `label`·`value`·`basis`를 **완성된 한 객체**로 닫는다(열린 따옴표·미완성 항목 금지).
+    """).strip()
+
+
 def _json_schema_text(mode: str) -> str:
     return json.dumps(OUTPUT_SCHEMA[mode], ensure_ascii=False, indent=2)
 
@@ -353,6 +476,19 @@ def build_full_prompt(mode: str, runtime_input: Dict[str, Any]) -> str:
         image_prompt_outdoor에서만 반영하고, 금융 본문 필드에는 날씨를 새로 넣지 않는다.
         """).rstrip()
 
+    convergence = _today_genie_convergence_blocks(runtime_input) if mode == "today_genie" else ""
+
+    json_harden = ""
+    if mode == "today_genie":
+        json_harden = dedent("""
+        [JSON_OUTPUT_HARDENING — today_genie]
+        - 응답은 **완전한 단일 JSON 객체** 하나로 끝난다. 출력이 길면 문장을 압축하되 **닫는 `}`까지** 끝낸다.
+        - JSON 문자열 안에 **raw 줄바꿈**을 넣지 않는다(`\\n` 이스케이프만 허용).
+        - 모든 키·문자열은 **쌍따옴표**만 사용한다.
+        - `market_snapshot` 항목마다 `label`·`value`·`basis`를 **완결**한다(쉼표·따옴표 누락 금지).
+        - 금지 맺음·가늠류는 이전 블록과 동일하게 쓰지 않는다: '신중한 접근이 필요합니다/필요하다', '가늠해야 합니다', '방향성을 가늠'.
+        """).strip()
+
     return dedent(f"""
     [COMMON_CHARACTER_BIBLE]
     {COMMON_CHARACTER_BIBLE}
@@ -373,6 +509,10 @@ def build_full_prompt(mode: str, runtime_input: Dict[str, Any]) -> str:
     {json.dumps(runtime_input, ensure_ascii=False, indent=2)}
     {image_weather_rule}
     {feed_alert}
+
+    {convergence}
+
+    {json_harden}
 
     [FINAL_INSTRUCTION]
     JSON 객체 1개만 반환하라.
