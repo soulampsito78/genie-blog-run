@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any, Dict, List, Literal
+
+from renderers import (
+    TODAY_GENIE_HASHTAG_COUNT,
+    today_genie_hashtag_key,
+    today_genie_hashtag_passes_locale_rule,
+    today_genie_is_generic_hashtag,
+)
 
 GateResultType = Literal["pass", "draft_only", "block"]
 
@@ -31,7 +39,50 @@ FORBIDDEN_FINANCE_PHRASES = [
     "반드시 오른다",
     "지금 사야 한다",
     "매수 확정",
+    "무조건 매수",
+    "반드시 매수",
+    "적극 매수",
+    "지금 매수",
+    "매수 타이밍",
+    "매수해야",
+    "사야 한다",
+    "사야 합니다",
+    "담으라",
+    "담으세요",
+    "풀매수",
+    "올인",
+    "확실한 상승",
+    "확실히 오른다",
+    "투자 추천",
+    "추천주",
+    "추천 종목",
+    "must buy",
+    "guaranteed return",
 ]
+
+# Definitive / promotional investment instruction (hard block)
+DEFINITIVE_PROPOSAL_PHRASES = (
+    "무조건 사",
+    "반드시 사",
+    "지금 사",
+    "매수하라",
+    "매수하세요",
+    "비중을 늘려",
+    "비중을 올려",
+    "포트폴리오에 넣",
+    "포트폴리오에 편입",
+    "수익을 보장",
+    "확정적으로",
+    "확정 수익률",
+    "이 가격이 매수",
+    "이 구간이 매수",
+    "매수 포인트",
+    "매수 구간",
+    "적극 매도",
+    "무조건 매도",
+    "should buy",
+    "strong buy",
+)
 
 INTERNAL_LEAK_TERMS = (
     "e2e",
@@ -68,7 +119,6 @@ _PREP_NOTICE_PHRASES = ("준비를 하겠습니다", "준비하겠습니다")
 
 WEAK_TITLE_PATTERNS = (
     "오늘의 장전 브리핑",
-    "장전 브리핑",
     "시장 브리핑",
     "모닝 브리핑",
 )
@@ -87,15 +137,33 @@ GENERIC_FINANCE_PHRASES = (
     "변동성에 유의",
     "관망이 필요",
     "신중한 접근",
+    "민감한 대응",
     "보수적 대응",
     "추가 확인이 필요",
     "시장 상황을 주시",
     "리스크 관리",
 )
 
+LECTURE_CLOSER_PHRASES = (
+    "신중한 접근이 필요합니다",
+    "신중한 접근이 필요하다",
+    "신중하게 접근",
+    "민감한 대응이 필요합니다",
+    "민감한 대응이 필요하다",
+    "민감하게 대응",
+    "보수적으로 지켜봐야",
+    "주의가 필요합니다",
+    "면밀히 지켜볼 필요",
+    "면밀히 지켜봐야 합니다",
+    "면밀히 지켜봐야 한다",
+    "주시할 필요가 있습니다",
+    "주시할 필요가 있다",
+)
+
 DECISION_HINT_TERMS = (
     "기준",
     "우선",
+    "먼저",
     "보류",
     "확인",
     "관찰",
@@ -106,6 +174,8 @@ DECISION_HINT_TERMS = (
     "진입",
     "유지",
     "축소",
+    "과해석",
+    "단정",
 )
 
 ASSERTIVE_TONE_TERMS = (
@@ -216,7 +286,20 @@ def _norm_text(text: Any) -> str:
 
 
 def _split_sentences(text: str) -> List[str]:
-    return [s.strip() for s in re.split(r"[.!?。\n]+", text) if s.strip()]
+    """Split on ASCII/East Asian sentence breaks; fallback for Korean clauses without periods."""
+    if not text.strip():
+        return []
+    primary = [s.strip() for s in re.split(r"[.!?。\n]+", text) if s.strip()]
+    if len(primary) >= 2:
+        return primary
+    secondary = [
+        s.strip()
+        for s in re.split(r"(?<=[다요음임])\s+(?=[가-힣ㄱ-ㅎ\d\(「\"'])", text)
+        if s.strip()
+    ]
+    if len(secondary) >= 2:
+        return secondary
+    return primary or [text.strip()]
 
 
 def _has_any(text: str, patterns: tuple[str, ...]) -> bool:
@@ -243,6 +326,10 @@ def _count_any(text: str, patterns: tuple[str, ...]) -> int:
 
 def _count_digits(text: str) -> int:
     return len(re.findall(r"\d", text))
+
+
+def _hangul_jamo_count(text: str) -> int:
+    return len(re.findall(r"[\uac00-\ud7a3]", _norm_text(text)))
 
 
 def _joined_today_editorial_text(data: Dict[str, Any]) -> str:
@@ -272,6 +359,299 @@ def _is_functional_watchpoint(item: Dict[str, Any]) -> bool:
     return True
 
 
+def _significant_tokens(text: str) -> List[str]:
+    n = _norm_text(text).lower()
+    n = re.sub(r"[^0-9a-z가-힣\s]", " ", n)
+    return [t for t in n.split() if len(t) >= 4]
+
+
+def _watchpoint_covers_news_headline(news_headline: str, wp_head: str, wp_detail: str) -> bool:
+    blob = (_norm_text(wp_head) + " " + _norm_text(wp_detail)).lower()
+    nh = _norm_text(news_headline).lower()
+    if len(nh) >= 14:
+        compact = re.sub(r"\s+", " ", nh).strip()
+        for ln in (50, 36, 24):
+            frag = compact[:ln].strip()
+            if len(frag) >= 12 and frag in blob:
+                return True
+    tokens = _significant_tokens(news_headline)
+    if not tokens:
+        return len(nh) >= 10 and nh[: min(24, len(nh))] in blob
+    hits = sum(1 for t in tokens[:10] if t in blob)
+    need = 2 if len(tokens) >= 3 else 1
+    return hits >= min(need, len(tokens))
+
+
+def _detail_has_what_and_why_today(detail: str) -> bool:
+    """TOP3 item: both 'what happened' and 'why it matters today' (not keyword-only)."""
+    d = _norm_text(detail)
+    if len(d) < 72:
+        return False
+    sents = _split_sentences(d)
+    if len(sents) < 2:
+        return False
+    dl = d.lower()
+    todayish = _has_any(
+        dl,
+        (
+            "오늘",
+            "장전",
+            "장중",
+            "아침",
+            "개장",
+            "장 초반",
+            "현재 시점",
+            "금일",
+            "당일",
+            "다음 주",
+            "주초",
+        ),
+    )
+    tactical_today = len(sents) >= 2 and _has_any(
+        d,
+        ("주시", "관찰", "확인", "대응", "접근", "운용", "판단", "시나리오", "점검"),
+    )
+    meaning = _has_any(d, INTERPRETATION_CUE_TERMS) or _has_any(
+        d,
+        ("무엇", "배경", "원인", "촉발", "발표", "이슈", "변수", "영향을", "의미를"),
+    )
+    return (todayish or tactical_today) and meaning
+
+
+def _detail_has_domestic_or_operational_watch(detail: str) -> bool:
+    """TOP3: 국내 시장 관전 또는 '오늘 무엇을 먼저 볼지' 성격의 운용 확인 문장."""
+    d = _norm_text(detail).lower()
+    if _has_any(
+        d,
+        (
+            "국내",
+            "코스피",
+            "코스닥",
+            "krx",
+            "원/달러",
+            "원화",
+            "환율",
+            "외국인",
+            "기관",
+            "선물",
+            "유가",
+            "금리",
+            "채권",
+        ),
+    ):
+        return True
+    if _has_any(d, ("오늘", "장전", "장중", "아침", "개장", "금일")) and _has_any(
+        d,
+        (
+            "먼저",
+            "우선",
+            "주시",
+            "확인",
+            "살펴",
+            "점검",
+            "관찰",
+            "대응",
+            "유의",
+            "체크",
+            "볼 변수",
+            "봐야",
+        ),
+    ):
+        return True
+    return False
+
+
+def _text_blob_aligns_news_headline(news_headline: str, blob: str) -> bool:
+    """True if blob (e.g. combined image prompts) carries the same story as the input headline."""
+    return _watchpoint_covers_news_headline(news_headline, "", blob)
+
+
+def _watchpoint_topic_aligns_news_headline(news_headline: str, wp: Dict[str, Any]) -> bool:
+    """When headline languages differ, allow topic-level grounding (CPI/index/geo, etc.)."""
+    nh = _norm_text(news_headline).lower()
+    blob = (
+        _norm_text(wp.get("headline", "")) + " " + _norm_text(wp.get("detail", ""))
+    ).lower()
+    if not nh:
+        return False
+    if "inflation" in nh or "cpi" in nh:
+        return (
+            "cpi" in blob
+            or "물가" in blob
+            or "인플레" in blob
+            or "inflation" in blob
+        )
+    if "index" in nh or "fared" in nh or "indexes" in nh:
+        return (
+            "지수" in blob
+            or "나스닥" in blob
+            or "다우" in blob
+            or "s&p" in blob
+            or "스펜" in blob
+            or "증시" in blob
+            or "nasdaq" in blob
+            or "dow" in blob
+            or "sp500" in blob
+            or "index" in blob
+            or "indices" in blob
+        )
+    if "ceasefire" in nh or "iran" in nh or "geopolit" in nh or "middle east" in nh:
+        return (
+            "중동" in blob
+            or "지정학" in blob
+            or "휴전" in blob
+            or "외교" in blob
+            or "middle east" in blob
+            or "geopolit" in blob
+            or "ceasefire" in blob
+        )
+    return False
+
+
+def _validate_top_three_news_briefing(
+    runtime_input: Dict[str, Any], data: Dict[str, Any]
+) -> List[ValidationIssue]:
+    issues: List[ValidationIssue] = []
+    wps = [w for w in data.get("key_watchpoints", []) if isinstance(w, dict)]
+    if len(wps) < 3:
+        issues.append(
+            ValidationIssue(
+                "top3_watchpoints_missing",
+                "본문에 TOP3 핵심 체크포인트(정확히 3개)가 없거나 비어 있음",
+                "error",
+            )
+        )
+        return issues
+    for i in range(3):
+        detail = _norm_text(wps[i].get("detail", ""))
+        if not _detail_has_what_and_why_today(detail):
+            issues.append(
+                ValidationIssue(
+                    "top3_item_insufficient_briefing",
+                    f"TOP3 체크포인트 {i + 1}: 사실(무엇이 있었는지)과 오늘 관점(왜 중요한지)이 detail에 구체 서술로 드러나야 함(키워드만 금지)",
+                    "error",
+                )
+            )
+        if not _detail_has_domestic_or_operational_watch(detail):
+            issues.append(
+                ValidationIssue(
+                    "top3_item_missing_domestic_watch",
+                    f"TOP3 체크포인트 {i + 1}: 국내 시장 관전 또는 오늘 우선 확인할 변수가 detail에 포함돼야 함",
+                    "error",
+                )
+            )
+    news = runtime_input.get("top_market_news")
+    if isinstance(news, list) and len(news) >= 1:
+        n_need = min(3, len(news))
+        for i in range(n_need):
+            item = news[i]
+            if not isinstance(item, dict):
+                continue
+            nh = item.get("headline", "")
+            if not isinstance(nh, str) or not nh.strip():
+                continue
+            wp = wps[i]
+            head = _norm_text(wp.get("headline", ""))
+            det = _norm_text(wp.get("detail", ""))
+            if not (
+                _watchpoint_covers_news_headline(nh, head, det)
+                or _watchpoint_topic_aligns_news_headline(nh, wp)
+            ):
+                issues.append(
+                    ValidationIssue(
+                        "top3_not_grounded_in_input_news",
+                        f"TOP3 체크포인트 {i + 1}: 입력 top_market_news 헤드라인과의 정합이 약함",
+                        "error",
+                    )
+                )
+    return issues
+
+
+def _validate_image_prompts_news_anchoring(
+    runtime_input: Dict[str, Any], data: Dict[str, Any]
+) -> List[ValidationIssue]:
+    """Full feeds: studio+outdoor English prompts should visibly carry feed/news themes (customer-facing alignment)."""
+    issues: List[ValidationIssue] = []
+    if runtime_input.get("input_feed_status") != "full":
+        return issues
+    studio = _norm_text(data.get("image_prompt_studio", ""))
+    outdoor = _norm_text(data.get("image_prompt_outdoor", ""))
+    blob = studio + "\n" + outdoor
+    if len(blob.strip()) < 80:
+        return issues
+    news = runtime_input.get("top_market_news")
+    if not isinstance(news, list) or len(news) < 1:
+        return issues
+    n_need = min(3, len(news))
+    weak: List[int] = []
+    for i in range(n_need):
+        item = news[i]
+        if not isinstance(item, dict):
+            continue
+        nh = item.get("headline", "")
+        if not isinstance(nh, str) or not nh.strip():
+            continue
+        if _text_blob_aligns_news_headline(nh, blob) or _watchpoint_topic_aligns_news_headline(
+            nh, {"headline": "", "detail": blob}
+        ):
+            continue
+        weak.append(i + 1)
+    if weak:
+        issues.append(
+            ValidationIssue(
+                "image_prompt_underanchored_vs_news",
+                "상·하단 이미지 영문 프롬프트가 입력 뉴스 헤드라인과 주제 연결이 약함(헤드라인 번호: "
+                + ", ".join(str(x) for x in weak)
+                + "). CPI·지수·지정학 등 입력 앵커를 스튜디오/야외 프롬프트에 명시할 것",
+                "error",
+            )
+        )
+    return issues
+
+
+def _body_underuses_news_when_feeds_full(
+    runtime_input: Dict[str, Any], all_text: str
+) -> bool:
+    """Full feeds: briefing should visibly carry input headlines, not generic filler."""
+    if runtime_input.get("input_feed_status") != "full":
+        return False
+    news = runtime_input.get("top_market_news")
+    if not isinstance(news, list) or len(news) < 2:
+        return False
+    blob = all_text.lower()
+    anchored = 0
+    for item in news[:5]:
+        if not isinstance(item, dict):
+            continue
+        h = item.get("headline", "")
+        if not isinstance(h, str) or not h.strip():
+            continue
+        toks = _significant_tokens(h)[:8]
+        if toks:
+            if len(toks) == 1:
+                hit_need = 1
+            else:
+                hit_need = min(2, len(toks))
+            if sum(1 for t in toks if t in blob) >= hit_need:
+                anchored += 1
+                continue
+        nh = h.lower()
+        bl = blob.lower()
+        topic_hit = False
+        if "inflation" in nh or "cpi" in nh:
+            topic_hit = "cpi" in bl or "물가" in bl or "인플레" in bl
+        elif "index" in nh or "fared" in nh:
+            topic_hit = (
+                "지수" in bl or "나스닥" in bl or "다우" in bl or "스펜" in bl or "s&p" in bl
+            )
+        elif "ceasefire" in nh or "iran" in nh or "geopolit" in nh or "middle east" in nh:
+            topic_hit = "중동" in bl or "지정학" in bl or "휴전" in bl
+        if topic_hit:
+            anchored += 1
+    need = 1 if len(news) <= 2 else 2
+    return anchored < min(need, len(news))
+
+
 def _is_functional_risk(item: Dict[str, Any]) -> bool:
     risk = _norm_text(item.get("risk", ""))
     detail = _norm_text(item.get("detail", ""))
@@ -284,9 +664,31 @@ def _summary_opening_is_weak(summary: str) -> bool:
     if not sentences:
         return True
     first = sentences[0]
+    if re.search(
+        r"\d{1,2}월|\d{1,2}일|장전|개장 직전|개장|야간|어젯밤|미국 증시|나스닥|다우|코스피|코스닥|금리|환율|지수",
+        first,
+    ):
+        return False
     if _has_any(first, META_OPENING_PATTERNS) and _specificity_score(first) == 0:
         return True
     return False
+
+
+def _last_sentence(text: str) -> str:
+    sents = _split_sentences(_norm_text(text))
+    return sents[-1] if sents else _norm_text(text)
+
+
+def _lecture_tail_without_anchor(text: str) -> bool:
+    """Closing sentence is generic caution lecturing without a concrete anchor."""
+    last = _last_sentence(text)
+    if len(last) < 18:
+        return False
+    if not _has_any(last, LECTURE_CLOSER_PHRASES):
+        return False
+    if _specificity_score(last) >= 1:
+        return False
+    return True
 
 
 def _decision_line_missing(closing: str) -> bool:
@@ -449,12 +851,453 @@ def _non_briefing_customer_language_issues(
     return issues
 
 
+_KO_WEEKDAY_NAMES = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
+
+# YYYY년 M월 D일 + 요일 — briefing 기준일과 요일이 어긋나면 차단
+_RX_KO_DATE_THEN_WEEKDAY = re.compile(
+    r"(?P<y>\d{4})년\s*(?P<m>\d{1,2})월\s*(?P<d>\d{1,2})일\s*(?P<wd>[월화수목금토일]요일)"
+)
+_RX_TODAY_WEEKDAY_WORD = re.compile(r"오늘(?:은)?\s*(?P<wd>[월화수목금토일]요일)")
+
+# 고객 표면에서 피할 느슨한 완충/메타 표현(폴리시 배치)
+_POLISH_VAGUE_PHRASE_ERRORS = (
+    "방향성을 가늠",
+    "가늠해야 합니다",
+    "가늠해야 할",
+    "막연히 주목",
+    "무엇을 주목해야 할지",
+)
+
+# Hollow psychological prediction closers (summary / indices narrative / checkpoints / risks)
+_HOLLOW_PREDICTION_CLOSURE_ERRORS = (
+    "신중한 접근이 예상됩니다",
+    "신중한 접근이 예상된다",
+    "신중한 접근은 예상됩니다",
+)
+
+_DOMESTIC_DIVERGENCE_MARKERS = (
+    "엇갈",
+    "차별",
+    "온도차",
+    "대형주",
+    "중소형",
+    "달리 움직",
+    "다르게 움직",
+    "반대로",
+    "상반",
+    "대조",
+    "괴리",
+    "순환매",
+    "시가총액",
+)
+
+
+def _expected_korean_weekday(target_date_str: object) -> str | None:
+    if not isinstance(target_date_str, str) or len(target_date_str) < 10:
+        return None
+    try:
+        d = date.fromisoformat(target_date_str[:10])
+    except ValueError:
+        return None
+    return _KO_WEEKDAY_NAMES[d.weekday()]
+
+
+def _target_weekday_accuracy_issues(
+    data: Dict[str, Any], runtime_input: Dict[str, Any]
+) -> List[ValidationIssue]:
+    """브리핑 기준일(target_date)과 불일치하는 요일 표기 차단(결정적 검증)."""
+    issues: List[ValidationIssue] = []
+    exp = _expected_korean_weekday(runtime_input.get("target_date"))
+    if not exp:
+        return issues
+    td_raw = runtime_input.get("target_date")
+    td_str = td_raw[:10] if isinstance(td_raw, str) and len(td_raw) >= 10 else ""
+    try:
+        td_date = date.fromisoformat(td_str) if td_str else None
+    except ValueError:
+        td_date = None
+    if td_date is None:
+        return issues
+
+    fields = (
+        ("summary", data.get("summary")),
+        ("greeting", data.get("greeting")),
+        ("market_setup", data.get("market_setup")),
+        ("closing_message", data.get("closing_message")),
+    )
+    for label, raw in fields:
+        if not isinstance(raw, str):
+            continue
+        text = raw
+        for m in _RX_KO_DATE_THEN_WEEKDAY.finditer(text):
+            y, mo, d = int(m.group("y")), int(m.group("m")), int(m.group("d"))
+            wd = m.group("wd")
+            try:
+                mentioned = date(y, mo, d)
+            except ValueError:
+                continue
+            if mentioned == td_date and wd != exp:
+                issues.append(
+                    ValidationIssue(
+                        "briefing_date_weekday_mismatch",
+                        f"{label}: 기준일({td_str})에 맞지 않는 요일 표기({wd}). "
+                        f"올바른 요일은 {exp}이거나, 요일을 생략하고 날짜만 쓸 것.",
+                        "error",
+                    )
+                )
+        for m in _RX_TODAY_WEEKDAY_WORD.finditer(text):
+            wd = m.group("wd")
+            if wd != exp:
+                issues.append(
+                    ValidationIssue(
+                        "today_weekday_word_mismatch",
+                        f"{label}: '오늘'과 함께 쓰인 요일({wd})이 기준일 요일({exp})과 불일치",
+                        "error",
+                    )
+                )
+    return issues
+
+
+def _polish_vague_phrase_issues(data: Dict[str, Any]) -> List[ValidationIssue]:
+    """느슨한 메타·완충 표현 축소(요약·셋업·TOP3·리스크 대상)."""
+    issues: List[ValidationIssue] = []
+    checks: list[tuple[str, str]] = []
+    for label in ("summary", "market_setup"):
+        t = data.get(label)
+        if isinstance(t, str):
+            checks.append((label, t))
+    for idx, w in enumerate([w for w in data.get("key_watchpoints", []) if isinstance(w, dict)][:3]):
+        d = w.get("detail")
+        if isinstance(d, str):
+            checks.append((f"key_watchpoints[{idx + 1}].detail", d))
+    for idx, r in enumerate([r for r in data.get("risk_check", []) if isinstance(r, dict)][:8]):
+        d = r.get("detail")
+        if isinstance(d, str):
+            checks.append((f"risk_check[{idx + 1}].detail", d))
+    for path, blob in checks:
+        for phrase in _POLISH_VAGUE_PHRASE_ERRORS:
+            if phrase in blob:
+                issues.append(
+                    ValidationIssue(
+                        "polish_vague_meta_phrase",
+                        f"{path}: '{phrase}' 류의 막연한 표현 — 명명 변수·우선 확인 순서로 구체화",
+                        "error",
+                    )
+                )
+                break
+    return issues
+
+
+def _hollow_prediction_closure_issues(data: Dict[str, Any]) -> List[ValidationIssue]:
+    """Block empty 'psychology forecast' endings on high-visibility briefing surfaces."""
+    issues: List[ValidationIssue] = []
+    checks: list[tuple[str, str]] = []
+    for label in ("summary", "market_setup"):
+        t = data.get(label)
+        if isinstance(t, str):
+            checks.append((label, t))
+    for idx, w in enumerate([w for w in data.get("key_watchpoints", []) if isinstance(w, dict)][:3]):
+        d = w.get("detail")
+        if isinstance(d, str):
+            checks.append((f"key_watchpoints[{idx + 1}].detail", d))
+    for idx, r in enumerate([r for r in data.get("risk_check", []) if isinstance(r, dict)][:8]):
+        d = r.get("detail")
+        if isinstance(d, str):
+            checks.append((f"risk_check[{idx + 1}].detail", d))
+    for path, blob in checks:
+        for phrase in _HOLLOW_PREDICTION_CLOSURE_ERRORS:
+            if phrase in blob:
+                issues.append(
+                    ValidationIssue(
+                        "hollow_prediction_closure",
+                        f"{path}: 막연한 심리 예측형 맺음('{phrase}') — 금리·환율·수급 등 명명 변수와 확인 순서로 대체",
+                        "error",
+                    )
+                )
+                break
+    return issues
+
+
+def _kospi_kosdaq_change_pct_divergent(indices: Dict[str, Any]) -> bool:
+    ks = indices.get("KOSPI")
+    kd = indices.get("KOSDAQ")
+    if not isinstance(ks, dict) or not isinstance(kd, dict):
+        return False
+    pk = ks.get("change_pct")
+    pd = kd.get("change_pct")
+    if not isinstance(pk, (int, float)) or not isinstance(pd, (int, float)):
+        return False
+    if pk == 0 or pd == 0:
+        return False
+    return (pk > 0) != (pd > 0)
+
+
+def _domestic_index_divergence_narrative_issues(
+    data: Dict[str, Any], runtime_input: Dict[str, Any]
+) -> List[ValidationIssue]:
+    """코스피·코스닥 등락 방향이 반대일 때 해석 문단 요구."""
+    issues: List[ValidationIssue] = []
+    kj = runtime_input.get("korea_japan_indices")
+    if not isinstance(kj, dict):
+        return issues
+    idx = kj.get("indices")
+    if not isinstance(idx, dict):
+        return issues
+    if not _kospi_kosdaq_change_pct_divergent(idx):
+        return issues
+    ms = _norm_text(data.get("market_setup", ""))
+    if not any(m in ms for m in _DOMESTIC_DIVERGENCE_MARKERS):
+        issues.append(
+            ValidationIssue(
+                "domestic_kospi_kosdaq_divergence_thin",
+                "코스피와 코스닥 등락 방향이 엇갈리는데 market_setup에서 "
+                "그 차이가 의미하는 바(대형주 대비 중소·테마 온도차 등)가 드러나지 않음",
+                "error",
+            )
+        )
+    return issues
+
+
+def _forbidden_surface_cliche_issues(data: Dict[str, Any]) -> List[ValidationIssue]:
+    """Block dominant generic closer in customer-facing editorial fields (success HTML surface)."""
+    issues: List[ValidationIssue] = []
+    bad = "신중한 접근이 필요합니다"
+    for label, text in (
+        ("summary", data.get("summary")),
+        ("market_setup", data.get("market_setup")),
+    ):
+        if isinstance(text, str) and bad in text:
+            issues.append(
+                ValidationIssue(
+                    "forbidden_surface_cliche_phrase",
+                    f"{label}: 금지 맺음 문구 포함 — 금리·환율·수급 등 명명 변수와 확인 순서로 대체",
+                    "error",
+                )
+            )
+    for idx, w in enumerate([w for w in data.get("key_watchpoints", []) if isinstance(w, dict)][:3]):
+        d = w.get("detail", "")
+        if isinstance(d, str) and bad in d:
+            issues.append(
+                ValidationIssue(
+                    "forbidden_surface_cliche_phrase",
+                    f"key_watchpoints[{idx}] detail: 금지 맺음 문구 포함",
+                    "error",
+                )
+            )
+    for idx, r in enumerate([r for r in data.get("risk_check", []) if isinstance(r, dict)][:8]):
+        d = r.get("detail", "")
+        if isinstance(d, str) and bad in d:
+            issues.append(
+                ValidationIssue(
+                    "forbidden_surface_cliche_phrase",
+                    f"risk_check[{idx}] detail: 금지 맺음 문구 포함",
+                    "error",
+                )
+            )
+    return issues
+
+
+def _market_indices_customer_narrative_gate(
+    data: Dict[str, Any], runtime_input: Dict[str, Any]
+) -> List[ValidationIssue]:
+    """When feeds carry US index inputs, market_setup must read as interpretive briefing (not a table dump)."""
+    issues: List[ValidationIssue] = []
+    if runtime_input.get("input_feed_status") != "full":
+        return issues
+    snap = data.get("market_snapshot")
+    has_snap = isinstance(snap, list) and len(snap) >= 2
+    ov = runtime_input.get("overnight_us_market")
+    has_idx = False
+    if isinstance(ov, dict):
+        idx = ov.get("indices")
+        if isinstance(idx, dict) and len(idx) >= 2:
+            has_idx = True
+    kj = runtime_input.get("korea_japan_indices")
+    has_kj_numbers = False
+    has_nikkei_number = False
+    has_kospi_number = False
+    has_kosdaq_number = False
+    if isinstance(kj, dict):
+        kjx = kj.get("indices")
+        if isinstance(kjx, dict):
+            for sym, slot in kjx.items():
+                if isinstance(slot, dict) and slot.get("close") is not None:
+                    has_kj_numbers = True
+                    if sym in ("NIKKEI", "N225", "NI225"):
+                        has_nikkei_number = True
+                    if sym == "KOSPI":
+                        has_kospi_number = True
+                    if sym == "KOSDAQ":
+                        has_kosdaq_number = True
+    if not has_snap and not has_idx and not has_kj_numbers:
+        return issues
+    ms = _norm_text(data.get("market_setup", ""))
+    min_chars = 260 if has_kj_numbers else 220
+    if len(ms) < min_chars:
+        issues.append(
+            ValidationIssue(
+                "market_indices_narrative_thin",
+                "market_setup이 야간 지수 흐름·해석·국내 연결을 서술형으로 전달하기에 부족함",
+                "error",
+            )
+        )
+        return issues
+    domestic = (
+        "한국",
+        "국내",
+        "코스피",
+        "코스닥",
+        "원/",
+        "원·달러",
+        "환율",
+        "외국인",
+        "개장",
+        "서울",
+        "장전",
+        "KRX",
+    )
+    if not any(d in ms for d in domestic):
+        issues.append(
+            ValidationIssue(
+                "market_indices_korea_link_missing",
+                "market_setup에 오늘 국내 증시·환율·수급 등 확인 관점이 명시되지 않음",
+                "error",
+            )
+        )
+    if has_kospi_number and "코스피" not in ms:
+        issues.append(
+            ValidationIssue(
+                "market_indices_kospi_anchor_missing",
+                "입력에 코스피 수준이 있는데 market_setup에 코스피 맥락이 드러나지 않음",
+                "error",
+            )
+        )
+    if has_kosdaq_number and "코스닥" not in ms:
+        issues.append(
+            ValidationIssue(
+                "market_indices_kosdaq_anchor_missing",
+                "입력에 코스닥 수준이 있는데 market_setup에 코스닥 맥락이 드러나지 않음",
+                "error",
+            )
+        )
+    if has_nikkei_number:
+        jp_markers = ("니케이", "일본", "아시아", "도쿄")
+        if not any(m in ms for m in jp_markers):
+            issues.append(
+                ValidationIssue(
+                    "market_indices_japan_anchor_missing",
+                    "입력에 니케이 수준이 있는데 market_setup에 일본·아시아 맥락이 드러나지 않음",
+                    "error",
+                )
+            )
+    digit_ratio = sum(1 for c in ms if c.isdigit()) / max(len(ms), 1)
+    if digit_ratio > 0.26:
+        issues.append(
+            ValidationIssue(
+                "market_indices_numbers_heavy",
+                "market_setup 숫자 비중이 높아 서술형 주요 지수 브리핑 요건을 충족하지 못함",
+                "error",
+            )
+        )
+    return issues
+
+
+def _korean_surface_issues_today_genie(data: Dict[str, Any]) -> List[ValidationIssue]:
+    """Require Hangul-rich customer-facing briefing fields (English-only leakage guard)."""
+    issues: List[ValidationIssue] = []
+
+    def check_field(path: str, text: object, min_hangul: int, min_len: int) -> None:
+        if not isinstance(text, str):
+            return
+        t = _norm_text(text)
+        if len(t) < min_len:
+            return
+        if _hangul_jamo_count(t) < min_hangul:
+            issues.append(
+                ValidationIssue(
+                    "korean_surface_weak",
+                    f"{path}: 고객 표면 한국어 서술이 부족함(한글 음절·문맥 점검 필요)",
+                    "error",
+                )
+            )
+
+    check_field("title", data.get("title"), 4, 10)
+    check_field("summary", data.get("summary"), 14, 48)
+    g = data.get("greeting")
+    if isinstance(g, str) and len(_norm_text(g)) >= 6:
+        check_field("greeting", g, 2, 6)
+    check_field("market_setup", data.get("market_setup"), 6, 36)
+    check_field("closing_message", data.get("closing_message"), 5, 20)
+    for idx, w in enumerate([w for w in data.get("key_watchpoints", []) if isinstance(w, dict)][:3]):
+        check_field(f"key_watchpoints[{idx + 1}].headline", w.get("headline"), 2, 5)
+        check_field(f"key_watchpoints[{idx + 1}].detail", w.get("detail"), 18, 60)
+    for idx, r in enumerate([r for r in data.get("risk_check", []) if isinstance(r, dict)][:5]):
+        if isinstance(r.get("risk"), str) and len(_norm_text(r.get("risk", ""))) >= 5:
+            check_field(f"risk_check[{idx + 1}].risk", r.get("risk"), 1, 5)
+        if isinstance(r.get("detail"), str) and len(_norm_text(r.get("detail", ""))) >= 24:
+            check_field(f"risk_check[{idx + 1}].detail", r.get("detail"), 4, 24)
+    return issues
+
+
 def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) -> ValidationResult:
     common = validate_common_structure(data, "today_genie")
     if common.result == "block":
         return common
 
     issues = list(common.issues)
+
+    tags = data.get("hashtags")
+    if not isinstance(tags, list) or len(tags) != TODAY_GENIE_HASHTAG_COUNT:
+        issues.append(
+            ValidationIssue(
+                "hashtag_count_contract",
+                f"hashtags는 정확히 {TODAY_GENIE_HASHTAG_COUNT}개여야 함",
+                "error",
+            )
+        )
+    else:
+        seen_ht: set[str] = set()
+        for idx, t in enumerate(tags):
+            if not isinstance(t, str) or not str(t).strip():
+                issues.append(
+                    ValidationIssue("hashtag_empty", f"hashtags[{idx}] 비어 있음", "error")
+                )
+                continue
+            ts = str(t).strip()
+            if not ts.startswith("#"):
+                issues.append(
+                    ValidationIssue(
+                        "hashtag_format",
+                        f"hashtags[{idx}]는 '#'으로 시작해야 함",
+                        "warning",
+                    )
+                )
+            if today_genie_is_generic_hashtag(ts):
+                issues.append(
+                    ValidationIssue(
+                        "generic_hashtag_filler",
+                        f"hashtags[{idx}]가 검색 가치가 낮은 일반 단독 태그로 분류됨",
+                        "warning",
+                    )
+                )
+            if not today_genie_hashtag_passes_locale_rule(ts):
+                issues.append(
+                    ValidationIssue(
+                        "hashtag_locale",
+                        f"hashtags[{idx}] 한국어 우선(또는 허용 매크로 기호) 규칙 필요",
+                        "warning",
+                    )
+                )
+            hk = today_genie_hashtag_key(ts)
+            if hk in seen_ht:
+                issues.append(
+                    ValidationIssue(
+                        "hashtag_duplicate",
+                        "hashtags에 중복 태그가 있음",
+                        "error",
+                    )
+                )
+            seen_ht.add(hk)
 
     today_keys = [
         "market_setup",
@@ -480,26 +1323,20 @@ def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) ->
             )
         )
 
+    decode_failed = runtime_input.get("feed_json_decode_failed_envs") or []
+    if decode_failed:
+        issues.append(
+            ValidationIssue(
+                "feed_json_decode_failed",
+                f"핵심 피드 JSON 파싱 실패(재시도 후에도 복구 불가): {', '.join(decode_failed)}",
+                "error",
+            )
+        )
+
     if not data.get("image_prompt_studio"):
         issues.append(ValidationIssue("missing_image_prompt", "today 스튜디오 이미지 프롬프트 누락", "error"))
     if not data.get("image_prompt_outdoor"):
         issues.append(ValidationIssue("missing_image_prompt", "today 야외 이미지 프롬프트 누락", "error"))
-
-    text_blobs = [
-        data.get("title", ""),
-        data.get("summary", ""),
-        data.get("market_setup", ""),
-        data.get("closing_message", ""),
-    ]
-    for item in data.get("key_watchpoints", []):
-        if isinstance(item, dict):
-            text_blobs.append(item.get("headline", ""))
-            text_blobs.append(item.get("detail", ""))
-
-    joined = "\n".join(text_blobs)
-    for phrase in FORBIDDEN_FINANCE_PHRASES:
-        if phrase in joined:
-            issues.append(ValidationIssue("forbidden_financial_promise", f"금지 표현 탐지: {phrase}", "error"))
 
     if _basis_invalid(data.get("market_snapshot", []), ["label", "value"]):
         issues.append(ValidationIssue("invalid_market_snapshot", "market_snapshot 구조 오류", "error"))
@@ -510,13 +1347,25 @@ def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) ->
     if _basis_invalid(data.get("risk_check", []), ["risk", "detail"]):
         issues.append(ValidationIssue("invalid_risk_check", "risk_check 구조 오류", "error"))
 
+    all_text = _joined_today_editorial_text(data)
+    for phrase in FORBIDDEN_FINANCE_PHRASES:
+        if phrase in all_text:
+            issues.append(ValidationIssue("forbidden_financial_promise", f"금지 표현 탐지: {phrase}", "error"))
+    if _has_any(all_text, DEFINITIVE_PROPOSAL_PHRASES):
+        issues.append(
+            ValidationIssue(
+                "definitive_investment_proposal",
+                "투자 권유·확정·매수/매도 지시형 표현(브리핑 범위를 넘는 제안 톤)이 탐지됨",
+                "error",
+            )
+        )
+
     title = _norm_text(data.get("title", ""))
     summary = _norm_text(data.get("summary", ""))
     closing = _norm_text(data.get("closing_message", ""))
     watchpoints = [w for w in data.get("key_watchpoints", []) if isinstance(w, dict)]
     risks = [r for r in data.get("risk_check", []) if isinstance(r, dict)]
     opportunities = [o for o in data.get("opportunities", []) if isinstance(o, dict)]
-    all_text = _joined_today_editorial_text(data)
 
     # A) Opening quality checks
     if _has_any(title, WEAK_TITLE_PATTERNS):
@@ -524,7 +1373,7 @@ def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) ->
             ValidationIssue(
                 "template_title",
                 "제목이 템플릿형 문구에 가까워 오프닝 차별성이 약함",
-                "warning",
+                "error",
             )
         )
     if _summary_opening_is_weak(summary):
@@ -574,6 +1423,43 @@ def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) ->
             ValidationIssue("missing_decision_line", "마무리 결정 기준 문장이 없거나 실사용성이 약함", "warning")
         )
 
+    if _lecture_tail_without_anchor(summary):
+        issues.append(
+            ValidationIssue(
+                "summary_lecture_tail",
+                "요약 맺음이 강의형 완충으로 끝나 판단 보조가 약함",
+                "warning",
+            )
+        )
+    for idx, w in enumerate(watchpoints[:3]):
+        det = _norm_text(w.get("detail", ""))
+        if len(det) >= 40 and _lecture_tail_without_anchor(det):
+            issues.append(
+                ValidationIssue(
+                    "watchpoint_lecture_tail",
+                    f"TOP3 체크포인트 {idx + 1}: detail 맺음이 강의형 완충에 치우침",
+                    "warning",
+                )
+            )
+    for idx, r in enumerate(risks[:4]):
+        det = _norm_text(r.get("detail", ""))
+        if len(det) >= 36 and _lecture_tail_without_anchor(det):
+            issues.append(
+                ValidationIssue(
+                    "risk_lecture_tail",
+                    f"risk_check {idx + 1}: detail 맺음이 추상 경고형 완충에 치우침(구체 변수·대응 기준 필요)",
+                    "warning",
+                )
+            )
+    if len(closing) >= 28 and _lecture_tail_without_anchor(closing):
+        issues.append(
+            ValidationIssue(
+                "closing_lecture_tail",
+                "한 줄 기준이 강의형 완충으로만 끝남(우선 확인·과해석 금지를 구체화할 것)",
+                "warning",
+            )
+        )
+
     issues.extend(
         _non_briefing_customer_language_issues(
             summary,
@@ -582,11 +1468,18 @@ def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) ->
         )
     )
 
-    # C) TOP 3 / watchpoint quality checks
-    if len(watchpoints) < 3:
-        issues.append(
-            ValidationIssue("low_watchpoint_density", "핵심 체크포인트 TOP3 미충족", "warning")
-        )
+    issues.extend(_forbidden_surface_cliche_issues(data))
+    issues.extend(_target_weekday_accuracy_issues(data, runtime_input))
+    issues.extend(_polish_vague_phrase_issues(data))
+    issues.extend(_hollow_prediction_closure_issues(data))
+    issues.extend(_domestic_index_divergence_narrative_issues(data, runtime_input))
+
+    issues.extend(_market_indices_customer_narrative_gate(data, runtime_input))
+
+    # C) TOP 3 news briefing (mandatory structure + grounding)
+    issues.extend(_validate_top_three_news_briefing(runtime_input, data))
+    issues.extend(_validate_image_prompts_news_anchoring(runtime_input, data))
+    issues.extend(_korean_surface_issues_today_genie(data))
     if _watchpoints_are_repetitive(watchpoints):
         issues.append(
             ValidationIssue("repetitive_market_generalities", "체크포인트 간 차별성이 부족하거나 반복적임", "warning")
@@ -598,14 +1491,14 @@ def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) ->
             ValidationIssue(
                 "overconfident_with_thin_input",
                 "입력 피드가 얇은데 결과 톤/밀도가 과도하게 권위적으로 보임",
-                "warning",
+                "error",
             )
         )
         issues.append(
             ValidationIssue(
                 "authority_exceeds_input_support",
                 "입력 지원 범위를 넘는 권위적 브리핑 톤이 감지됨",
-                "warning",
+                "error",
             )
         )
 
@@ -617,6 +1510,26 @@ def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) ->
                 "generic_finance_filler",
                 "비구체적 금융 상투 문구 비중이 높아 상업적 밀도가 부족함",
                 "warning",
+            )
+        )
+    if (
+        runtime_input.get("input_feed_status") == "full"
+        and filler_hits >= 2
+        and _specificity_score(all_text) < 10
+    ):
+        issues.append(
+            ValidationIssue(
+                "generic_filler_despite_full_feeds",
+                "입력이 충분한데도 구체 앵커 대신 상투적 완충 문구 비중이 높음",
+                "error",
+            )
+        )
+    if _body_underuses_news_when_feeds_full(runtime_input, all_text):
+        issues.append(
+            ValidationIssue(
+                "unanchored_briefing_vs_input_news",
+                "입력 뉴스 헤드라인이 본문에 충분히 녹지 않아 근거 부족 브리핑으로 보임",
+                "error",
             )
         )
 
@@ -654,7 +1567,16 @@ def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) ->
                 "error",
             )
         )
-    if section_failures >= 4:
+    if status in THIN_INPUT_STATUSES and section_failures >= 3:
+        issues.append(
+            ValidationIssue(
+                "thin_input_briefing_inadequate",
+                "입력이 불완전한데 본문이 완성형 브리핑처럼 보이거나 핵심 섹션 밀도가 부족함",
+                "error",
+            )
+        )
+    core_threshold = 3 if status in THIN_INPUT_STATUSES else 4
+    if section_failures >= core_threshold:
         issues.append(
             ValidationIssue(
                 "core_section_breakdown",

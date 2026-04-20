@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List
@@ -15,8 +16,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from prompts import build_full_prompt
-from renderers import render_email_html, render_naver_body_html, render_web_html
+from renderers import (
+    TODAY_GENIE_LEGAL_DISCLAIMER,
+    finalize_today_genie_hashtag_list,
+    render_email_html,
+    render_naver_body_html,
+    render_web_html,
+)
 from validators import validate_today_genie, validate_tomorrow_genie
+from weather_image_context import build_image_weather_context_for_today
 
 # Vertex AI SDK
 # 설치 필요:
@@ -45,6 +53,19 @@ OPENWEATHER_BASE_URL = os.getenv(
     "OPENWEATHER_BASE_URL", "https://api.openweathermap.org/data/2.5/forecast"
 )
 
+
+def _openweather_app_id() -> str:
+    """Same OpenWeather provider as tomorrow_genie; WEATHER_API_KEY overrides OPENWEATHER_API_KEY."""
+    return (os.getenv("WEATHER_API_KEY") or OPENWEATHER_API_KEY or "").strip()
+
+
+def _openweather_query_q() -> str:
+    city = os.getenv("TARGET_CITY", "").strip()
+    country = os.getenv("TARGET_COUNTRY", "").strip()
+    if city and country:
+        return f"{city},{country}"
+    return OPENWEATHER_CITY.strip() or "Seoul,KR"
+
 SUPPORTED_MODES = ["today_genie", "tomorrow_genie"]
 
 
@@ -72,19 +93,71 @@ def _load_json_env(env_name: str, default: Any) -> Any:
         return default
 
 
+def _load_json_env_with_retries(env_name: str, default: Any, attempts: int = 3) -> tuple[Any, str]:
+    """
+    Read JSON from env with parse retries (transient / race on env injection).
+    Returns (value, status): status is ok | missing | decode_failed_after_retries
+    """
+    for _ in range(max(1, attempts)):
+        raw = os.getenv(env_name)
+        if raw is None or not str(raw).strip():
+            return default, "missing"
+        try:
+            return json.loads(raw), "ok"
+        except json.JSONDecodeError:
+            time.sleep(0.08)
+    return default, "decode_failed_after_retries"
+
+
+def _load_today_genie_feed_bundle(max_rounds: int = 3) -> Dict[str, Any]:
+    """
+    Load core today_genie market JSON envs; up to `max_rounds` full reload rounds
+    if any decode fails (handles late env population).
+    """
+    specs = [
+        ("TODAY_GENIE_OVERNIGHT_US_MARKET_JSON", "overnight_us_market", {}),
+        ("TODAY_GENIE_MACRO_INDICATORS_JSON", "macro_indicators", {}),
+        ("TODAY_GENIE_TOP_MARKET_NEWS_JSON", "top_market_news", []),
+        ("TODAY_GENIE_RISK_FACTORS_JSON", "risk_factors", []),
+        (
+            "TODAY_GENIE_KOREA_JAPAN_INDICES_JSON",
+            "korea_japan_indices",
+            {"as_of": "", "session": "", "indices": {}, "summary": ""},
+        ),
+    ]
+    decode_failed: List[str] = []
+    bundle: Dict[str, Any] = {}
+    for _ in range(max(1, max_rounds)):
+        decode_failed = []
+        bundle = {}
+        all_ok = True
+        for env_key, field, default in specs:
+            val, st = _load_json_env_with_retries(env_key, default, attempts=3)
+            bundle[field] = val
+            if st == "decode_failed_after_retries":
+                decode_failed.append(env_key)
+                all_ok = False
+        if all_ok:
+            break
+        time.sleep(0.1)
+    bundle["feed_json_decode_failed_envs"] = decode_failed
+    return bundle
+
+
 def fetch_seoul_weather_forecast(forecast_date: str) -> Dict[str, Any]:
     """
     Fetch OpenWeather 5-day / 3-hour forecast and extract a daily summary
     for the given forecast_date (YYYY-MM-DD) in metric units.
     """
-    if not OPENWEATHER_API_KEY:
+    app_id = _openweather_app_id()
+    if not app_id:
         return {}
 
     query = urllib.parse.urlencode(
         {
-            "q": OPENWEATHER_CITY,
+            "q": _openweather_query_q(),
             "units": "metric",
-            "appid": OPENWEATHER_API_KEY,
+            "appid": app_id,
         }
     )
     url = f"{OPENWEATHER_BASE_URL}?{query}"
@@ -118,6 +191,8 @@ def fetch_seoul_weather_forecast(forecast_date: str) -> Dict[str, Any]:
     feels_like = []
     descriptions = set()
     precipitation_prob = []
+    wind_speeds: List[float] = []
+    humidities: List[float] = []
 
     for item in day_entries:
         main = item.get("main", {})
@@ -125,6 +200,8 @@ def fetch_seoul_weather_forecast(forecast_date: str) -> Dict[str, Any]:
             temps.append(main["temp"])
         if "feels_like" in main:
             feels_like.append(main["feels_like"])
+        if isinstance(main.get("humidity"), (int, float)):
+            humidities.append(float(main["humidity"]))
         weather_list = item.get("weather", [])
         if weather_list and isinstance(weather_list, list):
             desc = weather_list[0].get("description")
@@ -133,6 +210,10 @@ def fetch_seoul_weather_forecast(forecast_date: str) -> Dict[str, Any]:
         pop = item.get("pop")
         if isinstance(pop, (int, float)):
             precipitation_prob.append(pop)
+        wind = item.get("wind") if isinstance(item.get("wind"), dict) else {}
+        ws = wind.get("speed")
+        if isinstance(ws, (int, float)):
+            wind_speeds.append(float(ws))
 
     if not temps:
         return {}
@@ -147,6 +228,10 @@ def fetch_seoul_weather_forecast(forecast_date: str) -> Dict[str, Any]:
         summary["conditions"] = sorted(descriptions)
     if precipitation_prob:
         summary["precipitation_probability_max"] = max(precipitation_prob)
+    if wind_speeds:
+        summary["wind_speed_max"] = max(wind_speeds)
+    if humidities:
+        summary["humidity_avg"] = sum(humidities) / len(humidities)
 
     return {
         "provider": "openweather",
@@ -163,10 +248,13 @@ def build_runtime_input(mode: str) -> Dict[str, Any]:
     now_kst = kst_now.isoformat()
 
     if mode == "today_genie":
-        overnight_us_market = _load_json_env("TODAY_GENIE_OVERNIGHT_US_MARKET_JSON", {})
-        macro_indicators = _load_json_env("TODAY_GENIE_MACRO_INDICATORS_JSON", {})
-        top_market_news = _load_json_env("TODAY_GENIE_TOP_MARKET_NEWS_JSON", [])
-        risk_factors = _load_json_env("TODAY_GENIE_RISK_FACTORS_JSON", [])
+        feeds = _load_today_genie_feed_bundle(max_rounds=3)
+        overnight_us_market = feeds["overnight_us_market"]
+        macro_indicators = feeds["macro_indicators"]
+        top_market_news = feeds["top_market_news"]
+        risk_factors = feeds["risk_factors"]
+        korea_japan_indices = feeds["korea_japan_indices"]
+        decode_failed_envs = list(feeds.get("feed_json_decode_failed_envs") or [])
 
         def _feed_nonempty(val: Any) -> bool:
             if val is None:
@@ -182,6 +270,7 @@ def build_runtime_input(mode: str) -> Dict[str, Any]:
             ("macro_indicators", macro_indicators),
             ("top_market_news", top_market_news),
             ("risk_factors", risk_factors),
+            ("korea_japan_indices", korea_japan_indices),
         ]
         missing_feeds = [name for name, v in feed_pairs if not _feed_nonempty(v)]
         if not missing_feeds:
@@ -191,16 +280,33 @@ def build_runtime_input(mode: str) -> Dict[str, Any]:
         else:
             input_feed_status = "partial"
 
+        if decode_failed_envs:
+            today_genie_feed_gate = "block"
+        elif input_feed_status == "none":
+            today_genie_feed_gate = "block"
+        else:
+            today_genie_feed_gate = "ok"
+
+        today_date = kst_now.date().isoformat()
+        weather_raw = fetch_seoul_weather_forecast(today_date)
+        if not isinstance(weather_raw, dict):
+            weather_raw = {}
+        image_weather_context = build_image_weather_context_for_today(weather_raw, kst_now)
+
         return {
-            "target_date": kst_now.date().isoformat(),
+            "target_date": today_date,
             "briefing_time_kst": "06:30",
             "purpose": "장전 금융 브리핑",
             "overnight_us_market": overnight_us_market,
             "macro_indicators": macro_indicators,
             "top_market_news": top_market_news,
             "risk_factors": risk_factors,
+            "korea_japan_indices": korea_japan_indices,
             "input_feed_status": input_feed_status,
-            "editor_note": "사실/해석/추정 구분. 입력 부족 시 보수적으로 축약."
+            "editor_note": "사실/해석/추정 구분. 입력 부족 시 보수적으로 축약.",
+            "image_weather_context": image_weather_context,
+            "feed_json_decode_failed_envs": decode_failed_envs,
+            "today_genie_feed_gate": today_genie_feed_gate,
         }
 
     if mode == "tomorrow_genie":
@@ -398,11 +504,29 @@ def generate(job: JobRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"Unsupported type: {mode}")
 
     runtime_input = build_runtime_input(mode)
+    if (
+        mode == "today_genie"
+        and runtime_input.get("today_genie_feed_gate") == "block"
+    ):
+        detail = {
+            "status": "review_required",
+            "reason": "today_genie_feed_unavailable",
+            "message": (
+                "핵심 시장 피드가 비어 있거나(JSON 미설정) 연속 로드에 실패했습니다. "
+                "피드를 확인한 뒤 다시 실행하세요."
+            ),
+            "feed_json_decode_failed_envs": runtime_input.get(
+                "feed_json_decode_failed_envs", []
+            ),
+            "input_feed_status": runtime_input.get("input_feed_status"),
+        }
+        raise HTTPException(status_code=422, detail=detail)
+
     prompt = build_full_prompt(mode, runtime_input)
     raw_text = call_gemini(prompt, mode)
     data = parse_model_json(raw_text, mode)
-
     if mode == "today_genie":
+        data["hashtags"] = finalize_today_genie_hashtag_list(data, runtime_input)
         validation = validate_today_genie(data, runtime_input)
     else:
         validation = validate_tomorrow_genie(data, runtime_input)
@@ -424,6 +548,9 @@ def generate(job: JobRequest) -> Dict[str, Any]:
                 "raw_preview": raw_text[:1200],
             },
         )
+
+    if mode == "today_genie":
+        data = {**data, "legal_disclaimer": TODAY_GENIE_LEGAL_DISCLAIMER}
 
     web_html = render_web_html(mode, data)
     workflow_status = "validated" if validation.result == "pass" else "review_required"

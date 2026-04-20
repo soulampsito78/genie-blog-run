@@ -1,0 +1,11 @@
+# Python / OS
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Local secrets (never commit)
+today.env
+tomorrow.env
+
+# Generated proof runs, previews, diagnostics, archives (runtime under output/)
+output/

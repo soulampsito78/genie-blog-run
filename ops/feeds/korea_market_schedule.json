@@ -1,0 +1,23 @@
+{
+  "date_kst": "2026-04-16",
+  "premarket_window_kst": "08:30–09:00",
+  "cash_session_kst": "09:00–15:30",
+  "notes": "KRX regular session; pre-open includes liquidity checks and reference price formation for some products.",
+  "events": [
+    {
+      "time_kst": "08:30",
+      "label": "Pre-open / reference window",
+      "detail": "Order imbalance disclosure and reference price formation ahead of 09:00 cash open."
+    },
+    {
+      "time_kst": "09:00",
+      "label": "KOSPI/KOSDAQ cash open",
+      "detail": "Regular continuous trading begins; overnight US tape and futures set the opening auction context."
+    },
+    {
+      "time_kst": "12:30–13:50",
+      "label": "Mid-session block",
+      "detail": "Lunch-hour liquidity pattern; global headline risk can still move ADRs and index futures during the break."
+    }
+  ]
+}

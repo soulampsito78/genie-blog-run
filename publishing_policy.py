@@ -22,10 +22,19 @@ class PublishingDecision:
 # Finance-safety issue codes: any of these must suppress downstream distribution.
 FINANCE_SAFETY_CODES = frozenset({
     "forbidden_finance_phrase",
+    "forbidden_financial_promise",
+    "definitive_investment_proposal",
     "invalid_market_snapshot",
     "invalid_watchpoints",
     "invalid_opportunities",
     "invalid_risk_check",
+    "top3_watchpoints_missing",
+    "top3_item_insufficient_briefing",
+    "top3_not_grounded_in_input_news",
+    "feed_json_decode_failed",
+    "unsupported_numeric_claim",
+    "unsupported_news_claim",
+    "unsupported_schedule_or_stock_claim",
 })
 
 # Critical today_genie inputs: if either is missing, no auto email.

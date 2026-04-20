@@ -1,0 +1,10 @@
+{
+  "as_of": "2026-04-10",
+  "session": "Asia reference — prior session / futures context for 장전 브리핑 (not US cash)",
+  "indices": {
+    "KOSPI": {"close": 2587.12, "change_pts": -15.4, "change_pct": -0.59},
+    "KOSDAQ": {"close": 736.88, "change_pts": 4.12, "change_pct": 0.56},
+    "NIKKEI": {"close": 34721.5, "change_pts": -112.3, "change_pct": -0.32}
+  },
+  "summary": "Domestic cash indices (KOSPI/KOSDAQ) and Nikkei reference move vs prior close; use with US overnight tape for tri-region 장전 framing."
+}
