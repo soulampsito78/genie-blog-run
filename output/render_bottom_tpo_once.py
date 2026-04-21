@@ -72,7 +72,7 @@ def main() -> int:
 
     from image_exec_suffixes import today_genie_suffix_outdoor_daily
     from image_generator import generate_image_file
-    from main import build_full_prompt, build_runtime_input, call_gemini, parse_model_json
+    from main import build_runtime_input, run_today_genie_text_pipeline
     from validators import validate_today_genie
 
     mode = "today_genie"
@@ -86,9 +86,7 @@ def main() -> int:
         )
         return 3
 
-    prompt = build_full_prompt(mode, ri)
-    raw = call_gemini(prompt, mode)
-    data = parse_model_json(raw, mode)
+    data, raw, _ = run_today_genie_text_pipeline(ri)
     val = validate_today_genie(data, ri)
     if val.result == "block":
         print(
@@ -126,6 +124,12 @@ def main() -> int:
         project_id=project_id,
         location=location,
     )
+    try:
+        from genie_image_overlay import apply_today_genie_brand_footer
+
+        apply_today_genie_brand_footer(out)
+    except Exception:
+        pass
     st = out.stat()
     print(
         json.dumps(

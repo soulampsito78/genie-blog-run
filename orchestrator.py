@@ -9,6 +9,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from email_sender import send_genie_email
@@ -160,8 +161,59 @@ def send_email_if_allowed(result: OrchestrationResult) -> bool:
     data = result.response_data.get("data") or {}
     channels = data.get("rendered_channels") or {}
     drafts = data.get("channel_drafts") or {}
-    html_body = channels.get("email_body_html") or ""
     subject = drafts.get("email_subject") or "(Genie briefing)"
+    mode = (
+        str(result.mode or "").strip()
+        or str(result.response_data.get("type") or "").strip()
+    )
+    validation_result = str(result.response_data.get("validation_result") or "pass")
+
+    # Canonical today_genie handoff send path: rich MIME + CID inline + attachments.
+    if mode == "today_genie":
+        try:
+            from main import build_today_genie_email_html_for_cid_mime_send
+            from renderers import today_genie_email_inline_cid_pair
+        except Exception as e:  # noqa: BLE001
+            logger.warning("send_email_if_allowed: today_genie rich imports failed: %s", e)
+            return False
+
+        html_body = build_today_genie_email_html_for_cid_mime_send(
+            data,
+            validation_result=validation_result,
+        )
+        if not html_body.strip():
+            logger.warning("send_email_if_allowed: skipped (empty today_genie rich html)")
+            return False
+
+        repo = Path(__file__).resolve().parent
+        top_latest = repo / "static" / "email" / "GENIE_EMAIL_today_genie_top_latest.jpg"
+        bottom_latest = repo / "static" / "email" / "GENIE_EMAIL_today_genie_bottom_latest.jpg"
+        if not top_latest.is_file() or not bottom_latest.is_file():
+            logger.warning(
+                "send_email_if_allowed: skipped (today_genie latest image assets missing: top=%s bottom=%s)",
+                top_latest.is_file(),
+                bottom_latest.is_file(),
+            )
+            return False
+
+        cid_top, cid_bottom = today_genie_email_inline_cid_pair()
+        inline_parts = [
+            (str(top_latest), cid_top, "GENIE_EMAIL_today_genie_top.jpg"),
+            (str(bottom_latest), cid_bottom, "GENIE_EMAIL_today_genie_bottom.jpg"),
+        ]
+        attach_parts = [
+            (str(top_latest), "GENIE_EMAIL_today_genie_top.jpg"),
+            (str(bottom_latest), "GENIE_EMAIL_today_genie_bottom.jpg"),
+        ]
+        os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
+        return send_genie_email(
+            html_body,
+            subject,
+            inline_jpeg_parts=inline_parts,
+            attachment_jpeg_parts=attach_parts,
+        )
+
+    html_body = channels.get("email_body_html") or ""
 
     if not html_body.strip():
         logger.warning("send_email_if_allowed: skipped (empty email_body_html)")

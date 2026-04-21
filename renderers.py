@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from html import escape as html_escape
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Email: one-line finance discipline (server-owned, not model output)
 TODAY_EMAIL_CLOSING_CRITERION = (
@@ -16,9 +16,20 @@ TODAY_GENIE_LEGAL_DISCLAIMER = (
     "본 브리핑은 정보 제공 목적이며, 최종 판단과 책임은 투자자 본인에게 있습니다."
 )
 
+# today_genie: rights / usage (MirAI:ON — server-owned; not model-generated)
+TODAY_GENIE_MIRAI_USAGE_NOTE = (
+    "MirAI:ON 오늘의 지니 브리핑 콘텐츠와 구성 요소는 서비스 제공 목적 범위에서 이용해 주세요. "
+    "사전 동의 없는 무단 전재·배포·상업적 재이용은 제한될 수 있습니다."
+)
+TODAY_GENIE_ANTICIPATION_CUE = "오늘 아침 시장을 움직일 3가지는 아래에 이어집니다. 계속 읽기 ↓"
+
 TODAY_GENIE_HASHTAG_COUNT = 7
 TODAY_GENIE_BRAND_TAG = "#오늘의지니"
 TODAY_GENIE_UTILITY_FALLBACK = "#오늘증시체크"
+
+# MIME inline Content-ID tokens (no angle brackets); used with cid:… in HTML and email_sender.
+TODAY_GENIE_EMAIL_CID_TOP = "genie.today.top@genie-email.local"
+TODAY_GENIE_EMAIL_CID_BOTTOM = "genie.today.bottom@genie-email.local"
 
 # Empty search-value / generic-only tags (normalized, no #)
 GENERIC_HASHTAG_BAN_BODY = frozenset(
@@ -405,7 +416,8 @@ def render_web_html(mode: str, data: Dict[str, Any]) -> str:
     </section>
     {hashtags_section}
     <footer>
-      <p style="font-size:13px;line-height:1.65;color:#555;margin-top:12px;">{_safe(TODAY_GENIE_LEGAL_DISCLAIMER)}</p>
+      <p style="font-size:12px;line-height:1.55;color:#64748b;margin-top:12px;">{_safe(TODAY_GENIE_MIRAI_USAGE_NOTE)}</p>
+      <p style="font-size:13px;line-height:1.65;color:#555;margin-top:8px;">{_safe(TODAY_GENIE_LEGAL_DISCLAIMER)}</p>
     </footer>
   </main>
 </body>
@@ -468,18 +480,21 @@ def render_web_html(mode: str, data: Dict[str, Any]) -> str:
 
 
 def _email_wrapper_inner(content: str, footer_html: str = "") -> str:
-    """Conservative mobile-first email body wrapper (no external CSS)."""
+    """Email-client-safe table wrapper (avoids div-collapse/sanitizer layout drops)."""
     return (
-        '<div style="margin:0;padding:0;background:#ffffff;">'
-        '<div style="max-width:640px;width:100%;margin:0 auto;background:#ffffff;'
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" '
+        'style="margin:0;padding:0;background:#ffffff;border-collapse:collapse;">'
+        "<tr><td align=\"center\" style=\"padding:0;\">"
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="640" '
+        'style="width:100%;max-width:640px;background:#ffffff;border-collapse:collapse;'
         'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Arial,sans-serif;'
         'font-size:15px;line-height:1.75;color:#1a1a1a;">'
-        '<div style="padding:24px;">'
+        '<tr><td style="padding:24px;">'
         f"{content}"
-        "</div>"
+        "</td></tr>"
         f"{footer_html}"
-        "</div>"
-        "</div>"
+        "</table>"
+        "</td></tr></table>"
     )
 
 
@@ -493,19 +508,51 @@ def _email_img_block(absolute_url: str, alt: str) -> str:
     )
 
 
-def email_image_slots_html(mode: str, public_base_url: str) -> tuple[str, str]:
+def _email_img_block_cid(content_id: str, alt: str) -> str:
+    """Inline image via MIME Content-ID (no external URL)."""
+    cid_src = f"cid:{content_id}"
+    return (
+        '<div style="margin:0 0 20px 0;text-align:center;">'
+        f'<img src="{_safe(cid_src)}" alt="{_safe(alt)}" width="592" '
+        'style="max-width:100%;height:auto;display:block;margin:0 auto;border:0;outline:none;" />'
+        "</div>"
+    )
+
+
+def today_genie_email_inline_cid_pair() -> Tuple[str, str]:
+    """Stable Content-ID pair for today_genie top/bottom JPEG inline parts."""
+    return (TODAY_GENIE_EMAIL_CID_TOP, TODAY_GENIE_EMAIL_CID_BOTTOM)
+
+
+def email_image_slots_html(
+    mode: str,
+    public_base_url: str,
+    inline_cid_pair: Optional[Tuple[str, str]] = None,
+) -> tuple[str, str]:
     """
-    Email-purpose images under /static/email/ (served by API).
-    today_genie: separate derived top/bottom assets; tomorrow_genie: same ref file, distinct alts.
-    Returns (top_slot_html, bottom_slot_html); empty strings if no base URL.
+    Email-purpose images: either absolute HTTP URLs (public_base_url) or inline cid:… references.
+    today_genie: separate top/bottom assets; tomorrow_genie: same ref file, distinct alts.
+    When inline_cid_pair is set, returns CID-based img blocks (no URL / no local path dependence).
     """
+    if inline_cid_pair and len(inline_cid_pair) == 2:
+        top_cid, bot_cid = inline_cid_pair[0].strip(), inline_cid_pair[1].strip()
+        if mode == "today_genie" and top_cid and bot_cid:
+            top_alt = "Genie — 스튜디오 인사 컷 (장전 브리핑)"
+            bot_alt = "Genie — 야외 편안한 휴식 컷 (장전 브리핑, 동일 인물)"
+            return _email_img_block_cid(top_cid, top_alt), _email_img_block_cid(bot_cid, bot_alt)
+        if mode != "today_genie" and top_cid:
+            top_alt = "Genie — 스튜디오 인사 컷 (내일 준비)"
+            bot_alt = "Genie — 야외 OOTD·편안한 휴식 컷 (내일 준비)"
+            # Single master asset: same CID in both slots (one MIME inline part).
+            return _email_img_block_cid(top_cid, top_alt), _email_img_block_cid(top_cid, bot_alt)
+
     base = (public_base_url or "").strip().rstrip("/")
     if not base:
         return "", ""
 
     if mode == "today_genie":
-        top_path = "static/email/GENIE_EMAIL_today_genie_top_v1.jpg"
-        bot_path = "static/email/GENIE_EMAIL_today_genie_bottom_v1.jpg"
+        top_path = "static/email/GENIE_EMAIL_today_genie_top_latest.jpg"
+        bot_path = "static/email/GENIE_EMAIL_today_genie_bottom_latest.jpg"
         top_alt = "Genie — 스튜디오 인사 컷 (장전 브리핑)"
         bot_alt = "Genie — 야외 편안한 휴식 컷 (장전 브리핑, 동일 인물)"
         return (
@@ -543,7 +590,6 @@ def render_email_operational_box(meta: Dict[str, Any]) -> str:
     send_line = _safe(meta.get("email_delivery_label", ""))
     mode_code = _safe(meta.get("mode_code", ""))
     post_raw = str(meta.get("revision_request_post_url", "") or "").strip()
-    post_action = html_escape(post_raw, quote=True) if post_raw else "#"
 
     row = (
         '<p style="margin:0 0 8px 0;font-size:13px;line-height:1.6;color:#334155;">'
@@ -551,12 +597,21 @@ def render_email_operational_box(meta: Dict[str, Any]) -> str:
         "<span style=\"color:#1e293b;\">{value}</span></p>"
     )
     notice = (
-        '<p style="margin:0 0 6px 0;font-size:12px;line-height:1.6;color:#64748b;">최대 2회까지 요청할 수 있습니다.</p>'
-        '<p style="margin:0 0 6px 0;font-size:12px;line-height:1.6;color:#64748b;">요청 내용과 입력 데이터 상태를 검토한 뒤 재발행 여부가 결정됩니다.</p>'
-        '<p style="margin:0;font-size:12px;line-height:1.6;color:#64748b;">반영이 어려운 경우에는 사유와 처리 과정을 함께 안내해 드립니다.</p>'
+        '<p style="margin:0;font-size:12px;line-height:1.6;color:#64748b;">'
+        "재발행/수정 요청은 운영 검토 후 반영됩니다(최대 2회)."
+        "</p>"
     )
     reason_opts = "".join(
         f'<option value="{_safe(l)}">{_safe(l)}</option>' for l in _REVISION_REQUEST_REASONS
+    )
+    rerequest_raw = str(meta.get("rerequest_url", "") or "").strip()
+    rerequest_href = html_escape(rerequest_raw, quote=True) if rerequest_raw else "#"
+    revision_live = bool(post_raw) and "placeholder.genie-revision.bind-later.invalid" not in post_raw
+    revision_status = "연동됨" if revision_live else "현재 비활성(운영 연동 전)"
+    revision_detail = (
+        f'요청 접수 엔드포인트: {_safe(post_raw)}'
+        if revision_live
+        else "요청 접수 엔드포인트: 아직 연결되지 않았습니다."
     )
     return f"""
 <section id="genie-operational-handoff" aria-label="운영 안내" style="margin-top:32px;padding:20px 20px 22px 20px;border:1px solid #cbd5e1;border-radius:10px;background:#f1f5f9;">
@@ -568,42 +623,15 @@ def render_email_operational_box(meta: Dict[str, Any]) -> str:
     {row.format(label="핵심 결과 요약", value=summary_line)}
     {row.format(label="이메일 발송 여부", value=send_line)}
   </div>
-  <div id="genie-rr-notice" style="margin:0 0 18px 0;padding:12px 14px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;">
+  <div id="genie-rr-notice" style="margin:0 0 10px 0;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;">
     {notice}
   </div>
-  <button type="button" id="genie-rr-start-btn" style="display:inline-block;padding:12px 26px;background:#0f172a;color:#ffffff;font-size:14px;font-weight:800;line-height:1.35;border-radius:8px;border:1px solid #020617;box-shadow:0 1px 2px rgba(15,23,42,0.12);cursor:pointer;">재발행 요청</button>
-  <div id="genie-rr-reason-stage" style="display:none;margin-top:14px;">
-    <form id="genie-rr-form" method="post" action="{post_action}" enctype="application/x-www-form-urlencoded" target="_blank" style="margin:0;padding:0;">
-      <input type="hidden" name="internal_state" value="revision_request" />
-      <input type="hidden" name="mode" value="{mode_code}" />
-      <input type="hidden" name="execution_time_kst" value="{exec_kst}" />
-      <label for="genie-rr-reason" style="display:block;margin:0 0 6px 0;font-size:12px;font-weight:700;color:#475569;">사유 선택</label>
-      <select id="genie-rr-reason" name="reason" required style="width:100%;max-width:100%;box-sizing:border-box;padding:10px 12px;font-size:14px;line-height:1.4;color:#1e293b;border:1px solid #cbd5e1;border-radius:6px;background:#ffffff;">
-        <option value="">사유를 선택하세요</option>
-        {reason_opts}
-      </select>
-      <div id="genie-rr-submit-stage" style="display:none;margin-top:14px;">
-        <button type="submit" id="genie-rr-submit-btn" style="padding:12px 26px;background:#0f172a;color:#ffffff;font-size:14px;font-weight:800;line-height:1.35;border-radius:8px;border:1px solid #020617;cursor:pointer;">재발행 요청 제출</button>
-      </div>
-    </form>
+  <div style="margin-top:0;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;background:#ffffff;">
+    <p style="margin:0 0 6px 0;font-size:12px;line-height:1.6;color:#475569;font-weight:700;">재발행/수정 요청 안내</p>
+    <p style="margin:0 0 6px 0;font-size:12px;line-height:1.6;color:#334155;">상태: {revision_status}</p>
+    <p style="margin:0 0 4px 0;font-size:12px;line-height:1.6;color:#334155;">재요청 링크: <a href="{rerequest_href}" style="color:#0f172a;">{_safe(rerequest_raw or "(미설정)")}</a></p>
+    <p style="margin:0;font-size:12px;line-height:1.6;color:#334155;">{revision_detail}</p>
   </div>
-  <script type="text/javascript">
-  (function () {{
-    var root = document.getElementById("genie-operational-handoff");
-    if (!root) return;
-    var start = root.querySelector("#genie-rr-start-btn");
-    var reasonStage = root.querySelector("#genie-rr-reason-stage");
-    var sel = root.querySelector("#genie-rr-reason");
-    var submitStage = root.querySelector("#genie-rr-submit-stage");
-    if (!start || !reasonStage || !sel || !submitStage) return;
-    start.addEventListener("click", function () {{
-      reasonStage.style.display = "block";
-    }});
-    sel.addEventListener("change", function () {{
-      submitStage.style.display = sel.value ? "block" : "none";
-    }});
-  }})();
-  </script>
 </section>
 """.strip()
 
@@ -683,11 +711,176 @@ def _hashtags_block_html(mode: str, hashtags: Any) -> str:
     )
 
 
+def _today_snapshot_grouped_html(snapshot: Any) -> str:
+    """Email-safe grouped market snapshot with index value + change columns."""
+    def _parse_value_and_change(raw: str) -> tuple[str, str]:
+        txt = str(raw or "").strip()
+        if not txt:
+            return "", ""
+        # Supports "6816.89 (-0.1%)", "2587.12 / -0.59%", "-0.59%" etc.
+        m = re.search(r"([0-9][0-9,]*\.?[0-9]*)\s*(?:\(|/)?\s*([+-]?[0-9]+(?:\.[0-9]+)?%)?", txt)
+        if m:
+            v = (m.group(1) or "").strip()
+            c = (m.group(2) or "").strip()
+            if v and c:
+                return v, c
+        pct = re.search(r"([+-]?[0-9]+(?:\.[0-9]+)?%)", txt)
+        if pct:
+            return "", pct.group(1).strip()
+        return txt, ""
+
+    def _lift_from_setup(text: Any) -> dict[str, tuple[str, str]]:
+        src = str(text or "")
+        if not src:
+            return {}
+        close_patterns = {
+            "코스피": r"코스피[\s\S]{0,260}?([0-9]{3,}(?:,[0-9]{3})*(?:\.[0-9]+))",
+            "코스닥": r"코스닥[\s\S]{0,260}?([0-9]{3,}(?:,[0-9]{3})*(?:\.[0-9]+))",
+            "S&P 500": r"(?:S&P\s*500|SPX)[\s\S]{0,260}?([0-9]{4,}(?:,[0-9]{3})*(?:\.[0-9]+))",
+            "나스닥": r"나스닥[\s\S]{0,260}?([0-9]{4,}(?:,[0-9]{3})*(?:\.[0-9]+))",
+            "니케이": r"니케이[\s\S]{0,260}?([0-9]{4,}(?:,[0-9]{3})*(?:\.[0-9]+))",
+            "다우존스": r"(?:다우존스|DJI)[\s\S]{0,260}?([0-9]{4,}(?:,[0-9]{3})*(?:\.[0-9]+))",
+        }
+        span_patterns = {
+            "코스피": r"(코스피[\s\S]{0,260})",
+            "코스닥": r"(코스닥[\s\S]{0,260})",
+            "S&P 500": r"((?:S&P\s*500|SPX)[\s\S]{0,260})",
+            "나스닥": r"(나스닥[\s\S]{0,260})",
+            "니케이": r"(니케이[\s\S]{0,260})",
+            "다우존스": r"((?:다우존스|DJI)[\s\S]{0,260})",
+        }
+        out: dict[str, tuple[str, str]] = {}
+        for key, cpat in close_patterns.items():
+            val = ""
+            cm = re.search(cpat, src, re.I)
+            if cm:
+                val = (cm.group(1) or "").strip()
+            seg = ""
+            sm = re.search(span_patterns[key], src, re.I)
+            if sm:
+                seg = sm.group(1) or ""
+            pct_m = re.search(r"([+\-]?[0-9]+(?:\.[0-9]+)?%)", seg)
+            pct = (pct_m.group(1) if pct_m else "").strip()
+            if pct and not pct.startswith(("+", "-")):
+                s = pct_m.start() if pct_m else 0
+                e = pct_m.end() if pct_m else 0
+                ctx = seg[max(0, s - 40): min(len(seg), e + 40)]
+                if re.search(r"(하락|내린|하회|약세|감소)", ctx):
+                    pct = f"-{pct}"
+                elif re.search(r"(상승|오른|강세|증가)", ctx):
+                    pct = f"+{pct}"
+                else:
+                    pct = f"+{pct}"
+            if val or pct:
+                out[key] = (val, pct)
+        return out
+
+    if not isinstance(snapshot, list):
+        return ""
+    rows = []
+    for item in snapshot:
+        if not isinstance(item, dict):
+            continue
+        label_raw = str(item.get("label") or "").strip()
+        value_raw = str(item.get("value") or "").strip()
+        if not label_raw or not value_raw:
+            continue
+        idx_val, chg = _parse_value_and_change(value_raw)
+        rows.append(
+            {
+                "label_raw": label_raw,
+                "label_html": _safe(label_raw),
+                "value_html": _safe(value_raw),
+                "index_value": idx_val,
+                "change_pct": chg,
+            }
+        )
+    if not rows:
+        return ""
+
+    domestic_order = ("코스피", "코스닥")
+    global_order = ("S&P 500", "나스닥", "니케이", "다우존스")
+
+    by_label = {
+        r["label_raw"]: (r["label_html"], r["index_value"], r["change_pct"], r["value_html"])
+        for r in rows
+    }
+    lifted = _lift_from_setup(globals().get("_TODAY_EMAIL_MARKET_SETUP_CONTEXT", ""))
+    def _norm_change_pct(txt: str) -> str:
+        c = str(txt or "").strip()
+        if not c:
+            return c
+        if c.startswith(("+", "-")):
+            return c
+        if re.match(r"^[0-9]+(?:\.[0-9]+)?%$", c):
+            return f"+{c}"
+        return c
+
+    def render_group(title: str, order: tuple[str, ...]) -> str:
+        grp_rows = [k for k in order if k in by_label]
+        if not grp_rows:
+            return ""
+        tr = "".join(
+            (
+                '<tr>'
+                f'<td style="padding:8px 10px;border-top:1px solid #e2e8f0;font-size:14px;line-height:1.5;color:#334155;font-weight:700;white-space:nowrap;">{by_label[lbl][0]}</td>'
+                f'<td style="padding:8px 10px;border-top:1px solid #e2e8f0;font-size:14px;line-height:1.5;color:#111827;text-align:right;white-space:nowrap;">{_safe((lifted.get(lbl, ("", ""))[0] or by_label[lbl][1] or "-"))}</td>'
+                f'<td style="padding:8px 10px;border-top:1px solid #e2e8f0;font-size:14px;line-height:1.5;color:#111827;text-align:right;white-space:nowrap;">{_safe(_norm_change_pct((lifted.get(lbl, ("", ""))[1] or by_label[lbl][2] or by_label[lbl][3] or "-")))}</td>'
+                "</tr>"
+            )
+            for lbl in grp_rows
+        )
+        return (
+            f'<p style="margin:14px 0 6px 0;font-size:13px;line-height:1.5;color:#475569;font-weight:800;">{_safe(title)}</p>'
+            '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" '
+            'style="border-collapse:collapse;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;">'
+            '<tr>'
+            '<td style="padding:8px 10px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:12px;line-height:1.4;color:#475569;font-weight:800;white-space:nowrap;">지수명</td>'
+            '<td style="padding:8px 10px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:12px;line-height:1.4;color:#475569;font-weight:800;text-align:right;white-space:nowrap;">지수값</td>'
+            '<td style="padding:8px 10px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:12px;line-height:1.4;color:#475569;font-weight:800;text-align:right;white-space:nowrap;">등락률</td>'
+            '</tr>'
+            f"{tr}"
+            "</table>"
+        )
+
+    domestic_html = render_group("전일 국내 마감", domestic_order)
+    global_html = render_group("밤사이 해외 마감", global_order)
+    return f"{domestic_html}{global_html}".strip()
+
+
 def _build_today_genie_email_editorial_html(data: Dict[str, Any]) -> str:
-    """today_genie email body only (no image slots); Korean section headings; basis shown in Korean."""
+    """today_genie email body only (no image slots); use email-safe block tags (div/p/ul/li)."""
     title = _safe(data.get("title", ""))
-    summary_html = _summary_html(data.get("summary", ""))
-    greeting_html = _paragraphs_html(data.get("greeting", ""))
+    # Build 2-3 readable summary paragraphs for gift-envelope opening rhythm.
+    summary_raw = _safe(data.get("summary", ""))
+    greeting_raw = _safe(data.get("greeting", ""))
+    chunks = [x.strip() for x in re.split(r"(?<=[.!?])\s+", summary_raw) if x.strip()]
+    paras: List[str] = []
+    if greeting_raw:
+        paras.append(greeting_raw)
+    if chunks:
+        first = chunks[0]
+        second = " ".join(chunks[1:3]).strip()
+        rest = " ".join(chunks[3:]).strip()
+        paras.append(first)
+        if second:
+            paras.append(second)
+        if rest:
+            paras.append(rest)
+    elif summary_raw:
+        paras.append(summary_raw)
+    # Ensure at least 2 paragraphs when summary is a single long block.
+    if len(paras) < 2 and len(summary_raw) > 90:
+        mid = len(summary_raw) // 2
+        split_at = summary_raw.find(" ", mid)
+        if split_at == -1:
+            split_at = mid
+        paras = [summary_raw[:split_at].strip(), summary_raw[split_at:].strip()]
+    paras = [p for p in paras if p][:3]
+    summary_html = "".join(
+        f'<p style="margin:0 0 14px 0;font-size:16px;line-height:1.72;font-weight:400;color:#1a1a1a;">{_safe(p)}</p>'
+        for p in paras
+    )
     closing = _safe(data.get("closing_message", ""))
     header_label = (
         '<p style="margin:0 0 10px 0;font-size:12px;line-height:1.6;color:#666;"><strong>[장전 브리핑]</strong></p>'
@@ -711,15 +904,9 @@ def _build_today_genie_email_editorial_html(data: Dict[str, Any]) -> str:
         if isinstance(item, dict)
     )
     market_setup_html = _paragraphs_html(data.get("market_setup", ""))
-    market_snapshot_items = "".join(
-        '<li style="margin:0 0 12px 0;">'
-        f'<p style="margin:0 0 6px 0;font-size:16px;line-height:1.5;font-weight:700;color:#1a1a1a;">{_safe(item.get("label"))}</p>'
-        f'<p style="margin:0;font-size:15px;line-height:1.7;color:#1a1a1a;">{_safe(item.get("value"))} '
-        f'<span style="font-size:12px;line-height:1.6;color:#666;">({_safe(_today_genie_basis_label_ko(item.get("basis")))})</span></p>'
-        "</li>"
-        for item in data.get("market_snapshot", [])
-        if isinstance(item, dict)
-    )
+    # Narrow scope: allow snapshot table to lift index value/change from market_setup narrative when snapshot lacks value column.
+    globals()["_TODAY_EMAIL_MARKET_SETUP_CONTEXT"] = str(data.get("market_setup", "") or "")
+    market_snapshot_grouped = _today_snapshot_grouped_html(data.get("market_snapshot", []))
     opportunities = "".join(
         '<li style="margin:0 0 12px 0;">'
         f'<p style="margin:0 0 6px 0;font-size:16px;line-height:1.5;font-weight:700;color:#1a1a1a;">{_safe(item.get("theme"))}</p>'
@@ -732,10 +919,10 @@ def _build_today_genie_email_editorial_html(data: Dict[str, Any]) -> str:
     numbers_inner = ""
     if market_setup_html:
         numbers_inner += f'<h3 {h3}>맥락·셋업</h3>{market_setup_html}'
-    if market_snapshot_items:
+    if market_snapshot_grouped:
         numbers_inner += (
-            f'<h3 {h3}>지표·시세 스냅샷</h3>'
-            f'<ul style="margin:0 0 14px 18px;padding:0;">{market_snapshot_items}</ul>'
+            f'<h3 {h3}>오늘 바로 볼 숫자</h3>'
+            f"{market_snapshot_grouped}"
         )
     if opportunities:
         numbers_inner += (
@@ -750,31 +937,34 @@ def _build_today_genie_email_editorial_html(data: Dict[str, Any]) -> str:
     hashtags_html = _hashtags_block_html("today_genie", data.get("hashtags", []))
     return f"""
 {header_label}
-<h1 style="margin:0 0 16px 0;font-size:28px;line-height:1.35;font-weight:700;color:#1a1a1a;">{title}</h1>
-<section>
-  <h2 {h2}>오늘의 핵심 요약</h2>
-  {greeting_html}
+<div style="margin:0 0 16px 0;font-size:28px;line-height:1.35;font-weight:700;color:#1a1a1a;">{title}</div>
+<div style="display:block;">
+  <p {h2}>오늘의 핵심 요약</p>
   {summary_html}
-</section>
-<section>
-  <h2 {h2}>오늘의 TOP 3 뉴스 브리핑</h2>
+</div>
+<div style="margin:8px 0 18px 0;padding:10px 12px;border-left:3px solid #334155;background:#f8fafc;">
+  <p style="margin:0;font-size:14px;line-height:1.65;color:#334155;font-weight:700;">{_safe(TODAY_GENIE_ANTICIPATION_CUE)}</p>
+</div>
+<div style="display:block;">
+  <p {h2}>오늘의 TOP 3 뉴스 브리핑</p>
   <ul style="margin:0 0 14px 18px;padding:0;">{watch_items or '<li style="margin:0 0 12px 0;"><p style="margin:0;font-size:15px;line-height:1.7;color:#1a1a1a;">(체크포인트 없음)</p></li>'}</ul>
-</section>
-<section>
-  <h2 {h2}>오늘 보는 숫자</h2>
+</div>
+<div style="display:block;">
+  <p {h2}>오늘 보는 숫자</p>
   {numbers_inner}
-</section>
-<section>
-  <h2 {h2}>오늘의 리스크</h2>
+</div>
+<div style="display:block;">
+  <p {h2}>오늘의 리스크</p>
   <ul style="margin:0 0 14px 18px;padding:0;">{risks or '<li style="margin:0 0 12px 0;"><p style="margin:0;font-size:15px;line-height:1.7;color:#1a1a1a;">(리스크 항목 없음)</p></li>'}</ul>
-</section>
-<section>
-  <h2 {h2}>오늘의 한 줄 기준</h2>
+</div>
+<div style="display:block;">
+  <p {h2}>오늘의 한 줄 기준</p>
   <div style="margin:32px 0 32px 0;padding:16px 18px;border:1px solid #d9d9d9;background:#fafafa;">
     <p style="margin:0;font-size:16px;line-height:1.7;font-weight:700;color:#1a1a1a;">{closing}</p>
   </div>
-</section>
+</div>
 <p style="margin:0 0 14px 0;font-size:12px;line-height:1.6;color:#666;">{_safe(TODAY_EMAIL_CLOSING_CRITERION)}</p>
+<p style="margin:0 0 10px 0;font-size:11px;line-height:1.55;color:#64748b;">{_safe(TODAY_GENIE_MIRAI_USAGE_NOTE)}</p>
 <p style="margin:0 0 14px 0;font-size:12px;line-height:1.65;color:#555;">{_safe(TODAY_GENIE_LEGAL_DISCLAIMER)}</p>
 {hashtags_html}
 """.strip()
@@ -785,6 +975,7 @@ def render_email_html(
     data: Dict[str, Any],
     operational_meta: Optional[Dict[str, Any]] = None,
     email_asset_base_url: str = "",
+    email_inline_cid_pair: Optional[Tuple[str, str]] = None,
 ) -> str:
     title = _safe(data.get("title", ""))
     summary_html = _summary_html(data.get("summary", ""))
@@ -845,11 +1036,15 @@ def render_email_html(
 {hashtags_html}
 """.strip()
 
-    top_img, bottom_img = email_image_slots_html(mode, email_asset_base_url)
-    # Order: top image → editorial (through hashtags / decision) → admin handoff → bottom decorative image.
+    top_img, bottom_img = email_image_slots_html(
+        mode, email_asset_base_url, inline_cid_pair=email_inline_cid_pair
+    )
+    # Keep delivered baseline order for today_genie: top image first.
     op_block = (
         render_email_operational_box(operational_meta) if operational_meta else ""
     )
+    if mode == "today_genie":
+        return _email_wrapper_inner(f"{top_img}{editorial}{op_block}{bottom_img}", "")
     return _email_wrapper_inner(f"{top_img}{editorial}{op_block}{bottom_img}", "")
 
 
@@ -921,6 +1116,7 @@ def render_naver_body_html(mode: str, data: Dict[str, Any]) -> str:
 <h3>해시태그</h3>
 {ht_block}
 </section>
+<p style="font-size:12px;line-height:1.55;color:#64748b;">{_safe(TODAY_GENIE_MIRAI_USAGE_NOTE)}</p>
 <p>{_safe(TODAY_GENIE_LEGAL_DISCLAIMER)}</p>
 """.strip()
 

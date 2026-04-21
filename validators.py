@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -10,6 +11,10 @@ from renderers import (
     today_genie_hashtag_key,
     today_genie_hashtag_passes_locale_rule,
     today_genie_is_generic_hashtag,
+)
+from today_genie_top3_assembly import (
+    collect_valid_major_overseas_news,
+    watchpoint_covers_feed_blobs,
 )
 
 GateResultType = Literal["pass", "draft_only", "block"]
@@ -597,6 +602,7 @@ def _validate_top_three_news_briefing(
 ) -> List[ValidationIssue]:
     issues: List[ValidationIssue] = []
     wps = [w for w in data.get("key_watchpoints", []) if isinstance(w, dict)]
+    valid_news = collect_valid_major_overseas_news(runtime_input, max_items=3)
     if len(wps) < 3:
         issues.append(
             ValidationIssue(
@@ -624,30 +630,32 @@ def _validate_top_three_news_briefing(
                     "error",
                 )
             )
-    news = runtime_input.get("top_market_news")
-    if isinstance(news, list) and len(news) >= 1:
-        n_need = min(3, len(news))
-        for i in range(n_need):
-            item = news[i]
-            if not isinstance(item, dict):
-                continue
-            nh = item.get("headline", "")
-            if not isinstance(nh, str) or not nh.strip():
-                continue
-            wp = wps[i]
-            head = _norm_text(wp.get("headline", ""))
-            det = _norm_text(wp.get("detail", ""))
-            if not (
-                _watchpoint_covers_news_headline(nh, head, det)
-                or _watchpoint_topic_aligns_news_headline(nh, wp)
-            ):
-                issues.append(
-                    ValidationIssue(
-                        "top3_not_grounded_in_input_news",
-                        f"TOP3 체크포인트 {i + 1}: 입력 top_market_news 헤드라인과의 정합이 약함",
-                        "error",
-                    )
+    for i, (_, item) in enumerate(valid_news):
+        if i >= 3:
+            break
+        nh = item.get("headline", "")
+        if not isinstance(nh, str) or not nh.strip():
+            continue
+        wp = wps[i]
+        head = _norm_text(wp.get("headline", ""))
+        det = _norm_text(wp.get("detail", ""))
+        if not (_watchpoint_covers_news_headline(nh, head, det) or _watchpoint_topic_aligns_news_headline(nh, wp)):
+            issues.append(
+                ValidationIssue(
+                    "top3_not_grounded_in_input_news",
+                    f"TOP3 체크포인트 {i + 1}: 입력 top_market_news 헤드라인과의 정합이 약함",
+                    "error",
                 )
+            )
+    for i in range(len(valid_news), 3):
+        if not watchpoint_covers_feed_blobs(wps[i], runtime_input):
+            issues.append(
+                ValidationIssue(
+                    "top3_not_grounded_in_input_news",
+                    f"TOP3 체크포인트 {i + 1}: 야간장·매크로·리스크 입력과의 정합이 약함(피드 기반 관전 슬롯)",
+                    "error",
+                )
+            )
     return issues
 
 
@@ -663,15 +671,9 @@ def _validate_image_prompts_news_anchoring(
     blob = studio + "\n" + outdoor
     if len(blob.strip()) < 80:
         return issues
-    news = runtime_input.get("top_market_news")
-    if not isinstance(news, list) or len(news) < 1:
-        return issues
-    n_need = min(3, len(news))
+    valid_news = collect_valid_major_overseas_news(runtime_input, max_items=3)
     weak: List[int] = []
-    for i in range(n_need):
-        item = news[i]
-        if not isinstance(item, dict):
-            continue
+    for i, (_, item) in enumerate(valid_news):
         nh = item.get("headline", "")
         if not isinstance(nh, str) or not nh.strip():
             continue
@@ -692,6 +694,23 @@ def _validate_image_prompts_news_anchoring(
                 "error",
             )
         )
+    if len(valid_news) < 3:
+        feed_blob = ""
+        for key in ("overnight_us_market", "macro_indicators", "risk_factors"):
+            v = runtime_input.get(key)
+            if isinstance(v, (dict, list)):
+                feed_blob += json.dumps(v, ensure_ascii=False)
+        fl = feed_blob.lower()
+        blob_l = blob.lower()
+        need = ("cpi", "inflation", "nasdaq", "s&p", "spx", "dow", "fed", "yield", "dollar", "geopolit", "kospi", "kosdaq")
+        if not any(k in blob_l and k in fl for k in need):
+            issues.append(
+                ValidationIssue(
+                    "image_prompt_underanchored_vs_news",
+                    "뉴스 헤드라인이 3건 미만일 때는 스튜디오/야외 프롬프트에 야간장·매크로 입력 앵커(CPI·지수·금리·환율 등)를 명시해야 함",
+                    "error",
+                )
+            )
     return issues
 
 

@@ -23,7 +23,6 @@ _REPO = Path(__file__).resolve().parents[1]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from prompts import today_genie_json_recovery_suffix
 _FEED_FILES = [
     ("TODAY_GENIE_OVERNIGHT_US_MARKET_JSON", "overnight_us_market.json"),
     ("TODAY_GENIE_MACRO_INDICATORS_JSON", "macro_indicators.json"),
@@ -235,10 +234,8 @@ def main() -> int:
         PROJECT_ID,
         VERTEX_LOCATION,
         VERTEX_MODEL,
-        build_full_prompt,
         build_runtime_input,
-        call_gemini,
-        parse_model_json,
+        run_today_genie_text_pipeline,
         validate_today_genie,
     )
     from renderers import finalize_today_genie_hashtag_list
@@ -325,26 +322,14 @@ def main() -> int:
 
     try:
         t = time.perf_counter()
-        prompt = build_full_prompt(mode, ri)
-        prof["prompt_build_sec"] = round(time.perf_counter() - t, 4)
+        data, raw, layer_prof = run_today_genie_text_pipeline(ri)
+        prof["top3_extract_inference_sec"] = float(layer_prof.get("top3_extract_inference_sec", 0))
+        prof["main_brief_inference_sec"] = float(layer_prof.get("main_brief_inference_sec", 0))
+        prof["model_inference_sec"] = round(
+            prof["top3_extract_inference_sec"] + prof["main_brief_inference_sec"], 4
+        )
+        prof["prompt_build_sec"] = 0.0
         t = time.perf_counter()
-        raw = call_gemini(prompt, mode)
-        prof["model_inference_sec"] = round(time.perf_counter() - t, 4)
-        t = time.perf_counter()
-        try:
-            data = parse_model_json(raw, mode)
-        except HTTPException as e_parse:
-            det = e_parse.detail if isinstance(e_parse.detail, dict) else {}
-            if det.get("reason") == "json_parse_error":
-                t_rec = time.perf_counter()
-                raw = call_gemini(prompt + today_genie_json_recovery_suffix(), mode)
-                prof["model_inference_recovery_sec"] = round(time.perf_counter() - t_rec, 4)
-                prof["json_recovery_second_call"] = True
-                data = parse_model_json(raw, mode)
-            else:
-                raise
-        else:
-            prof["json_recovery_second_call"] = False
         data["hashtags"] = finalize_today_genie_hashtag_list(data, ri)
         val = validate_today_genie(data, ri)
         prof["parse_finalize_validate_sec"] = round(time.perf_counter() - t, 4)
@@ -702,6 +687,12 @@ def main() -> int:
         )
         prof["image_generation_top_sec"] = round(time.perf_counter() - t, 4)
         top_done = True
+        try:
+            from genie_image_overlay import apply_today_genie_brand_footer
+
+            apply_today_genie_brand_footer(top_img)
+        except Exception as e_ov:
+            err.append(f"image_overlay_top:{type(e_ov).__name__}:{e_ov}")
     except Exception as e:
         top_err = f"{type(e).__name__}:{e}"
         err.append(f"image_top:{top_err}")
@@ -720,6 +711,12 @@ def main() -> int:
         )
         prof["image_generation_bottom_sec"] = round(time.perf_counter() - t, 4)
         bot_done = True
+        try:
+            from genie_image_overlay import apply_today_genie_brand_footer
+
+            apply_today_genie_brand_footer(bot_img)
+        except Exception as e_ov:
+            err.append(f"image_overlay_bottom:{type(e_ov).__name__}:{e_ov}")
     except Exception as e:
         bot_err = f"{type(e).__name__}:{e}"
         err.append(f"image_bottom:{bot_err}")
@@ -1057,6 +1054,14 @@ body.handoff-page { font-family: system-ui, -apple-system, sans-serif; margin: 0
   margin-top: 6px; white-space: pre-wrap; word-break: break-word;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04); }
 .summary-box { font-size: 1.02rem; line-height: 1.7; }
+.briefing-paragraph { margin: 0 0 14px 0; }
+.briefing-paragraph:last-child { margin-bottom: 0; }
+.watchpoint-list { margin: 2px 0 0 0; padding-left: 1.15rem; }
+.watchpoint-item { margin: 0 0 18px 0; }
+.watchpoint-item:last-child { margin-bottom: 0; }
+.watchpoint-headline { display: block; margin-bottom: 8px; }
+.watchpoint-paragraph { margin: 0 0 9px 0; line-height: 1.72; }
+.watchpoint-paragraph:last-child { margin-bottom: 0; }
 .hero-img-wrap { margin: 12px 0 0 0; text-align: center; }
 .hero-img-wrap img { max-width: 100%; height: auto; border: 1px solid #cbd5e1; border-radius: 12px;
   background: #e2e8f0; box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06); }
@@ -1098,6 +1103,7 @@ table.handoff-table { width: 100%; border-collapse: collapse; font-size: 0.98rem
 .tpo-fail { color: #b91c1c; font-weight: 700; }
 .investment-disclaimer { margin-top: 2rem; margin-bottom: 0; padding: 14px 16px 4px;
   border-top: 1px solid #e2e8f0; font-size: 0.84rem; line-height: 1.55; color: #64748b; }
+.usage-note { margin-top: 1rem; margin-bottom: 0; font-size: 0.8rem; line-height: 1.5; color: #64748b; }
 """
 
 
@@ -1110,6 +1116,13 @@ def _customer_investment_disclaimer_html() -> str:
         "투자 결정과 그 결과에 대한 책임은 전적으로 본인에게 있습니다."
         "</p>"
     )
+
+
+def _customer_copyright_usage_note_html() -> str:
+    """Fixed customer-safe usage/copyright note (MirAI:ON), separate from investment disclaimer."""
+    from renderers import TODAY_GENIE_MIRAI_USAGE_NOTE
+
+    return f'<p class="muted usage-note" role="note">{html.escape(TODAY_GENIE_MIRAI_USAGE_NOTE)}</p>'
 
 
 def _briefing_eyebrow_line(ri: dict[str, object], run_id: str) -> str:
@@ -1336,7 +1349,7 @@ def _proof_customer_major_indices_section(ri: dict[str, object], hd: dict[str, o
         '<h2 class="section-heading">주요 지수 브리핑</h2>',
     ]
     if narrative:
-        parts.append(f'<div class="box summary-box">{html.escape(narrative)}</div>')
+        parts.append(_market_setup_readable_box_html(narrative))
     parts.append('<p class="muted section-lede">주요 지표 스냅샷</p>')
     parts.append(snapshot_html)
     parts.append("</section>")
@@ -1433,19 +1446,68 @@ def _proof_bottom_image_slot_html(image_run: dict[str, Any]) -> str:
 
 
 def _format_watchpoints(wps: object) -> str:
-    parts: list[str] = ["<ul>"]
+    parts: list[str] = ['<ul class="watchpoint-list">']
     if isinstance(wps, list):
         for w in wps[:8]:
             if isinstance(w, dict):
+                head = html.escape(str(w.get("headline", "")))
+                detail = str(w.get("detail", ""))
+                paras = _detail_readability_paragraphs(detail)
+                para_html = "".join(
+                    f'<p class="watchpoint-paragraph">{html.escape(p)}</p>' for p in paras
+                )
                 parts.append(
-                    "<li><strong>"
-                    + html.escape(str(w.get("headline", "")))
-                    + "</strong> — "
-                    + html.escape(str(w.get("detail", "")))
+                    '<li class="watchpoint-item"><strong class="watchpoint-headline">'
+                    + head
+                    + "</strong>"
+                    + para_html
                     + "</li>"
                 )
     parts.append("</ul>")
     return "".join(parts)
+
+
+def _detail_readability_paragraphs(detail: str) -> list[str]:
+    text = re.sub(r"\s+", " ", str(detail or "")).strip()
+    if not text:
+        return [""]
+    sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    if len(sents) <= 2:
+        return [text]
+    # Keep one bullet item per TOP3, but expose breathing room between fact/today/watch chunks.
+    p1 = " ".join(sents[:2]).strip()
+    p2 = " ".join(sents[2:]).strip()
+    return [p for p in (p1, p2) if p]
+
+
+def _market_setup_readable_box_html(narrative: str) -> str:
+    p1, p2 = _split_market_setup_into_two_paragraphs(narrative)
+    return (
+        '<div class="box summary-box">'
+        f'<p class="briefing-paragraph">{html.escape(p1)}</p>'
+        f'<p class="briefing-paragraph">{html.escape(p2)}</p>'
+        "</div>"
+    )
+
+
+def _split_market_setup_into_two_paragraphs(narrative: str) -> tuple[str, str]:
+    text = re.sub(r"\s+", " ", str(narrative or "")).strip()
+    if not text:
+        return "", ""
+    sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    if len(sents) <= 1:
+        return text, text
+    domestic_markers = ("국내", "코스피", "코스닥", "원/달러", "원달러", "니케이", "일본", "아시아")
+    cut = -1
+    for i, s in enumerate(sents):
+        if any(m in s for m in domestic_markers):
+            cut = i
+            break
+    if cut <= 0 or cut >= len(sents):
+        cut = max(1, len(sents) // 2)
+    p1 = " ".join(sents[:cut]).strip() or sents[0]
+    p2 = " ".join(sents[cut:]).strip() or sents[-1]
+    return p1, p2
 
 
 def _format_risks(rks: object) -> str:
@@ -1953,6 +2015,7 @@ def _proof_html_body(
     else:
         admin_footer = _customer_reader_admin_panel(run_id)
 
+    usage_note_footer = _customer_copyright_usage_note_html()
     disc_footer = _customer_investment_disclaimer_html()
 
     if failure_mode:
@@ -2005,6 +2068,7 @@ def _proof_html_body(
 {reasons_block}
 {bottom_reader}
 {tag_section}
+{usage_note_footer}
 {disc_footer}
 {admin_footer}
 {operator_wrap}
@@ -2040,6 +2104,7 @@ def _proof_html_body(
 </section>
 {bottom_reader}
 {tag_section}
+{usage_note_footer}
 {disc_footer}
 {admin_footer}
 {operator_wrap}

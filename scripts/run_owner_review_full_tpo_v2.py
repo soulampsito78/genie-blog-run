@@ -422,6 +422,12 @@ def artifacts_only_main() -> int:
             project_id=PROJECT_ID or None,
             location=VERTEX_LOCATION,
         )
+        try:
+            from genie_image_overlay import apply_today_genie_brand_footer
+
+            apply_today_genie_brand_footer(bottom_out)
+        except Exception:
+            pass
     except Exception as e:
         print(json.dumps({"error": "image_generation_failed", "message": f"{type(e).__name__}: {e}"}, ensure_ascii=False))
         return 4
@@ -504,11 +510,9 @@ def main() -> int:
         VERTEX_IMAGE_MODEL,
         VERTEX_LOCATION,
         _mood_prefix_for_image_prompts,
-        build_full_prompt,
         build_runtime_input,
-        call_gemini_text,
-        parse_model_json,
         response_issues,
+        run_today_genie_text_pipeline,
         validate_today_genie,
     )
     from renderers import TODAY_EMAIL_CLOSING_CRITERION
@@ -530,7 +534,6 @@ def main() -> int:
         )
         return 20
 
-    prompt = build_full_prompt(mode, ri)
     max_attempts = 6
     data: dict = {}
     raw_text = ""
@@ -539,8 +542,7 @@ def main() -> int:
 
     for attempt in range(1, max_attempts + 1):
         try:
-            raw_text = call_gemini_text(prompt, mode)
-            data = parse_model_json(raw_text, mode)
+            data, raw_text, _ = run_today_genie_text_pipeline(ri)
             validation = validate_today_genie(data, ri)
         except HTTPException as e:
             detail = e.detail if isinstance(e.detail, dict) else {"message": str(e.detail)}
@@ -607,6 +609,12 @@ def main() -> int:
             project_id=PROJECT_ID or None,
             location=VERTEX_LOCATION,
         )
+        try:
+            from genie_image_overlay import apply_today_genie_brand_footer
+
+            apply_today_genie_brand_footer(bottom_out)
+        except Exception:
+            pass
     except Exception as e:
         print(json.dumps({"error": "image_generation_failed", "message": f"{type(e).__name__}: {e}"}, ensure_ascii=False))
         return 4

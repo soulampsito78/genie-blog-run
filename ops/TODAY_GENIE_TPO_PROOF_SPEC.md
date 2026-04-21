@@ -6,7 +6,7 @@ This file describes **only** what `scripts/run_tpo_proof_once.py` does in this r
 
 - **Command:** from repository root, `python3 scripts/run_tpo_proof_once.py` (or `python` if available).
 - **Feeds:** reads JSON from `ops/feeds/` per `_FEED_FILES` in that script; exits non‑zero if any required file is missing or empty.
-- **Pipeline:** `build_runtime_input("today_genie")` → `build_full_prompt` → `call_gemini` → `parse_model_json` → `finalize_today_genie_hashtag_list` → `validate_today_genie` → (if not blocked) image generation → `_proof_html_body` → `_write_proof_bundle`.
+- **Pipeline:** `build_runtime_input("today_genie")` → `run_today_genie_text_pipeline` → `finalize_today_genie_hashtag_list` → `validate_today_genie` → (if not blocked) image generation (+ optional `genie_image_overlay` footer strip) → `_proof_html_body` → `_write_proof_bundle`.
 
 ## Artifact set (per run)
 

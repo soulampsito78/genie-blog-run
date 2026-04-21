@@ -7,7 +7,7 @@ import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from zoneinfo import ZoneInfo
 
@@ -15,13 +15,24 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from prompts import build_full_prompt, today_genie_json_recovery_suffix
+from prompts import (
+    build_full_prompt,
+    build_top3_extraction_prompt,
+    today_genie_json_recovery_suffix,
+    today_genie_top3_extract_recovery_suffix,
+)
+from today_genie_top3_assembly import (
+    apply_briefing_repetition_guard,
+    assemble_key_watchpoints_from_slots,
+    normalize_top3_slots_payload,
+)
 from renderers import (
     TODAY_GENIE_LEGAL_DISCLAIMER,
     finalize_today_genie_hashtag_list,
     render_email_html,
     render_naver_body_html,
     render_web_html,
+    today_genie_email_inline_cid_pair,
 )
 from validators import validate_today_genie, validate_tomorrow_genie
 from weather_image_context import build_image_weather_context_for_today
@@ -427,11 +438,20 @@ def parse_model_json(raw_text: str, mode: str) -> Dict[str, Any]:
     )
 
 
-def call_gemini(prompt: str, mode: str) -> str:
+def call_gemini(
+    prompt: str,
+    mode: str,
+    *,
+    max_output_tokens: int | None = None,
+) -> str:
     try:
         init_vertex()
         model = get_model()
-        max_out = int(os.getenv("GENIE_MAX_OUTPUT_TOKENS", "12288"))
+        max_out = (
+            max_output_tokens
+            if max_output_tokens is not None
+            else int(os.getenv("GENIE_MAX_OUTPUT_TOKENS", "12288"))
+        )
 
         generation_config = GenerationConfig(
             temperature=0.3,
@@ -473,6 +493,58 @@ def call_gemini(prompt: str, mode: str) -> str:
     return text
 
 
+call_gemini_text = call_gemini
+
+
+def run_today_genie_text_pipeline(
+    runtime_input: Dict[str, Any],
+) -> tuple[Dict[str, Any], str, Dict[str, float]]:
+    """
+    Two-phase today_genie text: (1) structured TOP3 slots, (2) main briefing JSON.
+    Final key_watchpoints are always assembled in code: **exactly three** items,
+    news-anchored where headlines exist, otherwise feed-anchored (overnight/macro/risk)
+    market-watch slots — never absence filler.
+    """
+    prof: Dict[str, float] = {}
+    ext_prompt = build_top3_extraction_prompt(runtime_input)
+    t0 = time.perf_counter()
+    raw_ext = call_gemini(ext_prompt, "today_genie", max_output_tokens=4096)
+    prof["top3_extract_inference_sec"] = round(time.perf_counter() - t0, 4)
+    try:
+        ext_data = parse_model_json(raw_ext, "today_genie")
+    except HTTPException:
+        raw_ext = call_gemini(
+            ext_prompt + today_genie_top3_extract_recovery_suffix(),
+            "today_genie",
+            max_output_tokens=4096,
+        )
+        ext_data = parse_model_json(raw_ext, "today_genie")
+    slots = normalize_top3_slots_payload(ext_data)
+    main_prompt = build_full_prompt(
+        "today_genie",
+        runtime_input,
+        today_genie_main_briefing=True,
+    )
+    t1 = time.perf_counter()
+    raw_main = call_gemini(main_prompt, "today_genie")
+    prof["main_brief_inference_sec"] = round(time.perf_counter() - t1, 4)
+    try:
+        data = parse_model_json(raw_main, "today_genie")
+    except HTTPException as e:
+        det = e.detail if isinstance(e.detail, dict) else {}
+        if det.get("reason") == "json_parse_error":
+            raw_main = call_gemini(
+                main_prompt + today_genie_json_recovery_suffix(),
+                "today_genie",
+            )
+            data = parse_model_json(raw_main, "today_genie")
+        else:
+            raise
+    data["key_watchpoints"] = assemble_key_watchpoints_from_slots(slots, runtime_input)
+    apply_briefing_repetition_guard(data)
+    return data, raw_main, prof
+
+
 def response_issues(issues: List[Any]) -> List[Dict[str, Any]]:
     return [
         {
@@ -484,7 +556,7 @@ def response_issues(issues: List[Any]) -> List[Dict[str, Any]]:
     ]
 
 
-def _email_operational_handoff_meta(
+def email_operational_handoff_meta(
     mode: str,
     validation_result: str,
 ) -> Dict[str, Any]:
@@ -538,6 +610,24 @@ def _email_operational_handoff_meta(
     }
 
 
+def build_today_genie_email_html_for_cid_mime_send(
+    data: Dict[str, Any],
+    validation_result: str = "pass",
+) -> str:
+    """
+    today_genie HTML for SMTP MIME sends: top/bottom slots use cid:… references
+    so the message does not depend on public base URLs or local static paths for images.
+    """
+    op_meta = email_operational_handoff_meta("today_genie", validation_result)
+    return render_email_html(
+        "today_genie",
+        data,
+        op_meta,
+        email_asset_base_url="",
+        email_inline_cid_pair=today_genie_email_inline_cid_pair(),
+    )
+
+
 @app.get("/health")
 def health() -> Dict[str, Any]:
     return {
@@ -574,17 +664,21 @@ def generate(job: JobRequest) -> Dict[str, Any]:
         }
         raise HTTPException(status_code=422, detail=detail)
 
-    prompt = build_full_prompt(mode, runtime_input)
-    raw_text = call_gemini(prompt, mode)
-    try:
-        data = parse_model_json(raw_text, mode)
-    except HTTPException as e:
-        det = e.detail if isinstance(e.detail, dict) else {}
-        if det.get("reason") == "json_parse_error" and mode == "today_genie":
-            raw_text = call_gemini(prompt + today_genie_json_recovery_suffix(), mode)
+    if mode == "today_genie":
+        data, raw_text, _layer_prof = run_today_genie_text_pipeline(runtime_input)
+        logger.info("today_genie_two_phase_timings_sec=%s", _layer_prof)
+    else:
+        prompt = build_full_prompt(mode, runtime_input)
+        raw_text = call_gemini(prompt, mode)
+        try:
             data = parse_model_json(raw_text, mode)
-        else:
-            raise
+        except HTTPException as e:
+            det = e.detail if isinstance(e.detail, dict) else {}
+            if det.get("reason") == "json_parse_error":
+                raw_text = call_gemini(prompt + today_genie_json_recovery_suffix(), mode)
+                data = parse_model_json(raw_text, mode)
+            else:
+                raise
     if mode == "today_genie":
         data["hashtags"] = finalize_today_genie_hashtag_list(data, runtime_input)
         validation = validate_today_genie(data, runtime_input)
@@ -614,7 +708,7 @@ def generate(job: JobRequest) -> Dict[str, Any]:
 
     web_html = render_web_html(mode, data)
     workflow_status = "validated" if validation.result == "pass" else "review_required"
-    op_meta = _email_operational_handoff_meta(mode, validation.result)
+    op_meta = email_operational_handoff_meta(mode, validation.result)
     email_base = os.getenv("GENIE_PUBLIC_BASE_URL", "").strip().rstrip("/")
     email_html = render_email_html(
         mode, data, op_meta, email_asset_base_url=email_base

@@ -28,11 +28,10 @@ def today_genie_suffix_studio_hero() -> str:
         High click appeal; premium commercial realism; editorial quality; morning greeting energy;
         visually magnetic but still trustworthy; warm, lively, human presence; not stiff, not overposed.
 
-        Framing and body (editorial fashion proportion — top hero)
-        Either a strong 3/4 shot or a full-body hero shot. When full-body or strong 3/4 is used, enforce a long, elegant ~8.5-head editorial fashion proportion (not a compact news-thumb crop).
-        Positive: elongated leg line; long clean silhouette; higher waist emphasis where tailoring allows; long lower-body proportion;
-        editorial full-body fashion proportion; natural stride or elegant weight shift; relaxed vertical posture; one leg subtly leading when stance allows.
-        Avoid: short-legged read; compact or squat body balance; flat symmetrical standing pose; wide-angle leg foreshortening that collapses proportion.
+        Framing and body (premium anchor silhouette — top hero)
+        Either a strong 3/4 shot or a full-body hero shot. When full-body or strong 3/4 is used, keep a **balanced ~7.5–8 head** proportion with **healthy feminine curves** and **soft glamour** (broadcast-credible, not runway-emaciated).
+        Positive: softly glamorous presence; confident anchor posture; natural waist definition; smooth shoulder line; realistic healthy body volume; elegant weight shift; one leg subtly leading when stance allows.
+        Avoid: overly thin or stretched runway legs; exaggerated wasp-waist; collapsed foreshortening; compact squat balance; flat symmetrical mannequin stance; any look that reads as generic-AI thinness.
 
         Expression (vary naturally across runs; alive and human, not one repeated smile template)
         Natural morning greeting warmth; soft eye engagement; subtle cheek lift; relaxed human smile;
@@ -171,11 +170,10 @@ def today_genie_suffix_outdoor_daily(ri: Dict[str, Any], variation_seed: str = "
         subtle motion, breath, gaze shift, or weight shift so the moment feels human.
         Expression should feel naturally lived, not staged for a catalogue.
 
-        Framing and body (editorial fashion proportion — bottom / daily-life)
-        May be full-body, 3/4, or lifestyle medium-wide framing depending on the scene; when full-body or strong 3/4, prioritize a long, elegant ~8.5-head editorial fashion proportion.
-        Positive: elongated leg line; long clean silhouette; higher waist emphasis on separates or dresses where appropriate; long lower-body proportion;
-        editorial full-body fashion proportion; natural stride or elegant weight shift; relaxed vertical posture; one leg subtly leading.
-        Avoid: short-legged read; compact or squat body balance; flat symmetrical standing pose; catalogue stiffness that shrinks the figure.
+        Framing and body (premium daily silhouette — bottom / daily-life)
+        May be full-body, 3/4, or lifestyle medium-wide framing depending on the scene; when full-body or strong 3/4, keep **balanced ~7.5–8 head** proportion with **healthy curves** and **soft glamour** (realistic daily premium, not catalogue-thin).
+        Positive: softly glamorous, lived-in attractiveness; natural waist and hip volume; smooth posture; believable stride; relaxed vertical presence; one leg subtly leading.
+        Avoid: overly thin legs; stretched runway proportions; catalogue stiffness that flattens the figure; generic-AI waif silhouette; loss of identity continuity versus the reference face.
 
         Identity and controlled diversity
         Same person continuity must remain stable; no random person drift; no unrelated scene roulette.

@@ -307,6 +307,21 @@ OUTPUT_SCHEMA = {
     }
 }
 
+TOP3_EXTRACTION_OUTPUT_SCHEMA = {
+    "mode": "today_genie_top3_extract",
+    "slots": [
+        {
+            "slot": 1,
+            "headline_ko": "string (한글 6~28자, 이슈 한 줄)",
+            "what_happened": "string (1문장 40~220자, 입력 헤드라인의 고유명사·숫자·지표명 중 최소 1개 포함)",
+            "why_it_matters_today": "string (1문장 35~200자, 오늘 장전·장 초반 관점)",
+            "what_to_watch_in_korea": "string (1문장 35~200자, 코스피·코스닥·원/달러·외국인·기관 중 명시)",
+        },
+        {"slot": 2, "headline_ko": "string", "what_happened": "string", "why_it_matters_today": "string", "what_to_watch_in_korea": "string"},
+        {"slot": 3, "headline_ko": "string", "what_happened": "string", "why_it_matters_today": "string", "what_to_watch_in_korea": "string"},
+    ],
+}
+
 
 def _collect_top_market_news_headlines(runtime_input: Dict[str, Any]) -> List[str]:
     raw = runtime_input.get("top_market_news")
@@ -377,20 +392,30 @@ def _english_image_anchor_hints(runtime_input: Dict[str, Any]) -> List[str]:
     return hints[:10]
 
 
+def _surface_closer_steer_block() -> str:
+    return dedent("""
+    [SURFACE_CLOSER_STEER]
+    summary·market_setup·risk_check detail 마지막은 **구체 변수명 + 오늘 먼저 볼 확인 순서**로 묶어 마무리한다.
+    다음 표현은 쓰지 않는다: '신중한 접근이 필요합니다/필요하다/필요해', '방향성을 가늠', '가늠해야 합니다', 막연한 '가늠'만으로 끝내기.
+    risk_check 각 항목의 risk 필드는 한글 명사구로 쓴다(영문 단독 라벨 금지).
+
+    [CROSS_SURFACE_NON_REPETITION — binding]
+    - summary: 글로벌·야간 축을 한 번에 짚는 **짧은 1차 확인 리드**만. market_setup과 **동일 문장·거의 같은 맺음**(예: 원/달러·외국인 수급을 한 문장에 묶어 복붙)을 쓰지 말 것.
+    - market_setup(주요 지수 브리핑): **한국 시장·지수·환율 관점의 넓은 장전 망**만. summary 문장을 붙여넣거나 요약을 반복하지 말 것.
+    - TOP3 detail은 서버 조립이므로 여기에 쓰지 말 것. 대신 summary·market_setup에 아래 **TOP3용 보일러플레이트**를 절대 넣지 말 것: '장 초반에는 앞서 적은', '같은 축에서 환율·수급', '시나리오를 즉시 조정', '시나리오를 바로 조정'.
+    """).strip()
+
+
 def _today_genie_convergence_blocks(runtime_input: Dict[str, Any]) -> str:
-    """Runtime injection: TOP3 slot discipline, image/news anchors, surface closer steer."""
+    """Legacy single-pass: model writes full TOP3 prose (slot lock + image + steer)."""
     headlines = _collect_top_market_news_headlines(runtime_input)
     hints = _english_image_anchor_hints(runtime_input)
     hints_line = ", ".join(hints) if hints else "(헤드라인·야간 요약의 고유명사·지표명을 영어로 직접 인용)"
-
-    steer = dedent("""
-    [SURFACE_CLOSER_STEER]
-    summary·market_setup·key_watchpoints detail·risk_check detail에서 금지 맺음('신중한 접근이 필요합니다' 등) 대신,
-    입력에 있는 원인 변수명(예: CPI·환율·외국인 수급·지정학 이슈)과 오늘 먼저 확인할 가격·시간·체크포인트를 한 덩어리 문장으로 묶어 마무리한다.
-    다음 표현은 고객 표면 어디에도 쓰지 않는다(검증 차단과 동일): '방향성을 가늠', '가늠해야 합니다', 막연한 '가늠'만으로 끝내는 문장.
-    JSON 객체에서 key_watchpoints는 길이가 정확히 3인 배열이며, 각 원소의 headline·detail은 빈 문자열이면 안 된다.
-    risk_check 각 항목의 risk 필드는 고객 표면용으로 한글 명사구로 쓴다(영문 단독 라벨·티커만 넣지 말 것).
-    """).strip()
+    steer = _surface_closer_steer_block()
+    steer = (
+        steer
+        + "\nJSON 객체에서 key_watchpoints는 길이가 정확히 3이며, 각 headline·detail은 빈 문자열이면 안 된다.\n"
+    )
 
     if not headlines:
         return steer
@@ -416,6 +441,76 @@ def _today_genie_convergence_blocks(runtime_input: Dict[str, Any]) -> str:
     return "\n\n".join([slot, img, steer])
 
 
+def _today_genie_main_convergence_blocks(runtime_input: Dict[str, Any]) -> str:
+    """Second-pass main briefing: TOP3 prose is server-assembled; image + surface steer only."""
+    hints = _english_image_anchor_hints(runtime_input)
+    hints_line = ", ".join(hints) if hints else "(헤드라인·야간 요약의 고유명사·지표명을 영어로 직접 인용)"
+    top3_note = dedent("""
+    [TOP3_SERVER_ASSEMBLED — binding]
+    **1차 호출에서 TOP3 사실 슬롯이 이미 추출되었다.** 이 응답의 `key_watchpoints`는 스키마 자리만 채운다.
+    - 정확히 3개 요소. `headline`은 한글 4~10자 짧은 키워드만(예: 물가·지수·지정학).
+    - `detail`은 반드시 문자 **하이픈 하나 `-`** 만 넣는다(서버가 최종 브리핑 문단으로 치환).
+    - `basis`는 fact.
+    이 필드에 긴 문장을 쓰지 마라.
+    """).strip()
+    img = dedent(f"""
+    [IMAGE_PROMPT_NEWS_ANCHOR_LOCK — binding]
+    image_prompt_studio와 image_prompt_outdoor **각각**에 아래 후보 중 입력에 실제로 해당하는 영어 명명 앵커를 **최소 2개** 이상 포함한다.
+    오늘 우선 후보: {hints_line}
+    하단(image_prompt_outdoor)은 runtime_input.image_weather_context 반응 규칙을 유지하되, 금융 앵커 단어는 문장 안에 반드시 남긴다.
+    """).strip()
+    return "\n\n".join([top3_note, img, _surface_closer_steer_block()])
+
+
+def today_genie_top3_extract_recovery_suffix() -> str:
+    return dedent("""
+
+    [TOP3_EXTRACT_REPAIR]
+    직전 응답이 JSON 파싱에 실패했다. `mode`는 `today_genie_top3_extract`, `slots`는 정확히 3개인 **완전한 단일 JSON**만 다시 출력한다.
+    """).strip()
+
+
+def build_top3_extraction_prompt(runtime_input: Dict[str, Any]) -> str:
+    """Layer-1: fact-locked structured slots only (no full letter prose)."""
+    headlines = _collect_top_market_news_headlines(runtime_input)
+    schema_txt = json.dumps(TOP3_EXTRACTION_OUTPUT_SCHEMA, ensure_ascii=False, indent=2)
+    if not headlines:
+        slot_instr = "입력 top_market_news가 비어 있으면 slots 3개를 짧게라도 채우되 지어내지 말고 입력 범위 안에서만."
+    else:
+        numbered = "\n".join(f"  {i}. {h}" for i, h in enumerate(headlines, start=1))
+        slot_instr = dedent(f"""
+        아래 1·2·3번은 각각 slots[0]·slots[1]·slots[2]와 **동일 순서**로 짝지운다.
+        {numbered}
+        유효한 해외 시장 헤드라인이 3건 미만이면, 남는 슬롯은 **반드시** `overnight_us_market`·`macro_indicators`·`risk_factors`(및 `top_macro_issues`가 있으면 그 구조) 안의 **실제 문장·수치·라벨만**으로 채운다.
+        금지: '추가 뉴스 없음', '세 번째 뉴스는 확인되지 않았습니다' 등 **부재 설명형** 문장, 헤드라인 밖의 지어낸 이슈.
+        """).strip()
+    return dedent(f"""
+    [COMMON_CHARACTER_BIBLE]
+    {COMMON_CHARACTER_BIBLE}
+
+    [TOP3_EXTRACTION_LAYER — today_genie]
+    역할: 장전 브리핑의 **TOP3 뉴스 슬롯만** 구조화한다. summary·market_setup·이미지 프롬프트는 쓰지 않는다.
+    출력은 아래 스키마의 JSON **한 개만**(코드블록 없음).
+    {slot_instr}
+    필드 규칙(각 슬롯):
+    - headline_ko: 한글 6~28자, 이슈 한 줄(영어 헤드라인 통째 복붙 금지; CPI·나스닥 등 고유 표기 유지).
+    - what_happened: 1문장 40~220자, 해당 헤드라인의 **고유명사·숫자·지표명** 중 최소 1개 포함.
+    - why_it_matters_today: 1문장 35~200자, 오늘 장전·장 초반 관점.
+    - what_to_watch_in_korea: 1문장 35~200자, 코스피·코스닥·원/달러·외국인·기관 중 **명시**.
+    금지: '신중한 접근', '가늠', '방향성을 가늠', 추상 맺음 전용 문장.
+    JSON 문자열 안에 raw 줄바꿈 금지.
+
+    [REQUIRED_OUTPUT_SCHEMA]
+    {schema_txt}
+
+    [RUNTIME_INPUT]
+    {json.dumps(runtime_input, ensure_ascii=False, indent=2)}
+
+    [FINAL_INSTRUCTION]
+    JSON 객체 1개만 반환하라.
+    """).strip()
+
+
 def today_genie_json_recovery_suffix() -> str:
     """Appended to the primary prompt after a json_parse_error to request a full re-emission."""
     return dedent("""
@@ -434,7 +529,12 @@ def _json_schema_text(mode: str) -> str:
     return json.dumps(OUTPUT_SCHEMA[mode], ensure_ascii=False, indent=2)
 
 
-def build_full_prompt(mode: str, runtime_input: Dict[str, Any]) -> str:
+def build_full_prompt(
+    mode: str,
+    runtime_input: Dict[str, Any],
+    *,
+    today_genie_main_briefing: bool = False,
+) -> str:
     if mode not in ("today_genie", "tomorrow_genie"):
         raise ValueError(f"Unsupported mode: {mode}")
 
@@ -476,7 +576,13 @@ def build_full_prompt(mode: str, runtime_input: Dict[str, Any]) -> str:
         image_prompt_outdoor에서만 반영하고, 금융 본문 필드에는 날씨를 새로 넣지 않는다.
         """).rstrip()
 
-    convergence = _today_genie_convergence_blocks(runtime_input) if mode == "today_genie" else ""
+    if mode == "today_genie":
+        if today_genie_main_briefing:
+            convergence = _today_genie_main_convergence_blocks(runtime_input)
+        else:
+            convergence = _today_genie_convergence_blocks(runtime_input)
+    else:
+        convergence = ""
 
     json_harden = ""
     if mode == "today_genie":
