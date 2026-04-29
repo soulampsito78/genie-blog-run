@@ -940,6 +940,7 @@ def generate(job: JobRequest) -> Dict[str, Any]:
         "workflow_status": workflow_status,
         "validation_result": validation.result,
         "issues": response_issues(validation.issues),
+        "content_quality_warnings": list(validation.content_quality_warnings),
         "runtime_input": runtime_input,
         "data": {
             **data,

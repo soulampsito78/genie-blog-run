@@ -4,6 +4,7 @@ concrete publishing actions. Does not change runtime behavior.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -31,7 +32,6 @@ FINANCE_SAFETY_CODES = frozenset({
     "stale_content_date_conflict",
     "invalid_watchpoints",
     "invalid_opportunities",
-    "invalid_risk_check",
     "top3_watchpoints_missing",
     "top3_item_insufficient_briefing",
     "top3_not_grounded_in_input_news",
@@ -50,6 +50,13 @@ def _has_finance_safety_issue(issues: List[Dict[str, Any]]) -> bool:
         return False
     codes = {i.get("code") for i in issues if isinstance(i, dict)}
     return bool(codes & FINANCE_SAFETY_CODES)
+
+
+def _controlled_test_send_active() -> bool:
+    """GENIE_CONTROLLED_TEST_MODE + target date (same contract as orchestrator)."""
+    flag = os.getenv("GENIE_CONTROLLED_TEST_MODE", "").strip().lower()
+    target = os.getenv("GENIE_CONTROLLED_TEST_TARGET_DATE", "").strip()
+    return flag in ("1", "true", "yes") and bool(target)
 
 
 def _critical_today_inputs_missing(runtime_input: Optional[Dict[str, Any]]) -> bool:
@@ -109,6 +116,20 @@ def decide_publishing_actions(
     if mode == "today_genie":
         critical_missing = _critical_today_inputs_missing(runtime_input)
         if result == "draft_only":
+            # Controlled internal image-review: editorial warnings only → allow send
+            # when finance-safety / critical-input hard gates are clear.
+            if (
+                _controlled_test_send_active()
+                and not critical_missing
+                and not _has_finance_safety_issue(issues)
+            ):
+                return PublishingDecision(
+                    send_email=True,
+                    create_naver_draft=True,
+                    auto_publish=False,
+                    require_review=True,
+                    suppress_external=False,
+                )
             return PublishingDecision(
                 send_email=False,
                 create_naver_draft=True,

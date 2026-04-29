@@ -19,6 +19,32 @@ from today_genie_top3_assembly import (
 
 GateResultType = Literal["pass", "draft_only", "block"]
 
+# Controlled internal image-review: downgrade these *error* severities to warning so
+# they surface as content_quality_warnings instead of HTTP validation_block.
+_CONTROLLED_EDITORIAL_ERROR_DOWNGRADE_CODES = frozenset(
+    {
+        "invalid_risk_check",
+        "weak_opening",
+        "low_summary_density",
+        "thin_input_briefing_inadequate",
+        "overconfident_with_thin_input",
+        "authority_exceeds_input_support",
+        "low_risk_density",
+        "risk_lecture_tail",
+        "watchpoint_lecture_tail",
+        "summary_lecture_tail",
+        "closing_lecture_tail",
+        "generic_filler_despite_full_feeds",
+        "unanchored_briefing_vs_input_news",
+        # Reserved / forward-compat aliases from product language
+        "image_perception_open",
+        "number_accuracy_not_externally_verified",
+        "weak_summary",
+        "thin_input",
+        "risk_section_weak",
+    }
+)
+
 
 @dataclass
 class ValidationIssue:
@@ -31,6 +57,7 @@ class ValidationIssue:
 class ValidationResult:
     result: GateResultType
     issues: List[ValidationIssue] = field(default_factory=list)
+    content_quality_warnings: List[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -1899,14 +1926,44 @@ def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) ->
             )
         )
 
+    content_quality_warnings: List[str] = []
+    controlled_relaxed = bool(runtime_input.get("controlled_test_mode")) and bool(
+        str(runtime_input.get("target_date") or "").strip()
+    )
+    if controlled_relaxed:
+        for idx, issue in enumerate(issues):
+            if issue.severity == "error" and issue.code in _CONTROLLED_EDITORIAL_ERROR_DOWNGRADE_CODES:
+                issues[idx] = ValidationIssue(
+                    code=issue.code,
+                    message=issue.message + " [controlled: editorial severity downgraded to warning]",
+                    severity="warning",
+                )
+                content_quality_warnings.append(issue.code)
+
     has_error = any(i.severity == "error" for i in issues)
     has_warning = any(i.severity == "warning" for i in issues)
 
+    for i in issues:
+        if i.severity == "warning":
+            content_quality_warnings.append(i.code)
+
+    # Dedupe while preserving order
+    seen_cq: set[str] = set()
+    cq_ordered: List[str] = []
+    for c in content_quality_warnings:
+        if c not in seen_cq:
+            seen_cq.add(c)
+            cq_ordered.append(c)
+
     if has_error:
-        return ValidationResult(result="block", issues=issues)
+        return ValidationResult(
+            result="block", issues=issues, content_quality_warnings=cq_ordered
+        )
     if has_warning:
-        return ValidationResult(result="draft_only", issues=issues)
-    return ValidationResult(result="pass", issues=issues)
+        return ValidationResult(
+            result="draft_only", issues=issues, content_quality_warnings=cq_ordered
+        )
+    return ValidationResult(result="pass", issues=issues, content_quality_warnings=cq_ordered)
 
 
 def validate_tomorrow_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) -> ValidationResult:

@@ -18,6 +18,10 @@ from publishing_policy import PublishingDecision, decide_publishing_actions
 
 logger = logging.getLogger(__name__)
 
+_APPROVED_CONTROLLED_IMAGE_REVIEW_EMAILS = frozenset(
+    {"soulampsito@gmail.com", "ey2133@naver.com"}
+)
+
 GENIE_API_URL = os.getenv("GENIE_API_URL", "http://localhost:8080")
 GENIE_REQUEST_TIMEOUT = int(os.getenv("GENIE_REQUEST_TIMEOUT", "120"))
 GENIE_API_RETRIES = int(os.getenv("GENIE_API_RETRIES", "2"))
@@ -150,6 +154,18 @@ def run_genie_job(mode: str) -> OrchestrationResult:
     )
 
 
+def _controlled_test_send_env_active() -> bool:
+    flag = os.getenv("GENIE_CONTROLLED_TEST_MODE", "").strip().lower()
+    target = os.getenv("GENIE_CONTROLLED_TEST_TARGET_DATE", "").strip()
+    return flag in ("1", "true", "yes") and bool(target)
+
+
+def _controlled_recipients_ok() -> bool:
+    raw = os.getenv("EMAIL_TO", "")
+    parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    return bool(parts) and all(p in _APPROVED_CONTROLLED_IMAGE_REVIEW_EMAILS for p in parts)
+
+
 def send_email_if_allowed(result: OrchestrationResult) -> bool:
     """
     If policy allows sending email and we have payload, send via email_sender.
@@ -182,6 +198,11 @@ def send_email_if_allowed(result: OrchestrationResult) -> bool:
         target_date = str(runtime_input.get("target_date") or "").strip()
         marker = f"[GENIE render test] {target_date} Gmail/Naver 비교"
         subject = marker if not subject else f"{marker} - {subject}"
+        if "[GENIE render test]" not in subject:
+            logger.warning(
+                "send_email_if_allowed: skipped (controlled today_genie subject missing render-test marker)"
+            )
+            return False
     validation_result = str(result.response_data.get("validation_result") or "pass")
 
     # Canonical today_genie handoff send path: rich MIME + CID inline only.
@@ -192,6 +213,17 @@ def send_email_if_allowed(result: OrchestrationResult) -> bool:
         except Exception as e:  # noqa: BLE001
             logger.warning("send_email_if_allowed: today_genie rich imports failed: %s", e)
             return False
+
+        if (
+            isinstance(runtime_input, dict)
+            and runtime_input.get("controlled_test_mode")
+            and _controlled_test_send_env_active()
+        ):
+            if not _controlled_recipients_ok():
+                logger.warning(
+                    "send_email_if_allowed: skipped (controlled test EMAIL_TO not exactly approved list)"
+                )
+                return False
 
         html_body = build_today_genie_email_html_for_cid_mime_send(
             data,
