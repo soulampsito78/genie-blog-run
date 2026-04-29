@@ -1,10 +1,41 @@
 {
-  "as_of": "2026-04-10",
-  "session": "US cash close (Friday)",
+  "as_of": "2026-04-28",
+  "session": "US cash close (EDT)",
+  "fetched_at": "2026-04-29T07:10:16Z",
+  "verified_at": "2026-04-29T07:15:12Z",
+  "verified_by": "operator_public_source_probe",
+  "source_scope": "public_web_collection_probe",
   "indices": {
-    "SPX": {"close": 6816.89, "change_pts": -7.77, "change_pct": -0.1},
-    "NASDAQ": {"close": 22902.89, "change_pts": 80.48, "change_pct": 0.4},
-    "DJI": {"close": 47916.57, "change_pts": -269.23, "change_pct": -0.6}
+    "SPX": {
+      "close": 7138.8,
+      "change_pct": -0.49,
+      "source_name": "CNBC",
+      "source_url": "https://www.cnbc.com/quotes/.SPX",
+      "cross_check_url": "https://apnews.com/article/wall-street-stocks-dow-nasdaq-b147717d731d3f7cfaf27a9625715c21",
+      "confidence": "high",
+      "accuracy_status": "verified",
+      "notes": "Cross-checked against AP close recap."
+    },
+    "NASDAQ": {
+      "close": 24663.8,
+      "change_pct": -0.9,
+      "source_name": "CNBC",
+      "source_url": "https://www.cnbc.com/quotes/.IXIC",
+      "cross_check_url": "https://apnews.com/article/wall-street-stocks-dow-nasdaq-b147717d731d3f7cfaf27a9625715c21",
+      "confidence": "high",
+      "accuracy_status": "verified",
+      "notes": "Cross-checked against AP close recap."
+    },
+    "DJI": {
+      "close": 49141.93,
+      "change_pct": -0.05,
+      "source_name": "CNBC",
+      "source_url": "https://www.cnbc.com/quotes/.DJI",
+      "cross_check_url": "https://apnews.com/article/wall-street-stocks-dow-nasdaq-b147717d731d3f7cfaf27a9625715c21",
+      "confidence": "high",
+      "accuracy_status": "verified",
+      "notes": "Cross-checked against AP close recap."
+    }
   },
-  "summary": "Mixed US finish: Nasdaq +0.4% with tech support; Dow -0.6%; S&P 500 -0.1%. Choppy session tied to March CPI reaction and Middle East ceasefire headlines in weekend press."
+  "summary": "Public-source draft only. Not a licensed automated market-data feed."
 }
