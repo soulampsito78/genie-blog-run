@@ -2,6 +2,13 @@
 
 **Purpose:** One visual identity across `GENIE_EMAIL_today_genie_top_v{1,2,3}.jpg` and `GENIE_EMAIL_today_genie_bottom_v{1,2,3}.jpg`. All image prompts and regenerations must paste the **LOCK BLOCK** verbatim before the shot-specific line.
 
+## Identity-only principle (2026-04 contract — server-enforced suffix)
+
+- **Fixed (continuity only):** same premium Korean woman; same recognizable **face family**; same **hair identity** (long dark-brown soft waves); same late-20s age read; same trustworthy Genie brand tier.
+- **Explicitly NOT fixed:** outfit, blazer, inner blouse, pose, hands, camera distance, background, lighting recipe, body angle, expression template, silhouette recipe.
+- **Hard rule:** identity consistency must **never** read as mannequin repetition, catalogue “outfit swap only,” or the same shot reused with a new filename.
+- **Intent:** the inbox pair must feel like **the same person in two different lived moments** — not the same doll redressed in one anchor pose. Runtime Vertex appendices live in `image_exec_suffixes.py` (`today_genie_suffix_studio_hero`, `today_genie_suffix_outdoor_daily`) and log per-run wardrobe / pose / scene / camera picks into TPO JSON as `image_prompt_contract`.
+
 ## LOCK BLOCK (paste first in every prompt)
 
 ```
@@ -63,3 +70,19 @@ Visual diversity must come from **that day’s briefing meaning**, not from addi
 - **Screens / street:** No legible words, logos, or UI on monitors or signage; blur signage to abstraction.
 - **TOP (Zone A):** **Direct camera eye contact** on every top asset; **no** off-camera gaze; allow standing full-body / 3/4 / key visual; allow skirts and studio dresses; forbid lecturer/explainer gestures; aim for **commercial warmth**, not dead PS neutrality.
 - **BOTTOM (Zone B):** Outside shots must not all read as the same repeated suit; outdoor closet must not feel empty or blazer-only.
+
+## Proportion and feminine appeal lock (2026-04 patch)
+
+- **Proportion hard lock (top + bottom):** For full-body or strong 3/4 framing, enforce **8.5 to 9-head-tall editorial proportion**.
+- **Body-read requirements:** long leg line, high-waist visual balance, long lower-body silhouette, slim but healthy athletic build, elegant vertical posture, clean shoulder line, defined waist through tailoring/silhouette, graceful neck line.
+- **Compact-ban:** no short-legged read, no squat body, no compact torso-heavy figure, no boxy silhouette, no childlike proportions.
+
+- **Feminine appeal hard lock:** feminine but premium, refined, realistic, and trustworthy.
+- **Attractive but non-sexualized:** appeal comes from confidence, styling, silhouette, gesture, expression, and editorial composition.
+- **Face/expression:** soft but alert eyes, composed warmth, subtle vitality, no stiff mannequin expression.
+
+- **Negative lock (absolute):** no cheap glamour, no lingerie, no excessive cleavage, no nightclub styling, no over-sexualized pose.
+- **Pose lock (absolute):** no stiff catalogue mannequin pose, no flat symmetrical standing pose.
+
+- **Top application:** keep premium briefing anchor presence; confident and attractive; polished fashion-editorial proportion; professional but not stiff; strong 3/4 or full-body allowed; avoid cropped news-thumb framing that shrinks the figure.
+- **Bottom application:** keep daily-life but visibly elegant read; maintain long silhouette even in casual clothing; movement-based pose preferred; not another blazer mannequin; practical but attractive city styling; prefer full-body or medium-wide environmental framing when possible.
