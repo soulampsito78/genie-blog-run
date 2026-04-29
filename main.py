@@ -34,7 +34,11 @@ from renderers import (
     render_web_html,
     today_genie_email_inline_cid_pair,
 )
-from validators import validate_today_genie, validate_tomorrow_genie
+from validators import (
+    NUMBER_TABLE_ACCURACY_STATUSES,
+    validate_today_genie,
+    validate_tomorrow_genie,
+)
 from weather_image_context import build_image_weather_context_for_today
 
 # Vertex AI SDK
@@ -624,29 +628,99 @@ def _fmt_close(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _coerce_index_float(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    txt = str(value or "").strip().replace(",", "")
+    if txt.endswith("%"):
+        txt = txt[:-1]
+    try:
+        return float(txt)
+    except ValueError:
+        return None
+
+
+def _provenance_field(slot: Any, feed: Dict[str, Any], key: str) -> str:
+    if isinstance(slot, dict):
+        v = slot.get(key)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    v = feed.get(key)
+    if v is not None and str(v).strip():
+        return str(v).strip()
+    return ""
+
+
+def _resolve_row_accuracy_status(slot: Any, feed: Dict[str, Any], has_proof: bool) -> str:
+    for obj in (slot, feed):
+        if not isinstance(obj, dict):
+            continue
+        raw = str(obj.get("accuracy_status") or "").strip().lower()
+        if raw in NUMBER_TABLE_ACCURACY_STATUSES:
+            return raw
+    if has_proof:
+        return "unverified"
+    return "source_missing"
+
+
 def _feed_index_row(
     indices: Any,
+    feed: Any,
     source_keys: tuple[str, ...],
     label: str,
-) -> Optional[Dict[str, str]]:
+) -> Optional[Dict[str, Any]]:
     if not isinstance(indices, dict):
         return None
-    slot = None
+    feed_dict = feed if isinstance(feed, dict) else {}
+    slot: Optional[Dict[str, Any]] = None
+    symbol = ""
     for key in source_keys:
         candidate = indices.get(key)
         if isinstance(candidate, dict):
             slot = candidate
+            symbol = key
             break
     if not slot:
         return None
-    close = _fmt_close(slot.get("close"))
+    close_disp = _fmt_close(slot.get("close"))
     pct = _fmt_signed_pct(slot.get("change_pct"))
-    if not close or not pct:
+    if not close_disp or not pct:
         return None
+    close_num = _coerce_index_float(slot.get("close"))
+    pct_num = _coerce_index_float(slot.get("change_pct"))
+    if close_num is None or pct_num is None:
+        return None
+
+    as_of = ""
+    raw_as_of = feed_dict.get("as_of")
+    if isinstance(raw_as_of, str) and len(raw_as_of.strip()) >= 10:
+        as_of = raw_as_of.strip()[:10]
+
+    source_name = _provenance_field(slot, feed_dict, "source_name")
+    source_url = _provenance_field(slot, feed_dict, "source_url")
+    source_id = _provenance_field(slot, feed_dict, "source_id")
+    fetched_at = _provenance_field(slot, feed_dict, "fetched_at")
+    verified_at = _provenance_field(slot, feed_dict, "verified_at")
+    has_proof = bool(source_name) and (bool(source_url) or bool(source_id)) and bool(verified_at)
+    accuracy_status = _resolve_row_accuracy_status(slot, feed_dict, has_proof)
+
     return {
         "label": label,
-        "value": f"{close} ({pct})",
+        "value": f"{close_disp} ({pct})",
         "basis": "fact",
+        "symbol": symbol,
+        "display_name": label,
+        "close": float(close_num),
+        "change_pct": float(pct_num),
+        "as_of": as_of,
+        "source_name": source_name,
+        "source_url": source_url,
+        "source_id": source_id,
+        "fetched_at": fetched_at,
+        "verified_at": verified_at,
+        "accuracy_status": accuracy_status,
     }
 
 
@@ -662,15 +736,17 @@ def enforce_today_genie_market_snapshot_from_feeds(
     ov = runtime_input.get("overnight_us_market")
     kj_indices = kj.get("indices") if isinstance(kj, dict) else {}
     ov_indices = ov.get("indices") if isinstance(ov, dict) else {}
+    kj_d = kj if isinstance(kj, dict) else {}
+    ov_d = ov if isinstance(ov, dict) else {}
     required = [
-        (kj_indices, ("KOSPI",), "코스피"),
-        (kj_indices, ("KOSDAQ",), "코스닥"),
-        (ov_indices, ("SPX", "S&P 500", "SP500"), "S&P 500"),
-        (ov_indices, ("NASDAQ", "IXIC"), "나스닥"),
-        (kj_indices, ("NIKKEI", "N225", "NI225"), "니케이"),
-        (ov_indices, ("DJI", "DOW", "DOWJONES"), "다우존스"),
+        (kj_indices, kj_d, ("KOSPI",), "코스피"),
+        (kj_indices, kj_d, ("KOSDAQ",), "코스닥"),
+        (ov_indices, ov_d, ("SPX", "S&P 500", "SP500"), "S&P 500"),
+        (ov_indices, ov_d, ("NASDAQ", "IXIC"), "나스닥"),
+        (kj_indices, kj_d, ("NIKKEI", "N225", "NI225"), "니케이"),
+        (ov_indices, ov_d, ("DJI", "DOW", "DOWJONES"), "다우존스"),
     ]
-    rows = [_feed_index_row(indices, keys, label) for indices, keys, label in required]
+    rows = [_feed_index_row(indices, fd, keys, label) for indices, fd, keys, label in required]
     complete = [r for r in rows if r is not None]
     if complete:
         return {**data, "market_snapshot": complete}
@@ -895,6 +971,11 @@ def generate(job: JobRequest) -> Dict[str, Any]:
         data = enforce_today_genie_market_snapshot_from_feeds(data, runtime_input)
         data = stabilize_today_genie_validation_fields(data, runtime_input)
         validation = validate_today_genie(data, runtime_input)
+        if any(i.code == "number_table_accuracy_not_verified" for i in validation.issues):
+            logger.warning(
+                "today_genie number_table: accuracy_not_externally_verified "
+                "(issue code number_table_accuracy_not_verified)"
+            )
     else:
         validation = validate_tomorrow_genie(data, runtime_input)
 

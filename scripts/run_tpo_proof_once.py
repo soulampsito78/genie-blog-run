@@ -228,14 +228,20 @@ def main() -> int:
     _load_feeds_or_exit()
     prof["feed_load_sec"] = round(time.perf_counter() - t, 4)
 
-    from image_exec_suffixes import today_genie_suffix_outdoor_daily, today_genie_suffix_studio_hero
+    from image_exec_suffixes import (
+        today_genie_image_prompt_log,
+        today_genie_suffix_outdoor_daily,
+        today_genie_suffix_studio_hero,
+    )
     from image_generator import generate_image_file
     from main import (
         PROJECT_ID,
         VERTEX_LOCATION,
         VERTEX_MODEL,
         build_runtime_input,
+        enforce_today_genie_market_snapshot_from_feeds,
         run_today_genie_text_pipeline,
+        stabilize_today_genie_validation_fields,
         validate_today_genie,
     )
     from renderers import finalize_today_genie_hashtag_list
@@ -331,6 +337,8 @@ def main() -> int:
         prof["prompt_build_sec"] = 0.0
         t = time.perf_counter()
         data["hashtags"] = finalize_today_genie_hashtag_list(data, ri)
+        data = enforce_today_genie_market_snapshot_from_feeds(data, ri)
+        data = stabilize_today_genie_validation_fields(data, ri)
         val = validate_today_genie(data, ri)
         prof["parse_finalize_validate_sec"] = round(time.perf_counter() - t, 4)
         if val.result == "block":
@@ -670,15 +678,30 @@ def main() -> int:
         )
         return 3
 
+    snap["image_prompt_contract"] = today_genie_image_prompt_log(
+        variation_seed=stamp,
+        runtime_input=dict(ri),
+        mood_prefix=prefix,
+        image_prompt_studio=p_studio,
+        image_prompt_outdoor=p_out,
+        reference_image_path=str(ref),
+        top_output_path=str(top_img),
+        bottom_output_path=str(bot_img),
+    )
+
     images_ok = False
     top_done = False
     bot_done = False
     top_err: str | None = None
     bot_err: str | None = None
+    suffix_top = today_genie_suffix_studio_hero(stamp)
+    suffix_bot = today_genie_suffix_outdoor_daily(dict(ri), variation_seed=stamp)
+    top_prompt_full = prefix + p_studio + "\n\n" + suffix_top
+    bot_prompt_full = prefix + p_out + "\n\n" + suffix_bot
     try:
         t = time.perf_counter()
         generate_image_file(
-            prompt=prefix + p_studio + "\n\n" + today_genie_suffix_studio_hero(),
+            prompt=top_prompt_full,
             output_path=top_img,
             model_name=image_model,
             reference_image_path=ref,
@@ -699,10 +722,7 @@ def main() -> int:
     try:
         t = time.perf_counter()
         generate_image_file(
-            prompt=prefix
-            + p_out
-            + "\n\n"
-            + today_genie_suffix_outdoor_daily(ri, variation_seed=stamp),
+            prompt=bot_prompt_full,
             output_path=bot_img,
             model_name=image_model,
             reference_image_path=ref,

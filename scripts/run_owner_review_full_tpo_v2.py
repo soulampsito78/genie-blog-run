@@ -50,6 +50,7 @@ _FEED_FILES = [
     ("TODAY_GENIE_TOP_MARKET_NEWS_JSON", "top_market_news.json"),
     ("TODAY_GENIE_KOREA_MARKET_SCHEDULE_JSON", "korea_market_schedule.json"),
     ("TODAY_GENIE_RISK_FACTORS_JSON", "risk_factors.json"),
+    ("TODAY_GENIE_KOREA_JAPAN_INDICES_JSON", "korea_japan_indices.json"),
 ]
 
 
@@ -368,6 +369,7 @@ def artifacts_only_main() -> int:
     os.chdir(_REPO)
     sys.path.insert(0, str(_REPO))
 
+    from image_exec_suffixes import today_genie_suffix_outdoor_daily
     from image_generator import generate_image_file
     from main import (
         PROJECT_ID,
@@ -413,9 +415,13 @@ def artifacts_only_main() -> int:
         print(json.dumps({"error": "fixed_top_missing", "path": str(fixed_top_path)}, ensure_ascii=False))
         return 5
 
+    ri_img = raw.get("runtime_input") if isinstance(raw.get("runtime_input"), dict) else {}
     try:
         generate_image_file(
-            prompt=mood_prefix + p_out,
+            prompt=mood_prefix
+            + p_out
+            + "\n\n"
+            + today_genie_suffix_outdoor_daily(ri_img, variation_seed=run_id.replace(":", "-")),
             output_path=bottom_out,
             model_name=VERTEX_IMAGE_MODEL,
             reference_image_path=fixed_top_path,
@@ -504,6 +510,7 @@ def main() -> int:
     sys.path.insert(0, str(_REPO))
     _load_feeds_or_exit()
 
+    from image_exec_suffixes import today_genie_suffix_outdoor_daily
     from image_generator import generate_image_file
     from main import (
         PROJECT_ID,
@@ -511,8 +518,10 @@ def main() -> int:
         VERTEX_LOCATION,
         _mood_prefix_for_image_prompts,
         build_runtime_input,
+        enforce_today_genie_market_snapshot_from_feeds,
         response_issues,
         run_today_genie_text_pipeline,
+        stabilize_today_genie_validation_fields,
         validate_today_genie,
     )
     from renderers import TODAY_EMAIL_CLOSING_CRITERION
@@ -543,6 +552,8 @@ def main() -> int:
     for attempt in range(1, max_attempts + 1):
         try:
             data, raw_text, _ = run_today_genie_text_pipeline(ri)
+            data = enforce_today_genie_market_snapshot_from_feeds(data, ri)
+            data = stabilize_today_genie_validation_fields(data, ri)
             validation = validate_today_genie(data, ri)
         except HTTPException as e:
             detail = e.detail if isinstance(e.detail, dict) else {"message": str(e.detail)}
@@ -567,7 +578,7 @@ def main() -> int:
                 "codes": [i.code for i in validation.issues[:12]],
             }
         )
-        if validation.result == "pass":
+        if validation.result in ("pass", "draft_only"):
             break
     else:
         print(
@@ -582,7 +593,7 @@ def main() -> int:
         )
         return 2
 
-    if validation is None or validation.result != "pass":
+    if validation is None or validation.result not in ("pass", "draft_only"):
         print(json.dumps({"error": "no_pass", "attempts": attempts_log}, ensure_ascii=False, indent=2))
         return 2
 
@@ -602,7 +613,10 @@ def main() -> int:
 
     try:
         generate_image_file(
-            prompt=mood_prefix + p_out,
+            prompt=mood_prefix
+            + p_out
+            + "\n\n"
+            + today_genie_suffix_outdoor_daily(dict(ri), variation_seed=run_id.replace(":", "-")),
             output_path=bottom_out,
             model_name=VERTEX_IMAGE_MODEL,
             reference_image_path=fixed_top_path,

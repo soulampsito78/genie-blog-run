@@ -19,6 +19,24 @@ from today_genie_top3_assembly import (
 
 GateResultType = Literal["pass", "draft_only", "block"]
 
+# today_genie market_snapshot extended contract (per index row)
+NUMBER_TABLE_ACCURACY_STATUSES = frozenset(
+    {"verified", "unverified", "source_missing", "mismatch", "stale"}
+)
+NUMBER_TABLE_CONTRACT_KEYS = (
+    "symbol",
+    "display_name",
+    "close",
+    "change_pct",
+    "as_of",
+    "source_name",
+    "source_url",
+    "source_id",
+    "fetched_at",
+    "verified_at",
+    "accuracy_status",
+)
+
 # Controlled internal image-review: downgrade these *error* severities to warning so
 # they surface as content_quality_warnings instead of HTTP validation_block.
 _CONTROLLED_EDITORIAL_ERROR_DOWNGRADE_CODES = frozenset(
@@ -39,6 +57,7 @@ _CONTROLLED_EDITORIAL_ERROR_DOWNGRADE_CODES = frozenset(
         # Reserved / forward-compat aliases from product language
         "image_perception_open",
         "number_accuracy_not_externally_verified",
+        "number_table_accuracy_not_verified",
         "weak_summary",
         "thin_input",
         "risk_section_weak",
@@ -1200,6 +1219,173 @@ def _today_required_number_table_issues(
     return issues
 
 
+def _extract_close_and_pct_from_snapshot_value(raw_value: str) -> tuple[Optional[float], Optional[float]]:
+    """Best-effort parse of primary index close and first percent from customer value string."""
+    txt = _norm_text(raw_value).replace(",", "")
+    nums = re.findall(r"[+-]?[0-9][0-9,]*(?:\.[0-9]+)?%?", txt)
+    close: Optional[float] = None
+    for n in nums:
+        if n.endswith("%"):
+            continue
+        v = _parse_floatish(n)
+        if v is not None and v > 100:
+            close = v
+            break
+    pct: Optional[float] = None
+    for n in nums:
+        if not n.endswith("%"):
+            continue
+        p = _parse_floatish(n)
+        if p is not None:
+            pct = p
+            break
+    return close, pct
+
+
+def _number_table_row_close_numeric(close_raw: Any) -> Optional[float]:
+    if isinstance(close_raw, bool):
+        return None
+    if isinstance(close_raw, (int, float)):
+        return float(close_raw)
+    if isinstance(close_raw, str) and _norm_text(close_raw):
+        return _parse_floatish(close_raw)
+    return None
+
+
+def _number_table_row_change_pct_numeric(raw: Any) -> Optional[float]:
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str) and _norm_text(raw):
+        t = _norm_text(raw)
+        if t.endswith("%"):
+            t = t[:-1]
+        return _parse_floatish(t)
+    return None
+
+
+def _today_number_table_contract_accuracy_issues(
+    data: Dict[str, Any], runtime_input: Dict[str, Any]
+) -> List[ValidationIssue]:
+    """
+    Number-table contract (per-row provenance fields) and accuracy gate.
+
+    - number_table_contract_malformed: missing contract keys / invalid types / bad as_of / bad enum
+    - number_table_accuracy_fail: explicit mismatch/stale status or value vs numeric fields disagree
+    - number_table_accuracy_not_verified: structure OK but not every row is externally verified
+    """
+    issues: List[ValidationIssue] = []
+    snap = data.get("market_snapshot")
+    if not isinstance(snap, list):
+        return issues
+
+    rows: Dict[str, Any] = {
+        _canonical_index_key(item.get("label")): item
+        for item in snap
+        if isinstance(item, dict)
+    }
+
+    structure_errors: List[str] = []
+    accuracy_fail_labels: List[str] = []
+
+    for label, keys, _src in _REQUIRED_TODAY_INDEX_ROWS:
+        item = rows.get(label)
+        if not isinstance(item, dict):
+            continue
+
+        missing_keys = [k for k in NUMBER_TABLE_CONTRACT_KEYS if k not in item]
+        if missing_keys:
+            structure_errors.append(f"{label}: 누락 필드 {','.join(missing_keys)}")
+            continue
+
+        close_num = _number_table_row_close_numeric(item.get("close"))
+        if close_num is None:
+            structure_errors.append(f"{label}: close 가 숫자가 아님")
+            continue
+
+        pct_num = _number_table_row_change_pct_numeric(item.get("change_pct"))
+        if pct_num is None:
+            structure_errors.append(f"{label}: change_pct 가 숫자로 해석 불가")
+            continue
+
+        as_raw = item.get("as_of")
+        if not isinstance(as_raw, str) or _parse_iso_date(as_raw) is None:
+            structure_errors.append(f"{label}: as_of 가 YYYY-MM-DD 형식이 아님")
+            continue
+
+        acc = str(item.get("accuracy_status") or "").strip().lower()
+        if acc not in NUMBER_TABLE_ACCURACY_STATUSES:
+            structure_errors.append(f"{label}: accuracy_status 가 허용 enum 이 아님({acc!r})")
+            continue
+
+        v_close, v_pct = _extract_close_and_pct_from_snapshot_value(str(item.get("value") or ""))
+        if v_close is not None and abs(v_close - close_num) > 0.05:
+            accuracy_fail_labels.append(f"{label}: 표시 value 와 close 불일치")
+        if v_pct is not None and abs(v_pct - pct_num) > 0.05:
+            accuracy_fail_labels.append(f"{label}: 표시 value 와 change_pct 불일치")
+
+        source_name = _norm_text(item.get("source_name"))
+        source_url = _norm_text(item.get("source_url"))
+        source_id = _norm_text(item.get("source_id"))
+        verified_at = _norm_text(item.get("verified_at"))
+        fetched_at = _norm_text(item.get("fetched_at"))
+        has_proof = bool(source_name) and (bool(source_url) or bool(source_id)) and bool(verified_at)
+
+        if acc in ("mismatch", "stale"):
+            accuracy_fail_labels.append(f"{label}: accuracy_status={acc}")
+        if acc == "verified":
+            if not has_proof or not fetched_at:
+                accuracy_fail_labels.append(f"{label}: verified 표기이나 출처/검증 메타 불충분")
+
+    if structure_errors:
+        issues.append(
+            ValidationIssue(
+                "number_table_contract_malformed",
+                "숫자표 계약(행 단위 필드/타입) 위반: " + "; ".join(structure_errors[:16]),
+                "error",
+            )
+        )
+    if accuracy_fail_labels:
+        issues.append(
+            ValidationIssue(
+                "number_table_accuracy_fail",
+                "숫자표 정확도·검증 상태 실패: " + "; ".join(accuracy_fail_labels[:16]),
+                "error",
+            )
+        )
+
+    if structure_errors or accuracy_fail_labels:
+        return issues
+
+    all_six = all(rows.get(lab) for lab, _, __ in _REQUIRED_TODAY_INDEX_ROWS)
+    if not all_six:
+        return issues
+
+    def _row_fully_verified(it: Dict[str, Any]) -> bool:
+        if str(it.get("accuracy_status") or "").strip().lower() != "verified":
+            return False
+        if not _norm_text(it.get("source_name")):
+            return False
+        if not (_norm_text(it.get("source_url")) or _norm_text(it.get("source_id"))):
+            return False
+        if not _norm_text(it.get("verified_at")):
+            return False
+        if not _norm_text(it.get("fetched_at")):
+            return False
+        return True
+
+    if not all(_row_fully_verified(rows[lab]) for lab, _, __ in _REQUIRED_TODAY_INDEX_ROWS):
+        issues.append(
+            ValidationIssue(
+                "number_table_accuracy_not_verified",
+                "숫자표는 구조상 완료되었으나 외부 출처 검증(verified) 단계가 아님 — 운영 검토 또는 피드 메타데이터 보강 필요",
+                "warning",
+            )
+        )
+    return issues
+
+
 def _parse_iso_date(raw: Any) -> Optional[date]:
     if not isinstance(raw, str) or len(raw) < 10:
         return None
@@ -1810,6 +1996,7 @@ def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) ->
     issues.extend(_forbidden_surface_cliche_issues(data))
     issues.extend(_target_weekday_accuracy_issues(data, runtime_input))
     issues.extend(_today_required_number_table_issues(data, runtime_input))
+    issues.extend(_today_number_table_contract_accuracy_issues(data, runtime_input))
     issues.extend(_today_stale_date_issues(data, runtime_input))
     issues.extend(_polish_vague_phrase_issues(data))
     issues.extend(_hollow_prediction_closure_issues(data))

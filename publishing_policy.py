@@ -28,6 +28,8 @@ FINANCE_SAFETY_CODES = frozenset({
     "invalid_market_snapshot",
     "market_snapshot_missing_required_rows",
     "market_snapshot_required_row_malformed",
+    "number_table_contract_malformed",
+    "number_table_accuracy_fail",
     "stale_feed_date",
     "stale_content_date_conflict",
     "invalid_watchpoints",
@@ -67,6 +69,12 @@ def _critical_today_inputs_missing(runtime_input: Optional[Dict[str, Any]]) -> b
         if val is None or (isinstance(val, (list, dict)) and len(val) == 0):
             return True
     return False
+
+
+# today_genie number table: structure/accuracy_fail codes in FINANCE_SAFETY_CODES suppress
+# distribution. number_table_accuracy_not_verified is a warning → validation draft_only;
+# production email send requires validation_result pass; controlled image-review may
+# still send on draft_only when GENIE_CONTROLLED_TEST_MODE is active (see below).
 
 
 def decide_publishing_actions(
