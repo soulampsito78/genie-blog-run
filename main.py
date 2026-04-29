@@ -556,6 +556,84 @@ def response_issues(issues: List[Any]) -> List[Dict[str, Any]]:
     ]
 
 
+def _fmt_signed_pct(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        sign = "+" if value > 0 else ""
+        return f"{sign}{value:g}%"
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if raw.endswith("%"):
+        if raw.startswith(("+", "-")):
+            return raw
+        try:
+            num = float(raw[:-1])
+        except ValueError:
+            return raw
+        sign = "+" if num > 0 else ""
+        return f"{sign}{raw}"
+    return raw
+
+
+def _fmt_close(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+    return str(value or "").strip()
+
+
+def _feed_index_row(
+    indices: Any,
+    source_keys: tuple[str, ...],
+    label: str,
+) -> Optional[Dict[str, str]]:
+    if not isinstance(indices, dict):
+        return None
+    slot = None
+    for key in source_keys:
+        candidate = indices.get(key)
+        if isinstance(candidate, dict):
+            slot = candidate
+            break
+    if not slot:
+        return None
+    close = _fmt_close(slot.get("close"))
+    pct = _fmt_signed_pct(slot.get("change_pct"))
+    if not close or not pct:
+        return None
+    return {
+        "label": label,
+        "value": f"{close} ({pct})",
+        "basis": "fact",
+    }
+
+
+def enforce_today_genie_market_snapshot_from_feeds(
+    data: Dict[str, Any],
+    runtime_input: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Preserve model content, but make the customer number table deterministic
+    when feed values exist. Missing required feed values remain validation errors.
+    """
+    kj = runtime_input.get("korea_japan_indices")
+    ov = runtime_input.get("overnight_us_market")
+    kj_indices = kj.get("indices") if isinstance(kj, dict) else {}
+    ov_indices = ov.get("indices") if isinstance(ov, dict) else {}
+    required = [
+        (kj_indices, ("KOSPI",), "코스피"),
+        (kj_indices, ("KOSDAQ",), "코스닥"),
+        (ov_indices, ("SPX", "S&P 500", "SP500"), "S&P 500"),
+        (ov_indices, ("NASDAQ", "IXIC"), "나스닥"),
+        (kj_indices, ("NIKKEI", "N225", "NI225"), "니케이"),
+        (ov_indices, ("DJI", "DOW", "DOWJONES"), "다우존스"),
+    ]
+    rows = [_feed_index_row(indices, keys, label) for indices, keys, label in required]
+    complete = [r for r in rows if r is not None]
+    if complete:
+        return {**data, "market_snapshot": complete}
+    return data
+
+
 def email_operational_handoff_meta(
     mode: str,
     validation_result: str,
@@ -681,6 +759,7 @@ def generate(job: JobRequest) -> Dict[str, Any]:
                 raise
     if mode == "today_genie":
         data["hashtags"] = finalize_today_genie_hashtag_list(data, runtime_input)
+        data = enforce_today_genie_market_snapshot_from_feeds(data, runtime_input)
         validation = validate_today_genie(data, runtime_input)
     else:
         validation = validate_tomorrow_genie(data, runtime_input)

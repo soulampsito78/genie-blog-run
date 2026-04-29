@@ -604,14 +604,12 @@ def render_email_operational_box(meta: Dict[str, Any]) -> str:
     reason_opts = "".join(
         f'<option value="{_safe(l)}">{_safe(l)}</option>' for l in _REVISION_REQUEST_REASONS
     )
-    rerequest_raw = str(meta.get("rerequest_url", "") or "").strip()
-    rerequest_href = html_escape(rerequest_raw, quote=True) if rerequest_raw else "#"
     revision_live = bool(post_raw) and "placeholder.genie-revision.bind-later.invalid" not in post_raw
-    revision_status = "연동됨" if revision_live else "현재 비활성(운영 연동 전)"
+    revision_status = "운영 준비 중" if not revision_live else "운영 검토 접수 가능"
     revision_detail = (
-        f'요청 접수 엔드포인트: {_safe(post_raw)}'
-        if revision_live
-        else "요청 접수 엔드포인트: 아직 연결되지 않았습니다."
+        "수정 요청 기능은 현재 운영 준비 중입니다. 필요한 경우 운영자 검토 후 별도 안내됩니다."
+        if not revision_live
+        else "수정 요청은 운영자 검토 후 별도 안내됩니다."
     )
     return f"""
 <section id="genie-operational-handoff" aria-label="운영 안내" style="margin-top:32px;padding:20px 20px 22px 20px;border:1px solid #cbd5e1;border-radius:10px;background:#f1f5f9;">
@@ -629,7 +627,6 @@ def render_email_operational_box(meta: Dict[str, Any]) -> str:
   <div style="margin-top:0;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;background:#ffffff;">
     <p style="margin:0 0 6px 0;font-size:12px;line-height:1.6;color:#475569;font-weight:700;">재발행/수정 요청 안내</p>
     <p style="margin:0 0 6px 0;font-size:12px;line-height:1.6;color:#334155;">상태: {revision_status}</p>
-    <p style="margin:0 0 4px 0;font-size:12px;line-height:1.6;color:#334155;">재요청 링크: <a href="{rerequest_href}" style="color:#0f172a;">{_safe(rerequest_raw or "(미설정)")}</a></p>
     <p style="margin:0;font-size:12px;line-height:1.6;color:#334155;">{revision_detail}</p>
   </div>
 </section>
@@ -848,35 +845,71 @@ def _today_snapshot_grouped_html(snapshot: Any) -> str:
     return f"{domestic_html}{global_html}".strip()
 
 
+_EMAIL_META_LEAD_PATTERNS = (
+    "안녕하세요",
+    "좋은 아침",
+    "장전 금융 브리핑",
+    "브리핑 지니입니다",
+    "브리핑입니다",
+    "전해드립니다",
+)
+
+_EMAIL_MARKET_LEAD_TERMS = (
+    "cpi",
+    "금리",
+    "환율",
+    "미국",
+    "증시",
+    "나스닥",
+    "다우",
+    "s&p",
+    "중동",
+    "지정학",
+    "섹터",
+    "외국인",
+    "코스피",
+    "코스닥",
+)
+
+
+def _email_summary_body_paragraphs(summary_raw: str, greeting_raw: str) -> List[str]:
+    source = str(summary_raw or "").strip()
+    chunks = [x.strip() for x in re.split(r"(?<=[.!?。])(?=\s+|[가-힣A-Za-z])", source) if x.strip()]
+    if not chunks and source:
+        chunks = [x.strip() for x in source.split("\n") if x.strip()]
+
+    filtered: List[str] = []
+    for chunk in chunks:
+        low = chunk.lower()
+        if any(p.lower() in low for p in _EMAIL_META_LEAD_PATTERNS):
+            continue
+        if re.match(r"^\s*20\d{2}년\s+\d{1,2}월\s+\d{1,2}일\s+(?:오전\s+\d{1,2}시(?:\s+\d{1,2}분)?[,，]?\s*)?장전", chunk):
+            continue
+        filtered.append(chunk)
+
+    if filtered and not any(t in filtered[0].lower() for t in _EMAIL_MARKET_LEAD_TERMS):
+        for i, chunk in enumerate(filtered[1:], start=1):
+            if any(t in chunk.lower() for t in _EMAIL_MARKET_LEAD_TERMS):
+                filtered.insert(0, filtered.pop(i))
+                break
+
+    if not filtered and source:
+        filtered = [source]
+    if len(filtered) < 2 and len(source) > 90:
+        mid = len(source) // 2
+        split_at = source.find(" ", mid)
+        if split_at == -1:
+            split_at = mid
+        filtered = [source[:split_at].strip(), source[split_at:].strip()]
+    return [p for p in filtered if p][:3]
+
+
 def _build_today_genie_email_editorial_html(data: Dict[str, Any]) -> str:
     """today_genie email body only (no image slots); use email-safe block tags (div/p/ul/li)."""
     title = _safe(data.get("title", ""))
-    # Build 2-3 readable summary paragraphs for gift-envelope opening rhythm.
     summary_raw = _safe(data.get("summary", ""))
     greeting_raw = _safe(data.get("greeting", ""))
-    chunks = [x.strip() for x in re.split(r"(?<=[.!?])\s+", summary_raw) if x.strip()]
-    paras: List[str] = []
-    if greeting_raw:
-        paras.append(greeting_raw)
-    if chunks:
-        first = chunks[0]
-        second = " ".join(chunks[1:3]).strip()
-        rest = " ".join(chunks[3:]).strip()
-        paras.append(first)
-        if second:
-            paras.append(second)
-        if rest:
-            paras.append(rest)
-    elif summary_raw:
-        paras.append(summary_raw)
-    # Ensure at least 2 paragraphs when summary is a single long block.
-    if len(paras) < 2 and len(summary_raw) > 90:
-        mid = len(summary_raw) // 2
-        split_at = summary_raw.find(" ", mid)
-        if split_at == -1:
-            split_at = mid
-        paras = [summary_raw[:split_at].strip(), summary_raw[split_at:].strip()]
-    paras = [p for p in paras if p][:3]
+    paras = _email_summary_body_paragraphs(summary_raw, greeting_raw)
     summary_html = "".join(
         f'<p style="margin:0 0 14px 0;font-size:16px;line-height:1.72;font-weight:400;color:#1a1a1a;">{_safe(p)}</p>'
         for p in paras
@@ -963,7 +996,6 @@ def _build_today_genie_email_editorial_html(data: Dict[str, Any]) -> str:
     <p style="margin:0;font-size:16px;line-height:1.7;font-weight:700;color:#1a1a1a;">{closing}</p>
   </div>
 </div>
-<p style="margin:0 0 14px 0;font-size:12px;line-height:1.6;color:#666;">{_safe(TODAY_EMAIL_CLOSING_CRITERION)}</p>
 <p style="margin:0 0 10px 0;font-size:11px;line-height:1.55;color:#64748b;">{_safe(TODAY_GENIE_MIRAI_USAGE_NOTE)}</p>
 <p style="margin:0 0 14px 0;font-size:12px;line-height:1.65;color:#555;">{_safe(TODAY_GENIE_LEGAL_DISCLAIMER)}</p>
 {hashtags_html}
@@ -1134,4 +1166,3 @@ def render_naver_body_html(mode: str, data: Dict[str, Any]) -> str:
 <ul>{lifestyle_notes}</ul>
 <p>{closing}</p>
 """.strip()
-

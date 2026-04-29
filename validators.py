@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Dict, List, Literal
+from typing import Any, Dict, List, Literal, Optional
 
 from renderers import (
     TODAY_GENIE_HASHTAG_COUNT,
@@ -1063,6 +1063,205 @@ def _target_weekday_accuracy_issues(
     return issues
 
 
+_REQUIRED_TODAY_INDEX_ROWS = (
+    ("코스피", ("KOSPI",), "korea_japan_indices"),
+    ("코스닥", ("KOSDAQ",), "korea_japan_indices"),
+    ("S&P 500", ("SPX", "S&P 500", "SP500"), "overnight_us_market"),
+    ("나스닥", ("NASDAQ", "IXIC"), "overnight_us_market"),
+    ("니케이", ("NIKKEI", "N225", "NI225"), "korea_japan_indices"),
+    ("다우존스", ("DJI", "DOW", "DOWJONES"), "overnight_us_market"),
+)
+
+
+def _parse_floatish(raw: Any) -> Optional[float]:
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    txt = str(raw or "").strip().replace(",", "")
+    if txt.endswith("%"):
+        txt = txt[:-1]
+    try:
+        return float(txt)
+    except ValueError:
+        return None
+
+
+def _canonical_index_key(label: Any) -> str:
+    text = _norm_text(label).lower()
+    upper = text.upper()
+    if "코스피" in text or upper == "KOSPI":
+        return "코스피"
+    if "코스닥" in text or upper == "KOSDAQ":
+        return "코스닥"
+    if "s&p" in text or "s＆p" in text or upper in ("SPX", "SP500"):
+        return "S&P 500"
+    if "나스닥" in text or "NASDAQ" in upper or "IXIC" in upper:
+        return "나스닥"
+    if "니케이" in text or "NIKKEI" in upper or "N225" in upper or "NI225" in upper:
+        return "니케이"
+    if "다우" in text or upper in ("DJI", "DOW", "DOWJONES"):
+        return "다우존스"
+    return _norm_text(label)
+
+
+def _feed_has_required_index(runtime_input: Dict[str, Any], source_name: str, keys: tuple[str, ...]) -> bool:
+    source = runtime_input.get(source_name)
+    if not isinstance(source, dict):
+        return False
+    indices = source.get("indices")
+    if not isinstance(indices, dict):
+        return False
+    for key in keys:
+        slot = indices.get(key)
+        if isinstance(slot, dict) and slot.get("close") is not None and slot.get("change_pct") is not None:
+            return True
+    return False
+
+
+def _today_required_number_table_issues(
+    data: Dict[str, Any], runtime_input: Dict[str, Any]
+) -> List[ValidationIssue]:
+    snap = data.get("market_snapshot")
+    if not isinstance(snap, list):
+        return [
+            ValidationIssue(
+                "market_snapshot_missing_required_rows",
+                "today_genie 숫자표 market_snapshot 배열이 없어 필수 6개 지수 행을 만들 수 없음",
+                "error",
+            )
+        ]
+    rows = {
+        _canonical_index_key(item.get("label")): item
+        for item in snap
+        if isinstance(item, dict)
+    }
+    missing: List[str] = []
+    malformed: List[str] = []
+    for label, keys, source_name in _REQUIRED_TODAY_INDEX_ROWS:
+        if not _feed_has_required_index(runtime_input, source_name, keys):
+            missing.append(f"{label}(feed)")
+            continue
+        item = rows.get(label)
+        if not item:
+            missing.append(label)
+            continue
+        raw_value = _norm_text(item.get("value", ""))
+        nums = re.findall(r"[+-]?[0-9][0-9,]*(?:\.[0-9]+)?%?", raw_value)
+        has_close = any(
+            (not n.endswith("%")) and (v := _parse_floatish(n)) is not None and v > 100
+            for n in nums
+        )
+        has_pct = any(n.endswith("%") and _parse_floatish(n) is not None for n in nums)
+        if raw_value in ("", "-", "0", "0.0", "0.00") or not has_close or not has_pct:
+            malformed.append(label)
+    issues: List[ValidationIssue] = []
+    if missing:
+        issues.append(
+            ValidationIssue(
+                "market_snapshot_missing_required_rows",
+                "today_genie 숫자표 필수 지수 행 누락: " + ", ".join(missing),
+                "error",
+            )
+        )
+    if malformed:
+        issues.append(
+            ValidationIssue(
+                "market_snapshot_required_row_malformed",
+                "today_genie 숫자표 지수값/등락률 불완전: " + ", ".join(malformed),
+                "error",
+            )
+        )
+    return issues
+
+
+def _parse_iso_date(raw: Any) -> Optional[date]:
+    if not isinstance(raw, str) or len(raw) < 10:
+        return None
+    try:
+        return date.fromisoformat(raw[:10])
+    except ValueError:
+        return None
+
+
+_EN_MONTHS = {
+    "january": 1, "february": 2, "march": 3, "april": 4,
+    "may": 5, "june": 6, "july": 7, "august": 8,
+    "september": 9, "october": 10, "november": 11, "december": 12,
+}
+
+
+def _extract_explicit_dates(text: str, default_year: int) -> List[date]:
+    out: List[date] = []
+    for y, m, d in re.findall(r"\b(20\d{2})[-./년 ]+([01]?\d)[-./월 ]+([0-3]?\d)", text):
+        try:
+            out.append(date(int(y), int(m), int(d)))
+        except ValueError:
+            pass
+    for m, d in re.findall(r"(?<!\d)([01]?\d)\s*월\s*([0-3]?\d)\s*일", text):
+        try:
+            out.append(date(default_year, int(m), int(d)))
+        except ValueError:
+            pass
+    month_rx = r"\b(" + "|".join(_EN_MONTHS) + r")\s+([0-3]?\d)(?:st|nd|rd|th)?(?:,?\s+(20\d{2}))?"
+    for month, d, y in re.findall(month_rx, text, re.I):
+        try:
+            out.append(date(int(y) if y else default_year, _EN_MONTHS[month.lower()], int(d)))
+        except ValueError:
+            pass
+    for m, d, y in re.findall(r"\b([01]?\d)/([0-3]?\d)/(20\d{2})\b", text):
+        try:
+            out.append(date(int(y), int(m), int(d)))
+        except ValueError:
+            pass
+    return out
+
+
+def _today_stale_date_issues(
+    data: Dict[str, Any], runtime_input: Dict[str, Any]
+) -> List[ValidationIssue]:
+    issues: List[ValidationIssue] = []
+    target = _parse_iso_date(runtime_input.get("target_date"))
+    if target is None:
+        return issues
+    for source_name in ("overnight_us_market", "korea_japan_indices", "macro_indicators"):
+        source = runtime_input.get(source_name)
+        if not isinstance(source, dict):
+            continue
+        as_of = _parse_iso_date(source.get("as_of"))
+        if as_of and (target - as_of).days > 7:
+            issues.append(
+                ValidationIssue(
+                    "stale_feed_date",
+                    f"{source_name}.as_of={as_of.isoformat()} is stale for target_date={target.isoformat()}",
+                    "error",
+                )
+            )
+    blobs: List[str] = [
+        _norm_text(data.get("title", "")),
+        _norm_text(data.get("summary", "")),
+        _norm_text(data.get("market_setup", "")),
+    ]
+    for item in data.get("key_watchpoints", []):
+        if isinstance(item, dict):
+            blobs.append(_norm_text(item.get("headline", "")))
+            blobs.append(_norm_text(item.get("detail", "")))
+    old_mentions = sorted(
+        {
+            d.isoformat()
+            for d in _extract_explicit_dates("\n".join(blobs), target.year)
+            if d != target and (target - d).days > 7
+        }
+    )
+    if old_mentions:
+        issues.append(
+            ValidationIssue(
+                "stale_content_date_conflict",
+                "본문/TOP3에 target_date와 충돌하는 오래된 날짜가 있음: " + ", ".join(old_mentions),
+                "error",
+            )
+        )
+    return issues
+
+
 def _polish_vague_phrase_issues(data: Dict[str, Any]) -> List[ValidationIssue]:
     """느슨한 메타·완충 표현 축소(요약·셋업·TOP3·리스크 대상)."""
     issues: List[ValidationIssue] = []
@@ -1583,6 +1782,8 @@ def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) ->
 
     issues.extend(_forbidden_surface_cliche_issues(data))
     issues.extend(_target_weekday_accuracy_issues(data, runtime_input))
+    issues.extend(_today_required_number_table_issues(data, runtime_input))
+    issues.extend(_today_stale_date_issues(data, runtime_input))
     issues.extend(_polish_vague_phrase_issues(data))
     issues.extend(_hollow_prediction_closure_issues(data))
     issues.extend(_domestic_index_divergence_narrative_issues(data, runtime_input))
@@ -1756,5 +1957,3 @@ def validate_tomorrow_genie(data: Dict[str, Any], runtime_input: Dict[str, Any])
     if has_warning:
         return ValidationResult(result="draft_only", issues=issues)
     return ValidationResult(result="pass", issues=issues)
-
-
