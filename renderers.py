@@ -1071,12 +1071,11 @@ def render_email_html(
     top_img, bottom_img = email_image_slots_html(
         mode, email_asset_base_url, inline_cid_pair=email_inline_cid_pair
     )
-    # Keep delivered baseline order for today_genie: top image first.
     op_block = (
         render_email_operational_box(operational_meta) if operational_meta else ""
     )
     if mode == "today_genie":
-        return _email_wrapper_inner(f"{top_img}{editorial}{op_block}{bottom_img}", "")
+        return _email_wrapper_inner(f"{top_img}{editorial}{bottom_img}{op_block}", "")
     return _email_wrapper_inner(f"{top_img}{editorial}{op_block}{bottom_img}", "")
 
 

@@ -184,7 +184,7 @@ def send_email_if_allowed(result: OrchestrationResult) -> bool:
         subject = marker if not subject else f"{marker} - {subject}"
     validation_result = str(result.response_data.get("validation_result") or "pass")
 
-    # Canonical today_genie handoff send path: rich MIME + CID inline + attachments.
+    # Canonical today_genie handoff send path: rich MIME + CID inline only.
     if mode == "today_genie":
         try:
             from main import build_today_genie_email_html_for_cid_mime_send
@@ -217,16 +217,12 @@ def send_email_if_allowed(result: OrchestrationResult) -> bool:
             (str(top_latest), cid_top, "GENIE_EMAIL_today_genie_top.jpg"),
             (str(bottom_latest), cid_bottom, "GENIE_EMAIL_today_genie_bottom.jpg"),
         ]
-        attach_parts = [
-            (str(top_latest), "GENIE_EMAIL_today_genie_top.jpg"),
-            (str(bottom_latest), "GENIE_EMAIL_today_genie_bottom.jpg"),
-        ]
         os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
         return send_genie_email(
             html_body,
             subject,
             inline_jpeg_parts=inline_parts,
-            attachment_jpeg_parts=attach_parts,
+            attachment_jpeg_parts=[],
         )
 
     html_body = channels.get("email_body_html") or ""
