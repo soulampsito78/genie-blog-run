@@ -677,6 +677,95 @@ def enforce_today_genie_market_snapshot_from_feeds(
     return data
 
 
+def _today_genie_risk_fallbacks_from_feeds(runtime_input: Dict[str, Any]) -> List[Dict[str, str]]:
+    """
+    Build review-safe risk rows from supplied risk feeds when model output is
+    structurally unusable. This does not add new market facts; it only restates
+    the provided risk feed in the required customer-facing shape.
+    """
+    risks = runtime_input.get("risk_factors")
+    if not isinstance(risks, list):
+        risks = []
+
+    fallback: List[Dict[str, str]] = []
+    for item in risks[:4]:
+        if not isinstance(item, dict):
+            continue
+        raw_risk = str(item.get("risk") or "").strip()
+        raw_detail = str(item.get("detail") or "").strip()
+        if not raw_risk or not raw_detail:
+            continue
+        low = raw_risk.lower()
+        if "inflation" in low or "cpi" in low:
+            risk = "인플레이션 경로"
+            detail = "CPI와 금리 재평가가 이어질 수 있어 장 초반 금리·환율 반응을 먼저 확인합니다."
+        elif "geopolitic" in low or "iran" in raw_detail.lower():
+            risk = "지정학 변수"
+            detail = "중동 휴전 관련 뉴스가 위험선호를 흔들 수 있어 헤드라인과 유가 반응을 함께 봅니다."
+        else:
+            risk = raw_risk
+            detail = raw_detail
+        fallback.append({"risk": risk, "detail": detail, "basis": "interpretation"})
+
+    if fallback:
+        return fallback
+
+    return [
+        {
+            "risk": "금리·환율 반응",
+            "detail": "CPI 이후 금리와 원/달러 환율이 같은 방향으로 움직이는지 먼저 확인합니다.",
+            "basis": "interpretation",
+        }
+    ]
+
+
+def stabilize_today_genie_validation_fields(
+    data: Dict[str, Any],
+    runtime_input: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Keep the generated briefing, but make validation-critical structural fields
+    deterministic before the hard gate. This aligns no-send preflight and worker
+    send attempts without weakening validators or publishing policy.
+    """
+    normalized = dict(data)
+
+    risk_rows: List[Dict[str, str]] = []
+    source_risks = data.get("risk_check")
+    if isinstance(source_risks, list):
+        for item in source_risks[:4]:
+            if not isinstance(item, dict):
+                continue
+            risk = str(item.get("risk") or "").strip()
+            detail = str(item.get("detail") or "").strip()
+            if not risk or not detail:
+                continue
+            basis = str(item.get("basis") or "").strip()
+            if basis not in ("fact", "interpretation", "speculation"):
+                basis = "interpretation"
+            risk_rows.append({"risk": risk, "detail": detail, "basis": basis})
+
+    if not risk_rows:
+        risk_rows = _today_genie_risk_fallbacks_from_feeds(runtime_input)
+    normalized["risk_check"] = risk_rows
+
+    closing = str(data.get("closing_message") or "").strip()
+    lecture_tails = (
+        "신중한 접근",
+        "민감한 대응",
+        "주의가 필요",
+        "면밀히 지켜",
+        "주시할 필요",
+        "리스크 관리",
+    )
+    if not closing or any(phrase in closing for phrase in lecture_tails):
+        normalized["closing_message"] = (
+            "오늘은 CPI 이후 금리·환율 반응과 외국인 수급이 같은 방향인지 먼저 확인하겠습니다."
+        )
+
+    return normalized
+
+
 def email_operational_handoff_meta(
     mode: str,
     validation_result: str,
@@ -804,6 +893,7 @@ def generate(job: JobRequest) -> Dict[str, Any]:
     if mode == "today_genie":
         data["hashtags"] = finalize_today_genie_hashtag_list(data, runtime_input)
         data = enforce_today_genie_market_snapshot_from_feeds(data, runtime_input)
+        data = stabilize_today_genie_validation_fields(data, runtime_input)
         validation = validate_today_genie(data, runtime_input)
     else:
         validation = validate_tomorrow_genie(data, runtime_input)
