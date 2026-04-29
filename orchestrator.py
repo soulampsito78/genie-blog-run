@@ -59,6 +59,56 @@ class OrchestrationResult:
         return self.decision.suppress_external
 
 
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _runtime_check_from_api_payload(
+    payload: Dict[str, Any],
+    *,
+    reason_summary: str,
+) -> Dict[str, Any]:
+    detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else {}
+    root_runtime = payload.get("runtime_validation_check")
+    detail_runtime = detail.get("runtime_validation_check")
+    runtime = root_runtime if isinstance(root_runtime, dict) else detail_runtime if isinstance(detail_runtime, dict) else {}
+    root_issues = payload.get("issues")
+    detail_issues = detail.get("issues")
+    issue_details = _as_list(root_issues) if isinstance(root_issues, list) else _as_list(detail_issues)
+    issue_codes: list[str] = []
+    if isinstance(payload.get("issue_codes"), list):
+        issue_codes = [str(x) for x in payload.get("issue_codes")]
+    elif isinstance(detail.get("issue_codes"), list):
+        issue_codes = [str(x) for x in detail.get("issue_codes")]
+    else:
+        issue_codes = [
+            str(item.get("code"))
+            for item in issue_details
+            if isinstance(item, dict) and item.get("code") is not None
+        ]
+    cqw = payload.get("content_quality_warnings")
+    if not isinstance(cqw, list):
+        cqw = detail.get("content_quality_warnings")
+    return {
+        "controlled_test_mode": os.getenv("GENIE_CONTROLLED_TEST_MODE", "").strip().lower()
+        in ("1", "true", "yes"),
+        "controlled_test_target_date": os.getenv("GENIE_CONTROLLED_TEST_TARGET_DATE", "").strip() or None,
+        "target_date": runtime.get("target_date")
+        or (payload.get("runtime_input", {}) if isinstance(payload.get("runtime_input"), dict) else {}).get("target_date")
+        or (detail.get("runtime_input", {}) if isinstance(detail.get("runtime_input"), dict) else {}).get("target_date"),
+        "validation_result": payload.get("validation_result")
+        or detail.get("validation_result")
+        or runtime.get("validation_result"),
+        "workflow_status": payload.get("workflow_status")
+        or detail.get("workflow_status")
+        or runtime.get("workflow_status"),
+        "reason_summary": reason_summary,
+        "issue_codes": issue_codes,
+        "issue_details": issue_details,
+        "content_quality_warnings": _as_list(cqw),
+    }
+
+
 def run_genie_job(mode: str) -> OrchestrationResult:
     """
     Call the Genie API for the given mode, then apply publishing policy.
@@ -133,6 +183,8 @@ def run_genie_job(mode: str) -> OrchestrationResult:
             mode, validation_result, workflow_status, issues, runtime_input
         )
         reason = "ok" if validation_result == "pass" else "review_required"
+        runtime_check = _runtime_check_from_api_payload(data, reason_summary=reason)
+        logger.info("today_genie runtime_check: %s", json.dumps(runtime_check, ensure_ascii=False))
         return OrchestrationResult(
             decision=decision,
             reason_summary=reason,
@@ -146,11 +198,14 @@ def run_genie_job(mode: str) -> OrchestrationResult:
     reason = inner.get("reason", "api_error") if isinstance(inner, dict) else "api_error"
     issues = inner.get("issues", []) if isinstance(inner, dict) else []
     decision = decide_publishing_actions(mode, None, None, issues, None)
+    runtime_check = _runtime_check_from_api_payload(data if isinstance(data, dict) else {}, reason_summary=reason)
+    logger.info("today_genie runtime_check: %s", json.dumps(runtime_check, ensure_ascii=False))
     return OrchestrationResult(
         decision=decision,
         reason_summary=reason,
         response_status=status,
         mode=mode,
+        response_data=data if isinstance(data, dict) else None,
     )
 
 
@@ -171,10 +226,22 @@ def send_email_if_allowed(result: OrchestrationResult) -> bool:
     If policy allows sending email and we have payload, send via email_sender.
     No send on suppress_external or when response_data is missing.
     """
+    payload = result.response_data if isinstance(result.response_data, dict) else {}
+    runtime_check = _runtime_check_from_api_payload(payload, reason_summary=result.reason_summary)
+    send_decision_log = {
+        "send_email": bool(result.decision.send_email),
+        "create_naver_draft": bool(result.decision.create_naver_draft),
+        "suppress_external": bool(result.decision.suppress_external),
+        "reason_summary": result.reason_summary,
+        "issue_codes": runtime_check.get("issue_codes", []),
+        "content_quality_warnings": runtime_check.get("content_quality_warnings", []),
+    }
     if not result.decision.send_email:
+        logger.info("today_genie runtime_send_decision: %s", json.dumps(send_decision_log, ensure_ascii=False))
         logger.info("send_email_if_allowed: skipped (policy send_email=False)")
         return False
     if result.decision.suppress_external:
+        logger.info("today_genie runtime_send_decision: %s", json.dumps(send_decision_log, ensure_ascii=False))
         logger.info("send_email_if_allowed: skipped (suppress_external=True)")
         return False
     if not result.response_data:

@@ -603,6 +603,29 @@ def response_issues(issues: List[Any]) -> List[Dict[str, Any]]:
     ]
 
 
+def _runtime_validation_check_payload(
+    *,
+    runtime_input: Dict[str, Any],
+    validation_result: str,
+    workflow_status: str,
+    issues: List[Any],
+    content_quality_warnings: List[Any],
+) -> Dict[str, Any]:
+    issue_details = response_issues(issues)
+    return {
+        "target_date": runtime_input.get("target_date"),
+        "controlled_test_mode": bool(runtime_input.get("controlled_test_mode")),
+        "controlled_test_target_date": runtime_input.get("target_date")
+        if runtime_input.get("controlled_test_mode")
+        else None,
+        "validation_result": validation_result,
+        "workflow_status": workflow_status,
+        "issue_codes": [item.get("code") for item in issue_details if isinstance(item, dict)],
+        "issue_details": issue_details,
+        "content_quality_warnings": list(content_quality_warnings),
+    }
+
+
 def _fmt_signed_pct(value: Any) -> str:
     if isinstance(value, (int, float)):
         sign = "+" if value > 0 else ""
@@ -981,6 +1004,13 @@ def generate(job: JobRequest) -> Dict[str, Any]:
 
     if validation.result == "block":
         issue_codes = [i.code for i in validation.issues[:8]]
+        runtime_check = _runtime_validation_check_payload(
+            runtime_input=runtime_input,
+            validation_result=validation.result,
+            workflow_status="review_required",
+            issues=validation.issues,
+            content_quality_warnings=list(validation.content_quality_warnings),
+        )
         logger.error(
             "genie_api failure mode=%s reason=validation_block issue_count=%s issue_codes=%s",
             mode,
@@ -993,6 +1023,10 @@ def generate(job: JobRequest) -> Dict[str, Any]:
                 "status": "failed" if mode == "today_genie" else "review_required",
                 "reason": "validation_block",
                 "issues": response_issues(validation.issues),
+                "issue_codes": runtime_check["issue_codes"],
+                "issue_details": runtime_check["issue_details"],
+                "content_quality_warnings": runtime_check["content_quality_warnings"],
+                "runtime_validation_check": runtime_check,
                 "raw_preview": raw_text[:1200],
             },
         )
@@ -1015,13 +1049,23 @@ def generate(job: JobRequest) -> Dict[str, Any]:
         "naver_blog_body_html": naver_body_html,
     }
 
+    runtime_check = _runtime_validation_check_payload(
+        runtime_input=runtime_input,
+        validation_result=validation.result,
+        workflow_status=workflow_status,
+        issues=validation.issues,
+        content_quality_warnings=list(validation.content_quality_warnings),
+    )
     return {
         "status": "ok",
         "type": mode,
         "workflow_status": workflow_status,
         "validation_result": validation.result,
         "issues": response_issues(validation.issues),
+        "issue_codes": runtime_check["issue_codes"],
+        "issue_details": runtime_check["issue_details"],
         "content_quality_warnings": list(validation.content_quality_warnings),
+        "runtime_validation_check": runtime_check,
         "runtime_input": runtime_input,
         "data": {
             **data,
