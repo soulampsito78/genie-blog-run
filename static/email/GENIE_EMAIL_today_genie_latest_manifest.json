@@ -1,23 +1,20 @@
 {
-  "promoted_at": "2026-04-29T11:24:33+09:00",
-  "top_source_path": "output/GENIE_EMAIL_today_genie_top_reverted_shot_20260429_111532.jpg",
-  "bottom_source_path": "output/GENIE_EMAIL_today_genie_bottom_reverted_shot_20260429_111532.jpg",
-  "top_latest_path": "static/email/GENIE_EMAIL_today_genie_top_latest.jpg",
-  "bottom_latest_path": "static/email/GENIE_EMAIL_today_genie_bottom_latest.jpg",
-  "top_sha256": "b1a590aa23686edeb4b96f523165d7258d045dcb2d3aab4f8501b2e3722462d2",
-  "bottom_sha256": "5039c4d94fcd0610e71f78c32144c7b2ac0370cddfc4a1f242c33d1009a5f334",
-  "top_size_bytes": 132804,
-  "bottom_size_bytes": 176501,
-  "top_dimensions": [
-    832,
-    1248
-  ],
-  "bottom_dimensions": [
-    832,
-    1248
-  ],
-  "generation_manifest_source": "output/today_genie_reverted_shot_image_generation_20260429_111532.json",
-  "top_prompt_hash": "a7d3be84645c23a018e786f0e248ae84d68c3a31c077f5ab9c5f60575657dd40",
-  "bottom_prompt_hash": "cc252b98515414e2f2f407e72b611d797653b9ddcb17e4abd4118bfc14f867ed",
-  "note": "reverted shot output promoted to Cloud Run handoff latest assets"
+  "promoted_at": "2026-04-29T17:13:06.961216+09:00",
+  "top_source_path": "/Volumes/DATA_MirAION/Young SeoK Park/git_Genie_Project/genie-blog-run/output/GENIE_EMAIL_today_genie_top_patched_contract_20260429_170639.jpg",
+  "bottom_source_path": "/Volumes/DATA_MirAION/Young SeoK Park/git_Genie_Project/genie-blog-run/output/GENIE_EMAIL_today_genie_bottom_patched_contract_20260429_170639.jpg",
+  "top_latest_path": "/Volumes/DATA_MirAION/Young SeoK Park/git_Genie_Project/genie-blog-run/static/email/GENIE_EMAIL_today_genie_top_latest.jpg",
+  "bottom_latest_path": "/Volumes/DATA_MirAION/Young SeoK Park/git_Genie_Project/genie-blog-run/static/email/GENIE_EMAIL_today_genie_bottom_latest.jpg",
+  "top_sha256": "9a120fc79a72b91f1c1ffd54480f6ffd2d450da970136e8ba89e95f14dc165f8",
+  "bottom_sha256": "d3b92d0a8ab2f012c702a4c71f3cfeb2b298b3fcff0566a144eed0592996150b",
+  "dimensions": {
+    "top": {
+      "width": 832,
+      "height": 1248
+    },
+    "bottom": {
+      "width": 832,
+      "height": 1248
+    }
+  },
+  "note": "operator-approved patched proportion/wardrobe/pose images"
 }
