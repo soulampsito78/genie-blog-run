@@ -65,7 +65,14 @@ def run_genie_job(mode: str) -> OrchestrationResult:
     import urllib.request
 
     url = GENIE_API_URL.rstrip("/") + "/"
-    body = json.dumps({"type": mode}).encode("utf-8")
+    payload: Dict[str, Any] = {"type": mode}
+    controlled_flag = os.getenv("GENIE_CONTROLLED_TEST_MODE", "").strip().lower()
+    controlled_target = os.getenv("GENIE_CONTROLLED_TEST_TARGET_DATE", "").strip()
+    if mode == "today_genie" and controlled_flag in ("1", "true", "yes") and controlled_target:
+        payload["controlled_test_mode"] = True
+        payload["controlled_test_target_date"] = controlled_target
+        logger.info("controlled_test_mode active target_date=%s", controlled_target)
+    body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=body,
@@ -166,6 +173,15 @@ def send_email_if_allowed(result: OrchestrationResult) -> bool:
         str(result.mode or "").strip()
         or str(result.response_data.get("type") or "").strip()
     )
+    runtime_input = result.response_data.get("runtime_input")
+    if (
+        mode == "today_genie"
+        and isinstance(runtime_input, dict)
+        and runtime_input.get("controlled_test_mode")
+    ):
+        target_date = str(runtime_input.get("target_date") or "").strip()
+        marker = f"[GENIE render test] {target_date} Gmail/Naver 비교"
+        subject = marker if not subject else f"{marker} - {subject}"
     validation_result = str(result.response_data.get("validation_result") or "pass")
 
     # Canonical today_genie handoff send path: rich MIME + CID inline + attachments.

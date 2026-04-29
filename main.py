@@ -82,6 +82,14 @@ SUPPORTED_MODES = ["today_genie", "tomorrow_genie"]
 
 class JobRequest(BaseModel):
     type: str = Field(..., description="today_genie or tomorrow_genie")
+    controlled_test_mode: bool = Field(
+        False,
+        description="Explicit one-off controlled test gate; ignored unless true.",
+    )
+    controlled_test_target_date: Optional[str] = Field(
+        None,
+        description="YYYY-MM-DD target date for controlled tests only.",
+    )
 
 
 def init_vertex() -> None:
@@ -254,7 +262,37 @@ def fetch_seoul_weather_forecast(forecast_date: str) -> Dict[str, Any]:
     }
 
 
-def build_runtime_input(mode: str) -> Dict[str, Any]:
+def _valid_iso_date(raw: str) -> bool:
+    try:
+        datetime.strptime(raw, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
+
+
+def _controlled_test_target_date_from_env() -> Optional[str]:
+    flag = os.getenv("GENIE_CONTROLLED_TEST_MODE", "").strip().lower()
+    if flag not in ("1", "true", "yes"):
+        return None
+    target = os.getenv("GENIE_CONTROLLED_TEST_TARGET_DATE", "").strip()
+    if not target or not _valid_iso_date(target):
+        return None
+    return target
+
+
+def _controlled_test_target_date_from_request(job: JobRequest) -> Optional[str]:
+    if not job.controlled_test_mode:
+        return None
+    target = (job.controlled_test_target_date or "").strip()
+    if not target or not _valid_iso_date(target):
+        raise HTTPException(
+            status_code=400,
+            detail="controlled_test_target_date must be YYYY-MM-DD when controlled_test_mode=true",
+        )
+    return target
+
+
+def build_runtime_input(mode: str, controlled_test_target_date: Optional[str] = None) -> Dict[str, Any]:
     kst_now = datetime.now(ZoneInfo("Asia/Seoul"))
     now_kst = kst_now.isoformat()
 
@@ -298,7 +336,11 @@ def build_runtime_input(mode: str) -> Dict[str, Any]:
         else:
             today_genie_feed_gate = "ok"
 
-        today_date = kst_now.date().isoformat()
+        env_controlled_target = _controlled_test_target_date_from_env()
+        today_date = controlled_test_target_date or env_controlled_target or kst_now.date().isoformat()
+        controlled_active = bool(controlled_test_target_date or env_controlled_target)
+        if controlled_active:
+            logger.info("controlled_test_mode active target_date=%s", today_date)
         weather_raw = fetch_seoul_weather_forecast(today_date)
         if not isinstance(weather_raw, dict):
             weather_raw = {}
@@ -318,6 +360,7 @@ def build_runtime_input(mode: str) -> Dict[str, Any]:
             "image_weather_context": image_weather_context,
             "feed_json_decode_failed_envs": decode_failed_envs,
             "today_genie_feed_gate": today_genie_feed_gate,
+            "controlled_test_mode": controlled_active,
         }
 
     if mode == "tomorrow_genie":
@@ -723,7 +766,8 @@ def generate(job: JobRequest) -> Dict[str, Any]:
     if mode not in SUPPORTED_MODES:
         raise HTTPException(status_code=400, detail=f"Unsupported type: {mode}")
 
-    runtime_input = build_runtime_input(mode)
+    controlled_test_target_date = _controlled_test_target_date_from_request(job)
+    runtime_input = build_runtime_input(mode, controlled_test_target_date=controlled_test_target_date)
     if (
         mode == "today_genie"
         and runtime_input.get("today_genie_feed_gate") == "block"
