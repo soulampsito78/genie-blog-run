@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from html import escape as html_escape
+from html import escape as html_escape, unescape as html_unescape
 from typing import Any, Dict, List, Optional, Tuple
 
 # Email: one-line finance discipline (server-owned, not model output)
@@ -332,10 +332,52 @@ def _today_genie_basis_label_ko(basis: Any) -> str:
     return str(basis or "").strip() or "근거"
 
 
-def _safe(text: Any) -> str:
+def _normalize_plain_text(text: Any) -> str:
+    """Decode pre-escaped HTML entities in plain text fields before final escaping."""
     if text is None:
         return ""
-    return html_escape(str(text))
+    return html_unescape(str(text))
+
+
+def _safe(text: Any) -> str:
+    return html_escape(_normalize_plain_text(text))
+
+
+def _split_prose_into_sentences(text: str) -> List[str]:
+    source = text.strip()
+    if not source:
+        return []
+    parts = re.split(r"(?<=[.!?。])(?=\s+|[가-힣A-Za-z])", source)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _market_setup_paragraphs(text: str) -> List[str]:
+    plain = _normalize_plain_text(text).strip()
+    if not plain:
+        return []
+    if "\n\n" in plain:
+        return [p.strip() for p in plain.split("\n\n") if p.strip()]
+    if "\n" in plain:
+        lines = [p.strip() for p in plain.split("\n") if p.strip()]
+        if len(lines) > 1:
+            return lines
+    sentences = _split_prose_into_sentences(plain)
+    if not sentences:
+        return [plain]
+    if len(sentences) <= 3:
+        return [" ".join(sentences)]
+    per = 2 if len(sentences) >= 6 else 3
+    return [" ".join(sentences[i : i + per]) for i in range(0, len(sentences), per)]
+
+
+def _market_setup_html(text: Any) -> str:
+    parts = _market_setup_paragraphs(str(text or ""))
+    if not parts:
+        return ""
+    return "".join(
+        f'<p style="margin:0 0 14px 0;font-size:15px;line-height:1.75;color:#1a1a1a;">{_safe(p)}</p>'
+        for p in parts
+    )
 
 
 def render_web_html(mode: str, data: Dict[str, Any]) -> str:
@@ -634,32 +676,32 @@ def render_email_operational_box(meta: Dict[str, Any]) -> str:
 
 
 def _paragraphs_html(text: Any, compact: bool = False) -> str:
-    raw = _safe(text)
-    if not raw:
+    plain = _normalize_plain_text(text).strip()
+    if not plain:
         return ""
-    if "\n\n" in raw:
-        parts = [p.strip() for p in raw.split("\n\n") if p.strip()]
+    if "\n\n" in plain:
+        parts = [p.strip() for p in plain.split("\n\n") if p.strip()]
     else:
-        parts = [p.strip() for p in raw.split("\n") if p.strip()] or [raw.strip()]
+        parts = [p.strip() for p in plain.split("\n") if p.strip()] or [plain]
     if compact and len(parts) > 3:
         parts = parts[:3]
     return "".join(
-        f'<p style="margin:0 0 14px 0;font-size:15px;line-height:1.75;color:#1a1a1a;">{p}</p>'
+        f'<p style="margin:0 0 14px 0;font-size:15px;line-height:1.75;color:#1a1a1a;">{_safe(p)}</p>'
         for p in parts
     )
 
 
 def _summary_html(text: Any) -> str:
-    raw = _safe(text)
-    if not raw:
+    plain = _normalize_plain_text(text).strip()
+    if not plain:
         return ""
-    if "\n\n" in raw:
-        parts = [p.strip() for p in raw.split("\n\n") if p.strip()]
+    if "\n\n" in plain:
+        parts = [p.strip() for p in plain.split("\n\n") if p.strip()]
     else:
-        parts = [p.strip() for p in raw.split("\n") if p.strip()] or [raw.strip()]
+        parts = [p.strip() for p in plain.split("\n") if p.strip()] or [plain]
     parts = parts[:3]
     return "".join(
-        f'<p style="margin:0 0 14px 0;font-size:16px;line-height:1.7;font-weight:400;color:#1a1a1a;">{p}</p>'
+        f'<p style="margin:0 0 14px 0;font-size:16px;line-height:1.7;font-weight:400;color:#1a1a1a;">{_safe(p)}</p>'
         for p in parts
     )
 
@@ -925,9 +967,9 @@ def _email_summary_body_paragraphs(summary_raw: str, greeting_raw: str) -> List[
 def _build_today_genie_email_editorial_html(data: Dict[str, Any]) -> str:
     """today_genie email body only (no image slots); use email-safe block tags (div/p/ul/li)."""
     title = _safe(data.get("title", ""))
-    summary_raw = _safe(data.get("summary", ""))
-    greeting_raw = _safe(data.get("greeting", ""))
-    paras = _email_summary_body_paragraphs(summary_raw, greeting_raw)
+    summary_plain = _normalize_plain_text(data.get("summary", ""))
+    greeting_plain = _normalize_plain_text(data.get("greeting", ""))
+    paras = _email_summary_body_paragraphs(summary_plain, greeting_plain)
     summary_html = "".join(
         f'<p style="margin:0 0 14px 0;font-size:16px;line-height:1.72;font-weight:400;color:#1a1a1a;">{_safe(p)}</p>'
         for p in paras
@@ -954,7 +996,7 @@ def _build_today_genie_email_editorial_html(data: Dict[str, Any]) -> str:
         for item in data.get("risk_check", [])
         if isinstance(item, dict)
     )
-    market_setup_html = _paragraphs_html(data.get("market_setup", ""))
+    market_setup_html = _market_setup_html(data.get("market_setup", ""))
     market_snapshot_grouped = _today_snapshot_grouped_html(data.get("market_snapshot", []))
     opportunities = "".join(
         '<li style="margin:0 0 12px 0;">'
