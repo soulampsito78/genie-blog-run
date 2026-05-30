@@ -708,86 +708,114 @@ def _hashtags_block_html(mode: str, hashtags: Any) -> str:
     )
 
 
+def _coerce_snapshot_number(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    txt = str(value or "").strip().replace(",", "")
+    if not txt:
+        return None
+    if txt.endswith("%"):
+        txt = txt[:-1]
+    try:
+        return float(txt)
+    except ValueError:
+        return None
+
+
+def _fmt_snapshot_close(value: Any) -> str:
+    num = _coerce_snapshot_number(value)
+    if num is None:
+        return ""
+    return f"{num:.2f}".rstrip("0").rstrip(".")
+
+
+def _fmt_snapshot_change_pct(value: Any) -> str:
+    num = _coerce_snapshot_number(value)
+    if num is None:
+        return ""
+    if num == 0:
+        return "0%"
+    sign = "+" if num > 0 else ""
+    return f"{sign}{num:g}%"
+
+
+def _norm_change_pct(txt: str) -> str:
+    c = str(txt or "").strip()
+    if not c:
+        return c
+    if c.startswith(("+", "-")):
+        return c
+    if re.match(r"^[0-9]+(?:\.[0-9]+)?%$", c):
+        return f"+{c}"
+    return c
+
+
+def _parse_snapshot_value_string(raw: str) -> tuple[str, str]:
+    """Parse index close + change % from the row's own value string (not narrative)."""
+    txt = str(raw or "").strip()
+    if not txt:
+        return "", ""
+    m = re.search(
+        r"([0-9][0-9,]*\.?[0-9]*)\s*(?:\(|/)?\s*([+-]?[0-9]+(?:\.[0-9]+)?%)?",
+        txt,
+    )
+    if m:
+        v = (m.group(1) or "").strip()
+        c = (m.group(2) or "").strip()
+        if v and c:
+            return v, c
+    pct = re.search(r"([+-]?[0-9]+(?:\.[0-9]+)?%)", txt)
+    if pct:
+        return "", pct.group(1).strip()
+    return txt, ""
+
+
+def _snapshot_row_cells(item: Dict[str, Any]) -> tuple[str, str]:
+    """
+    Render cells from structured market_snapshot row fields only.
+    Priority: close / change_pct (+ aliases), then the row's value string.
+    Never reads market_setup or other narrative sources.
+    """
+    close_disp = ""
+    if item.get("close") not in (None, ""):
+        close_disp = _fmt_snapshot_close(item.get("close"))
+
+    pct_disp = ""
+    for key in ("change_pct", "change_percent", "percent_change"):
+        if item.get(key) not in (None, ""):
+            pct_disp = _fmt_snapshot_change_pct(item.get(key))
+            break
+
+    if not close_disp or not pct_disp:
+        parsed_close, parsed_pct = _parse_snapshot_value_string(str(item.get("value") or ""))
+        if not close_disp:
+            close_disp = parsed_close
+        if not pct_disp:
+            pct_disp = _norm_change_pct(parsed_pct)
+
+    return close_disp or "-", pct_disp or "-"
+
+
 def _today_snapshot_grouped_html(snapshot: Any) -> str:
     """Email-safe grouped market snapshot with index value + change columns."""
-    def _parse_value_and_change(raw: str) -> tuple[str, str]:
-        txt = str(raw or "").strip()
-        if not txt:
-            return "", ""
-        # Supports "6816.89 (-0.1%)", "2587.12 / -0.59%", "-0.59%" etc.
-        m = re.search(r"([0-9][0-9,]*\.?[0-9]*)\s*(?:\(|/)?\s*([+-]?[0-9]+(?:\.[0-9]+)?%)?", txt)
-        if m:
-            v = (m.group(1) or "").strip()
-            c = (m.group(2) or "").strip()
-            if v and c:
-                return v, c
-        pct = re.search(r"([+-]?[0-9]+(?:\.[0-9]+)?%)", txt)
-        if pct:
-            return "", pct.group(1).strip()
-        return txt, ""
-
-    def _lift_from_setup(text: Any) -> dict[str, tuple[str, str]]:
-        src = str(text or "")
-        if not src:
-            return {}
-        close_patterns = {
-            "코스피": r"코스피[\s\S]{0,260}?([0-9]{3,}(?:,[0-9]{3})*(?:\.[0-9]+))",
-            "코스닥": r"코스닥[\s\S]{0,260}?([0-9]{3,}(?:,[0-9]{3})*(?:\.[0-9]+))",
-            "S&P 500": r"(?:S&P\s*500|SPX)[\s\S]{0,260}?([0-9]{4,}(?:,[0-9]{3})*(?:\.[0-9]+))",
-            "나스닥": r"나스닥[\s\S]{0,260}?([0-9]{4,}(?:,[0-9]{3})*(?:\.[0-9]+))",
-            "니케이": r"니케이[\s\S]{0,260}?([0-9]{4,}(?:,[0-9]{3})*(?:\.[0-9]+))",
-            "다우존스": r"(?:다우존스|DJI)[\s\S]{0,260}?([0-9]{4,}(?:,[0-9]{3})*(?:\.[0-9]+))",
-        }
-        span_patterns = {
-            "코스피": r"(코스피[\s\S]{0,260})",
-            "코스닥": r"(코스닥[\s\S]{0,260})",
-            "S&P 500": r"((?:S&P\s*500|SPX)[\s\S]{0,260})",
-            "나스닥": r"(나스닥[\s\S]{0,260})",
-            "니케이": r"(니케이[\s\S]{0,260})",
-            "다우존스": r"((?:다우존스|DJI)[\s\S]{0,260})",
-        }
-        out: dict[str, tuple[str, str]] = {}
-        for key, cpat in close_patterns.items():
-            val = ""
-            cm = re.search(cpat, src, re.I)
-            if cm:
-                val = (cm.group(1) or "").strip()
-            seg = ""
-            sm = re.search(span_patterns[key], src, re.I)
-            if sm:
-                seg = sm.group(1) or ""
-            pct_m = re.search(r"([+\-]?[0-9]+(?:\.[0-9]+)?%)", seg)
-            pct = (pct_m.group(1) if pct_m else "").strip()
-            if pct and not pct.startswith(("+", "-")):
-                s = pct_m.start() if pct_m else 0
-                e = pct_m.end() if pct_m else 0
-                ctx = seg[max(0, s - 40): min(len(seg), e + 40)]
-                if re.search(r"(하락|내린|하회|약세|감소)", ctx):
-                    pct = f"-{pct}"
-                elif re.search(r"(상승|오른|강세|증가)", ctx):
-                    pct = f"+{pct}"
-                else:
-                    pct = f"+{pct}"
-            if val or pct:
-                out[key] = (val, pct)
-        return out
-
     if not isinstance(snapshot, list):
         return ""
     rows = []
     for item in snapshot:
         if not isinstance(item, dict):
             continue
-        label_raw = str(item.get("label") or "").strip()
-        value_raw = str(item.get("value") or "").strip()
-        if not label_raw or not value_raw:
+        label_raw = str(item.get("label") or item.get("display_name") or "").strip()
+        if not label_raw:
             continue
-        idx_val, chg = _parse_value_and_change(value_raw)
+        idx_val, chg = _snapshot_row_cells(item)
+        if idx_val == "-" and chg == "-":
+            continue
         rows.append(
             {
                 "label_raw": label_raw,
                 "label_html": _safe(label_raw),
-                "value_html": _safe(value_raw),
                 "index_value": idx_val,
                 "change_pct": chg,
             }
@@ -799,19 +827,9 @@ def _today_snapshot_grouped_html(snapshot: Any) -> str:
     global_order = ("S&P 500", "나스닥", "니케이", "다우존스")
 
     by_label = {
-        r["label_raw"]: (r["label_html"], r["index_value"], r["change_pct"], r["value_html"])
+        r["label_raw"]: (r["label_html"], r["index_value"], r["change_pct"])
         for r in rows
     }
-    lifted = _lift_from_setup(globals().get("_TODAY_EMAIL_MARKET_SETUP_CONTEXT", ""))
-    def _norm_change_pct(txt: str) -> str:
-        c = str(txt or "").strip()
-        if not c:
-            return c
-        if c.startswith(("+", "-")):
-            return c
-        if re.match(r"^[0-9]+(?:\.[0-9]+)?%$", c):
-            return f"+{c}"
-        return c
 
     def render_group(title: str, order: tuple[str, ...]) -> str:
         grp_rows = [k for k in order if k in by_label]
@@ -821,8 +839,8 @@ def _today_snapshot_grouped_html(snapshot: Any) -> str:
             (
                 '<tr>'
                 f'<td style="padding:8px 10px;border-top:1px solid #e2e8f0;font-size:14px;line-height:1.5;color:#334155;font-weight:700;white-space:nowrap;">{by_label[lbl][0]}</td>'
-                f'<td style="padding:8px 10px;border-top:1px solid #e2e8f0;font-size:14px;line-height:1.5;color:#111827;text-align:right;white-space:nowrap;">{_safe((lifted.get(lbl, ("", ""))[0] or by_label[lbl][1] or "-"))}</td>'
-                f'<td style="padding:8px 10px;border-top:1px solid #e2e8f0;font-size:14px;line-height:1.5;color:#111827;text-align:right;white-space:nowrap;">{_safe(_norm_change_pct((lifted.get(lbl, ("", ""))[1] or by_label[lbl][2] or by_label[lbl][3] or "-")))}</td>'
+                f'<td style="padding:8px 10px;border-top:1px solid #e2e8f0;font-size:14px;line-height:1.5;color:#111827;text-align:right;white-space:nowrap;">{_safe(by_label[lbl][1] or "-")}</td>'
+                f'<td style="padding:8px 10px;border-top:1px solid #e2e8f0;font-size:14px;line-height:1.5;color:#111827;text-align:right;white-space:nowrap;">{_safe(_norm_change_pct(by_label[lbl][2] or "-"))}</td>'
                 "</tr>"
             )
             for lbl in grp_rows
@@ -937,8 +955,6 @@ def _build_today_genie_email_editorial_html(data: Dict[str, Any]) -> str:
         if isinstance(item, dict)
     )
     market_setup_html = _paragraphs_html(data.get("market_setup", ""))
-    # Narrow scope: allow snapshot table to lift index value/change from market_setup narrative when snapshot lacks value column.
-    globals()["_TODAY_EMAIL_MARKET_SETUP_CONTEXT"] = str(data.get("market_setup", "") or "")
     market_snapshot_grouped = _today_snapshot_grouped_html(data.get("market_snapshot", []))
     opportunities = "".join(
         '<li style="margin:0 0 12px 0;">'

@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from prompts import (
     build_full_prompt,
     build_top3_extraction_prompt,
+    feed_image_anchor_hints,
     today_genie_json_recovery_suffix,
     today_genie_top3_extract_recovery_suffix,
 )
@@ -51,6 +52,10 @@ import urllib.parse
 import urllib.request
 
 app = FastAPI(title="Genie Project API")
+
+from admin_routes import router as admin_router  # noqa: E402
+
+app.include_router(admin_router)
 
 _static_dir = Path(__file__).resolve().parent / "static"
 if _static_dir.is_dir():
@@ -818,6 +823,65 @@ def _today_genie_risk_fallbacks_from_feeds(runtime_input: Dict[str, Any]) -> Lis
     ]
 
 
+_VAGUE_PHRASE_REPLACEMENTS = (
+    ("방향성을 가늠", "우선 확인할 변수는 금리·환율·수급 흐름"),
+    ("가늠해야 합니다", "우선 확인할 필요가 있습니다"),
+    ("가늠해야 할", "우선 확인할"),
+)
+
+
+def _scrub_vague_phrases(text: str) -> str:
+    out = text
+    for src, dst in _VAGUE_PHRASE_REPLACEMENTS:
+        out = out.replace(src, dst)
+    return out
+
+
+def stabilize_today_genie_vague_phrases(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Deterministic cleanup for validator-blocked vague meta phrases."""
+    normalized = dict(data)
+    for field in ("summary", "market_setup"):
+        val = normalized.get(field)
+        if isinstance(val, str) and val.strip():
+            normalized[field] = _scrub_vague_phrases(val)
+    wps = normalized.get("key_watchpoints")
+    if isinstance(wps, list):
+        patched: List[Any] = []
+        for wp in wps:
+            if not isinstance(wp, dict):
+                patched.append(wp)
+                continue
+            wp2 = dict(wp)
+            for key in ("headline", "detail"):
+                if isinstance(wp2.get(key), str):
+                    wp2[key] = _scrub_vague_phrases(wp2[key])
+            patched.append(wp2)
+        normalized["key_watchpoints"] = patched
+    return normalized
+
+
+def stabilize_today_genie_image_prompt_anchors(
+    data: Dict[str, Any],
+    runtime_input: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Append feed-derived anchor terms to image prompts when the model omitted them."""
+    hints = feed_image_anchor_hints(runtime_input)
+    if not hints:
+        return data
+    normalized = dict(data)
+    for key in ("image_prompt_studio", "image_prompt_outdoor"):
+        prompt = str(normalized.get(key) or "").strip()
+        if not prompt:
+            continue
+        blob = prompt.lower()
+        missing = [h for h in hints if h.lower() not in blob]
+        if not missing:
+            continue
+        tail = " Include subtle visual references to: " + ", ".join(missing) + "."
+        normalized[key] = prompt.rstrip(".") + "." + tail
+    return normalized
+
+
 def stabilize_today_genie_validation_fields(
     data: Dict[str, Any],
     runtime_input: Dict[str, Any],
@@ -827,7 +891,8 @@ def stabilize_today_genie_validation_fields(
     deterministic before the hard gate. This aligns no-send preflight and worker
     send attempts without weakening validators or publishing policy.
     """
-    normalized = dict(data)
+    normalized = stabilize_today_genie_vague_phrases(data)
+    normalized = stabilize_today_genie_image_prompt_anchors(normalized, runtime_input)
 
     risk_rows: List[Dict[str, str]] = []
     source_risks = data.get("risk_check")

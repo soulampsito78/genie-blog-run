@@ -311,6 +311,131 @@ def apply_briefing_repetition_guard(data: Dict[str, Any]) -> None:
                     data["market_setup"] = trimmed_ms
 
 
+_SHORT_CRITICAL_TOKENS = frozenset({"cpi", "fed", "imf", "gdp", "oil", "ust", "ai"})
+
+
+def _significant_headline_tokens(text: str) -> List[str]:
+    n = _norm_one_line(text).lower()
+    n = re.sub(r"[^0-9a-z가-힣\s]", " ", n)
+    tokens = [t for t in n.split() if len(t) >= 4]
+    for t in n.split():
+        if t in _SHORT_CRITICAL_TOKENS and t not in tokens:
+            tokens.append(t)
+    return tokens
+
+
+def _topic_aligns_headline(headline: str, blob: str) -> bool:
+    """Conservative topic rescue aligned with validator bundles (no validators import)."""
+    nh = _norm_one_line(headline).lower()
+    b = blob.lower()
+    if "inflation" in nh or "cpi" in nh:
+        return (
+            "cpi" in b
+            or "물가" in b
+            or "inflation" in b
+            or "인플레" in b
+        )
+    if any(
+        x in nh
+        for x in ("index", "fared", "indexes", "stock", "mixed", "shares", "record")
+    ):
+        return any(
+            x in b
+            for x in (
+                "지수",
+                "나스닥",
+                "다우",
+                "s&p",
+                "sp500",
+                "nasdaq",
+                "dow",
+                "index",
+                "indices",
+                "증시",
+                "혼조",
+                "미국",
+            )
+        )
+    if (
+        "ceasefire" in nh
+        or "iran" in nh
+        or "geopolit" in nh
+        or "middle east" in nh
+        or "mideast" in nh
+    ):
+        return any(
+            x in b
+            for x in (
+                "중동",
+                "지정학",
+                "휴전",
+                "mideast",
+                "middle east",
+                "geopolit",
+                "ceasefire",
+            )
+        )
+    if "nikkei" in nh or "japan" in nh:
+        return "nikkei" in b or "니케이" in b or "japan" in b or "일본" in b
+    if "seoul" in nh or "kospi" in nh:
+        return "seoul" in b or "kospi" in b or "코스피" in b or "서울" in b
+    if re.search(r"\bai\b", nh):
+        return re.search(r"\bai\b", b) is not None
+    return False
+
+
+def _needs_headline_anchor(headline: str, detail: str) -> bool:
+    """True when detail lacks the English headline text needed for validator grounding."""
+    nh = headline.strip()
+    if not nh:
+        return False
+    if nh in detail or nh.lower() in detail.lower():
+        return False
+    if "Input headline anchor:" in detail:
+        return False
+    words = re.findall(r"[A-Za-z][A-Za-z0-9&'./-]{2,}", nh)
+    blob = detail.lower()
+    if words and any(w.lower() in blob for w in words):
+        return False
+    return True
+
+
+def _headline_grounded_in_text(headline: str, text: str) -> bool:
+    """True when assembled text carries enough of the input headline for validation."""
+    if not headline.strip() or not text.strip():
+        return False
+    if not _needs_headline_anchor(headline, text):
+        return True
+    blob = _norm_one_line(text).lower()
+    nh = _norm_one_line(headline).lower()
+    for candidate in (
+        nh,
+        re.sub(r"\s+", " ", re.sub(r"[^\w\s가-힣]", " ", nh)).strip(),
+    ):
+        if len(candidate) >= 14:
+            for ln in (50, 36, 24):
+                frag = candidate[:ln].strip()
+                if len(frag) >= 12 and frag in blob:
+                    return True
+    tokens = _significant_headline_tokens(headline)
+    if tokens:
+        hits = sum(1 for t in tokens[:10] if t in blob)
+        need = 2 if len(tokens) >= 3 else 1
+        if hits >= min(need, len(tokens)):
+            return True
+    return _topic_aligns_headline(headline, blob)
+
+
+def _prepend_headline_anchor(detail: str, headline: str) -> str:
+    nh = headline.strip()
+    if not nh:
+        return detail
+    anchor = f"Input headline anchor: {nh}."
+    if nh.lower() in detail.lower() or anchor.lower() in detail.lower():
+        return detail
+    return f"{anchor} {detail}".strip()
+
+
 def watchpoint_covers_feed_blobs(wp: Dict[str, Any], runtime_input: Dict[str, Any]) -> bool:
     """True if headline+detail visibly reuse tokens from overnight/macro/risk JSON (for synthetic TOP3 slots)."""
     chunks: List[str] = []
@@ -392,5 +517,9 @@ def assemble_key_watchpoints_from_slots(
         if len(hk) > 72:
             hk = hk[:69] + "…"
         detail = _compose_top3_detail(wh, wy, wk, position)
+        if position < len(valid):
+            nh = str(valid[position][1].get("headline") or "").strip()
+            if nh and _needs_headline_anchor(nh, detail):
+                detail = _prepend_headline_anchor(detail, nh)
         result.append({"headline": hk, "detail": detail, "basis": "fact"})
     return result

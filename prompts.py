@@ -396,7 +396,24 @@ def _english_image_anchor_hints(runtime_input: Dict[str, Any]) -> List[str]:
         push("Fed")
     if "gold" in blob:
         push("gold")
+    if "nikkei" in blob:
+        push("Nikkei")
+    if "kospi" in blob:
+        push("KOSPI")
+    if "seoul" in blob:
+        push("Seoul shares")
+    if "mideast" in blob:
+        push("Mideast")
+        if "middle east" not in seen:
+            push("Middle East")
+    if re.search(r"\bai\b", blob) or "ai optimism" in blob:
+        push("AI optimism")
     return hints[:10]
+
+
+def feed_image_anchor_hints(runtime_input: Dict[str, Any]) -> List[str]:
+    """Public wrapper: feed-derived English labels for image prompt stabilization."""
+    return _english_image_anchor_hints(runtime_input)
 
 
 def _surface_closer_steer_block() -> str:
