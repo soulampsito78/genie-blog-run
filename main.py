@@ -22,6 +22,7 @@ from prompts import (
     today_genie_json_recovery_suffix,
     today_genie_top3_extract_recovery_suffix,
 )
+from today_genie_grounding import headline_grounding_anchors
 from today_genie_top3_assembly import (
     apply_briefing_repetition_guard,
     assemble_key_watchpoints_from_slots,
@@ -866,6 +867,19 @@ def stabilize_today_genie_image_prompt_anchors(
 ) -> Dict[str, Any]:
     """Append feed-derived anchor terms to image prompts when the model omitted them."""
     hints = feed_image_anchor_hints(runtime_input)
+    seen = {h.lower() for h in hints}
+    news = runtime_input.get("top_market_news")
+    if isinstance(news, list):
+        for item in news[:3]:
+            if not isinstance(item, dict):
+                continue
+            headline = str(item.get("headline") or "").strip()
+            if not headline:
+                continue
+            for anchor in headline_grounding_anchors(headline):
+                if anchor.lower() not in seen:
+                    hints.append(anchor)
+                    seen.add(anchor.lower())
     if not hints:
         return data
     normalized = dict(data)

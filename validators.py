@@ -16,6 +16,11 @@ from today_genie_top3_assembly import (
     collect_valid_major_overseas_news,
     watchpoint_covers_feed_blobs,
 )
+from today_genie_grounding import (
+    PRIMARY_MARKET_ENTITIES,
+    extract_market_entities,
+    text_covers_headline_entities,
+)
 
 GateResultType = Literal["pass", "draft_only", "block"]
 
@@ -424,7 +429,10 @@ def _significant_tokens(text: str) -> List[str]:
 
 
 def _watchpoint_covers_news_headline(news_headline: str, wp_head: str, wp_detail: str) -> bool:
-    blob = (_norm_text(wp_head) + " " + _norm_text(wp_detail)).lower()
+    blob = _norm_text(wp_head) + " " + _norm_text(wp_detail)
+    if text_covers_headline_entities(blob, news_headline):
+        return True
+    blob_l = blob.lower()
     nh = _norm_text(news_headline).lower()
     for candidate in (
         re.sub(r"\s+", " ", nh).strip(),
@@ -433,12 +441,12 @@ def _watchpoint_covers_news_headline(news_headline: str, wp_head: str, wp_detail
         if len(candidate) >= 14:
             for ln in (50, 36, 24):
                 frag = candidate[:ln].strip()
-                if len(frag) >= 12 and frag in blob:
+                if len(frag) >= 12 and frag in blob_l:
                     return True
     tokens = _significant_tokens(news_headline)
     if not tokens:
-        return len(nh) >= 10 and nh[: min(24, len(nh))] in blob
-    hits = sum(1 for t in tokens[:10] if t in blob)
+        return len(nh) >= 10 and nh[: min(24, len(nh))] in blob_l
+    hits = sum(1 for t in tokens[:10] if t in blob_l)
     need = 2 if len(tokens) >= 3 else 1
     return hits >= min(need, len(tokens))
 
@@ -534,15 +542,21 @@ def _watchpoint_topic_aligns_news_headline(news_headline: str, wp: Dict[str, Any
     nh = _norm_text(news_headline).lower()
     blob = (
         _norm_text(wp.get("headline", "")) + " " + _norm_text(wp.get("detail", ""))
-    ).lower()
+    )
+    if text_covers_headline_entities(blob, news_headline):
+        return True
+    blob_l = blob.lower()
+    headline_primary = extract_market_entities(news_headline) & PRIMARY_MARKET_ENTITIES
+    if len(headline_primary) >= 2:
+        return False
     if not nh:
         return False
     if "inflation" in nh or "cpi" in nh:
         return (
-            "cpi" in blob
-            or "물가" in blob
-            or "인플레" in blob
-            or "inflation" in blob
+            "cpi" in blob_l
+            or "물가" in blob_l
+            or "인플레" in blob_l
+            or "inflation" in blob_l
         )
     if (
         "index" in nh
@@ -551,30 +565,32 @@ def _watchpoint_topic_aligns_news_headline(news_headline: str, wp: Dict[str, Any
         or "stock" in nh
         or "mixed" in nh
     ):
+        if headline_primary:
+            return False
         return (
-            "지수" in blob
-            or "나스닥" in blob
-            or "다우" in blob
-            or "s&p" in blob
-            or "스펜" in blob
-            or "증시" in blob
-            or "nasdaq" in blob
-            or "dow" in blob
-            or "sp500" in blob
-            or "index" in blob
-            or "indices" in blob
-            or "혼조" in blob
-            or "미국" in blob
+            "지수" in blob_l
+            or "나스닥" in blob_l
+            or "다우" in blob_l
+            or "s&p" in blob_l
+            or "스펜" in blob_l
+            or "증시" in blob_l
+            or "nasdaq" in blob_l
+            or "dow" in blob_l
+            or "sp500" in blob_l
+            or "index" in blob_l
+            or "indices" in blob_l
+            or "혼조" in blob_l
+            or "미국" in blob_l
         )
     if "ceasefire" in nh or "iran" in nh or "geopolit" in nh or "middle east" in nh:
         return (
-            "중동" in blob
-            or "지정학" in blob
-            or "휴전" in blob
-            or "외교" in blob
-            or "middle east" in blob
-            or "geopolit" in blob
-            or "ceasefire" in blob
+            "중동" in blob_l
+            or "지정학" in blob_l
+            or "휴전" in blob_l
+            or "외교" in blob_l
+            or "middle east" in blob_l
+            or "geopolit" in blob_l
+            or "ceasefire" in blob_l
         )
     return False
 
@@ -725,6 +741,7 @@ def _validate_image_prompts_news_anchoring(
             continue
         if (
             _text_blob_aligns_news_headline(nh, blob)
+            or text_covers_headline_entities(blob, nh)
             or _watchpoint_topic_aligns_news_headline(nh, {"headline": "", "detail": blob})
             or _soft_image_news_anchor(nh, blob)
         ):
@@ -776,6 +793,9 @@ def _body_underuses_news_when_feeds_full(
             continue
         h = item.get("headline", "")
         if not isinstance(h, str) or not h.strip():
+            continue
+        if text_covers_headline_entities(all_text, h):
+            anchored += 1
             continue
         toks = _significant_tokens(h)[:8]
         if toks:

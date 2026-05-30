@@ -9,10 +9,8 @@ from main import (
     stabilize_today_genie_image_prompt_anchors,
     stabilize_today_genie_vague_phrases,
 )
-from today_genie_top3_assembly import (
-    _headline_grounded_in_text,
-    assemble_key_watchpoints_from_slots,
-)
+from today_genie_grounding import text_covers_headline_entities
+from today_genie_top3_assembly import assemble_key_watchpoints_from_slots
 from validators import (
     _body_underuses_news_when_feeds_full,
     _polish_vague_phrase_issues,
@@ -64,26 +62,36 @@ def _korean_only_slots() -> list[dict]:
 
 
 class TodayGenieGroundingStabilizationTests(unittest.TestCase):
-    def test_korean_only_slots_get_input_headline_anchors(self) -> None:
+    def test_korean_only_slots_get_entity_grounding_anchors(self) -> None:
         ri = _sample_runtime_input()
         wps = assemble_key_watchpoints_from_slots(_korean_only_slots(), ri)
         self.assertEqual(len(wps), 3)
         from today_genie_top3_assembly import collect_valid_major_overseas_news
 
         headlines = [item.get("headline", "") for _, item in collect_valid_major_overseas_news(ri, 3)]
+        sp_nasdaq = "S&P 500 and Nasdaq close at new records, lifted by tech rally"
+        self.assertIn(sp_nasdaq, headlines)
+        slot2 = wps[1]["detail"]
+        self.assertIn("S&P 500", slot2)
+        self.assertIn("Nasdaq", slot2)
+        self.assertIn("원문 지표 기준:", slot2)
         for wp, nh in zip(wps, headlines):
             detail = wp.get("detail", "")
-            self.assertIn("Input headline anchor:", detail)
-            self.assertIn(nh, detail)
-            self.assertTrue(_headline_grounded_in_text(nh, detail))
+            self.assertTrue(text_covers_headline_entities(detail, nh), nh)
 
     def test_conflicting_model_text_does_not_remove_anchor(self) -> None:
         ri = _sample_runtime_input()
         slots = _korean_only_slots()
         slots[0]["what_happened"] = "완전히 다른 이슈만 서술하는 한국어 문장입니다." * 2
         wps = assemble_key_watchpoints_from_slots(slots, ri)
-        nh = ri["top_market_news"][0]["headline"]
-        self.assertIn(nh, wps[0]["detail"])
+        detail = wps[0]["detail"]
+        self.assertIn("원문 지표 기준:", detail)
+        self.assertTrue(
+            text_covers_headline_entities(
+                detail,
+                "Seoul shares close at new high on tech rally, Mideast optimism",
+            )
+        )
 
     def test_top3_validator_clears_after_anchor_injection(self) -> None:
         ri = _sample_runtime_input()
@@ -91,6 +99,14 @@ class TodayGenieGroundingStabilizationTests(unittest.TestCase):
         issues = _validate_top_three_news_briefing(ri, {"key_watchpoints": wps})
         codes = [i.code for i in issues]
         self.assertNotIn("top3_not_grounded_in_input_news", codes)
+
+    def test_sp_nasdaq_slot_passes_validator_specifically(self) -> None:
+        ri = _sample_runtime_input()
+        wps = assemble_key_watchpoints_from_slots(_korean_only_slots(), ri)
+        nh = ri["top_market_news"][1]["headline"]
+        self.assertIn("S&P 500", wps[1]["detail"])
+        self.assertIn("Nasdaq", wps[1]["detail"])
+        self.assertTrue(text_covers_headline_entities(wps[1]["detail"], nh))
 
     def test_image_prompts_receive_feed_anchors_when_missing(self) -> None:
         ri = _sample_runtime_input()
@@ -102,6 +118,7 @@ class TodayGenieGroundingStabilizationTests(unittest.TestCase):
         studio = out["image_prompt_studio"].lower()
         self.assertIn("include subtle visual references to:", studio)
         self.assertIn("nasdaq", studio)
+        self.assertIn("s&p 500", studio)
         issues = _validate_image_prompts_news_anchoring(ri, out)
         codes = [i.code for i in issues]
         self.assertNotIn("image_prompt_underanchored_vs_news", codes)
