@@ -6,6 +6,8 @@ __pycache__/
 # Local secrets (never commit)
 today.env
 tomorrow.env
+today.local.env
+*.local.env
 
 # Generated proof runs, previews, diagnostics, archives (runtime under output/)
 output/

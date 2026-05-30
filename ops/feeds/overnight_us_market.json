@@ -1,41 +1,44 @@
 {
-  "as_of": "2026-04-28",
-  "session": "US cash close (EDT)",
-  "fetched_at": "2026-04-29T07:10:16Z",
-  "verified_at": "2026-04-29T07:15:12Z",
+  "as_of": "2026-05-29",
+  "session": "US cash close (EDT, post-Memorial Day week)",
+  "fetched_at": "2026-05-30T04:30:00Z",
+  "verified_at": "2026-05-30T04:35:00Z",
   "verified_by": "operator_public_source_probe",
   "source_scope": "public_web_collection_probe",
   "indices": {
     "SPX": {
-      "close": 7138.8,
-      "change_pct": -0.49,
+      "close": 7580.06,
+      "change_pts": 16.43,
+      "change_pct": 0.22,
       "source_name": "CNBC",
-      "source_url": "https://www.cnbc.com/quotes/.SPX",
-      "cross_check_url": "https://apnews.com/article/wall-street-stocks-dow-nasdaq-b147717d731d3f7cfaf27a9625715c21",
+      "source_url": "https://www.cnbc.com/2026/05/28/stock-market-today-live-updates.html",
+      "cross_check_url": "https://www.yakimaherald.com/news/nation_and_world/business/how-major-us-stock-indexes-fared-friday-5-29-2026/article_7a0bd478-0439-51fd-a4d7-49ce848e2b57.html",
       "confidence": "high",
       "accuracy_status": "verified",
-      "notes": "Cross-checked against AP close recap."
+      "notes": "Cross-checked against AP syndication close recap for 2026-05-29."
     },
     "NASDAQ": {
-      "close": 24663.8,
-      "change_pct": -0.9,
+      "close": 26972.62,
+      "change_pts": 55.15,
+      "change_pct": 0.2,
       "source_name": "CNBC",
-      "source_url": "https://www.cnbc.com/quotes/.IXIC",
-      "cross_check_url": "https://apnews.com/article/wall-street-stocks-dow-nasdaq-b147717d731d3f7cfaf27a9625715c21",
+      "source_url": "https://www.cnbc.com/2026/05/28/stock-market-today-live-updates.html",
+      "cross_check_url": "https://www.investopedia.com/stock-market-today-dow-jones-s-and-p-500-05292026-11986232",
       "confidence": "high",
       "accuracy_status": "verified",
-      "notes": "Cross-checked against AP close recap."
+      "notes": "Cross-checked against Investopedia May 29 close recap."
     },
     "DJI": {
-      "close": 49141.93,
-      "change_pct": -0.05,
+      "close": 51032.46,
+      "change_pts": 363.49,
+      "change_pct": 0.72,
       "source_name": "CNBC",
-      "source_url": "https://www.cnbc.com/quotes/.DJI",
-      "cross_check_url": "https://apnews.com/article/wall-street-stocks-dow-nasdaq-b147717d731d3f7cfaf27a9625715c21",
+      "source_url": "https://www.cnbc.com/2026/05/28/stock-market-today-live-updates.html",
+      "cross_check_url": "https://www.yakimaherald.com/news/nation_and_world/business/how-major-us-stock-indexes-fared-friday-5-29-2026/article_7a0bd478-0439-51fd-a4d7-49ce848e2b57.html",
       "confidence": "high",
       "accuracy_status": "verified",
-      "notes": "Cross-checked against AP close recap."
+      "notes": "Cross-checked against AP syndication close recap for 2026-05-29."
     }
   },
-  "summary": "Public-source draft only. Not a licensed automated market-data feed."
+  "summary": "US indexes closed at records on 2026-05-29; tech-led gains capped a ninth straight winning week for the S&P 500. Public-source draft only. Not a licensed automated market-data feed."
 }

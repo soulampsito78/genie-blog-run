@@ -14,6 +14,7 @@ KEY_FILES = [
     ("TODAY_GENIE_MACRO_INDICATORS_JSON", "macro_indicators.json"),
     ("TODAY_GENIE_TOP_MARKET_NEWS_JSON", "top_market_news.json"),
     ("TODAY_GENIE_RISK_FACTORS_JSON", "risk_factors.json"),
+    ("TODAY_GENIE_KOREA_JAPAN_INDICES_JSON", "korea_japan_indices.json"),
 ]
 
 

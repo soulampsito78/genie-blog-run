@@ -1,12 +1,22 @@
 [
   {
-    "headline": "US stocks mixed after inflation data; Nasdaq gains on tech",
-    "source": "CNBC",
-    "date": "2026-04-10"
+    "headline": "Seoul shares close at new high on tech rally, Mideast optimism",
+    "source": "Yonhap",
+    "date": "2026-05-29"
   },
   {
-    "headline": "How major US stock indexes fared Friday 4/10/2026",
+    "headline": "S&P 500 and Nasdaq close at new records, lifted by tech rally",
+    "source": "CNBC",
+    "date": "2026-05-29"
+  },
+  {
+    "headline": "Japan's Nikkei scales record peak on Mideast, AI optimism",
+    "source": "The Standard",
+    "date": "2026-05-29"
+  },
+  {
+    "headline": "How major US stock indexes fared Friday 5/29/2026",
     "source": "AP",
-    "date": "2026-04-10"
+    "date": "2026-05-29"
   }
 ]
