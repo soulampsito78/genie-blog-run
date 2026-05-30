@@ -221,6 +221,97 @@ def _controlled_recipients_ok() -> bool:
     return bool(parts) and all(p in _APPROVED_CONTROLLED_IMAGE_REVIEW_EMAILS for p in parts)
 
 
+def _admin_reissue_send_active() -> bool:
+    return os.getenv("GENIE_ADMIN_REISSUE", "").strip().lower() in ("1", "true", "yes")
+
+
+def extract_email_html_for_artifact(result: OrchestrationResult) -> str:
+    """Best-effort email HTML for admin artifact storage (same render path as send)."""
+    if result.response_status != 200 or not isinstance(result.response_data, dict):
+        return ""
+    data = result.response_data.get("data") or {}
+    if not isinstance(data, dict):
+        return ""
+    mode = str(result.mode or result.response_data.get("type") or "").strip()
+    validation_result = str(result.response_data.get("validation_result") or "pass")
+    if mode == "today_genie":
+        try:
+            from main import build_today_genie_email_html_for_cid_mime_send
+
+            return build_today_genie_email_html_for_cid_mime_send(
+                data,
+                validation_result=validation_result,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("extract_email_html_for_artifact today_genie failed: %s", e)
+            return ""
+    channels = data.get("rendered_channels") or {}
+    if isinstance(channels, dict):
+        return str(channels.get("email_body_html") or "")
+    return ""
+
+
+def build_run_artifact_metadata(
+    result: OrchestrationResult,
+    *,
+    run_id: str,
+    email_sent: bool,
+    parent_run_id: str | None = None,
+    reissue_reason: str | None = None,
+) -> Dict[str, Any]:
+    payload = result.response_data if isinstance(result.response_data, dict) else {}
+    runtime_check = _runtime_check_from_api_payload(payload, reason_summary=result.reason_summary)
+    meta: Dict[str, Any] = {
+        "run_id": run_id,
+        "mode": result.mode,
+        "created_at": None,
+        "response_status": result.response_status,
+        "reason_summary": result.reason_summary,
+        "validation_result": payload.get("validation_result") or runtime_check.get("validation_result"),
+        "workflow_status": payload.get("workflow_status") or runtime_check.get("workflow_status"),
+        "email_sent": bool(email_sent),
+        "reissue_count": 0,
+        "parent_run_id": parent_run_id,
+        "reissue_reason": reissue_reason,
+        "policy": {
+            "send_email": bool(result.decision.send_email),
+            "create_naver_draft": bool(result.decision.create_naver_draft),
+            "require_review": bool(result.decision.require_review),
+            "suppress_external": bool(result.decision.suppress_external),
+        },
+        "issue_codes": runtime_check.get("issue_codes", []),
+        "content_quality_warnings": runtime_check.get("content_quality_warnings", []),
+        "target_date": runtime_check.get("target_date"),
+        "admin_reissue": bool(parent_run_id),
+    }
+    return meta
+
+
+def persist_orchestrator_run_artifact(
+    result: OrchestrationResult,
+    email_sent: bool,
+    *,
+    parent_run_id: str | None = None,
+    reissue_reason: str | None = None,
+) -> str:
+    from admin_store import generate_run_id, save_run_artifact
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    mode = str(result.mode or "unknown")
+    run_id = generate_run_id(mode)
+    meta = build_run_artifact_metadata(
+        result,
+        run_id=run_id,
+        email_sent=email_sent,
+        parent_run_id=parent_run_id,
+        reissue_reason=reissue_reason,
+    )
+    meta["created_at"] = datetime.now(ZoneInfo("Asia/Seoul")).isoformat()
+    email_html = extract_email_html_for_artifact(result)
+    return save_run_artifact(meta, email_html=email_html)
+
+
 def send_email_if_allowed(result: OrchestrationResult) -> bool:
     """
     If policy allows sending email and we have payload, send via email_sender.
@@ -236,7 +327,18 @@ def send_email_if_allowed(result: OrchestrationResult) -> bool:
         "issue_codes": runtime_check.get("issue_codes", []),
         "content_quality_warnings": runtime_check.get("content_quality_warnings", []),
     }
-    if not result.decision.send_email:
+    allow_send = bool(result.decision.send_email)
+    if (
+        not allow_send
+        and _admin_reissue_send_active()
+        and result.response_status == 200
+        and not result.decision.suppress_external
+        and result.response_data
+        and _controlled_recipients_ok()
+    ):
+        allow_send = True
+        send_decision_log["admin_reissue_send_override"] = True
+    if not allow_send:
         logger.info("today_genie runtime_send_decision: %s", json.dumps(send_decision_log, ensure_ascii=False))
         logger.info("send_email_if_allowed: skipped (policy send_email=False)")
         return False
@@ -271,6 +373,10 @@ def send_email_if_allowed(result: OrchestrationResult) -> bool:
             )
             return False
     validation_result = str(result.response_data.get("validation_result") or "pass")
+    if _admin_reissue_send_active():
+        drafts = data.get("channel_drafts") or {}
+        base_subj = drafts.get("email_subject") or "(Genie briefing)"
+        subject = f"[GENIE owner reissue] {base_subj}"
 
     # Canonical today_genie handoff send path: rich MIME + CID inline only.
     if mode == "today_genie":
@@ -359,3 +465,42 @@ def create_naver_draft_if_allowed(result: OrchestrationResult) -> bool:
         return False
 
     return create_naver_draft(html_body, title)
+
+
+def execute_orchestrator_run(
+    mode: str,
+    *,
+    parent_run_id: str | None = None,
+    reissue_reason: str | None = None,
+    admin_reissue: bool = False,
+) -> tuple[str, OrchestrationResult, bool]:
+    """
+    Run Genie job, attempt owner-review email, persist admin artifact.
+    Returns (run_id, result, email_sent).
+    """
+    prev_flag = os.environ.get("GENIE_ADMIN_REISSUE")
+    if admin_reissue:
+        os.environ["GENIE_ADMIN_REISSUE"] = "1"
+    try:
+        result = run_genie_job(mode)
+        email_sent = send_email_if_allowed(result)
+        run_id = persist_orchestrator_run_artifact(
+            result,
+            email_sent,
+            parent_run_id=parent_run_id,
+            reissue_reason=reissue_reason,
+        )
+        logger.info(
+            "execute_orchestrator_run: mode=%s run_id=%s email_sent=%s parent_run_id=%s",
+            mode,
+            run_id,
+            email_sent,
+            parent_run_id or "",
+        )
+        return run_id, result, email_sent
+    finally:
+        if admin_reissue:
+            if prev_flag is None:
+                os.environ.pop("GENIE_ADMIN_REISSUE", None)
+            else:
+                os.environ["GENIE_ADMIN_REISSUE"] = prev_flag

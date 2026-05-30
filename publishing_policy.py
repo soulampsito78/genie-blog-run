@@ -46,6 +46,47 @@ FINANCE_SAFETY_CODES = frozenset({
 # Critical today_genie inputs: if either is missing, no auto email.
 CRITICAL_TODAY_INPUTS = ("overnight_us_market", "macro_indicators")
 
+# Owner/internal review recipients only (not customer delivery).
+OWNER_REVIEW_EMAIL_ALLOWLIST = frozenset(
+    {
+        "soulampsito@gmail.com",
+        "ey2133@naver.com",
+    }
+)
+
+
+def _owner_review_send_gate_active() -> bool:
+    return os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _owner_recipients_only() -> bool:
+    raw = os.getenv("EMAIL_TO", "")
+    parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    return bool(parts) and all(p in OWNER_REVIEW_EMAIL_ALLOWLIST for p in parts)
+
+
+def _today_draft_only_owner_review_send_allowed(
+    issues: List[Dict[str, Any]],
+    runtime_input: Optional[Dict[str, Any]],
+) -> bool:
+    """
+    Scheduled/manual owner-review email for today_genie draft_only / review_required.
+    Requires explicit GENIE_OWNER_REVIEW_SEND=1 and owner-only EMAIL_TO.
+    """
+    if not _owner_review_send_gate_active():
+        return False
+    if _critical_today_inputs_missing(runtime_input):
+        return False
+    if _has_finance_safety_issue(issues):
+        return False
+    if not _owner_recipients_only():
+        return False
+    return True
+
 
 def _has_finance_safety_issue(issues: List[Dict[str, Any]]) -> bool:
     if not issues:
@@ -73,8 +114,8 @@ def _critical_today_inputs_missing(runtime_input: Optional[Dict[str, Any]]) -> b
 
 # today_genie number table: structure/accuracy_fail codes in FINANCE_SAFETY_CODES suppress
 # distribution. number_table_accuracy_not_verified is a warning → validation draft_only;
-# production email send requires validation_result pass; controlled image-review may
-# still send on draft_only when GENIE_CONTROLLED_TEST_MODE is active (see below).
+# production email send requires validation_result pass unless GENIE_OWNER_REVIEW_SEND=1
+# (owner-only EMAIL_TO) or controlled-test mode is active (see below).
 
 
 def decide_publishing_actions(
@@ -124,16 +165,18 @@ def decide_publishing_actions(
     if mode == "today_genie":
         critical_missing = _critical_today_inputs_missing(runtime_input)
         if result == "draft_only":
-            # Controlled internal image-review: editorial warnings only → allow send
-            # when finance-safety / critical-input hard gates are clear.
-            if (
+            controlled_send = (
                 _controlled_test_send_active()
                 and not critical_missing
                 and not _has_finance_safety_issue(issues)
-            ):
+            )
+            owner_review_send = _today_draft_only_owner_review_send_allowed(
+                issues, runtime_input
+            )
+            if controlled_send or owner_review_send:
                 return PublishingDecision(
                     send_email=True,
-                    create_naver_draft=True,
+                    create_naver_draft=bool(controlled_send),
                     auto_publish=False,
                     require_review=True,
                     suppress_external=False,

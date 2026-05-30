@@ -15,6 +15,7 @@ from orchestrator import (
     run_genie_job,
     send_email_if_allowed,
     create_naver_draft_if_allowed,
+    persist_orchestrator_run_artifact,
 )
 
 logging.basicConfig(
@@ -45,12 +46,19 @@ def main() -> int:
     email_sent = send_email_if_allowed(result)
     naver_draft_created = create_naver_draft_if_allowed(result)
 
+    run_id = ""
+    try:
+        run_id = persist_orchestrator_run_artifact(result, email_sent)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("run_orchestrator: failed to persist admin artifact: %s", exc)
+
     logger.info(
-        "run_orchestrator: mode=%s reason_summary=%s email_sent=%s naver_draft_created=%s",
+        "run_orchestrator: mode=%s reason_summary=%s email_sent=%s naver_draft_created=%s run_id=%s",
         mode,
         result.reason_summary,
         email_sent,
         naver_draft_created,
+        run_id or "(none)",
     )
 
     # Exit 1: request failed, API error, or policy suppresses distribution.
