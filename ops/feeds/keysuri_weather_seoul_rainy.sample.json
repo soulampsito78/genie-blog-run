@@ -1,0 +1,16 @@
+{
+  "_fixture_note": "Staged offline Seoul weather only — not live API data.",
+  "location": "Seoul",
+  "timezone": "Asia/Seoul",
+  "weather_date": "2026-06-04",
+  "observed_or_forecast_time_kst": "16:00",
+  "weather_condition": "rainy",
+  "temperature_c": 18,
+  "feels_like_c": 18,
+  "precipitation_probability": 85,
+  "humidity_percent": 78,
+  "fine_dust_level": "good",
+  "source_mode": "offline_fixture",
+  "source_label": "GENIE staged sample weather fixture",
+  "notes": "Rainy Seoul sample for offline Kee-Suri visual prompts."
+}
