@@ -1,0 +1,124 @@
+{
+  "program_id": "keysuri_korea_tech",
+  "news_scope": "korea",
+  "section_heading": "국내 테크 TOP 5",
+  "generated_status": "generated_review_required",
+  "operational_status": "review_required",
+  "top_5_news": {
+    "news_scope": "korea",
+    "section_heading": "국내 테크 TOP 5",
+    "items": [
+      {
+        "rank": 1,
+        "news_id": "korea-claim-policy-support",
+        "headline": "AI startup support eligibility expanded",
+        "category": "policy",
+        "summary": "Staged official example on support program criteria (sample only).",
+        "why_it_matters": "Eligibility changes can unlock non-dilutive runway for domestic AI teams.",
+        "business_implication": "Founders should map revised criteria to application timelines.",
+        "source_ids": [
+          "korea-t0-policy-official"
+        ],
+        "confidence_label": "confirmed"
+      },
+      {
+        "rank": 2,
+        "news_id": "korea-claim-business-opportunity",
+        "headline": "Vendor onboarding opportunities may widen",
+        "category": "business_opportunity",
+        "summary": "Staged interpretation across wire and press examples.",
+        "why_it_matters": "Combined platform and startup momentum affects GTM sequencing.",
+        "business_implication": "Operators should evaluate co-sell paths with domestic platforms.",
+        "source_ids": [
+          "korea-t2-startup-wire",
+          "korea-t3-platform-press"
+        ],
+        "confidence_label": "reported"
+      },
+      {
+        "rank": 3,
+        "news_id": "korea-claim-procurement",
+        "headline": "Public-sector AI procurement calendar update",
+        "category": "procurement",
+        "summary": "Staged wire example on procurement timelines (not live verified).",
+        "why_it_matters": "Procurement calendars drive B2G revenue timing for AI vendors.",
+        "business_implication": "Vendors should prepare compliance docs ahead of bid windows.",
+        "source_ids": [
+          "korea-t2-procurement-wire"
+        ],
+        "confidence_label": "reported"
+      },
+      {
+        "rank": 4,
+        "news_id": "korea-claim-public-support",
+        "headline": "R&D voucher window timing update",
+        "category": "public_support",
+        "summary": "Staged example on public support voucher calendar.",
+        "why_it_matters": "Support windows affect hiring and capex planning.",
+        "business_implication": "Teams should align spend with voucher eligibility periods.",
+        "source_ids": [
+          "korea-t2-support-wire"
+        ],
+        "confidence_label": "reported"
+      },
+      {
+        "rank": 5,
+        "news_id": "korea-claim-startup-partnership",
+        "headline": "Domestic AI startups expand platform deals",
+        "category": "startup",
+        "summary": "Staged wire example on startup-platform partnerships.",
+        "why_it_matters": "Partnership density signals ecosystem maturation.",
+        "business_implication": "Platform-native AI vendors may accelerate domestic GTM.",
+        "source_ids": [
+          "korea-t2-startup-wire"
+        ],
+        "confidence_label": "reported"
+      }
+    ]
+  },
+  "deep_dive": {
+    "section_heading": "키수리의 딥-다이브",
+    "body": "국내 staged 신호는 지원·조달·플랫폼·스타트업 파트너십이 겹치는 구간입니다. 테크 비서 키수리는 대표·실무자가 비희석 자금·B2G·플랫폼 GTM을 동시에 점검할 수 있도록 정리했습니다. 본 문안은 Gemini 생성 샘플이며 live fetch 결과가 아닙니다.",
+    "key_implications": [
+      "공공 지원·조달 캘린더를 먼저 맞추면 채용·CAPEX 타이밍 리스크를 줄일 수 있습니다.",
+      "플랫폼·스타트업 제휴 밀도가 높아지면 국내 GTM은 co-sell 중심으로 재설계할 여지가 있습니다.",
+      "정책 eligibility 변경은 신청 창구·서류 준비를 즉시 점검해야 합니다."
+    ],
+    "source_ids": [
+      "korea-t0-policy-official",
+      "korea-t2-procurement-wire"
+    ],
+    "confidence_label": "reported"
+  },
+  "one_line_checkpoint": {
+    "section_heading": "원-라인 체크포인트",
+    "body": "국내 테크 비서 체크포인트: 지원·조달·플랫폼 신호를 staged TOP 5로 묶었습니다. 고객 발송 전 review_required 상태입니다."
+  },
+  "closing_sources": {
+    "section_heading": "마무리 및 출처 리스트",
+    "closing_message": "staged TOP 5 기준 국내 지원·조달·플랫폼 신호를 프라이빗 비서 관점에서 요약했습니다. 최종 고객 발송 전입니다.",
+    "source_list": [
+      {
+        "source_id": "korea-t0-policy-official",
+        "label": "Example Korea AI Support Policy Notice",
+        "url": "https://example.com/source/korea-policy-official",
+        "tier": "T0_OFFICIAL_PRIMARY",
+        "note": "staged sample"
+      },
+      {
+        "source_id": "korea-t2-procurement-wire",
+        "label": "Example Korea Public Procurement Wire",
+        "url": "https://example.com/source/korea-procurement-wire",
+        "tier": "T2_TIER1_WIRE",
+        "note": "staged sample"
+      },
+      {
+        "source_id": "korea-t2-startup-wire",
+        "label": "Example Korea Startup Wire",
+        "url": "https://example.com/source/korea-startup-wire",
+        "tier": "T2_TIER1_WIRE",
+        "note": "staged sample"
+      }
+    ]
+  }
+}
