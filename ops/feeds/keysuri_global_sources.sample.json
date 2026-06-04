@@ -1,7 +1,7 @@
 {
   "program_id": "keysuri_global_tech",
   "generated_at": "2026-06-04T11:00:00+09:00",
-  "notes": "Sample staged source pack for Kee-Suri global tech briefing (example URLs only).",
+  "notes": "Staged sample source pack only — example.com URLs, not live fetched production data. Do not treat as verified current news.",
   "sources": [
     {
       "source_id": "global-t0-ai-official",
@@ -24,6 +24,16 @@
       "snippet": "Wire report on HBM and advanced packaging supply chain."
     },
     {
+      "source_id": "global-t2-bigtech-wire",
+      "source_name": "Example Tier-1 Wire Big Tech Desk",
+      "source_url": "https://example.com/source/global-bigtech-wire",
+      "source_tier": "T2_TIER1_WIRE",
+      "fetched_at": "2026-06-04T10:42:00+09:00",
+      "title": "Example hyperscaler capex commentary",
+      "publisher": "Example Wire",
+      "snippet": "Wire recap of AI-weighted capex signals from major platforms."
+    },
+    {
       "source_id": "global-t3-platform-press",
       "source_name": "Example Quality Press Platform Policy",
       "source_url": "https://example.com/source/global-platform-policy-press",
@@ -32,6 +42,26 @@
       "title": "Platform policy update may shift developer monetization",
       "publisher": "Example Tech Press",
       "snippet": "Analysis of app store policy changes and developer economics."
+    },
+    {
+      "source_id": "global-t3-policy-press",
+      "source_name": "Example Quality Press AI Policy",
+      "source_url": "https://example.com/source/global-policy-press",
+      "source_tier": "T3_QUALITY_PRESS",
+      "fetched_at": "2026-06-04T10:52:00+09:00",
+      "title": "Example draft AI governance framework discussion",
+      "publisher": "Example Tech Press",
+      "snippet": "Press summary of cross-border AI governance coordination themes."
+    },
+    {
+      "source_id": "global-t2-market-wire",
+      "source_name": "Example Tier-1 Wire Market Signal Desk",
+      "source_url": "https://example.com/source/global-market-wire",
+      "source_tier": "T2_TIER1_WIRE",
+      "fetched_at": "2026-06-04T10:48:00+09:00",
+      "title": "Example enterprise AI adoption survey recap",
+      "publisher": "Example Wire",
+      "snippet": "Wire-style staged recap of enterprise AI adoption survey themes."
     }
   ],
   "claims": [
@@ -40,28 +70,84 @@
       "statement": "Example Corp confirmed a new enterprise AI inference tier with lower latency.",
       "claim_type": "product_spec",
       "source_ids": ["global-t0-ai-official"],
-      "confidence_label": "confirmed"
+      "confidence_label": "confirmed",
+      "category": "ai_product",
+      "headline": "Example Corp enterprise AI inference tier update",
+      "summary": "Staged official example notes lower-latency enterprise inference tier.",
+      "why_it_matters": "Latency improvements can shift enterprise procurement evaluation cycles.",
+      "business_implication": "B2B AI vendors with inference optimization may gain near-term pipeline advantage."
     },
     {
       "claim_id": "global-claim-semi-demand",
-      "statement": "Wire sources report advanced packaging demand remains elevated for AI accelerators.",
-      "claim_type": "numeric",
+      "statement": "Wire-style example reports advanced packaging demand remains elevated for AI accelerators.",
+      "claim_type": "general",
       "source_ids": ["global-t2-semi-wire"],
-      "confidence_label": "reported"
+      "confidence_label": "reported",
+      "category": "semiconductor",
+      "headline": "Advanced packaging demand stays firm for AI accelerators",
+      "summary": "Staged wire example cites sustained packaging demand for AI hardware.",
+      "why_it_matters": "Supply chain bottlenecks can shift capex and vendor selection.",
+      "business_implication": "Packaging and equipment suppliers may see extended order visibility."
+    },
+    {
+      "claim_id": "global-claim-bigtech-capex",
+      "statement": "Wire-style example highlights AI-weighted capex commentary from major platforms.",
+      "claim_type": "general",
+      "source_ids": ["global-t2-bigtech-wire"],
+      "confidence_label": "reported",
+      "category": "bigtech",
+      "headline": "Big-tech capex signals remain AI-weighted",
+      "summary": "Staged wire example summarizes hyperscaler AI spend tone.",
+      "why_it_matters": "Capex tone guides supplier expectations across cloud and chip ecosystems.",
+      "business_implication": "Infrastructure vendors should track hyperscaler spend commentary for demand cues."
     },
     {
       "claim_id": "global-claim-platform-policy",
-      "statement": "Quality press reports platform policy changes may affect developer revenue share.",
+      "statement": "Quality press example reports platform policy changes may affect developer revenue share.",
       "claim_type": "law_policy",
       "source_ids": ["global-t3-platform-press"],
-      "confidence_label": "reported"
+      "confidence_label": "reported",
+      "category": "platform",
+      "headline": "Platform policy shift may alter developer monetization",
+      "summary": "Staged press example on app store policy and developer economics.",
+      "why_it_matters": "Platform fee changes can reshape indie and mid-size AI app economics.",
+      "business_implication": "Developers may need alternate distribution or pricing models."
+    },
+    {
+      "claim_id": "global-claim-ai-policy",
+      "statement": "Press example summarizes staged cross-border AI governance coordination themes.",
+      "claim_type": "law_policy",
+      "source_ids": ["global-t3-policy-press"],
+      "confidence_label": "reported",
+      "category": "policy",
+      "headline": "AI governance coordination themes in focus",
+      "summary": "Staged quality press example on AI policy coordination (not live verified).",
+      "why_it_matters": "Policy coordination can affect compliance cost curves for global AI vendors.",
+      "business_implication": "Operators should map policy timelines to product launch dependencies."
+    },
+    {
+      "claim_id": "global-claim-market-signal",
+      "statement": "Wire example recaps staged enterprise AI adoption survey themes.",
+      "claim_type": "general",
+      "source_ids": ["global-t2-market-wire"],
+      "confidence_label": "reported",
+      "category": "market_signal",
+      "headline": "Enterprise AI adoption survey themes recap",
+      "summary": "Staged wire example on enterprise adoption sentiment (sample only).",
+      "why_it_matters": "Adoption sentiment influences hiring and tooling budget allocation.",
+      "business_implication": "Enterprise SaaS teams may adjust GTM toward proven ROI narratives."
     },
     {
       "claim_id": "global-claim-business-opportunity",
-      "statement": "Enterprise AI tooling vendors may see expanded procurement windows as latency improves.",
+      "statement": "Staged interpretation links inference gains to wider enterprise procurement windows.",
       "claim_type": "interpretation",
-      "source_ids": ["global-t0-ai-official", "global-t2-semi-wire"],
-      "confidence_label": "reported"
+      "source_ids": ["global-t0-ai-official", "global-t2-market-wire"],
+      "confidence_label": "reported",
+      "category": "business_opportunity",
+      "headline": "Enterprise procurement windows may widen",
+      "summary": "Staged example interpretation across official and wire sources.",
+      "why_it_matters": "Timing shifts in enterprise evaluation affect Q3-Q4 conversion.",
+      "business_implication": "Solution sellers should prepare ROI narratives around latency gains."
     }
   ]
 }

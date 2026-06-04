@@ -1,7 +1,7 @@
 {
   "program_id": "keysuri_korea_tech",
   "generated_at": "2026-06-04T17:00:00+09:00",
-  "notes": "Sample staged source pack for Kee-Suri Korea tech briefing (example URLs only).",
+  "notes": "Staged sample source pack only — example.com URLs, not live fetched production data. Do not treat as verified current news.",
   "sources": [
     {
       "source_id": "korea-t0-policy-official",
@@ -32,29 +32,122 @@
       "title": "Local platform operators adjust AI marketplace fees",
       "publisher": "Example Korea Tech Press",
       "snippet": "Press analysis of domestic platform fee and support policy shifts."
+    },
+    {
+      "source_id": "korea-t2-procurement-wire",
+      "source_name": "Example Korea Public Procurement Wire",
+      "source_url": "https://example.com/source/korea-procurement-wire",
+      "source_tier": "T2_TIER1_WIRE",
+      "fetched_at": "2026-06-04T16:42:00+09:00",
+      "title": "Example public-sector AI procurement calendar update",
+      "publisher": "Example Korea Wire",
+      "snippet": "Staged wire example on public-sector AI procurement timelines."
+    },
+    {
+      "source_id": "korea-t3-enterprise-press",
+      "source_name": "Example Korea Enterprise Press",
+      "source_url": "https://example.com/source/korea-enterprise-press",
+      "source_tier": "T3_QUALITY_PRESS",
+      "fetched_at": "2026-06-04T16:47:00+09:00",
+      "title": "Domestic enterprise AI adoption pilot programs expand",
+      "publisher": "Example Korea Tech Press",
+      "snippet": "Press example on enterprise adoption pilots (staged sample)."
+    },
+    {
+      "source_id": "korea-t2-support-wire",
+      "source_name": "Example Korea Support Program Wire",
+      "source_url": "https://example.com/source/korea-support-wire",
+      "source_tier": "T2_TIER1_WIRE",
+      "fetched_at": "2026-06-04T16:43:00+09:00",
+      "title": "Example R&D voucher window opens for AI startups",
+      "publisher": "Example Korea Wire",
+      "snippet": "Staged wire example on R&D support voucher timing."
     }
   ],
   "claims": [
     {
       "claim_id": "korea-claim-policy-support",
-      "statement": "Official notice confirms expanded AI startup support program eligibility criteria.",
+      "statement": "Official example notice confirms expanded AI startup support program eligibility criteria.",
       "claim_type": "law_policy",
       "source_ids": ["korea-t0-policy-official"],
-      "confidence_label": "confirmed"
+      "confidence_label": "confirmed",
+      "category": "policy",
+      "headline": "AI startup support eligibility expanded",
+      "summary": "Staged official example on support program criteria (sample only).",
+      "why_it_matters": "Eligibility changes can unlock non-dilutive runway for domestic AI teams.",
+      "business_implication": "Founders should map revised criteria to application timelines."
     },
     {
       "claim_id": "korea-claim-startup-partnership",
-      "statement": "Wire sources report domestic AI startups are expanding platform partnerships.",
+      "statement": "Wire example reports domestic AI startups expanding platform partnerships.",
       "claim_type": "general",
       "source_ids": ["korea-t2-startup-wire"],
-      "confidence_label": "reported"
+      "confidence_label": "reported",
+      "category": "startup",
+      "headline": "Domestic AI startups expand platform deals",
+      "summary": "Staged wire example on startup-platform partnerships.",
+      "why_it_matters": "Partnership density signals ecosystem maturation.",
+      "business_implication": "Platform-native AI vendors may accelerate domestic GTM."
+    },
+    {
+      "claim_id": "korea-claim-public-support",
+      "statement": "Wire example notes staged R&D voucher window timing for AI startups.",
+      "claim_type": "general",
+      "source_ids": ["korea-t2-support-wire"],
+      "confidence_label": "reported",
+      "category": "public_support",
+      "headline": "R&D voucher window timing update",
+      "summary": "Staged example on public support voucher calendar.",
+      "why_it_matters": "Support windows affect hiring and capex planning.",
+      "business_implication": "Teams should align spend with voucher eligibility periods."
+    },
+    {
+      "claim_id": "korea-claim-procurement",
+      "statement": "Wire example summarizes staged public-sector AI procurement calendar updates.",
+      "claim_type": "general",
+      "source_ids": ["korea-t2-procurement-wire"],
+      "confidence_label": "reported",
+      "category": "procurement",
+      "headline": "Public-sector AI procurement calendar update",
+      "summary": "Staged wire example on procurement timelines (not live verified).",
+      "why_it_matters": "Procurement calendars drive B2G revenue timing for AI vendors.",
+      "business_implication": "Vendors should prepare compliance docs ahead of bid windows."
     },
     {
       "claim_id": "korea-claim-platform-opportunity",
-      "statement": "Quality press reports local platform fee adjustments may create vendor onboarding opportunities.",
+      "statement": "Press example describes domestic AI marketplace fee adjustments.",
+      "claim_type": "law_policy",
+      "source_ids": ["korea-t3-platform-press"],
+      "confidence_label": "reported",
+      "category": "platform",
+      "headline": "Domestic platform fee adjustments in focus",
+      "summary": "Staged press example on marketplace fee shifts.",
+      "why_it_matters": "Fee shifts can change unit economics for marketplace AI vendors.",
+      "business_implication": "SaaS vendors should reassess domestic platform fee stacks."
+    },
+    {
+      "claim_id": "korea-claim-enterprise-adoption",
+      "statement": "Press example notes staged domestic enterprise AI adoption pilot expansion.",
+      "claim_type": "general",
+      "source_ids": ["korea-t3-enterprise-press"],
+      "confidence_label": "reported",
+      "category": "enterprise_adoption",
+      "headline": "Enterprise AI adoption pilots expand",
+      "summary": "Staged press example on enterprise pilot programs.",
+      "why_it_matters": "Pilot expansion signals enterprise readiness for production rollouts.",
+      "business_implication": "B2B sellers should target pilot-to-production conversion plays."
+    },
+    {
+      "claim_id": "korea-claim-business-opportunity",
+      "statement": "Staged interpretation links platform and startup signals to vendor onboarding openings.",
       "claim_type": "interpretation",
-      "source_ids": ["korea-t3-platform-press", "korea-t2-startup-wire"],
-      "confidence_label": "reported"
+      "source_ids": ["korea-t2-startup-wire", "korea-t3-platform-press"],
+      "confidence_label": "reported",
+      "category": "business_opportunity",
+      "headline": "Vendor onboarding opportunities may widen",
+      "summary": "Staged interpretation across wire and press examples.",
+      "why_it_matters": "Combined platform and startup momentum affects GTM sequencing.",
+      "business_implication": "Operators should evaluate co-sell paths with domestic platforms."
     }
   ]
 }

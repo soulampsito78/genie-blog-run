@@ -1,0 +1,383 @@
+{
+  "_fixture_note": "Staged sample prompt input only — aligned with build_keysuri_prompt_input; not live production data.",
+  "program_id": "keysuri_korea_tech",
+  "prompt_profile": "keysuri_korea_tech_v1",
+  "output_contract": "keysuri_private_briefing_v1",
+  "news_scope": "korea",
+  "section_heading": "국내 테크 TOP 5",
+  "source_pack": {
+    "program_id": "keysuri_korea_tech",
+    "generated_at": "2026-06-04T17:00:00+09:00",
+    "notes": "Staged sample source pack only — example.com URLs, not live fetched production data. Do not treat as verified current news.",
+    "sources": [
+      {
+        "source_id": "korea-t0-policy-official",
+        "source_name": "Example Korea AI Support Policy Notice",
+        "source_url": "https://example.com/source/korea-policy-official",
+        "source_tier": "T0_OFFICIAL_PRIMARY",
+        "fetched_at": "2026-06-04T16:30:00+09:00",
+        "title": "Example ministry announces AI startup support program criteria",
+        "publisher": "Example Ministry",
+        "snippet": "Official notice on eligibility and application windows."
+      },
+      {
+        "source_id": "korea-t2-startup-wire",
+        "source_name": "Example Korea Startup Wire",
+        "source_url": "https://example.com/source/korea-startup-wire",
+        "source_tier": "T2_TIER1_WIRE",
+        "fetched_at": "2026-06-04T16:40:00+09:00",
+        "title": "Domestic AI startups expand platform partnerships",
+        "publisher": "Example Korea Wire",
+        "snippet": "Wire coverage of domestic AI startup ecosystem activity."
+      },
+      {
+        "source_id": "korea-t3-platform-press",
+        "source_name": "Example Korea Platform Press",
+        "source_url": "https://example.com/source/korea-platform-press",
+        "source_tier": "T3_QUALITY_PRESS",
+        "fetched_at": "2026-06-04T16:45:00+09:00",
+        "title": "Local platform operators adjust AI marketplace fees",
+        "publisher": "Example Korea Tech Press",
+        "snippet": "Press analysis of domestic platform fee and support policy shifts."
+      },
+      {
+        "source_id": "korea-t2-procurement-wire",
+        "source_name": "Example Korea Public Procurement Wire",
+        "source_url": "https://example.com/source/korea-procurement-wire",
+        "source_tier": "T2_TIER1_WIRE",
+        "fetched_at": "2026-06-04T16:42:00+09:00",
+        "title": "Example public-sector AI procurement calendar update",
+        "publisher": "Example Korea Wire",
+        "snippet": "Staged wire example on public-sector AI procurement timelines."
+      },
+      {
+        "source_id": "korea-t3-enterprise-press",
+        "source_name": "Example Korea Enterprise Press",
+        "source_url": "https://example.com/source/korea-enterprise-press",
+        "source_tier": "T3_QUALITY_PRESS",
+        "fetched_at": "2026-06-04T16:47:00+09:00",
+        "title": "Domestic enterprise AI adoption pilot programs expand",
+        "publisher": "Example Korea Tech Press",
+        "snippet": "Press example on enterprise adoption pilots (staged sample)."
+      },
+      {
+        "source_id": "korea-t2-support-wire",
+        "source_name": "Example Korea Support Program Wire",
+        "source_url": "https://example.com/source/korea-support-wire",
+        "source_tier": "T2_TIER1_WIRE",
+        "fetched_at": "2026-06-04T16:43:00+09:00",
+        "title": "Example R&D voucher window opens for AI startups",
+        "publisher": "Example Korea Wire",
+        "snippet": "Staged wire example on R&D support voucher timing."
+      }
+    ],
+    "claims": [
+      {
+        "claim_id": "korea-claim-policy-support",
+        "statement": "Official example notice confirms expanded AI startup support program eligibility criteria.",
+        "claim_type": "law_policy",
+        "source_ids": [
+          "korea-t0-policy-official"
+        ],
+        "confidence_label": "confirmed",
+        "category": "policy",
+        "headline": "AI startup support eligibility expanded",
+        "summary": "Staged official example on support program criteria (sample only).",
+        "why_it_matters": "Eligibility changes can unlock non-dilutive runway for domestic AI teams.",
+        "business_implication": "Founders should map revised criteria to application timelines."
+      },
+      {
+        "claim_id": "korea-claim-startup-partnership",
+        "statement": "Wire example reports domestic AI startups expanding platform partnerships.",
+        "claim_type": "general",
+        "source_ids": [
+          "korea-t2-startup-wire"
+        ],
+        "confidence_label": "reported",
+        "category": "startup",
+        "headline": "Domestic AI startups expand platform deals",
+        "summary": "Staged wire example on startup-platform partnerships.",
+        "why_it_matters": "Partnership density signals ecosystem maturation.",
+        "business_implication": "Platform-native AI vendors may accelerate domestic GTM."
+      },
+      {
+        "claim_id": "korea-claim-public-support",
+        "statement": "Wire example notes staged R&D voucher window timing for AI startups.",
+        "claim_type": "general",
+        "source_ids": [
+          "korea-t2-support-wire"
+        ],
+        "confidence_label": "reported",
+        "category": "public_support",
+        "headline": "R&D voucher window timing update",
+        "summary": "Staged example on public support voucher calendar.",
+        "why_it_matters": "Support windows affect hiring and capex planning.",
+        "business_implication": "Teams should align spend with voucher eligibility periods."
+      },
+      {
+        "claim_id": "korea-claim-procurement",
+        "statement": "Wire example summarizes staged public-sector AI procurement calendar updates.",
+        "claim_type": "general",
+        "source_ids": [
+          "korea-t2-procurement-wire"
+        ],
+        "confidence_label": "reported",
+        "category": "procurement",
+        "headline": "Public-sector AI procurement calendar update",
+        "summary": "Staged wire example on procurement timelines (not live verified).",
+        "why_it_matters": "Procurement calendars drive B2G revenue timing for AI vendors.",
+        "business_implication": "Vendors should prepare compliance docs ahead of bid windows."
+      },
+      {
+        "claim_id": "korea-claim-platform-opportunity",
+        "statement": "Press example describes domestic AI marketplace fee adjustments.",
+        "claim_type": "law_policy",
+        "source_ids": [
+          "korea-t3-platform-press"
+        ],
+        "confidence_label": "reported",
+        "category": "platform",
+        "headline": "Domestic platform fee adjustments in focus",
+        "summary": "Staged press example on marketplace fee shifts.",
+        "why_it_matters": "Fee shifts can change unit economics for marketplace AI vendors.",
+        "business_implication": "SaaS vendors should reassess domestic platform fee stacks."
+      },
+      {
+        "claim_id": "korea-claim-enterprise-adoption",
+        "statement": "Press example notes staged domestic enterprise AI adoption pilot expansion.",
+        "claim_type": "general",
+        "source_ids": [
+          "korea-t3-enterprise-press"
+        ],
+        "confidence_label": "reported",
+        "category": "enterprise_adoption",
+        "headline": "Enterprise AI adoption pilots expand",
+        "summary": "Staged press example on enterprise pilot programs.",
+        "why_it_matters": "Pilot expansion signals enterprise readiness for production rollouts.",
+        "business_implication": "B2B sellers should target pilot-to-production conversion plays."
+      },
+      {
+        "claim_id": "korea-claim-business-opportunity",
+        "statement": "Staged interpretation links platform and startup signals to vendor onboarding openings.",
+        "claim_type": "interpretation",
+        "source_ids": [
+          "korea-t2-startup-wire",
+          "korea-t3-platform-press"
+        ],
+        "confidence_label": "reported",
+        "category": "business_opportunity",
+        "headline": "Vendor onboarding opportunities may widen",
+        "summary": "Staged interpretation across wire and press examples.",
+        "why_it_matters": "Combined platform and startup momentum affects GTM sequencing.",
+        "business_implication": "Operators should evaluate co-sell paths with domestic platforms."
+      }
+    ]
+  },
+  "source_gate_result": "pass",
+  "source_gate_issues": [],
+  "top_5_selection_result": {
+    "verdict": "pass",
+    "top_5_news": {
+      "news_scope": "korea",
+      "section_heading": "국내 테크 TOP 5",
+      "items": [
+        {
+          "rank": 1,
+          "news_id": "korea-claim-policy-support",
+          "headline": "AI startup support eligibility expanded",
+          "category": "policy",
+          "summary": "Staged official example on support program criteria (sample only).",
+          "why_it_matters": "Eligibility changes can unlock non-dilutive runway for domestic AI teams.",
+          "business_implication": "Founders should map revised criteria to application timelines.",
+          "source_ids": [
+            "korea-t0-policy-official"
+          ],
+          "confidence_label": "confirmed"
+        },
+        {
+          "rank": 2,
+          "news_id": "korea-claim-business-opportunity",
+          "headline": "Vendor onboarding opportunities may widen",
+          "category": "business_opportunity",
+          "summary": "Staged interpretation across wire and press examples.",
+          "why_it_matters": "Combined platform and startup momentum affects GTM sequencing.",
+          "business_implication": "Operators should evaluate co-sell paths with domestic platforms.",
+          "source_ids": [
+            "korea-t2-startup-wire",
+            "korea-t3-platform-press"
+          ],
+          "confidence_label": "reported"
+        },
+        {
+          "rank": 3,
+          "news_id": "korea-claim-procurement",
+          "headline": "Public-sector AI procurement calendar update",
+          "category": "procurement",
+          "summary": "Staged wire example on procurement timelines (not live verified).",
+          "why_it_matters": "Procurement calendars drive B2G revenue timing for AI vendors.",
+          "business_implication": "Vendors should prepare compliance docs ahead of bid windows.",
+          "source_ids": [
+            "korea-t2-procurement-wire"
+          ],
+          "confidence_label": "reported"
+        },
+        {
+          "rank": 4,
+          "news_id": "korea-claim-public-support",
+          "headline": "R&D voucher window timing update",
+          "category": "public_support",
+          "summary": "Staged example on public support voucher calendar.",
+          "why_it_matters": "Support windows affect hiring and capex planning.",
+          "business_implication": "Teams should align spend with voucher eligibility periods.",
+          "source_ids": [
+            "korea-t2-support-wire"
+          ],
+          "confidence_label": "reported"
+        },
+        {
+          "rank": 5,
+          "news_id": "korea-claim-startup-partnership",
+          "headline": "Domestic AI startups expand platform deals",
+          "category": "startup",
+          "summary": "Staged wire example on startup-platform partnerships.",
+          "why_it_matters": "Partnership density signals ecosystem maturation.",
+          "business_implication": "Platform-native AI vendors may accelerate domestic GTM.",
+          "source_ids": [
+            "korea-t2-startup-wire"
+          ],
+          "confidence_label": "reported"
+        }
+      ]
+    },
+    "issues": []
+  },
+  "output_schema_summary": {
+    "output_contract": "keysuri_private_briefing_v1",
+    "required_top_level_keys": [
+      "program_id",
+      "operational_status",
+      "top_5_news",
+      "deep_dive",
+      "one_line_checkpoint",
+      "closing_sources"
+    ],
+    "top_5_news_item_fields": [
+      "rank",
+      "news_id",
+      "headline",
+      "category",
+      "summary",
+      "why_it_matters",
+      "business_implication",
+      "source_ids",
+      "confidence_label"
+    ],
+    "operational_status": "review_required"
+  },
+  "fixed_section_labels": {
+    "top_5_news": "국내 테크 TOP 5",
+    "deep_dive": "키수리의 딥-다이브",
+    "one_line_checkpoint": "원-라인 체크포인트",
+    "closing_sources": "마무리 및 출처 리스트"
+  },
+  "forbidden_outputs": [
+    "TOP 3 output",
+    "generic TOP 5",
+    "unsupported numbers",
+    "unsupported policy/legal certainty",
+    "fake sources",
+    "invented dates",
+    "public news anchor tone",
+    "Today_Geenee HTML email body",
+    "Naver paste body",
+    "HTML attachment language",
+    "image attachment package language",
+    "live-source claims not present in source_pack",
+    "글로벌 테크 TOP 5"
+  ],
+  "generation_instructions": [
+    "Return exactly one JSON object matching keysuri_private_briefing_v1.",
+    "top_5_news.news_scope must be 'korea'.",
+    "top_5_news.section_heading must be '국내 테크 TOP 5'.",
+    "Do not output '글로벌 테크 TOP 5' or generic TOP 5 / TOP 3 headings.",
+    "top_5_news.items must contain exactly 5 items grounded in source_pack claims.",
+    "Use only facts, numbers, dates, and sources present in the provided source_pack.",
+    "Maintain Kee-Suri premium private secretary tone; not public news anchor tone.",
+    "Set operational_status to review_required.",
+    "Do not produce email HTML, Naver paste, or attachment-package language."
+  ],
+  "operational_status": "review_required",
+  "prompt_status": "ready_for_generation",
+  "top_5_news": {
+    "news_scope": "korea",
+    "section_heading": "국내 테크 TOP 5",
+    "items": [
+      {
+        "rank": 1,
+        "news_id": "korea-claim-policy-support",
+        "headline": "AI startup support eligibility expanded",
+        "category": "policy",
+        "summary": "Staged official example on support program criteria (sample only).",
+        "why_it_matters": "Eligibility changes can unlock non-dilutive runway for domestic AI teams.",
+        "business_implication": "Founders should map revised criteria to application timelines.",
+        "source_ids": [
+          "korea-t0-policy-official"
+        ],
+        "confidence_label": "confirmed"
+      },
+      {
+        "rank": 2,
+        "news_id": "korea-claim-business-opportunity",
+        "headline": "Vendor onboarding opportunities may widen",
+        "category": "business_opportunity",
+        "summary": "Staged interpretation across wire and press examples.",
+        "why_it_matters": "Combined platform and startup momentum affects GTM sequencing.",
+        "business_implication": "Operators should evaluate co-sell paths with domestic platforms.",
+        "source_ids": [
+          "korea-t2-startup-wire",
+          "korea-t3-platform-press"
+        ],
+        "confidence_label": "reported"
+      },
+      {
+        "rank": 3,
+        "news_id": "korea-claim-procurement",
+        "headline": "Public-sector AI procurement calendar update",
+        "category": "procurement",
+        "summary": "Staged wire example on procurement timelines (not live verified).",
+        "why_it_matters": "Procurement calendars drive B2G revenue timing for AI vendors.",
+        "business_implication": "Vendors should prepare compliance docs ahead of bid windows.",
+        "source_ids": [
+          "korea-t2-procurement-wire"
+        ],
+        "confidence_label": "reported"
+      },
+      {
+        "rank": 4,
+        "news_id": "korea-claim-public-support",
+        "headline": "R&D voucher window timing update",
+        "category": "public_support",
+        "summary": "Staged example on public support voucher calendar.",
+        "why_it_matters": "Support windows affect hiring and capex planning.",
+        "business_implication": "Teams should align spend with voucher eligibility periods.",
+        "source_ids": [
+          "korea-t2-support-wire"
+        ],
+        "confidence_label": "reported"
+      },
+      {
+        "rank": 5,
+        "news_id": "korea-claim-startup-partnership",
+        "headline": "Domestic AI startups expand platform deals",
+        "category": "startup",
+        "summary": "Staged wire example on startup-platform partnerships.",
+        "why_it_matters": "Partnership density signals ecosystem maturation.",
+        "business_implication": "Platform-native AI vendors may accelerate domestic GTM.",
+        "source_ids": [
+          "korea-t2-startup-wire"
+        ],
+        "confidence_label": "reported"
+      }
+    ]
+  }
+}
