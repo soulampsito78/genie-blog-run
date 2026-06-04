@@ -14,6 +14,11 @@ from keysuri_weather_binding_integration import (
 )
 from keysuri_weather_visual_prompt_integration import (
     HAND_POLICY,
+    KOREA_HAND_POLICY,
+    KOREA_MOOD,
+    KOREA_POSE_POLICY,
+    KOREA_TABLET_POLICY,
+    KOREA_TIME_PROFILE,
     POSE_POLICY,
     PRODUCTION_REFERENCE_PARAGRAPH,
     PROMPT_CONTRACT_TYPE,
@@ -98,10 +103,15 @@ class KeysuriGlobalPromptContractTests(unittest.TestCase):
         self.assertIn("do not require large pose or composition change", pos)
         self.assertIn("relaxed hands", pos)
         self.assertIn("fingers mostly hidden", pos)
+        self.assertIn("tablet held simply", pos)
         self.assertIn("no pointing", pos)
-        self.assertIn("weather affects window light and atmosphere only", pos)
-        self.assertIn("daytime", pos)
+        self.assertIn("daytime or early afternoon", pos)
         self.assertIn("cloudy", pos)
+        self.assertNotIn("winter 18:30", pos)
+        self.assertNotIn("after-sunset", pos)
+        self.assertNotIn("sun has already set", pos)
+        self.assertNotIn("deep blue-gray seoul evening", pos)
+        self.assertNotIn("tablet is optional", pos)
         self.assertNotIn("new pose and camera perspective", pos)
         self.assertNotIn("subtle briefing gesture", pos)
         self.assertNotIn("weathercaster", pos)
@@ -127,14 +137,56 @@ class KeysuriKoreaPromptContractTests(unittest.TestCase):
         self.assertEqual(c["program_id"], "keysuri_korea_tech")
         self.assertEqual(c["visual_time_context"], "seoul_early_evening_1830")
         self.assertEqual(c["weather_condition"], "cloudy")
+        self.assertEqual(c["pose_policy"], KOREA_POSE_POLICY)
+        self.assertEqual(c["hand_policy"], KOREA_HAND_POLICY)
+        self.assertEqual(c["korea_time_profile"], KOREA_TIME_PROFILE)
+        self.assertEqual(c["korea_tablet_policy"], KOREA_TABLET_POLICY)
+        self.assertEqual(c["korea_hand_posture_policy"], KOREA_HAND_POLICY)
+        self.assertEqual(c["korea_mood"], KOREA_MOOD)
 
     def test_korea_positive_prompt(self) -> None:
         pos = self.contract["positive_prompt"].lower()
         self.assertIn("same person as the reference", pos)
-        self.assertIn("early evening", pos)
-        self.assertIn("weather affects window light and atmosphere only", pos)
+        self.assertIn("winter 18:30", pos)
+        self.assertIn("after-sunset", pos)
+        self.assertIn("sun has already set", pos)
+        self.assertIn("deep blue-gray seoul evening city", pos)
+        self.assertIn("city lights already visible but not flashy", pos)
+        self.assertIn("warm premium interior office light", pos)
+        self.assertIn("calm after-work private briefing", pos)
+        self.assertIn("face clearly lit", pos)
+        self.assertIn("must not darken", pos)
+        self.assertIn("organized after-work private briefing", pos)
+        self.assertIn("tablet is optional", pos)
+        self.assertIn("hands calmly clasped", pos)
+        self.assertIn("already been organized", pos)
+        self.assertIn("ready to brief", pos)
+        self.assertIn("domestic tech", pos)
+        self.assertIn("no pointing", pos)
+        self.assertNotIn("city lights just beginning", pos)
+        self.assertNotIn("blue-gray seoul dusk", pos)
+        self.assertNotIn("early evening 18:30", pos)
+        self.assertNotIn("tablet held simply at waist", pos)
         self.assertNotIn("new pose and camera perspective", pos)
         self.assertNotIn("weathercaster", pos)
+
+    def test_korea_negative_prompt(self) -> None:
+        neg = self.contract["negative_prompt"].lower()
+        for phrase in (
+            "bright cloudy daytime",
+            "white-night office",
+            "daylight-looking dusk",
+            "black night",
+            "cinematic noir",
+            "hotel lounge",
+            "bar lounge",
+            "fashion editorial",
+            "seductive night scene",
+            "outdoor weather scene",
+            "no tomorrow_geenee",
+            "not a weathercaster",
+        ):
+            self.assertIn(phrase, neg)
 
     def test_identity_block(self) -> None:
         ident = self.contract["identity"]
@@ -185,6 +237,26 @@ class KeysuriProductionProfileTests(unittest.TestCase):
         self.assertIn("pointing finger", must_not)
         self.assertIn("stylus", must_not)
 
+        k_pose = self.korea_contract["pose_variation_policy"]
+        self.assertEqual(k_pose["pose_policy"], KOREA_POSE_POLICY)
+        self.assertEqual(k_pose["hand_policy"], KOREA_HAND_POLICY)
+        korea_vars = " ".join(k_pose["korea_tech_allowed_variations"]).lower()
+        self.assertIn("tablet optional or absent", korea_vars)
+        self.assertIn("hands calmly clasped", korea_vars)
+
+    def test_global_korea_separation(self) -> None:
+        g_pos = self.global_contract["positive_prompt"].lower()
+        k_pos = self.korea_contract["positive_prompt"].lower()
+        self.assertIn("daytime or early afternoon", g_pos)
+        self.assertIn("winter 18:30", k_pos)
+        self.assertIn("after-sunset", k_pos)
+        self.assertNotIn("winter 18:30", g_pos)
+        self.assertNotIn("after-sunset", g_pos)
+        self.assertNotIn("sun has already set", g_pos)
+        self.assertIn("tablet held simply", g_pos)
+        self.assertIn("tablet is optional", k_pos)
+        self.assertNotIn("tablet is optional", g_pos)
+
     def test_production_reference_paragraph(self) -> None:
         for contract in (self.global_contract, self.korea_contract):
             pos = contract["positive_prompt"].lower()
@@ -221,6 +293,14 @@ class KeysuriProductionProfileTests(unittest.TestCase):
         bad["positive_prompt"] = bad["positive_prompt"] + " use the same pose as reference"
         codes = {i["code"] for i in validate_keysuri_weather_visual_prompt_contract(bad)}
         self.assertIn("forbidden_copy_language_in_positive", codes)
+
+    def test_validation_rejects_korea_daylight_dusk_language(self) -> None:
+        bad = deepcopy(self.korea_contract)
+        bad["positive_prompt"] = (
+            bad["positive_prompt"] + " blue-gray Seoul dusk with city lights just beginning"
+        )
+        codes = {i["code"] for i in validate_keysuri_weather_visual_prompt_contract(bad)}
+        self.assertIn("korea_daylight_language_forbidden", codes)
 
     def test_static_policy_constants(self) -> None:
         self.assertEqual(

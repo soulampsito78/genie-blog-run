@@ -64,15 +64,57 @@ REQUIRED_NEGATIVE_PHRASES = (
     "no tomorrow_geenee",
 )
 
+KOREA_EXTRA_NEGATIVE_PHRASES = (
+    "bright cloudy daytime",
+    "white-night office",
+    "daylight-looking dusk",
+    "black night",
+    "cinematic noir",
+    "hotel lounge",
+    "bar lounge",
+    "fashion editorial",
+    "seductive night scene",
+    "outdoor weather scene",
+)
+
+FORBIDDEN_KOREA_DAYLIGHT_POSITIVE_PHRASES = (
+    "city lights just beginning",
+    "blue-gray seoul dusk",
+    "early evening 18:30",
+    "seoul dusk outside",
+)
+
 REQUIRED_PRODUCTION_POSITIVE_PHRASES = (
     "same person as the reference",
     "same kee-suri identity",
     "small natural variation",
     "do not require large pose or composition change",
-    "relaxed hands",
-    "fingers mostly hidden",
     "no pointing",
     "weather affects window light and atmosphere only",
+)
+
+REQUIRED_GLOBAL_POSITIVE_PHRASES = (
+    "daytime or early afternoon",
+    "tablet held simply",
+    "relaxed hands",
+    "fingers mostly hidden",
+)
+
+REQUIRED_KOREA_POSITIVE_PHRASES = (
+    "winter 18:30",
+    "after-sunset",
+    "sun has already set",
+    "deep blue-gray seoul evening city",
+    "city lights already visible but not flashy",
+    "warm premium interior office light",
+    "calm after-work private briefing",
+    "face clearly lit",
+    "must not darken",
+    "organized after-work private briefing",
+    "tablet is optional",
+    "hands calmly clasped",
+    "already been organized",
+    "ready to brief",
 )
 
 FORBIDDEN_POSITIVE_AGGRESSIVE_PHRASES = (
@@ -114,6 +156,11 @@ FORBIDDEN_POSITIVE_COPY_PHRASES = (
 VARIATION_MODE = "minimal_micro"
 POSE_POLICY = "calm_briefing_stable_tablet"
 HAND_POLICY = "simple_edge_grip_no_gesture"
+KOREA_POSE_POLICY = "calm_briefing_optional_tablet"
+KOREA_HAND_POLICY = "calmly_clasped_or_simple_relaxed"
+KOREA_TABLET_POLICY = "optional_or_absent"
+KOREA_TIME_PROFILE = "winter_1830_after_sunset_blue_gray_warm_interior"
+KOREA_MOOD = "organized_after_work_private_briefing"
 SCENE_POLICY = "premium_private_office_moderate"
 WEATHER_POLICY = "window_light_haze_only"
 
@@ -190,8 +237,11 @@ POSE_VARIATION_POLICY = {
     ],
     "korea_tech_allowed_variations": [
         "standing or slight three-quarter private briefing stance",
-        "early-evening window atmosphere",
-        "tablet at waist with simple edge grip",
+        "winter 18:30 after-sunset blue-gray Seoul evening through windows",
+        "city lights already visible but not flashy",
+        "warm premium interior office light",
+        "hands calmly clasped at waist or simple relaxed posture",
+        "tablet optional or absent",
         "small head angle or gaze shift",
     ],
     "must_not": [
@@ -332,10 +382,20 @@ _PRODUCTION_IDENTITY_STEM = (
     "broadcast, not public anchor presentation, not weather-presenter styling"
 )
 
-_PRODUCTION_POSE_HAND_STEM = (
+_GLOBAL_POSE_HAND_STEM = (
     "Calm private briefing in a premium office: standing or slight three-quarter, "
-    "tablet held simply at waist with relaxed hands on the edge, fingers mostly hidden "
-    "or naturally curled. Keep hands simple with no pointing, tapping, or screen-covering gestures"
+    "tablet held simply at waist or low chest with relaxed hands on the edge, fingers "
+    "mostly hidden or naturally curled. Keep hands simple with no pointing, tapping, "
+    "or screen-covering gestures"
+)
+
+_KOREA_POSE_HAND_STEM = (
+    "Calm private briefing in a premium office: standing or slight three-quarter. "
+    "Tablet is optional or may be absent for the Korea evening profile. Kee-Suri may "
+    "stand with hands calmly clasped at the waist or with a simple relaxed hand posture, "
+    "as if the key domestic tech signals have already been organized and she is ready "
+    "to brief — not handing work to the user. Keep hands simple with no pointing, tapping, "
+    "or screen-covering gestures; avoid complex finger exposure"
 )
 
 _GLOBAL_SCENE_WEATHER_STEM = (
@@ -343,15 +403,21 @@ _GLOBAL_SCENE_WEATHER_STEM = (
     "non-readable charts. Daytime or early afternoon, Seoul-like cloudy overcast "
     "light: soft diffused daylight, grey sky, mild city haze through the window. "
     "Weather affects window light and atmosphere only — not outfit, pose, or role. "
-    "Global tech executive briefing mood, understated and professional"
+    "Global tech executive briefing mood, "
+    "understated and professional"
 )
 
 _KOREA_SCENE_WEATHER_STEM = (
     "Premium private office with large windows, desk and monitor with abstract "
-    "non-readable charts. Early evening, Seoul-like cloudy overcast light: soft "
-    "diffused light, grey sky, mild city haze through the window. Weather affects "
-    "window light and atmosphere only — not outfit, pose, or role. Korean tech "
-    "executive briefing mood, understated and professional"
+    "non-readable charts. Winter 18:30 after-sunset Korean tech briefing mood: the sun "
+    "has already set outside the office windows, deep blue-gray Seoul evening city, "
+    "city lights already visible but not flashy, warm premium interior office light, "
+    "calm after-work private briefing atmosphere, subdued but not gloomy. "
+    "Keep Kee-Suri's face clearly lit and premium; the evening mood must not darken, "
+    "muddy, or soften the face. Weather affects window light and atmosphere only — not "
+    "outfit, pose, or role. Time and sky affect window light, city haze, sky tone, and "
+    "interior ambience only. Korean tech and startup platform briefing mood, understated "
+    "and professional — organized after-work private briefing"
 )
 
 
@@ -363,16 +429,17 @@ def _build_positive_prompt(program_id: str, visual_context: dict) -> str:
     summary = str(visual_context.get("weather_visual_summary") or "").strip()
     props = str(visual_context.get("prop_direction") or "").strip()
 
-    scene_weather = (
-        _GLOBAL_SCENE_WEATHER_STEM
-        if program_id == "keysuri_global_tech"
-        else _KOREA_SCENE_WEATHER_STEM
-    )
+    if program_id == "keysuri_global_tech":
+        pose_hand = _GLOBAL_POSE_HAND_STEM
+        scene_weather = _GLOBAL_SCENE_WEATHER_STEM
+    else:
+        pose_hand = _KOREA_POSE_HAND_STEM
+        scene_weather = _KOREA_SCENE_WEATHER_STEM
 
     parts = [
         _PRODUCTION_IDENTITY_STEM,
         PRODUCTION_REFERENCE_PARAGRAPH,
-        _PRODUCTION_POSE_HAND_STEM,
+        pose_hand,
         scene_weather,
         summary,
         bg,
@@ -383,8 +450,11 @@ def _build_positive_prompt(program_id: str, visual_context: dict) -> str:
     return ". ".join(p for p in parts if p)
 
 
-def _build_negative_prompt() -> str:
-    return ", ".join(REQUIRED_NEGATIVE_PHRASES)
+def _build_negative_prompt(program_id: str) -> str:
+    phrases = list(REQUIRED_NEGATIVE_PHRASES)
+    if program_id == "keysuri_korea_tech":
+        phrases.extend(KOREA_EXTRA_NEGATIVE_PHRASES)
+    return ", ".join(phrases)
 
 
 def build_keysuri_weather_visual_prompt_contract(
@@ -409,7 +479,14 @@ def build_keysuri_weather_visual_prompt_contract(
         visual_context.get("visual_time_context") or VISUAL_TIME_BY_PROGRAM[pid]
     ).strip()
 
-    return {
+    pose_policy = POSE_POLICY if pid == "keysuri_global_tech" else KOREA_POSE_POLICY
+    hand_policy = HAND_POLICY if pid == "keysuri_global_tech" else KOREA_HAND_POLICY
+    pose_variation = dict(POSE_VARIATION_POLICY)
+    pose_variation["pose_policy"] = pose_policy
+    pose_variation["hand_policy"] = hand_policy
+    pose_variation["variation_role"] = pose_policy
+
+    contract: Dict[str, Any] = {
         "program_id": pid,
         "prompt_contract_type": PROMPT_CONTRACT_TYPE,
         "source_mode": SOURCE_MODE,
@@ -420,18 +497,24 @@ def build_keysuri_weather_visual_prompt_contract(
         "identity": dict(IDENTITY_BLOCK),
         "weather_visual_usage": dict(WEATHER_VISUAL_USAGE),
         "variation_mode": VARIATION_MODE,
-        "pose_policy": POSE_POLICY,
-        "hand_policy": HAND_POLICY,
+        "pose_policy": pose_policy,
+        "hand_policy": hand_policy,
         "scene_policy": SCENE_POLICY,
         "weather_policy": WEATHER_POLICY,
         "reference_usage_policy": dict(REFERENCE_USAGE_POLICY),
         "wardrobe_lock": dict(WARDROBE_LOCK),
-        "pose_variation_policy": dict(POSE_VARIATION_POLICY),
+        "pose_variation_policy": pose_variation,
         "positive_prompt": _build_positive_prompt(pid, visual_context),
-        "negative_prompt": _build_negative_prompt(),
+        "negative_prompt": _build_negative_prompt(pid),
         "safety_constraints": dict(SAFETY_CONSTRAINTS),
         "side_effects": dict(SIDE_EFFECTS_DISABLED),
     }
+    if pid == "keysuri_korea_tech":
+        contract["korea_time_profile"] = KOREA_TIME_PROFILE
+        contract["korea_tablet_policy"] = KOREA_TABLET_POLICY
+        contract["korea_hand_posture_policy"] = KOREA_HAND_POLICY
+        contract["korea_mood"] = KOREA_MOOD
+    return contract
 
 
 def build_keysuri_weather_visual_prompt_contracts_from_integration_result(
@@ -629,20 +712,22 @@ def validate_keysuri_weather_visual_prompt_contract(contract: dict) -> List[dict
                 "pose_variation_policy",
             )
         )
-    elif pose_policy.get("variation_role") != POSE_POLICY:
-        issues.append(
-            _issue(
-                "pose_variation_role_invalid",
-                f"variation_role must be {POSE_POLICY!r}",
-                "pose_variation_policy.variation_role",
-            )
-        )
     else:
-        if pose_policy.get("hand_policy") != HAND_POLICY:
+        expected_pose = POSE_POLICY if pid == "keysuri_global_tech" else KOREA_POSE_POLICY
+        if pose_policy.get("variation_role") != expected_pose:
+            issues.append(
+                _issue(
+                    "pose_variation_role_invalid",
+                    f"variation_role must be {expected_pose!r}",
+                    "pose_variation_policy.variation_role",
+                )
+            )
+        expected_hand = HAND_POLICY if pid == "keysuri_global_tech" else KOREA_HAND_POLICY
+        if pose_policy.get("hand_policy") != expected_hand:
             issues.append(
                 _issue(
                     "hand_policy_invalid",
-                    f"hand_policy must be {HAND_POLICY!r}",
+                    f"hand_policy must be {expected_hand!r}",
                     "pose_variation_policy.hand_policy",
                 )
             )
@@ -670,11 +755,13 @@ def validate_keysuri_weather_visual_prompt_contract(contract: dict) -> List[dict
             korea_vars = " ".join(
                 str(x).lower() for x in (pose_policy.get("korea_tech_allowed_variations") or [])
             )
-            if "early-evening" not in korea_vars and "tablet at waist" not in korea_vars:
+            has_after_sunset = "after-sunset" in korea_vars or "after sunset" in korea_vars
+            has_hands = "clasped" in korea_vars or "relaxed posture" in korea_vars
+            if not has_after_sunset or not has_hands:
                 issues.append(
                     _issue(
                         "korea_variation_missing",
-                        "korea_tech_allowed_variations must include early-evening or stable briefing stance",
+                        "korea_tech_allowed_variations must include after-sunset evening and clasped/relaxed hands",
                         "pose_variation_policy.korea_tech_allowed_variations",
                     )
                 )
@@ -697,11 +784,12 @@ def validate_keysuri_weather_visual_prompt_contract(contract: dict) -> List[dict
                 "variation_mode",
             )
         )
-    if contract.get("hand_policy") != HAND_POLICY:
+    expected_hand_policy = HAND_POLICY if pid == "keysuri_global_tech" else KOREA_HAND_POLICY
+    if contract.get("hand_policy") != expected_hand_policy:
         issues.append(
             _issue(
                 "contract_hand_policy_invalid",
-                f"hand_policy must be {HAND_POLICY!r}",
+                f"hand_policy must be {expected_hand_policy!r}",
                 "hand_policy",
             )
         )
@@ -715,6 +803,85 @@ def validate_keysuri_weather_visual_prompt_contract(contract: dict) -> List[dict
                     "positive_prompt",
                 )
             )
+
+    if pid == "keysuri_global_tech":
+        for phrase in REQUIRED_GLOBAL_POSITIVE_PHRASES:
+            if phrase not in pos_lower:
+                issues.append(
+                    _issue(
+                        "global_positive_phrase_missing",
+                        f"global positive_prompt must include {phrase!r}",
+                        "positive_prompt",
+                    )
+                )
+        for forbidden_evening in (
+            "winter 18:30",
+            "after-sunset",
+            "sun has already set",
+            "deep blue-gray seoul evening",
+            "city lights already visible",
+            "early evening 18:30",
+            "blue-gray seoul dusk",
+        ):
+            if forbidden_evening in pos_lower:
+                issues.append(
+                    _issue(
+                        "global_evening_language_forbidden",
+                        f"global positive_prompt must not include Korea evening stem {forbidden_evening!r}",
+                        "positive_prompt",
+                    )
+                )
+                break
+        if "tablet is optional" in pos_lower:
+            issues.append(
+                _issue(
+                    "global_tablet_optional_forbidden",
+                    "global positive_prompt must not use Korea tablet-optional language",
+                    "positive_prompt",
+                )
+            )
+    elif pid == "keysuri_korea_tech":
+        for phrase in REQUIRED_KOREA_POSITIVE_PHRASES:
+            if phrase not in pos_lower:
+                issues.append(
+                    _issue(
+                        "korea_positive_phrase_missing",
+                        f"korea positive_prompt must include {phrase!r}",
+                        "positive_prompt",
+                    )
+                )
+        for field, expected in (
+            ("korea_time_profile", KOREA_TIME_PROFILE),
+            ("korea_tablet_policy", KOREA_TABLET_POLICY),
+            ("korea_hand_posture_policy", KOREA_HAND_POLICY),
+            ("korea_mood", KOREA_MOOD),
+        ):
+            if contract.get(field) != expected:
+                issues.append(
+                    _issue(
+                        "korea_profile_field_invalid",
+                        f"{field} must be {expected!r}",
+                        field,
+                    )
+                )
+        for extra_neg in KOREA_EXTRA_NEGATIVE_PHRASES:
+            if extra_neg not in neg:
+                issues.append(
+                    _issue(
+                        "korea_negative_phrase_missing",
+                        f"korea negative_prompt must include {extra_neg!r}",
+                        "negative_prompt",
+                    )
+                )
+        for daylight_phrase in FORBIDDEN_KOREA_DAYLIGHT_POSITIVE_PHRASES:
+            if daylight_phrase in pos_lower:
+                issues.append(
+                    _issue(
+                        "korea_daylight_language_forbidden",
+                        f"korea positive_prompt must not include ambiguous daylight stem {daylight_phrase!r}",
+                        "positive_prompt",
+                    )
+                )
 
     for aggressive in FORBIDDEN_POSITIVE_AGGRESSIVE_PHRASES:
         if _positive_contains_unnegated_phrase(pos_lower, aggressive):
