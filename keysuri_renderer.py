@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from keysuri_news_contract import SECTION_TOP5_GLOBAL, SECTION_TOP5_KOREA
+from keysuri_generated_briefing import (
+    GENERATED_STATUS_REQUIRED,
+    validate_keysuri_generated_briefing,
+)
 from keysuri_private_briefing import (
     SECTION_CLOSING,
     SECTION_DEEP_DIVE,
@@ -187,13 +191,113 @@ def render_keysuri_source_audit_section(prompt_input: dict) -> str:
     )
 
 
-def render_keysuri_review_status_section(prompt_input: dict) -> str:
-    """Render badges, guardrails, scheduler summary, and generation placeholders."""
-    program_id = str(prompt_input.get("program_id") or "").strip()
-    program_display = _esc(PROGRAM_DISPLAY.get(program_id, program_id))
+def render_keysuri_placeholder_sections(prompt_input: dict) -> str:
+    """Render generation_pending placeholders for sections not yet generated."""
     labels = prompt_input.get("fixed_section_labels")
     if not isinstance(labels, dict):
         labels = {}
+
+    placeholder_sections = [
+        (labels.get("deep_dive") or SECTION_DEEP_DIVE, "deep-dive"),
+        (labels.get("one_line_checkpoint") or SECTION_ONE_LINE, "one-line"),
+        (labels.get("closing_sources") or SECTION_CLOSING, "closing"),
+    ]
+    parts: List[str] = []
+    for title, slug in placeholder_sections:
+        parts.extend(
+            [
+                f'<section class="card placeholder-section" id="{slug}">',
+                f"<h2>{_esc(title)}</h2>",
+                f'<p class="badge-pending">{GENERATION_PENDING_LABEL}</p>',
+                "<p class='muted'>Gemini 호출 전 · 최종 문안 아님</p>",
+                "<p>키수리 프라이빗 비서 문안은 generation 단계 이후 채워집니다. "
+                "이 preview는 prompt_input 기반 owner-review 화면입니다.</p>",
+                "</section>",
+            ]
+        )
+    return "\n".join(parts)
+
+
+def render_keysuri_generated_sections(generated_briefing: dict) -> str:
+    """Render validated generated deep_dive, one_line, and closing_sources sections."""
+    deep = generated_briefing.get("deep_dive") if isinstance(generated_briefing.get("deep_dive"), dict) else {}
+    one_line = (
+        generated_briefing.get("one_line_checkpoint")
+        if isinstance(generated_briefing.get("one_line_checkpoint"), dict)
+        else {}
+    )
+    closing = (
+        generated_briefing.get("closing_sources")
+        if isinstance(generated_briefing.get("closing_sources"), dict)
+        else {}
+    )
+
+    implications = deep.get("key_implications") if isinstance(deep.get("key_implications"), list) else []
+    impl_html = "".join(f"<li>{_esc(item)}</li>" for item in implications if str(item).strip())
+
+    deep_sids = deep.get("source_ids") if isinstance(deep.get("source_ids"), list) else []
+    deep_sources = _esc(", ".join(str(s) for s in deep_sids))
+
+    source_list = closing.get("source_list") if isinstance(closing.get("source_list"), list) else []
+    source_cards: List[str] = []
+    for entry in source_list:
+        if not isinstance(entry, dict):
+            continue
+        url = entry.get("url")
+        url_line = f'<p class="src-url">{_esc(url)}</p>' if _is_non_empty_str(url) else ""
+        tier = entry.get("tier")
+        tier_line = f'<p class="src-tier">tier: {_esc(tier)}</p>' if _is_non_empty_str(tier) else ""
+        note = entry.get("note")
+        note_line = f'<p class="src-note">{_esc(note)}</p>' if _is_non_empty_str(note) else ""
+        source_cards.extend(
+            [
+                '<article class="source-card">',
+                f'<p class="src-id"><strong>{_esc(entry.get("source_id"))}</strong></p>',
+                f'<p class="src-label">{_esc(entry.get("label"))}</p>',
+                url_line,
+                tier_line,
+                note_line,
+                "</article>",
+            ]
+        )
+
+    return "\n".join(
+        [
+            f'<section class="card generated-section" id="deep-dive">',
+            f"<h2>{_esc(deep.get('section_heading') or SECTION_DEEP_DIVE)}</h2>",
+            f'<p class="badge-generated">{_esc(GENERATED_STATUS_REQUIRED)}</p>',
+            f'<p class="generated-body">{_esc(deep.get("body"))}</p>',
+            "<h3>key_implications</h3>",
+            f"<ul>{impl_html}</ul>",
+            f'<p class="meta">source_ids: {deep_sources} · confidence: {_esc(deep.get("confidence_label"))}</p>',
+            "</section>",
+            f'<section class="card generated-section" id="one-line">',
+            f"<h2>{_esc(one_line.get('section_heading') or SECTION_ONE_LINE)}</h2>",
+            f'<p class="badge-generated">{_esc(GENERATED_STATUS_REQUIRED)}</p>',
+            f'<p class="generated-body">{_esc(one_line.get("body"))}</p>',
+            "</section>",
+            f'<section class="card generated-section" id="closing">',
+            f"<h2>{_esc(closing.get('section_heading') or SECTION_CLOSING)}</h2>",
+            f'<p class="badge-generated">{_esc(GENERATED_STATUS_REQUIRED)}</p>',
+            f'<p class="generated-body">{_esc(closing.get("closing_message"))}</p>',
+            "<h3>source_list</h3>",
+            *source_cards,
+            "</section>",
+        ]
+    )
+
+
+def _is_non_empty_str(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def render_keysuri_review_status_section(
+    prompt_input: dict,
+    generated_briefing: dict | None = None,
+) -> str:
+    """Render badges, guardrails, and scheduler summary (no content placeholders)."""
+    program_id = str(prompt_input.get("program_id") or "").strip()
+    program_display = _esc(PROGRAM_DISPLAY.get(program_id, program_id))
 
     forbidden = prompt_input.get("forbidden_outputs")
     forbidden_list: List[str] = []
@@ -208,26 +312,14 @@ def render_keysuri_review_status_section(prompt_input: dict) -> str:
         for name, time in ACTIVE_SCHEDULER_ROWS
     )
 
-    placeholder_sections = [
-        (labels.get("deep_dive") or SECTION_DEEP_DIVE, "deep-dive"),
-        (labels.get("one_line_checkpoint") or SECTION_ONE_LINE, "one-line"),
-        (labels.get("closing_sources") or SECTION_CLOSING, "closing"),
-    ]
-    placeholder_html: List[str] = []
-    for title, slug in placeholder_sections:
-        placeholder_html.extend(
-            [
-                f'<section class="card placeholder-section" id="{slug}">',
-                f"<h2>{_esc(title)}</h2>",
-                f'<p class="badge-pending">{GENERATION_PENDING_LABEL}</p>',
-                "<p class='muted'>Gemini 호출 전 · 최종 문안 아님</p>",
-                "<p>키수리 프라이빗 비서 문안은 generation 단계 이후 채워집니다. "
-                "이 preview는 prompt_input 기반 owner-review 화면입니다.</p>",
-                "</section>",
-            ]
-        )
-
     cross_forbidden = SECTION_TOP5_KOREA if program_id == "keysuri_global_tech" else SECTION_TOP5_GLOBAL
+
+    gen_status_row = ""
+    if generated_briefing is not None:
+        gen_status_row = (
+            f"<dt>generated_status</dt>"
+            f"<dd class='badge'>{_esc(generated_briefing.get('generated_status'))}</dd>"
+        )
 
     return "\n".join(
         [
@@ -236,6 +328,7 @@ def render_keysuri_review_status_section(prompt_input: dict) -> str:
             "<dl class='badge-dl'>",
             f"<dt>program</dt><dd>{program_display}</dd>",
             f"<dt>prompt_status</dt><dd class='badge'>{_esc(prompt_input.get('prompt_status'))}</dd>",
+            gen_status_row,
             f"<dt>operational_status</dt><dd class='badge'>{_esc(prompt_input.get('operational_status'))}</dd>",
             f"<dt>news_scope</dt><dd>{_esc(prompt_input.get('news_scope'))}</dd>",
             f"<dt>output_contract</dt><dd>{_esc(prompt_input.get('output_contract'))}</dd>",
@@ -246,7 +339,6 @@ def render_keysuri_review_status_section(prompt_input: dict) -> str:
             "<h3>Active scheduler (GENIE)</h3>",
             f"<ul class='scheduler-list'>{scheduler_html}</ul>",
             "</section>",
-            *placeholder_html,
         ]
     )
 
@@ -325,6 +417,30 @@ def _base_styles() -> str:
       font-weight: 600;
       font-size: 0.85rem;
     }
+    .generated-section { border: 1px solid #cbd5e1; background: #ffffff; }
+    .badge-generated {
+      display: inline-block;
+      padding: 4px 10px;
+      background: #dbeafe;
+      color: #1e3a8a;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 0.85rem;
+      margin-bottom: 10px;
+    }
+    .generated-body { margin: 0 0 12px; }
+    .source-card {
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      background: #f8fafc;
+    }
+    .error-section {
+      background: #fef2f2;
+      border: 2px solid #dc2626;
+      color: #7f1d1d;
+    }
     .footer {
       text-align: center;
       font-size: 0.8rem;
@@ -337,7 +453,10 @@ def _base_styles() -> str:
     """
 
 
-def render_keysuri_owner_review_html(prompt_input: dict) -> str:
+def render_keysuri_owner_review_html(
+    prompt_input: dict,
+    generated_briefing: dict | None = None,
+) -> str:
     """Render a complete standalone owner-review HTML page from prompt_input."""
     if not isinstance(prompt_input, dict):
         raise ValueError("prompt_input must be a dict")
@@ -345,18 +464,43 @@ def render_keysuri_owner_review_html(prompt_input: dict) -> str:
     program_id = str(prompt_input.get("program_id") or "").strip()
     program_display = _esc(PROGRAM_DISPLAY.get(program_id, program_id))
 
-    notice = """
+    if generated_briefing is not None:
+        issues = validate_keysuri_generated_briefing(
+            program_id, generated_briefing, prompt_input
+        )
+        if issues:
+            messages = "; ".join(
+                f"{i.get('code')}: {i.get('message')}" for i in issues[:5]
+            )
+            raise ValueError(f"Invalid generated briefing for {program_id}: {messages}")
+
+    if generated_briefing is not None:
+        notice_extra = (
+            "<li>staged sample generated briefing이 로드되었습니다. "
+            "최종 고객 발송 문안이 아니며 owner-review 검수용입니다.</li>"
+        )
+    else:
+        notice_extra = "<li>Gemini 호출 전 단계이며 최종 문안이 아닙니다.</li>"
+
+    notice = f"""
     <section class="notice" role="note">
       <p><strong>Owner-review 사전 검토 화면</strong></p>
       <ul>
         <li>이 화면은 테크 비서 키수리의 owner-review용 사전 검토 화면입니다.</li>
         <li>아직 고객에게 발송되지 않았습니다.</li>
         <li>실시간 뉴스 수집 결과가 아니라 staged sample source pack 기반 preview입니다.</li>
-        <li>Gemini 호출 전 단계이며 최종 문안이 아닙니다.</li>
+        {notice_extra}
         <li>프라이빗 테크 비서 톤 — 공개 방송형 브리핑 톤이 아닙니다.</li>
       </ul>
     </section>
     """
+
+    gen_badge = ""
+    if generated_briefing is not None:
+        gen_badge = (
+            f'<span class="badge">generated_status: '
+            f'{_esc(generated_briefing.get("generated_status"))}</span>'
+        )
 
     header = f"""
     <header class="card header-card">
@@ -366,6 +510,7 @@ def render_keysuri_owner_review_html(prompt_input: dict) -> str:
       <div class="badge-row">
         <span class="badge">operational_status: {_esc(prompt_input.get('operational_status'))}</span>
         <span class="badge">prompt_status: {_esc(prompt_input.get('prompt_status'))}</span>
+        {gen_badge}
         <span class="badge">news_scope: {_esc(prompt_input.get('news_scope'))}</span>
         <span class="badge">prompt_profile: {_esc(prompt_input.get('prompt_profile'))}</span>
       </div>
@@ -380,13 +525,17 @@ def render_keysuri_owner_review_html(prompt_input: dict) -> str:
     </footer>
     """
 
-    body = "\n".join(
-        [
-            render_keysuri_top5_section(prompt_input),
-            render_keysuri_source_audit_section(prompt_input),
-            render_keysuri_review_status_section(prompt_input),
-        ]
-    )
+    body_parts = [
+        render_keysuri_top5_section(prompt_input),
+        render_keysuri_source_audit_section(prompt_input),
+        render_keysuri_review_status_section(prompt_input, generated_briefing),
+    ]
+    if generated_briefing is not None:
+        body_parts.append(render_keysuri_generated_sections(generated_briefing))
+    else:
+        body_parts.append(render_keysuri_placeholder_sections(prompt_input))
+
+    body = "\n".join(body_parts)
 
     return (
         "<!DOCTYPE html>\n<html lang=\"ko\">\n<head>\n"

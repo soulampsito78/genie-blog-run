@@ -8,7 +8,13 @@ from copy import deepcopy
 from pathlib import Path
 
 from keysuri_news_contract import SECTION_TOP5_GLOBAL, SECTION_TOP5_KOREA
+from keysuri_generated_briefing import (
+    GENERATED_STATUS_REQUIRED,
+    load_keysuri_generated_briefing_fixture,
+)
+from keysuri_private_briefing import SECTION_CLOSING, SECTION_DEEP_DIVE, SECTION_ONE_LINE
 from keysuri_renderer import (
+    GENERATION_PENDING_LABEL,
     IDENTITY_TITLE,
     load_keysuri_prompt_input_fixture,
     render_keysuri_owner_review_html,
@@ -136,6 +142,86 @@ class KeysuriRendererFixtureLoaderTests(unittest.TestCase):
     def test_load_fixture(self) -> None:
         data = _load_fixture("keysuri_global_prompt_input.sample.json")
         self.assertEqual(data["program_id"], "keysuri_global_tech")
+
+
+def _load_generated(name: str) -> dict:
+    return load_keysuri_generated_briefing_fixture(
+        str(_REPO / "ops" / "feeds" / name)
+    )
+
+
+class KeysuriRendererGeneratedModeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.global_prompt = _load_fixture("keysuri_global_prompt_input.sample.json")
+        self.global_gen = _load_generated("keysuri_global_generated_briefing.sample.json")
+        self.global_html = render_keysuri_owner_review_html(
+            self.global_prompt, self.global_gen
+        )
+
+    def test_placeholder_mode_still_has_generation_pending(self) -> None:
+        html = render_keysuri_owner_review_html(self.global_prompt)
+        self.assertIn(GENERATION_PENDING_LABEL, html)
+        self.assertIn("badge-pending", html)
+
+    def test_generated_mode_no_generation_pending_placeholders(self) -> None:
+        self.assertNotRegex(
+            self.global_html,
+            r'<section class="card placeholder-section"',
+        )
+        self.assertNotIn(GENERATION_PENDING_LABEL, self.global_html)
+        self.assertNotIn("Gemini 호출 전 · 최종 문안 아님", self.global_html)
+
+    def test_generated_mode_renders_deep_dive_body(self) -> None:
+        body = self.global_gen["deep_dive"]["body"]
+        self.assertIn(SECTION_DEEP_DIVE, self.global_html)
+        self.assertIn(body[:40], self.global_html)
+
+    def test_generated_mode_renders_one_line_body(self) -> None:
+        body = self.global_gen["one_line_checkpoint"]["body"]
+        self.assertIn(SECTION_ONE_LINE, self.global_html)
+        self.assertIn(body[:30], self.global_html)
+
+    def test_generated_mode_renders_closing_sources(self) -> None:
+        self.assertIn(SECTION_CLOSING, self.global_html)
+        self.assertIn("source-card", self.global_html)
+        self.assertIn(
+            self.global_gen["closing_sources"]["closing_message"][:30],
+            self.global_html,
+        )
+
+    def test_generated_mode_shows_generated_review_required(self) -> None:
+        self.assertIn(GENERATED_STATUS_REQUIRED, self.global_html)
+        self.assertIn("badge-generated", self.global_html)
+
+    def test_generated_mode_keeps_owner_review_preview(self) -> None:
+        self.assertIn("Owner Review Preview", self.global_html)
+
+    def test_generated_mode_keeps_offline_footer(self) -> None:
+        for marker in ("No email sent", "No live fetch", "No Gemini call"):
+            self.assertIn(marker, self.global_html)
+
+    def test_generated_mode_escapes_unsafe_text(self) -> None:
+        bad_gen = deepcopy(self.global_gen)
+        bad_gen["deep_dive"]["body"] = '<script>alert("x")</script>'
+        html = render_keysuri_owner_review_html(self.global_prompt, bad_gen)
+        self.assertNotIn("<script>", html)
+        self.assertIn("&lt;script&gt;", html)
+
+    def test_generated_mode_rejects_invalid_briefing(self) -> None:
+        bad_gen = deepcopy(self.global_gen)
+        bad_gen["deep_dive"]["body"] = ""
+        with self.assertRaises(ValueError) as ctx:
+            render_keysuri_owner_review_html(self.global_prompt, bad_gen)
+        self.assertIn("Invalid generated briefing", str(ctx.exception))
+
+    def test_generated_html_identity_guard(self) -> None:
+        for bad in ("테크 앵커", "뉴스 앵커", "아나운서"):
+            self.assertNotIn(bad, self.global_html)
+
+    def test_generated_html_retired_guard(self) -> None:
+        self.assertNotIn("Tomorrow_Geenee", self.global_html)
+        self.assertNotIn("tomorrow_genie", self.global_html)
+        self.assertNotRegex(self.global_html, r"18:00\s*KST")
 
 
 if __name__ == "__main__":
