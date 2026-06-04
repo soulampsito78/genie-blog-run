@@ -1,0 +1,101 @@
+{
+  "program_id": "keysuri_korea_tech",
+  "operational_status": "review_required",
+  "notes": "Sample staged Kee-Suri Korea output fixture (example.com sources only; not live fetched data).",
+  "top_5_news": {
+    "news_scope": "korea",
+    "section_heading": "국내 테크 TOP 5",
+    "items": [
+      {
+        "rank": 1,
+        "news_id": "korea-news-01",
+        "headline": "Example ministry expands AI startup support eligibility",
+        "category": "public_support",
+        "summary": "Official example notice updates AI startup support program eligibility criteria.",
+        "why_it_matters": "Support eligibility changes can unlock non-dilutive runway for domestic AI teams.",
+        "business_implication": "Early-stage founders should map revised criteria to application timelines.",
+        "source_ids": ["korea-t0-policy-official"],
+        "confidence_label": "confirmed"
+      },
+      {
+        "rank": 2,
+        "news_id": "korea-news-02",
+        "headline": "Domestic AI startups expand platform partnerships",
+        "category": "startup",
+        "summary": "Wire-style example coverage notes domestic AI startups signing new platform partnerships.",
+        "why_it_matters": "Partnership density signals ecosystem maturation and distribution leverage.",
+        "business_implication": "Platform-native AI vendors may accelerate GTM via domestic platform channels.",
+        "source_ids": ["korea-t2-startup-wire"],
+        "confidence_label": "reported"
+      },
+      {
+        "rank": 3,
+        "news_id": "korea-news-03",
+        "headline": "Local platform fee adjustments create vendor onboarding openings",
+        "category": "platform",
+        "summary": "Press example analysis describes domestic AI marketplace fee adjustments.",
+        "why_it_matters": "Fee shifts can change unit economics for marketplace AI vendors.",
+        "business_implication": "SaaS and API vendors should reassess domestic platform fee stacks.",
+        "source_ids": ["korea-t3-platform-press"],
+        "confidence_label": "reported"
+      },
+      {
+        "rank": 4,
+        "news_id": "korea-news-04",
+        "headline": "Domestic AI policy support window remains active",
+        "category": "policy",
+        "summary": "Example official guidance reiterates active support windows for domestic AI programs.",
+        "why_it_matters": "Policy windows affect fundraising and hiring plans for Korea AI teams.",
+        "business_implication": "Operators should align hiring and capex with support program calendars.",
+        "source_ids": ["korea-t0-policy-official"],
+        "confidence_label": "confirmed"
+      },
+      {
+        "rank": 5,
+        "news_id": "korea-news-05",
+        "headline": "Domestic platform partnerships may unlock enterprise adoption",
+        "category": "enterprise_adoption",
+        "summary": "Interpretation example links startup-platform deals to enterprise adoption pathways.",
+        "why_it_matters": "Enterprise adoption paths differ when routed through domestic platforms.",
+        "business_implication": "B2B AI sellers should evaluate domestic platform co-sell options.",
+        "source_ids": ["korea-t2-startup-wire", "korea-t3-platform-press"],
+        "confidence_label": "reported"
+      }
+    ]
+  },
+  "deep_dive": {
+    "section_heading": "키수리의 딥-다이브",
+    "body": "Example deep-dive body connecting domestic policy support, startup partnerships, and platform economics.",
+    "key_implications": [
+      "Support policy updates may change founder application priorities.",
+      "Platform fee shifts alter domestic AI vendor margin models."
+    ],
+    "source_ids": ["korea-t0-policy-official", "korea-t3-platform-press"],
+    "confidence_label": "reported"
+  },
+  "one_line_checkpoint": {
+    "section_heading": "원-라인 체크포인트",
+    "body": "국내 AI 정책·스타트업·플랫폼 신호가 founder/operator money/work 결정에 어떻게 겹치는지 확인하세요."
+  },
+  "closing_sources": {
+    "section_heading": "마무리 및 출처 리스트",
+    "closing_message": "위 브리핑은 staged example source pack 기반이며 live fetch 데이터가 아닙니다.",
+    "source_list": [
+      {
+        "source_id": "korea-t0-policy-official",
+        "source_name": "Example Korea AI Support Policy Notice",
+        "source_url": "https://example.com/source/korea-policy-official"
+      },
+      {
+        "source_id": "korea-t2-startup-wire",
+        "source_name": "Example Korea Startup Wire",
+        "source_url": "https://example.com/source/korea-startup-wire"
+      },
+      {
+        "source_id": "korea-t3-platform-press",
+        "source_name": "Example Korea Platform Press",
+        "source_url": "https://example.com/source/korea-platform-press"
+      }
+    ]
+  }
+}

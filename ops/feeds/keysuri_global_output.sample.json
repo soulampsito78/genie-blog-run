@@ -1,0 +1,101 @@
+{
+  "program_id": "keysuri_global_tech",
+  "operational_status": "review_required",
+  "notes": "Sample staged Kee-Suri global output fixture (example.com sources only; not live fetched data).",
+  "top_5_news": {
+    "news_scope": "global",
+    "section_heading": "글로벌 테크 TOP 5",
+    "items": [
+      {
+        "rank": 1,
+        "news_id": "global-news-01",
+        "headline": "Example Corp enterprise AI inference tier update",
+        "category": "ai_product",
+        "summary": "Official example release notes describe lower-latency enterprise inference tier.",
+        "why_it_matters": "Enterprise procurement teams may rebalance AI tooling budgets toward latency-sensitive workloads.",
+        "business_implication": "B2B AI vendors with inference optimization may gain near-term enterprise pipeline advantage.",
+        "source_ids": ["global-t0-ai-official"],
+        "confidence_label": "confirmed"
+      },
+      {
+        "rank": 2,
+        "news_id": "global-news-02",
+        "headline": "Advanced packaging demand stays firm for AI accelerators",
+        "category": "semiconductor",
+        "summary": "Wire-style example desk reports sustained advanced packaging demand tied to AI accelerators.",
+        "why_it_matters": "Supply chain bottlenecks can shift capex and vendor selection in AI hardware stacks.",
+        "business_implication": "Semiconductor equipment and packaging suppliers may see extended order visibility.",
+        "source_ids": ["global-t2-semi-wire"],
+        "confidence_label": "reported"
+      },
+      {
+        "rank": 3,
+        "news_id": "global-news-03",
+        "headline": "Platform policy shift may alter developer monetization",
+        "category": "platform",
+        "summary": "Quality press example analysis flags app store policy changes affecting developer revenue share.",
+        "why_it_matters": "Platform fee changes can reshape indie and mid-size AI app economics.",
+        "business_implication": "Developers may need alternate distribution or pricing models for AI apps.",
+        "source_ids": ["global-t3-platform-press"],
+        "confidence_label": "reported"
+      },
+      {
+        "rank": 4,
+        "news_id": "global-news-04",
+        "headline": "Big-tech capex signals remain AI-weighted",
+        "category": "bigtech",
+        "summary": "Example wire recap highlights continued AI-weighted capex commentary from major platforms.",
+        "why_it_matters": "Capex tone guides supplier expectations across cloud and chip ecosystems.",
+        "business_implication": "AI infrastructure vendors should monitor hyperscaler spend commentary for demand cues.",
+        "source_ids": ["global-t2-semi-wire"],
+        "confidence_label": "reported"
+      },
+      {
+        "rank": 5,
+        "news_id": "global-news-05",
+        "headline": "Enterprise AI tooling procurement windows may widen",
+        "category": "business_opportunity",
+        "summary": "Interpretation example links improved inference latency to broader enterprise evaluation cycles.",
+        "why_it_matters": "Timing shifts in enterprise evaluation can affect Q3-Q4 pipeline conversion.",
+        "business_implication": "Solution sellers should prepare ROI narratives around latency and reliability gains.",
+        "source_ids": ["global-t0-ai-official", "global-t2-semi-wire"],
+        "confidence_label": "reported"
+      }
+    ]
+  },
+  "deep_dive": {
+    "section_heading": "키수리의 딥-다이브",
+    "body": "Example deep-dive body connecting global AI product, semiconductor, and platform policy signals for owner review.",
+    "key_implications": [
+      "Enterprise AI procurement may favor latency-optimized stacks.",
+      "Platform policy shifts can compress indie AI app margins."
+    ],
+    "source_ids": ["global-t0-ai-official", "global-t3-platform-press"],
+    "confidence_label": "reported"
+  },
+  "one_line_checkpoint": {
+    "section_heading": "원-라인 체크포인트",
+    "body": "글로벌 AI·반도체·플랫폼 신호가 enterprise money/work 결정에 동시에 작용하는지 확인하세요."
+  },
+  "closing_sources": {
+    "section_heading": "마무리 및 출처 리스트",
+    "closing_message": "위 브리핑은 staged example source pack 기반이며 live fetch 데이터가 아닙니다.",
+    "source_list": [
+      {
+        "source_id": "global-t0-ai-official",
+        "source_name": "Example AI Product Official Release",
+        "source_url": "https://example.com/source/global-ai-official"
+      },
+      {
+        "source_id": "global-t2-semi-wire",
+        "source_name": "Example Tier-1 Wire Semiconductor Desk",
+        "source_url": "https://example.com/source/global-semi-wire"
+      },
+      {
+        "source_id": "global-t3-platform-press",
+        "source_name": "Example Quality Press Platform Policy",
+        "source_url": "https://example.com/source/global-platform-policy-press"
+      }
+    ]
+  }
+}

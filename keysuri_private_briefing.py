@@ -2,7 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
+
+from keysuri_news_contract import (
+    PROGRAM_TO_HEADING as TOP5_HEADING_BY_PROGRAM,
+    SECTION_TOP5_GLOBAL,
+    SECTION_TOP5_KOREA,
+    validate_top_5_news_block,
+)
 
 KeysuriBriefingVerdict = Literal["pass", "block"]
 
@@ -11,13 +18,6 @@ KEYSURI_PROGRAM_IDS = frozenset({"keysuri_global_tech", "keysuri_korea_tech"})
 SECTION_DEEP_DIVE = "키수리의 딥-다이브"
 SECTION_ONE_LINE = "원-라인 체크포인트"
 SECTION_CLOSING = "마무리 및 출처 리스트"
-SECTION_TOP5_GLOBAL = "글로벌 테크 TOP 5"
-SECTION_TOP5_KOREA = "국내 테크 TOP 5"
-
-TOP5_HEADING_BY_PROGRAM: Dict[str, str] = {
-    "keysuri_global_tech": SECTION_TOP5_GLOBAL,
-    "keysuri_korea_tech": SECTION_TOP5_KOREA,
-}
 
 FORBIDDEN_SECTION_RENAMES: Dict[str, Tuple[str, ...]] = {
     "deep_dive": ("심층 분석",),
@@ -151,7 +151,6 @@ def validate_keysuri_private_briefing(
         )
         return KeysuriBriefingValidationResult(verdict="block", issues=tuple(issues))
 
-    expected_top5 = TOP5_HEADING_BY_PROGRAM[pid]
     op_status = str(output.get("operational_status") or "").strip()
     if op_status != REQUIRED_OPERATIONAL_STATUS:
         issues.append(
@@ -167,19 +166,12 @@ def validate_keysuri_private_briefing(
 
     top5 = _require_object(output, "top_5_news", issues)
     if top5 is not None:
-        _check_section_heading(
-            top5,
-            field_key="top_5_news",
-            expected=expected_top5,
-            issues=issues,
-        )
-        items = top5.get("items")
-        if not isinstance(items, list) or len(items) == 0:
+        for news_issue in validate_top_5_news_block(pid, top5):
             issues.append(
                 KeysuriBriefingIssue(
-                    code="top_5_news_items_missing",
-                    message="top_5_news.items must be a non-empty list",
-                    field="top_5_news.items",
+                    code=news_issue["code"],
+                    message=news_issue["message"],
+                    field=news_issue.get("field"),
                 )
             )
 
@@ -284,22 +276,36 @@ def validate_keysuri_private_briefing(
     return KeysuriBriefingValidationResult(verdict=verdict, issues=tuple(issues))
 
 
+def _example_top5_item(rank: int, *, news_id: str, category: str) -> Dict[str, Any]:
+    return {
+        "rank": rank,
+        "news_id": news_id,
+        "headline": "Example headline",
+        "category": category,
+        "summary": "Example summary grounded in staged source pack.",
+        "why_it_matters": "Example why-it-matters for owner review.",
+        "business_implication": "Example business implication for money/work decisions.",
+        "source_ids": ["example-source-id"],
+        "confidence_label": "reported",
+    }
+
+
 def keysuri_output_schema_example(program_id: str) -> Dict[str, Any]:
     """Return a structural example with exact required section headings."""
+    from keysuri_news_contract import PROGRAM_TO_SCOPE, expected_news_scope_for_program
+
     top5_heading = TOP5_HEADING_BY_PROGRAM.get(program_id, SECTION_TOP5_GLOBAL)
+    scope = PROGRAM_TO_SCOPE.get(program_id, expected_news_scope_for_program("keysuri_global_tech"))
+    categories = ["ai_product", "bigtech", "semiconductor", "platform", "policy"]
     return {
         "program_id": program_id,
         "operational_status": REQUIRED_OPERATIONAL_STATUS,
         "top_5_news": {
+            "news_scope": scope,
             "section_heading": top5_heading,
             "items": [
-                {
-                    "rank": 1,
-                    "headline": "string",
-                    "summary": "string",
-                    "source_ids": ["source_id"],
-                    "confidence_label": "reported",
-                }
+                _example_top5_item(i + 1, news_id=f"example-news-{i + 1}", category=categories[i])
+                for i in range(5)
             ],
         },
         "deep_dive": {
