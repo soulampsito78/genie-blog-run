@@ -290,10 +290,19 @@ def run_keysuri_image_api_canary(
     if pid is None:
         pid, _ = _normalize_program_arg(os.getenv("GENIE_KEYSURI_IMAGE_CANARY_PROGRAM"))
 
+    all_issues: List[dict] = list(multi_issues)
+    if any(i.get("code") == "multiple_programs_rejected" for i in multi_issues):
+        return _base_report(
+            canary_status="blocked_invalid_program",
+            program_id=pid,
+            manual_approval_present=manual_present,
+            dry_run=dry_run,
+            provider=CANARY_PROVIDER_PENDING,
+            issues=all_issues,
+        )
+
     runtime = build_keysuri_image_canary_runtime_config_from_env(program_id=pid, manual_approval=manual_present)
     provider = str(runtime.get("provider") or CANARY_PROVIDER_PENDING)
-    all_issues: List[dict] = list(multi_issues)
-
     if not manual_present:
         return _base_report(
             canary_status="blocked_no_manual_approval",

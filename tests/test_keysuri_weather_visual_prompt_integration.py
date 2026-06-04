@@ -13,9 +13,13 @@ from keysuri_weather_binding_integration import (
     build_keysuri_weather_binding_integration_report,
 )
 from keysuri_weather_visual_prompt_integration import (
+    IDENTITY_ONLY_REFERENCE_CLAUSE,
+    POSE_VARIATION_POLICY,
     PROMPT_CONTRACT_TYPE,
+    REFERENCE_USAGE_POLICY,
     REPORT_TYPE,
     SOURCE_MODE,
+    WARDROBE_LOCK,
     build_keysuri_weather_visual_prompt_contract,
     build_keysuri_weather_visual_prompt_contracts_from_integration_result,
     build_keysuri_weather_visual_prompt_report_from_canary_lock,
@@ -86,9 +90,13 @@ class KeysuriGlobalPromptContractTests(unittest.TestCase):
         self.assertIn("office", pos)
         self.assertIn("cloudy", pos)
         self.assertIn("daytime", pos)
+        self.assertIn("three-quarter", pos)
+        self.assertIn("wardrobe continuity only", pos)
+        self.assertIn("do not copy the reference pose", pos)
         self.assertNotIn("weathercaster", pos)
         self.assertNotIn("news anchor", pos)
         self.assertNotIn("announcer", pos)
+        self.assertNotIn("same pose", pos)
 
     def test_global_negative_and_safety(self) -> None:
         neg = self.contract["negative_prompt"].lower()
@@ -111,9 +119,11 @@ class KeysuriKoreaPromptContractTests(unittest.TestCase):
 
     def test_korea_positive_prompt(self) -> None:
         pos = self.contract["positive_prompt"].lower()
-        self.assertIn("early evening", pos)
+        self.assertIn("early-evening", pos)
         self.assertIn("korean tech", pos)
         self.assertIn("cloudy", pos)
+        self.assertIn("conversational", pos)
+        self.assertIn("wardrobe continuity only", pos)
         self.assertNotIn("broadcaster", pos)
         self.assertNotIn("weathercaster", pos)
 
@@ -124,6 +134,124 @@ class KeysuriKoreaPromptContractTests(unittest.TestCase):
         self.assertEqual(
             self.contract["weather_visual_usage"]["usage_type"],
             "visual_realism_only",
+        )
+
+
+class KeysuriPromptVariationGuardTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.global_contract = _report()["prompt_contracts"]["keysuri_global_tech"]
+        self.korea_contract = _report()["prompt_contracts"]["keysuri_korea_tech"]
+
+    def test_reference_usage_policy(self) -> None:
+        for contract in (self.global_contract, self.korea_contract):
+            policy = contract["reference_usage_policy"]
+            self.assertEqual(policy["reference_role"], "identity_and_wardrobe_continuity_only")
+            must_not = {x.lower() for x in policy["must_not_copy"]}
+            for item in (
+                "reference pose",
+                "reference camera angle",
+                "reference facial expression",
+                "reference hand position",
+                "reference tablet angle",
+                "reference composition",
+            ):
+                self.assertIn(item, must_not)
+            variation = {x.lower() for x in policy["variation_required"]}
+            self.assertIn("new pose", variation)
+            self.assertIn("new camera perspective", variation)
+            self.assertIn("new facial expression", variation)
+
+    def test_wardrobe_lock(self) -> None:
+        for contract in (self.global_contract, self.korea_contract):
+            lock = contract["wardrobe_lock"]
+            allowed = " ".join(lock["allowed"]).lower()
+            forbidden = " ".join(lock["forbidden"]).lower()
+            self.assertIn("charcoal fitted suit", allowed)
+            self.assertIn("ivory blouse", allowed)
+            self.assertIn("pencil skirt", allowed)
+            self.assertIn("thin glasses", allowed)
+            self.assertIn("tablet", allowed)
+            self.assertIn("news anchor outfit", forbidden)
+            self.assertIn("weathercaster outfit", forbidden)
+            self.assertIn("ceo power suit", forbidden)
+            self.assertIn("casual office worker", forbidden)
+            self.assertIn("evening dress", forbidden)
+            self.assertIn("fashion editorial", forbidden)
+            self.assertIn("overly revealing outfit", forbidden)
+            self.assertIn("today_geenee wardrobe logic", forbidden)
+
+    def test_pose_variation_policy(self) -> None:
+        g_pose = self.global_contract["pose_variation_policy"]
+        k_pose = self.korea_contract["pose_variation_policy"]
+        global_vars = " ".join(g_pose["global_tech_allowed_variations"]).lower()
+        korea_vars = " ".join(k_pose["korea_tech_allowed_variations"]).lower()
+        self.assertIn("three-quarter", global_vars)
+        self.assertIn("early-evening", korea_vars)
+        self.assertIn("conversational", korea_vars)
+        must_not = " ".join(g_pose["must_not"]).lower()
+        self.assertIn("background-only variation", must_not)
+
+    def test_required_prompt_clauses(self) -> None:
+        for contract in (self.global_contract, self.korea_contract):
+            pos = contract["positive_prompt"].lower()
+            neg = contract["negative_prompt"].lower()
+            self.assertIn(IDENTITY_ONLY_REFERENCE_CLAUSE.lower(), pos)
+            self.assertIn("do not copy the reference pose", neg)
+            self.assertIn("do not copy the reference camera angle", neg)
+            self.assertIn("do not copy the reference facial expression", neg)
+            self.assertIn("do not copy the reference hand position", neg)
+            self.assertIn("do not copy the reference tablet angle", neg)
+            self.assertIn("do not recreate the same composition", neg)
+            self.assertIn("do not merely change the background", neg)
+
+    def test_validation_rejects_missing_reference_policy(self) -> None:
+        bad = deepcopy(self.global_contract)
+        del bad["reference_usage_policy"]
+        codes = {i["code"] for i in validate_keysuri_weather_visual_prompt_contract(bad)}
+        self.assertIn("reference_usage_policy_missing", codes)
+
+    def test_validation_rejects_missing_wardrobe_lock(self) -> None:
+        bad = deepcopy(self.global_contract)
+        del bad["wardrobe_lock"]
+        codes = {i["code"] for i in validate_keysuri_weather_visual_prompt_contract(bad)}
+        self.assertIn("wardrobe_lock_missing", codes)
+
+    def test_validation_rejects_missing_pose_variation_policy(self) -> None:
+        bad = deepcopy(self.global_contract)
+        del bad["pose_variation_policy"]
+        codes = {i["code"] for i in validate_keysuri_weather_visual_prompt_contract(bad)}
+        self.assertIn("pose_variation_policy_missing", codes)
+
+    def test_validation_rejects_same_pose_positive(self) -> None:
+        bad = deepcopy(self.global_contract)
+        bad["positive_prompt"] = bad["positive_prompt"] + " use the same pose as reference"
+        codes = {i["code"] for i in validate_keysuri_weather_visual_prompt_contract(bad)}
+        self.assertIn("forbidden_copy_language_in_positive", codes)
+
+    def test_validation_rejects_same_composition_positive(self) -> None:
+        bad = deepcopy(self.global_contract)
+        bad["positive_prompt"] = bad["positive_prompt"] + " keep the same composition"
+        codes = {i["code"] for i in validate_keysuri_weather_visual_prompt_contract(bad)}
+        self.assertIn("forbidden_copy_language_in_positive", codes)
+
+    def test_validation_rejects_missing_no_copy_negative(self) -> None:
+        bad = deepcopy(self.global_contract)
+        bad["negative_prompt"] = "no collage, no weathercaster"
+        codes = {i["code"] for i in validate_keysuri_weather_visual_prompt_contract(bad)}
+        self.assertIn("negative_prompt_missing_phrase", codes)
+
+    def test_static_policy_constants(self) -> None:
+        self.assertEqual(
+            REFERENCE_USAGE_POLICY["reference_role"],
+            "identity_and_wardrobe_continuity_only",
+        )
+        self.assertEqual(
+            WARDROBE_LOCK["wardrobe_role"],
+            "premium_private_tech_secretary_professional",
+        )
+        self.assertEqual(
+            POSE_VARIATION_POLICY["variation_role"],
+            "required_non_reference_composition",
         )
 
 
@@ -175,11 +303,13 @@ class KeysuriPromptContractNegativeTests(unittest.TestCase):
 
 class KeysuriPromptSecretGuardTests(unittest.TestCase):
     def test_report_no_secrets(self) -> None:
-        blob = json.dumps(_report(), ensure_ascii=False)
+        report = _report()
+        blob = json.dumps(report, ensure_ascii=False)
         self.assertNotIn("appid=", blob)
         self.assertNotIn("WEATHER_API_KEY=", blob)
         self.assertNotIn("raw_provider_payload", blob)
-        self.assertNotIn("Tomorrow_Geenee", blob)
+        neg = report["prompt_contracts"]["keysuri_global_tech"]["negative_prompt"].lower()
+        self.assertIn("no tomorrow_geenee", neg)
 
 
 class KeysuriPromptIntegrationScriptTests(unittest.TestCase):

@@ -159,6 +159,7 @@ def _validate_prompt_contract_for_gate(
     else:
         blocked.append("safety_constraints_invalid")
 
+    neg_lower = neg.lower()
     texts: List[str] = []
     _collect_strings(prompt_contract, texts)
     blob_lower = "\n".join(texts).lower()
@@ -177,7 +178,7 @@ def _validate_prompt_contract_for_gate(
     if re.search(r"\b18:00\b", blob_lower) and "no tomorrow" not in blob_lower:
         retirement_ok = False
         blocked.append("forbidden_scheduler_18_00")
-    if "today_geenee" in blob_lower:
+    if "today_geenee" in blob_lower and "no today_geenee" not in neg_lower:
         retirement_ok = False
         blocked.append("forbidden_today_geenee")
     checks["retirement_guard_checked"] = retirement_ok

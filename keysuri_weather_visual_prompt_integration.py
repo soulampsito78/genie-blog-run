@@ -54,7 +54,137 @@ REQUIRED_NEGATIVE_PHRASES = (
     "no tomorrow_geenee",
     "no weather report presenter",
     "no logo text",
+    "no today_geenee wardrobe logic",
+    "no newsroom outfit",
+    "no weather presenter outfit",
+    "no ceo power suit",
+    "no casual office worker",
+    "no evening dress",
+    "no fashion editorial",
+    "no excessive luxury styling",
+    "no overly revealing outfit",
+    "do not copy the reference pose",
+    "do not copy the reference camera angle",
+    "do not copy the reference facial expression",
+    "do not copy the reference hand position",
+    "do not copy the reference tablet angle",
+    "do not recreate the same composition",
+    "do not merely change the background",
 )
+
+IDENTITY_ONLY_REFERENCE_CLAUSE = (
+    "Use the reference image for identity, hairstyle, glasses, facial impression, and "
+    "wardrobe continuity only. Do not copy the reference pose, camera angle, facial "
+    "expression, hand position, tablet angle, or composition. Create a new private "
+    "briefing moment with a different pose and camera perspective."
+)
+
+FORBIDDEN_POSITIVE_COPY_PHRASES = (
+    "same pose",
+    "same composition",
+    "identical pose",
+    "identical composition",
+    "recreate the reference pose",
+    "recreate the reference composition",
+    "merely change the background",
+    "background-only variation",
+    "background-only change",
+)
+
+REFERENCE_USAGE_POLICY = {
+    "reference_role": "identity_and_wardrobe_continuity_only",
+    "must_preserve": [
+        "Kee-Suri facial impression",
+        "sleek short bob hairstyle",
+        "thin glasses",
+        "refined Korean private tech secretary presence",
+        "charcoal fitted suit continuity",
+        "ivory blouse continuity",
+        "professional pencil-skirt or refined business outfit silhouette",
+        "premium private briefing mood",
+    ],
+    "must_not_copy": [
+        "reference pose",
+        "reference camera angle",
+        "reference facial expression",
+        "reference hand position",
+        "reference tablet angle",
+        "reference body orientation",
+        "reference composition",
+        "reference background layout",
+    ],
+    "variation_required": [
+        "new pose",
+        "new camera perspective",
+        "new facial expression",
+        "new private briefing gesture",
+        "new tablet interaction",
+        "program-specific office atmosphere",
+    ],
+}
+
+WARDROBE_LOCK = {
+    "wardrobe_role": "premium_private_tech_secretary_professional",
+    "allowed": [
+        "charcoal fitted suit",
+        "ivory blouse",
+        "pencil skirt",
+        "refined business dress",
+        "thin glasses",
+        "tablet or briefing folder",
+        "premium but not flashy styling",
+        "glamorous but professional silhouette",
+    ],
+    "forbidden": [
+        "news anchor outfit",
+        "weathercaster outfit",
+        "CEO power suit dominance",
+        "casual office worker look",
+        "evening dress",
+        "fashion editorial styling",
+        "excessive luxury styling",
+        "overly revealing outfit",
+        "seasonal wardrobe drift",
+        "Tomorrow_Geenee weather presenter styling",
+        "Today_Geenee wardrobe logic",
+    ],
+    "must_remain": [
+        "private tech secretary",
+        "professional briefing assistant",
+        "premium office presence",
+    ],
+}
+
+POSE_VARIATION_POLICY = {
+    "variation_role": "required_non_reference_composition",
+    "global_tech_allowed_variations": [
+        "three-quarter angle beside the desk",
+        "seated or half-standing near a briefing table",
+        "leaning slightly toward the viewer as if giving a private briefing",
+        "tablet angled toward the viewer",
+        "one hand making a subtle briefing gesture",
+        "calm confident expression with slight warmth",
+        "over-the-shoulder office monitor depth",
+        "premium daylight office with global tech briefing atmosphere",
+    ],
+    "korea_tech_allowed_variations": [
+        "early-evening private office briefing",
+        "slightly closer conversational angle",
+        "tablet lowered while explaining a key signal",
+        "subtle after-work briefing posture",
+        "soft confident expression",
+        "city-light window atmosphere",
+        "premium Korean tech/startup briefing mood",
+    ],
+    "must_not": [
+        "same front-facing standing pose",
+        "same tablet held at same angle",
+        "same neutral facial expression",
+        "same centered camera composition",
+        "same body crop as reference",
+        "background-only variation",
+    ],
+}
 
 SAFETY_CONSTRAINTS = {
     "no_collage": True,
@@ -168,28 +298,42 @@ def _build_positive_prompt(program_id: str, visual_context: dict) -> str:
     summary = str(visual_context.get("weather_visual_summary") or "").strip()
     props = str(visual_context.get("prop_direction") or "").strip()
 
-    shared = (
-        "Photorealistic premium Korean private tech secretary, sleek short bob hair, "
-        "thin metal glasses, refined Korean facial impression, charcoal or deep navy tailored suit, "
-        "ivory blouse, tablet briefing pose, private premium office, personal briefing distance, "
-        "quietly intelligent competent private executive tech secretary, "
-        "테크 비서 키수리 private insight assistant mood, no public studio feeling"
+    identity = (
+        "Photorealistic premium Korean private tech secretary 테크 비서 키수리, sleek short bob hair, "
+        "thin metal glasses, refined Korean facial impression, charcoal fitted suit, ivory blouse, "
+        "professional pencil-skirt or refined business silhouette, premium private briefing mood, "
+        "quietly intelligent competent private executive tech secretary, no public studio feeling, "
+        "no public broadcast anchor or newsroom studio feeling"
     )
 
     if program_id == "keysuri_global_tech":
         program_bits = (
-            "Seoul daytime cloudy light through window, cool but natural business atmosphere, "
-            "global tech big tech startup platform policy signal briefing mood, "
-            "international business executive office context"
+            "Daytime global tech private executive briefing, three-quarter or conversational "
+            "private briefing angle beside the desk, new pose and camera perspective different "
+            "from reference, tablet interaction angled toward the viewer with a subtle briefing "
+            "gesture, calm confident expression with slight warmth, Seoul daytime cloudy window "
+            "light affects daylight and window realism only, global tech big tech startup platform "
+            "policy signal briefing mood, international business executive office atmosphere"
         )
     else:
         program_bits = (
-            "Seoul early evening cloudy city tone, soft office lighting and city reflections, "
-            "Korean tech startup platform policy business opportunity briefing mood, "
-            "personal after-work briefing atmosphere, early evening premium office"
+            "Early-evening Korean tech startup private briefing, conversational after-work briefing "
+            "angle slightly closer to the viewer, new pose and camera perspective different from "
+            "reference, tablet lowered or briefing folder interaction different from reference, "
+            "soft confident expression, Seoul early evening cloudy city tone affects city and window "
+            "realism only, personal after-work premium office atmosphere"
         )
 
-    parts = [shared, program_bits, summary, bg, light, mood, props]
+    parts = [
+        identity,
+        IDENTITY_ONLY_REFERENCE_CLAUSE,
+        program_bits,
+        summary,
+        bg,
+        light,
+        mood,
+        props,
+    ]
     return ". ".join(p for p in parts if p)
 
 
@@ -229,6 +373,9 @@ def build_keysuri_weather_visual_prompt_contract(
         "location": LOCATION,
         "identity": dict(IDENTITY_BLOCK),
         "weather_visual_usage": dict(WEATHER_VISUAL_USAGE),
+        "reference_usage_policy": dict(REFERENCE_USAGE_POLICY),
+        "wardrobe_lock": dict(WARDROBE_LOCK),
+        "pose_variation_policy": dict(POSE_VARIATION_POLICY),
         "positive_prompt": _build_positive_prompt(pid, visual_context),
         "negative_prompt": _build_negative_prompt(),
         "safety_constraints": dict(SAFETY_CONSTRAINTS),
@@ -340,6 +487,170 @@ def validate_keysuri_weather_visual_prompt_contract(contract: dict) -> List[dict
                     "negative_prompt_missing_phrase",
                     f"negative_prompt must include {phrase!r}",
                     "negative_prompt",
+                )
+            )
+
+    ref_policy = contract.get("reference_usage_policy")
+    if not isinstance(ref_policy, dict):
+        issues.append(
+            _issue(
+                "reference_usage_policy_missing",
+                "reference_usage_policy must be a dict",
+                "reference_usage_policy",
+            )
+        )
+    elif ref_policy.get("reference_role") != "identity_and_wardrobe_continuity_only":
+        issues.append(
+            _issue(
+                "reference_role_invalid",
+                "reference_role must be identity_and_wardrobe_continuity_only",
+                "reference_usage_policy.reference_role",
+            )
+        )
+    else:
+        for key in ("must_preserve", "must_not_copy", "variation_required"):
+            if not isinstance(ref_policy.get(key), list) or not ref_policy.get(key):
+                issues.append(
+                    _issue(
+                        "reference_usage_policy_list_invalid",
+                        f"reference_usage_policy.{key} must be a non-empty list",
+                        f"reference_usage_policy.{key}",
+                    )
+                )
+        must_not_copy = {str(x).lower() for x in (ref_policy.get("must_not_copy") or [])}
+        for required in (
+            "reference pose",
+            "reference camera angle",
+            "reference facial expression",
+            "reference hand position",
+            "reference tablet angle",
+            "reference composition",
+        ):
+            if required not in must_not_copy:
+                issues.append(
+                    _issue(
+                        "must_not_copy_missing",
+                        f"must_not_copy must include {required!r}",
+                        "reference_usage_policy.must_not_copy",
+                    )
+                )
+
+    wardrobe = contract.get("wardrobe_lock")
+    if not isinstance(wardrobe, dict):
+        issues.append(
+            _issue(
+                "wardrobe_lock_missing",
+                "wardrobe_lock must be a dict",
+                "wardrobe_lock",
+            )
+        )
+    elif wardrobe.get("wardrobe_role") != "premium_private_tech_secretary_professional":
+        issues.append(
+            _issue(
+                "wardrobe_role_invalid",
+                "wardrobe_role must be premium_private_tech_secretary_professional",
+                "wardrobe_lock.wardrobe_role",
+            )
+        )
+    else:
+        forbidden_wardrobe = " ".join(str(x).lower() for x in (wardrobe.get("forbidden") or []))
+        for term in (
+            "today_geenee wardrobe logic",
+            "weathercaster outfit",
+            "news anchor outfit",
+        ):
+            if term not in forbidden_wardrobe:
+                issues.append(
+                    _issue(
+                        "wardrobe_forbidden_missing",
+                        f"wardrobe_lock.forbidden must include {term!r}",
+                        "wardrobe_lock.forbidden",
+                    )
+                )
+
+    pose_policy = contract.get("pose_variation_policy")
+    if not isinstance(pose_policy, dict):
+        issues.append(
+            _issue(
+                "pose_variation_policy_missing",
+                "pose_variation_policy must be a dict",
+                "pose_variation_policy",
+            )
+        )
+    elif pose_policy.get("variation_role") != "required_non_reference_composition":
+        issues.append(
+            _issue(
+                "pose_variation_role_invalid",
+                "variation_role must be required_non_reference_composition",
+                "pose_variation_policy.variation_role",
+            )
+        )
+    else:
+        if pid == "keysuri_global_tech":
+            global_vars = " ".join(
+                str(x).lower() for x in (pose_policy.get("global_tech_allowed_variations") or [])
+            )
+            if "three-quarter" not in global_vars and "conversational" not in global_vars:
+                issues.append(
+                    _issue(
+                        "global_variation_missing",
+                        "global_tech_allowed_variations must include three-quarter or conversational angle",
+                        "pose_variation_policy.global_tech_allowed_variations",
+                    )
+                )
+        if pid == "keysuri_korea_tech":
+            korea_vars = " ".join(
+                str(x).lower() for x in (pose_policy.get("korea_tech_allowed_variations") or [])
+            )
+            if "early-evening" not in korea_vars and "conversational" not in korea_vars:
+                issues.append(
+                    _issue(
+                        "korea_variation_missing",
+                        "korea_tech_allowed_variations must include early-evening or conversational briefing",
+                        "pose_variation_policy.korea_tech_allowed_variations",
+                    )
+                )
+        must_not_pose = " ".join(str(x).lower() for x in (pose_policy.get("must_not") or []))
+        if "background-only variation" not in must_not_pose:
+            issues.append(
+                _issue(
+                    "pose_must_not_missing",
+                    "must_not must include background-only variation",
+                    "pose_variation_policy.must_not",
+                )
+            )
+
+    if IDENTITY_ONLY_REFERENCE_CLAUSE.lower() not in pos_lower:
+        issues.append(
+            _issue(
+                "identity_only_reference_clause_missing",
+                "positive_prompt must include identity-only reference usage clause",
+                "positive_prompt",
+            )
+        )
+    if "do not copy the reference pose" not in pos_lower and "do not copy" not in pos_lower:
+        issues.append(
+            _issue(
+                "no_copy_pose_clause_missing",
+                "positive_prompt must forbid copying reference pose/composition",
+                "positive_prompt",
+            )
+        )
+    if "private tech secretary" not in pos_lower and "테크 비서" not in pos:
+        issues.append(
+            _issue(
+                "private_secretary_identity_missing",
+                "positive_prompt must include private tech secretary identity",
+                "positive_prompt",
+            )
+        )
+    for forbidden_phrase in FORBIDDEN_POSITIVE_COPY_PHRASES:
+        if forbidden_phrase.lower() in pos_lower:
+            issues.append(
+                _issue(
+                    "forbidden_copy_language_in_positive",
+                    f"positive_prompt must not contain {forbidden_phrase!r}",
+                    "positive_prompt",
                 )
             )
 
