@@ -76,6 +76,12 @@ class ProgramRegistryTests(unittest.TestCase):
             ["today_geenee", "keysuri_global_tech", "keysuri_korea_tech"],
         )
 
+    def test_all_active_programs_policy_flags(self) -> None:
+        for spec in list_programs():
+            with self.subTest(program_id=spec.program_id):
+                self.assertFalse(spec.auto_send_after_timeout_enabled)
+                self.assertTrue(spec.customer_send_requires_approval)
+
 
 if __name__ == "__main__":
     unittest.main()

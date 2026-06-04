@@ -12,6 +12,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from admin_store import (
     admin_runs_dir,
+    approve_run,
+    can_approve_customer_send,
     load_run_artifact,
     load_run_email_html,
     list_run_artifacts,
@@ -31,6 +33,18 @@ REISSUE_REASONS = (
     "구성 품질 이슈",
     "기타",
 )
+
+_APPROVE_ERROR_MESSAGES = {
+    "already_approved": "이미 승인된 실행입니다.",
+    "customer_already_sent": "고객 발송이 이미 완료된 실행입니다.",
+    "legacy_timeout_sent": "과거 타임아웃 자동 발송 기록입니다. 새 승인 발송은 불가합니다.",
+    "missing_customer_to": "GENIE_CUSTOMER_EMAIL_TO가 설정되지 않았습니다.",
+    "missing_email_html": "저장된 이메일 HTML이 없습니다.",
+    "missing_smtp": "SMTP 설정이 없습니다.",
+    "not_approvable": "승인할 수 없는 검증 상태입니다.",
+    "send_failed": "고객 이메일 발송에 실패했습니다.",
+    "unsupported_mode": "승인 발송을 지원하지 않는 mode입니다.",
+}
 
 
 def admin_password() -> str:
@@ -221,6 +235,23 @@ def admin_run_detail(request: Request, run_id: str):
         )
     has_email = load_run_email_html(run_id) is not None
     email_link = f'<a href="/admin/runs/{_esc(run_id)}/email" target="_blank">이메일 HTML 미리보기</a>' if has_email else "<em>저장된 이메일 HTML 없음</em>"
+    can_approve, approve_err = can_approve_customer_send(meta, has_email_html=has_email)
+    approve_block = ""
+    if meta.get("mode") == "today_genie":
+        if can_approve:
+            approve_block = (
+                f'<p><a class="btn" href="/admin/runs/{_esc(run_id)}/approve-confirm">'
+                "승인 검토 페이지 열기</a></p>"
+            )
+        else:
+            approve_block = (
+                f'<p class="warn">승인 발송 불가: {_esc(_APPROVE_ERROR_MESSAGES.get(approve_err, approve_err))}</p>'
+            )
+    if request.query_params.get("approve_error"):
+        err_code = request.query_params.get("approve_error", "")
+        warn += (
+            f'<div class="warn">승인 실패: {_esc(_APPROVE_ERROR_MESSAGES.get(err_code, err_code))}</div>'
+        )
     reason_opts = "".join(
         f'<option value="{_esc(o)}">{_esc(o)}</option>' for o in REISSUE_REASONS
     )
@@ -238,6 +269,7 @@ def admin_run_detail(request: Request, run_id: str):
 <div class="card">
 <dl class="meta">{meta_rows}</dl>
 <p>{email_link}</p>
+{approve_block}
 </div>
 <div class="card warn">
 <strong>재발행 안내</strong><br>
@@ -273,6 +305,62 @@ def admin_run_email_preview(request: Request, run_id: str):
             status_code=404,
         )
     return HTMLResponse(content)
+
+
+@router.get("/admin/runs/{run_id}/approve-confirm", response_class=HTMLResponse)
+def admin_run_approve_confirm(request: Request, run_id: str):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    if not validate_run_id(run_id):
+        return HTMLResponse(_layout("Not found", "<p>잘못된 run_id</p>"), status_code=404)
+    meta = load_run_artifact(run_id)
+    if not meta:
+        return HTMLResponse(_layout("Not found", "<p>실행 기록을 찾을 수 없습니다.</p>"), status_code=404)
+    has_email = load_run_email_html(run_id) is not None
+    can_approve, approve_err = can_approve_customer_send(meta, has_email_html=has_email)
+    if not can_approve:
+        msg = _APPROVE_ERROR_MESSAGES.get(approve_err, approve_err)
+        inner = f"<p>{_esc(msg)}</p><p><a href=\"/admin/runs/{_esc(run_id)}\">돌아가기</a></p>"
+        return HTMLResponse(_layout("Approve blocked", inner), status_code=400)
+    inner = f"""
+<h1>고객 발송 승인 확인</h1>
+<p>run_id: <code>{_esc(run_id)}</code></p>
+<p>mode: {_esc(meta.get('mode'))}</p>
+<p>승인 시 고객에게 HTML 본문 이메일이 즉시 발송됩니다. (첨부/Naver 패키지 없음)</p>
+<div class="card warn">
+<strong>주의</strong> — 승인은 되돌릴 수 없으며 중복 승인 발송은 차단됩니다.
+</div>
+<form method="post" action="/admin/runs/{_esc(run_id)}/approve">
+<label>승인 메모 (선택)<br>
+<input type="text" name="approve_note" maxlength="500" placeholder="승인 메모">
+</label><br><br>
+<button class="btn" type="submit">승인 및 고객 발송</button>
+</form>
+<p><a href="/admin/runs/{_esc(run_id)}">← 실행 상세</a></p>
+"""
+    return HTMLResponse(_layout(f"Approve {run_id}", inner))
+
+
+@router.post("/admin/runs/{run_id}/approve")
+def admin_run_approve(
+    request: Request,
+    run_id: str,
+    approve_note: str = Form(""),
+):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    if not validate_run_id(run_id):
+        return HTMLResponse(_layout("Not found", "<p>잘못된 run_id</p>"), status_code=404)
+    updated, status = approve_run(run_id, note=approve_note)
+    if status != "ok" or not updated:
+        code = status if status in _APPROVE_ERROR_MESSAGES else "send_failed"
+        return RedirectResponse(
+            url=f"/admin/runs/{run_id}?approve_error={code}",
+            status_code=303,
+        )
+    return RedirectResponse(url=f"/admin/runs/{run_id}", status_code=303)
 
 
 @router.post("/admin/runs/{run_id}/reissue")

@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional
 
 from email_sender import send_genie_email
 from naver_draft import create_naver_draft
+from programs.registry import UnknownProgramError, get_program, resolve_program_id
 from publishing_policy import PublishingDecision, decide_publishing_actions
 
 logger = logging.getLogger(__name__)
@@ -225,6 +226,14 @@ def _admin_reissue_send_active() -> bool:
     return os.getenv("GENIE_ADMIN_REISSUE", "").strip().lower() in ("1", "true", "yes")
 
 
+def _program_allows_naver_draft(mode: str) -> bool:
+    try:
+        spec = get_program(resolve_program_id(mode))
+    except UnknownProgramError:
+        return mode == "tomorrow_genie"
+    return bool(spec.naver_assets_enabled)
+
+
 def extract_email_html_for_artifact(result: OrchestrationResult) -> str:
     """Best-effort email HTML for admin artifact storage (same render path as send)."""
     if result.response_status != 200 or not isinstance(result.response_data, dict):
@@ -282,6 +291,8 @@ def build_run_artifact_metadata(
         "issue_codes": runtime_check.get("issue_codes", []),
         "content_quality_warnings": runtime_check.get("content_quality_warnings", []),
         "target_date": runtime_check.get("target_date"),
+        "owner_review_status": "pending_review",
+        "customer_delivery_status": "not_sent",
         "admin_reissue": bool(parent_run_id),
     }
     return meta
@@ -377,8 +388,12 @@ def send_email_if_allowed(result: OrchestrationResult) -> bool:
         drafts = data.get("channel_drafts") or {}
         base_subj = drafts.get("email_subject") or "(Genie briefing)"
         subject = f"[GENIE owner reissue] {base_subj}"
+    elif mode == "today_genie":
+        drafts = data.get("channel_drafts") or {}
+        base_subj = drafts.get("email_subject") or "(Genie briefing)"
+        subject = f"[운영자 검토] {base_subj}"
 
-    # Canonical today_genie handoff send path: rich MIME + CID inline only.
+    # Canonical today_genie handoff send path: owner-review rich MIME + CID inline only.
     if mode == "today_genie":
         try:
             from main import build_today_genie_email_html_for_cid_mime_send
@@ -442,8 +457,12 @@ def send_email_if_allowed(result: OrchestrationResult) -> bool:
 def create_naver_draft_if_allowed(result: OrchestrationResult) -> bool:
     """
     If policy allows creating a Naver draft and we have payload, create via naver_draft.
-    No action on suppress_external or when response_data is missing.
+    Today_Geenee registry disables Naver assets entirely.
     """
+    mode = str(result.mode or "").strip()
+    if not _program_allows_naver_draft(mode):
+        logger.info("create_naver_draft_if_allowed: skipped (naver_assets_enabled=false for %s)", mode)
+        return False
     if not result.decision.create_naver_draft:
         logger.info("create_naver_draft_if_allowed: skipped (policy create_naver_draft=False)")
         return False

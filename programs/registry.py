@@ -30,6 +30,8 @@ class ProgramSpec:
     image_attachment_enabled: bool
     naver_assets_enabled: bool
     in_app_enabled: bool
+    auto_send_after_timeout_enabled: bool
+    customer_send_requires_approval: bool
     source_gate_enabled: bool = False
     legacy_mode: str | None = None
 
@@ -56,6 +58,8 @@ PROGRAMS: Dict[str, ProgramSpec] = {
         image_attachment_enabled=False,
         naver_assets_enabled=False,
         in_app_enabled=False,
+        auto_send_after_timeout_enabled=False,
+        customer_send_requires_approval=True,
     ),
     "keysuri_global_tech": ProgramSpec(
         program_id="keysuri_global_tech",
@@ -78,6 +82,8 @@ PROGRAMS: Dict[str, ProgramSpec] = {
         naver_assets_enabled=False,
         in_app_enabled=True,
         source_gate_enabled=True,
+        auto_send_after_timeout_enabled=False,
+        customer_send_requires_approval=True,
     ),
     "keysuri_korea_tech": ProgramSpec(
         program_id="keysuri_korea_tech",
@@ -100,6 +106,8 @@ PROGRAMS: Dict[str, ProgramSpec] = {
         naver_assets_enabled=False,
         in_app_enabled=True,
         source_gate_enabled=True,
+        auto_send_after_timeout_enabled=False,
+        customer_send_requires_approval=True,
     ),
 }
 

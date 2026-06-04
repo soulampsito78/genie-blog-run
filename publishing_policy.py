@@ -8,6 +8,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from programs.registry import UnknownProgramError, get_program, resolve_program_id
+
 
 @dataclass(frozen=True)
 class PublishingDecision:
@@ -18,6 +20,7 @@ class PublishingDecision:
     auto_publish: bool
     require_review: bool
     suppress_external: bool
+    send_customer_email: bool = False
 
 
 # Finance-safety issue codes: any of these must suppress downstream distribution.
@@ -43,7 +46,7 @@ FINANCE_SAFETY_CODES = frozenset({
     "unsupported_schedule_or_stock_claim",
 })
 
-# Critical today_genie inputs: if either is missing, no auto email.
+# Critical today_genie inputs: if either is missing, no owner-review email.
 CRITICAL_TODAY_INPUTS = ("overnight_us_market", "macro_indicators")
 
 # Owner/internal review recipients only (not customer delivery).
@@ -69,13 +72,21 @@ def _owner_recipients_only() -> bool:
     return bool(parts) and all(p in OWNER_REVIEW_EMAIL_ALLOWLIST for p in parts)
 
 
-def _today_draft_only_owner_review_send_allowed(
+def _program_spec_for_mode(mode: str):
+    try:
+        return get_program(resolve_program_id(mode))
+    except UnknownProgramError:
+        return None
+
+
+def _today_owner_review_send_allowed(
     issues: List[Dict[str, Any]],
     runtime_input: Optional[Dict[str, Any]],
 ) -> bool:
     """
-    Scheduled/manual owner-review email for today_genie draft_only / review_required.
-    Requires explicit GENIE_OWNER_REVIEW_SEND=1 and owner-only EMAIL_TO.
+    Owner-review email for today_genie scheduled/manual runs.
+    Requires GENIE_OWNER_REVIEW_SEND=1 and owner-only EMAIL_TO.
+    Never authorizes customer delivery.
     """
     if not _owner_review_send_gate_active():
         return False
@@ -112,10 +123,46 @@ def _critical_today_inputs_missing(runtime_input: Optional[Dict[str, Any]]) -> b
     return False
 
 
-# today_genie number table: structure/accuracy_fail codes in FINANCE_SAFETY_CODES suppress
-# distribution. number_table_accuracy_not_verified is a warning → validation draft_only;
-# production email send requires validation_result pass unless GENIE_OWNER_REVIEW_SEND=1
-# (owner-only EMAIL_TO) or controlled-test mode is active (see below).
+def _today_geenee_scheduled_decision(
+    result: str,
+    issues: List[Dict[str, Any]],
+    runtime_input: Optional[Dict[str, Any]],
+) -> PublishingDecision:
+    """
+    Today_Geenee / today_genie: scheduler creates owner-review only.
+    Customer send requires explicit owner/admin approval (never from policy here).
+    """
+    critical_missing = _critical_today_inputs_missing(runtime_input)
+    owner_review_send = _today_owner_review_send_allowed(issues, runtime_input)
+
+    if result == "draft_only":
+        if owner_review_send and not critical_missing:
+            return PublishingDecision(
+                send_email=True,
+                create_naver_draft=False,
+                auto_publish=False,
+                require_review=True,
+                suppress_external=False,
+                send_customer_email=False,
+            )
+        return PublishingDecision(
+            send_email=False,
+            create_naver_draft=False,
+            auto_publish=False,
+            require_review=True,
+            suppress_external=False,
+            send_customer_email=False,
+        )
+
+    # pass — owner-review email only when explicitly gated; never customer or Naver
+    return PublishingDecision(
+        send_email=owner_review_send and not critical_missing,
+        create_naver_draft=False,
+        auto_publish=False,
+        require_review=True,
+        suppress_external=False,
+        send_customer_email=False,
+    )
 
 
 def decide_publishing_actions(
@@ -137,10 +184,11 @@ def decide_publishing_actions(
 
     Returns:
         PublishingDecision with send_email, create_naver_draft, auto_publish,
-        require_review, suppress_external.
+        require_review, suppress_external, send_customer_email.
     """
     issues = issues or []
     result = validation_result
+    program = _program_spec_for_mode(mode)
 
     # Run failed (500, network, etc.) or explicit block → full suppress
     if result not in ("pass", "draft_only"):
@@ -150,6 +198,7 @@ def decide_publishing_actions(
             auto_publish=False,
             require_review=True,
             suppress_external=True,
+            send_customer_email=False,
         )
 
     # Finance-safety issue: always suppress distribution
@@ -160,42 +209,14 @@ def decide_publishing_actions(
             auto_publish=False,
             require_review=True,
             suppress_external=True,
+            send_customer_email=False,
         )
 
     if mode == "today_genie":
-        critical_missing = _critical_today_inputs_missing(runtime_input)
-        if result == "draft_only":
-            controlled_send = (
-                _controlled_test_send_active()
-                and not critical_missing
-                and not _has_finance_safety_issue(issues)
-            )
-            owner_review_send = _today_draft_only_owner_review_send_allowed(
-                issues, runtime_input
-            )
-            if controlled_send or owner_review_send:
-                return PublishingDecision(
-                    send_email=True,
-                    create_naver_draft=bool(controlled_send),
-                    auto_publish=False,
-                    require_review=True,
-                    suppress_external=False,
-                )
-            return PublishingDecision(
-                send_email=False,
-                create_naver_draft=True,
-                auto_publish=False,
-                require_review=True,
-                suppress_external=False,
-            )
-        # pass
-        return PublishingDecision(
-            send_email=not critical_missing,
-            create_naver_draft=True,
-            auto_publish=False,
-            require_review=True,
-            suppress_external=False,
-        )
+        if program and program.customer_send_requires_approval:
+            return _today_geenee_scheduled_decision(result, issues, runtime_input)
+        # fallback (should not happen once registry wired)
+        return _today_geenee_scheduled_decision(result, issues, runtime_input)
 
     # tomorrow_genie (result is pass or draft_only; block handled above)
     if result == "draft_only":
@@ -205,6 +226,7 @@ def decide_publishing_actions(
             auto_publish=False,
             require_review=True,
             suppress_external=False,
+            send_customer_email=False,
         )
     # pass
     return PublishingDecision(
@@ -213,4 +235,5 @@ def decide_publishing_actions(
         auto_publish=False,
         require_review=True,
         suppress_external=False,
+        send_customer_email=False,
     )

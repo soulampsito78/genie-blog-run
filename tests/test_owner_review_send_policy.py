@@ -120,7 +120,7 @@ class OwnerReviewSendPolicyTests(unittest.TestCase):
         self.assertFalse(d.send_email)
         self.assertTrue(d.suppress_external)
 
-    def test_today_pass_behavior_unchanged(self) -> None:
+    def test_today_pass_requires_owner_gate_no_customer_send(self) -> None:
         os.environ.pop("GENIE_OWNER_REVIEW_SEND", None)
         d = decide_publishing_actions(
             "today_genie",
@@ -129,7 +129,23 @@ class OwnerReviewSendPolicyTests(unittest.TestCase):
             [],
             _FULL_RUNTIME,
         )
+        self.assertFalse(d.send_email)
+        self.assertFalse(d.create_naver_draft)
+        self.assertFalse(d.send_customer_email)
+
+    def test_today_pass_owner_gate_on_owner_review_only(self) -> None:
+        os.environ["GENIE_OWNER_REVIEW_SEND"] = "1"
+        os.environ["EMAIL_TO"] = _OWNER_TO
+        d = decide_publishing_actions(
+            "today_genie",
+            "pass",
+            "validated",
+            [],
+            _FULL_RUNTIME,
+        )
         self.assertTrue(d.send_email)
+        self.assertFalse(d.create_naver_draft)
+        self.assertFalse(d.send_customer_email)
 
     def test_tomorrow_draft_only_unchanged(self) -> None:
         os.environ.pop("GENIE_OWNER_REVIEW_SEND", None)

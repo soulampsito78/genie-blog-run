@@ -164,6 +164,14 @@ def _parse_to_addrs() -> list[str]:
     return [addr.strip() for addr in raw.split(",") if addr.strip()]
 
 
+def parse_customer_to_addrs() -> list[str]:
+    """Customer delivery recipients (approve path only)."""
+    raw = os.getenv("GENIE_CUSTOMER_EMAIL_TO", "")
+    if not raw or not raw.strip():
+        return []
+    return [addr.strip() for addr in raw.split(",") if addr.strip() and "@" in addr]
+
+
 def _rich_send_gate_ok() -> bool:
     return os.getenv("GENIE_EMAIL_SEND_TEST", "").strip() in ("1", "true", "True", "yes", "YES")
 
@@ -300,6 +308,7 @@ def send_genie_email(
     inline_jpeg_parts: Optional[List[Tuple[str, str, str]]] = None,
     attachment_jpeg_parts: Optional[List[Tuple[str, str]]] = None,
     test_to_addrs: Optional[List[str]] = None,
+    to_addrs_override: Optional[List[str]] = None,
 ) -> bool:
     """
     Send HTML email via SMTP.
@@ -348,7 +357,7 @@ def send_genie_email(
                 )
                 return False
         elif _rich_non_test_gate_ok():
-            to_addrs = _parse_to_addrs()
+            to_addrs = list(to_addrs_override) if to_addrs_override else _parse_to_addrs()
             if not to_addrs:
                 _LAST_SEND_DIAGNOSTIC = "rich_send_blocked: EMAIL_TO not set or empty"
                 logger.warning(
@@ -369,7 +378,7 @@ def send_genie_email(
             logger.warning("send_genie_email: MIME send requires inline_jpeg_parts")
             return False
     else:
-        to_addrs = _parse_to_addrs()
+        to_addrs = list(to_addrs_override) if to_addrs_override else _parse_to_addrs()
         if not to_addrs:
             _LAST_SEND_DIAGNOSTIC = "skipped: EMAIL_TO not set or empty"
             logger.warning("send_genie_email: skipped (EMAIL_TO not set or empty)")
