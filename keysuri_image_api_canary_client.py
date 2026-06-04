@@ -138,6 +138,10 @@ def _base_report(
     side_effects: dict | None = None,
     issues: List[dict] | None = None,
     output_report_path: str = DEFAULT_OUTPUT_REPORT,
+    wardrobe_date_kst: str | None = None,
+    wardrobe_profile_id: str | None = None,
+    daily_wardrobe_seed: str | None = None,
+    wardrobe_prompt_injected: bool = False,
 ) -> dict:
     return {
         "report_type": REPORT_TYPE,
@@ -155,6 +159,10 @@ def _base_report(
         "output_report_path": output_report_path,
         "reference_asset": reference_asset,
         "prompt_source": prompt_source,
+        "wardrobe_date_kst": wardrobe_date_kst,
+        "wardrobe_profile_id": wardrobe_profile_id,
+        "daily_wardrobe_seed": daily_wardrobe_seed,
+        "wardrobe_prompt_injected": wardrobe_prompt_injected,
         "today_geenee_in_canary": False,
         "tomorrow_geenee_in_canary": False,
         "secrets_exposed": False,
@@ -165,6 +173,55 @@ def _base_report(
         "side_effects": side_effects or _side_effects(),
         "issues": issues or [],
     }
+
+
+def _wardrobe_metadata_from_prompt_source(prompt_source: dict | None) -> dict:
+    if not isinstance(prompt_source, dict):
+        return {
+            "wardrobe_date_kst": None,
+            "wardrobe_profile_id": None,
+            "daily_wardrobe_seed": None,
+            "wardrobe_prompt_injected": False,
+        }
+    return {
+        "wardrobe_date_kst": prompt_source.get("wardrobe_date_kst"),
+        "wardrobe_profile_id": prompt_source.get("wardrobe_profile_id"),
+        "daily_wardrobe_seed": prompt_source.get("daily_wardrobe_seed"),
+        "wardrobe_prompt_injected": bool(prompt_source.get("wardrobe_prompt_injected")),
+    }
+
+
+def _validate_prompt_source_override(prompt_source: dict) -> List[dict]:
+    issues: List[dict] = []
+    if not isinstance(prompt_source, dict):
+        issues.append(_issue("prompt_source_override_invalid", "must be a dict", "prompt_source_override"))
+        return issues
+    if not str(prompt_source.get("positive_prompt") or "").strip():
+        issues.append(
+            _issue(
+                "prompt_source_override_missing_positive",
+                "positive_prompt is required",
+                "prompt_source_override.positive_prompt",
+            )
+        )
+    if not str(prompt_source.get("negative_prompt") or "").strip():
+        issues.append(
+            _issue(
+                "prompt_source_override_missing_negative",
+                "negative_prompt is required",
+                "prompt_source_override.negative_prompt",
+            )
+        )
+    override_pid = str(prompt_source.get("program_id") or "").strip()
+    if override_pid and not program_id_is_allowed(override_pid):
+        issues.append(
+            _issue(
+                "prompt_source_override_invalid_program",
+                f"invalid program_id {override_pid!r}",
+                "prompt_source_override.program_id",
+            )
+        )
+    return issues
 
 
 def _normalize_program_arg(program_id: str | None) -> tuple[str | None, List[dict]]:
@@ -246,6 +303,7 @@ def build_keysuri_image_api_canary_report(
     reference_asset: str | None = None,
     output_dir: str = DEFAULT_OUTPUT_DIR,
     lock_path: str = DEFAULT_LOCK_PATH,
+    prompt_source_override: dict | None = None,
     _generate_image_fn: Callable[..., Path] | None = None,
 ) -> dict:
     """Build manual image API canary report (may perform one mocked/real generation)."""
@@ -256,6 +314,7 @@ def build_keysuri_image_api_canary_report(
         reference_asset=reference_asset,
         output_dir=output_dir,
         lock_path=lock_path,
+        prompt_source_override=prompt_source_override,
         _generate_image_fn=_generate_image_fn,
     )
 
@@ -267,6 +326,7 @@ def run_keysuri_image_api_canary(
     reference_asset: str | None = None,
     output_dir: str = DEFAULT_OUTPUT_DIR,
     lock_path: str = DEFAULT_LOCK_PATH,
+    prompt_source_override: dict | None = None,
     _generate_image_fn: Callable[..., Path] | None = None,
 ) -> dict:
     """Run Kee-Suri manual image API canary with default blocked/no-call path."""
@@ -362,23 +422,63 @@ def run_keysuri_image_api_canary(
             ),
         )
 
-    prompt_source, gate_issues, gate_ready = _gate_prompt_source(
-        lock_path,
-        pid,
-        manual_approval_for_gate=True,
-    )
-    all_issues.extend(gate_issues)
-    if not gate_ready or prompt_source is None:
-        return _base_report(
-            canary_status="blocked_gate_not_ready",
-            program_id=pid,
-            manual_approval_present=True,
-            dry_run=dry_run,
-            provider=provider,
-            reference_asset=ref_path,
-            prompt_source=prompt_source,
-            issues=all_issues,
+    if prompt_source_override is not None:
+        override_issues = _validate_prompt_source_override(prompt_source_override)
+        all_issues.extend(override_issues)
+        if override_issues:
+            return _base_report(
+                canary_status="blocked_invalid_prompt_source_override",
+                program_id=pid,
+                manual_approval_present=True,
+                dry_run=dry_run,
+                provider=provider,
+                reference_asset=ref_path,
+                prompt_source=dict(prompt_source_override),
+                issues=all_issues,
+                **_wardrobe_metadata_from_prompt_source(prompt_source_override),
+            )
+        prompt_source = dict(prompt_source_override)
+        override_pid = str(prompt_source.get("program_id") or "").strip()
+        if override_pid and override_pid != pid:
+            all_issues.append(
+                _issue(
+                    "prompt_source_program_mismatch",
+                    "prompt_source_override.program_id must match run program_id",
+                    "prompt_source_override.program_id",
+                )
+            )
+            return _base_report(
+                canary_status="blocked_invalid_prompt_source_override",
+                program_id=pid,
+                manual_approval_present=True,
+                dry_run=dry_run,
+                provider=provider,
+                reference_asset=ref_path,
+                prompt_source=prompt_source,
+                issues=all_issues,
+                **_wardrobe_metadata_from_prompt_source(prompt_source),
+            )
+        gate_ready = True
+    else:
+        prompt_source, gate_issues, gate_ready = _gate_prompt_source(
+            lock_path,
+            pid,
+            manual_approval_for_gate=True,
         )
+        all_issues.extend(gate_issues)
+        if not gate_ready or prompt_source is None:
+            return _base_report(
+                canary_status="blocked_gate_not_ready",
+                program_id=pid,
+                manual_approval_present=True,
+                dry_run=dry_run,
+                provider=provider,
+                reference_asset=ref_path,
+                prompt_source=prompt_source,
+                issues=all_issues,
+            )
+
+    wardrobe_meta = _wardrobe_metadata_from_prompt_source(prompt_source)
 
     if not runtime.get("env_ready_for_call"):
         all_issues.extend(runtime.get("issues") or [])
@@ -391,6 +491,7 @@ def run_keysuri_image_api_canary(
             reference_asset=ref_path,
             prompt_source=prompt_source,
             issues=all_issues,
+            **wardrobe_meta,
         )
 
     if dry_run:
@@ -403,6 +504,7 @@ def run_keysuri_image_api_canary(
             reference_asset=ref_path,
             prompt_source=prompt_source,
             issues=all_issues,
+            **wardrobe_meta,
         )
 
     now = datetime.now(ZoneInfo("Asia/Seoul"))
@@ -459,6 +561,7 @@ def run_keysuri_image_api_canary(
                 generated_image=True,
             ),
             issues=all_issues,
+            **wardrobe_meta,
         )
     except Exception as exc:  # noqa: BLE001 — canary error surface
         all_issues.append(_issue("image_generation_failed", str(exc), "generate"))
@@ -476,6 +579,7 @@ def run_keysuri_image_api_canary(
             prompt_source=prompt_source,
             side_effects=_side_effects(called_gemini=True, called_image_api=True),
             issues=all_issues,
+            **wardrobe_meta,
         )
 
 
