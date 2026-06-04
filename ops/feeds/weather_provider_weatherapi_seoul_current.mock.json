@@ -1,0 +1,28 @@
+{
+  "_fixture_note": "Mock WeatherAPI current weather response for offline tests only — not live API data.",
+  "location": {
+    "name": "Seoul",
+    "region": "",
+    "country": "South Korea",
+    "lat": 37.57,
+    "lon": 126.98,
+    "tz_id": "Asia/Seoul",
+    "localtime_epoch": 1717480800,
+    "localtime": "2026-06-04 12:00"
+  },
+  "current": {
+    "last_updated_epoch": 1717480200,
+    "last_updated": "2026-06-04 11:50",
+    "temp_c": 21.0,
+    "feelslike_c": 21.0,
+    "humidity": 55,
+    "wind_kph": 7.2,
+    "wind_degree": 180,
+    "precip_mm": 0.0,
+    "condition": {
+      "text": "Partly cloudy",
+      "icon": "//cdn.weatherapi.com/weather/64x64/day/116.png",
+      "code": 1003
+    }
+  }
+}
