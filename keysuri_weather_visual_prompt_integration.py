@@ -374,14 +374,29 @@ def _program_is_forbidden(program_id: str) -> bool:
     )
 
 
-_PRODUCTION_IDENTITY_STEM = (
+_PRODUCTION_IDENTITY_PREFIX = (
     "Photorealistic premium Korean private tech secretary Kee-Suri (테크 비서 키수리). "
     "Same person as the reference: refined Korean facial impression, sleek short bob, "
     "thin metal glasses, calm intelligent gaze, mature professional age. "
+)
+_DEFAULT_WARDROBE_CLAUSE = (
     "Charcoal fitted suit, ivory or soft cream blouse, pencil skirt, premium private "
-    "tech briefing mood. Quiet, competent private executive secretary — not public "
+    "tech briefing mood."
+)
+_PRODUCTION_IDENTITY_SUFFIX = (
+    " Quiet, competent private executive secretary — not public "
     "broadcast, not public anchor presentation, not weather-presenter styling"
 )
+
+
+def _build_production_identity_stem(wardrobe_clause: str | None = None) -> str:
+    clause = _DEFAULT_WARDROBE_CLAUSE if wardrobe_clause is None else wardrobe_clause.strip()
+    if not clause:
+        raise ValueError("empty_wardrobe_clause")
+    return f"{_PRODUCTION_IDENTITY_PREFIX}{clause}{_PRODUCTION_IDENTITY_SUFFIX}"
+
+
+_PRODUCTION_IDENTITY_STEM = _build_production_identity_stem()
 
 _GLOBAL_POSE_HAND_STEM = (
     "Calm private briefing in a premium office: standing or slight three-quarter, "
@@ -422,7 +437,27 @@ _KOREA_SCENE_WEATHER_STEM = (
 )
 
 
-def _build_positive_prompt(program_id: str, visual_context: dict) -> str:
+def _extract_wardrobe_prompt_clause(prompt_snippet: str) -> str:
+    snippet = (prompt_snippet or "").strip()
+    if not snippet:
+        raise ValueError("empty_wardrobe_prompt_snippet")
+    if ". Same private" in snippet:
+        clause = snippet.split(". Same private", 1)[0].strip()
+    else:
+        clause = snippet.split(".", 1)[0].strip()
+    if not clause:
+        raise ValueError("empty_wardrobe_prompt_clause")
+    if not clause.endswith("."):
+        clause = f"{clause}."
+    return clause
+
+
+def _build_positive_prompt(
+    program_id: str,
+    visual_context: dict,
+    *,
+    wardrobe_clause: str | None = None,
+) -> str:
     """Build production-stable positive prompt from weather-bound visual context."""
     bg = str(visual_context.get("background_direction") or "").strip()
     light = str(visual_context.get("lighting_direction") or "").strip()
@@ -437,8 +472,9 @@ def _build_positive_prompt(program_id: str, visual_context: dict) -> str:
         pose_hand = _KOREA_POSE_HAND_STEM
         scene_weather = _KOREA_SCENE_WEATHER_STEM
 
+    identity_stem = _build_production_identity_stem(wardrobe_clause)
     parts = [
-        _PRODUCTION_IDENTITY_STEM,
+        identity_stem,
         PRODUCTION_REFERENCE_PARAGRAPH,
         pose_hand,
         scene_weather,
@@ -467,6 +503,7 @@ _DAILY_WARDROBE_METADATA_KEYS = (
     "manual_override_applied",
     "resolver_version",
     "program_id",
+    "wardrobe_prompt_injected",
 )
 
 
@@ -477,14 +514,13 @@ def _extract_wardrobe_date_kst(visual_context: dict) -> str:
     return date_str
 
 
-def build_daily_wardrobe_metadata(
-    program_id: str,
-    visual_context: dict,
-) -> dict:
-    """Resolve Kee-Suri daily wardrobe metadata for prompt contracts (no prompt injection)."""
+def _resolve_daily_wardrobe_for_context(program_id: str, visual_context: dict):
     pid = (program_id or "").strip()
     wardrobe_date_kst = _extract_wardrobe_date_kst(visual_context)
-    result = resolve_keysuri_daily_wardrobe(wardrobe_date_kst, pid)
+    return resolve_keysuri_daily_wardrobe(wardrobe_date_kst, pid)
+
+
+def _daily_wardrobe_metadata_from_result(result, *, wardrobe_prompt_injected: bool) -> dict:
     debug = result.debug
     return {
         "wardrobe_group": debug.wardrobe_group,
@@ -495,7 +531,22 @@ def build_daily_wardrobe_metadata(
         "manual_override_applied": debug.manual_override_applied,
         "resolver_version": debug.resolver_version,
         "program_id": debug.program_id,
+        "wardrobe_prompt_injected": wardrobe_prompt_injected,
     }
+
+
+def build_daily_wardrobe_metadata(
+    program_id: str,
+    visual_context: dict,
+    *,
+    wardrobe_prompt_injected: bool = False,
+) -> dict:
+    """Resolve Kee-Suri daily wardrobe metadata for prompt contracts (no prompt injection)."""
+    result = _resolve_daily_wardrobe_for_context(program_id, visual_context)
+    return _daily_wardrobe_metadata_from_result(
+        result,
+        wardrobe_prompt_injected=wardrobe_prompt_injected,
+    )
 
 
 def build_keysuri_weather_visual_prompt_contract(
@@ -503,6 +554,7 @@ def build_keysuri_weather_visual_prompt_contract(
     visual_context: dict,
     *,
     include_daily_wardrobe_metadata: bool = True,
+    use_daily_wardrobe_prompt_snippet: bool = False,
 ) -> dict:
     """Build weather-aware image prompt contract for one Kee-Suri program."""
     pid = (program_id or "").strip()
@@ -521,6 +573,15 @@ def build_keysuri_weather_visual_prompt_contract(
     visual_time = str(
         visual_context.get("visual_time_context") or VISUAL_TIME_BY_PROGRAM[pid]
     ).strip()
+
+    wardrobe_clause = None
+    wardrobe_result = None
+    if include_daily_wardrobe_metadata or use_daily_wardrobe_prompt_snippet:
+        wardrobe_result = _resolve_daily_wardrobe_for_context(pid, visual_context)
+    if use_daily_wardrobe_prompt_snippet:
+        wardrobe_clause = _extract_wardrobe_prompt_clause(
+            wardrobe_result.wardrobe_profile.prompt_snippet
+        )
 
     pose_policy = POSE_POLICY if pid == "keysuri_global_tech" else KOREA_POSE_POLICY
     hand_policy = HAND_POLICY if pid == "keysuri_global_tech" else KOREA_HAND_POLICY
@@ -547,7 +608,11 @@ def build_keysuri_weather_visual_prompt_contract(
         "reference_usage_policy": dict(REFERENCE_USAGE_POLICY),
         "wardrobe_lock": dict(WARDROBE_LOCK),
         "pose_variation_policy": pose_variation,
-        "positive_prompt": _build_positive_prompt(pid, visual_context),
+        "positive_prompt": _build_positive_prompt(
+            pid,
+            visual_context,
+            wardrobe_clause=wardrobe_clause,
+        ),
         "negative_prompt": _build_negative_prompt(pid),
         "safety_constraints": dict(SAFETY_CONSTRAINTS),
         "side_effects": dict(SIDE_EFFECTS_DISABLED),
@@ -558,7 +623,12 @@ def build_keysuri_weather_visual_prompt_contract(
         contract["korea_hand_posture_policy"] = KOREA_HAND_POLICY
         contract["korea_mood"] = KOREA_MOOD
     if include_daily_wardrobe_metadata:
-        contract["daily_wardrobe"] = build_daily_wardrobe_metadata(pid, visual_context)
+        if wardrobe_result is None:
+            wardrobe_result = _resolve_daily_wardrobe_for_context(pid, visual_context)
+        contract["daily_wardrobe"] = _daily_wardrobe_metadata_from_result(
+            wardrobe_result,
+            wardrobe_prompt_injected=use_daily_wardrobe_prompt_snippet,
+        )
     return contract
 
 

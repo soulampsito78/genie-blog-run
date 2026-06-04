@@ -35,6 +35,9 @@ from keysuri_weather_visual_prompt_integration import (
     build_keysuri_weather_visual_prompt_report_from_canary_lock,
     validate_keysuri_weather_visual_prompt_contract,
     validate_keysuri_weather_visual_prompt_report,
+    _build_production_identity_stem,
+    _extract_wardrobe_prompt_clause,
+    _PRODUCTION_IDENTITY_STEM,
 )
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -57,6 +60,7 @@ _DAILY_WARDROBE_METADATA_KEYS = (
     "manual_override_applied",
     "resolver_version",
     "program_id",
+    "wardrobe_prompt_injected",
 )
 
 
@@ -351,6 +355,8 @@ class KeysuriDailyWardrobeMetadataTests(unittest.TestCase):
         self.assertEqual(g_daily["wardrobe_group"], "keysuri_daily")
         self.assertEqual(g_daily["resolver_version"], RESOLVER_VERSION)
         self.assertFalse(g_daily["manual_override_applied"])
+        self.assertFalse(g_daily["wardrobe_prompt_injected"])
+        self.assertFalse(k_daily["wardrobe_prompt_injected"])
 
     def test_daily_wardrobe_program_id_differs_by_program(self) -> None:
         self.assertEqual(
@@ -412,6 +418,121 @@ class KeysuriDailyWardrobeMetadataTests(unittest.TestCase):
         for mod in ("image_exec_suffixes", "weather_image_context"):
             self.assertFalse(any(mod in line for line in import_lines), msg=mod)
         self.assertTrue(any("keysuri_daily_wardrobe_resolver" in line for line in import_lines))
+
+
+class KeysuriDailyWardrobePromptInjectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.integration = _integration()
+        self.global_ctx = self.integration["visual_contexts"]["keysuri_global_tech"]
+        self.korea_ctx = self.integration["visual_contexts"]["keysuri_korea_tech"]
+
+    def test_default_production_identity_stem_unchanged(self) -> None:
+        self.assertEqual(_build_production_identity_stem(), _PRODUCTION_IDENTITY_STEM)
+
+    def test_default_positive_prompt_unchanged(self) -> None:
+        global_default = build_keysuri_weather_visual_prompt_contract(
+            "keysuri_global_tech",
+            self.global_ctx,
+            use_daily_wardrobe_prompt_snippet=False,
+        )
+        korea_default = build_keysuri_weather_visual_prompt_contract(
+            "keysuri_korea_tech",
+            self.korea_ctx,
+            use_daily_wardrobe_prompt_snippet=False,
+        )
+        report = _report()
+        self.assertEqual(
+            global_default["positive_prompt"],
+            report["prompt_contracts"]["keysuri_global_tech"]["positive_prompt"],
+        )
+        self.assertEqual(
+            korea_default["positive_prompt"],
+            report["prompt_contracts"]["keysuri_korea_tech"]["positive_prompt"],
+        )
+        for pos in (
+            global_default["positive_prompt"],
+            korea_default["positive_prompt"],
+        ):
+            lower = pos.lower()
+            self.assertIn("charcoal fitted suit", lower)
+            self.assertIn("ivory or soft cream blouse", lower)
+            self.assertNotIn("fitted premium business silhouette", lower)
+
+    def test_integration_result_default_non_injected(self) -> None:
+        contracts = build_keysuri_weather_visual_prompt_contracts_from_integration_result(
+            self.integration
+        )
+        for pos in (
+            contracts["keysuri_global_tech"]["positive_prompt"],
+            contracts["keysuri_korea_tech"]["positive_prompt"],
+        ):
+            self.assertNotIn("fitted premium business silhouette", pos.lower())
+
+    def test_opt_in_2026_06_04_profile_01_wardrobe_clause(self) -> None:
+        global_contract = build_keysuri_weather_visual_prompt_contract(
+            "keysuri_global_tech",
+            self.global_ctx,
+            use_daily_wardrobe_prompt_snippet=True,
+        )
+        pos = global_contract["positive_prompt"].lower()
+        self.assertIn("charcoal fitted suit with ivory blouse", pos)
+        self.assertIn("fitted premium business silhouette", pos)
+        self.assertNotIn("not a lounge or glamour shoot", pos)
+        self.assertNotIn("private korean ai tech secretary kee-suri identity:", pos)
+        self.assertTrue(global_contract["daily_wardrobe"]["wardrobe_prompt_injected"])
+        self.assertEqual(
+            global_contract["daily_wardrobe"]["wardrobe_profile_id"],
+            "profile_01_charcoal_ivory",
+        )
+
+    def test_opt_in_same_date_global_korea_share_wardrobe_clause(self) -> None:
+        global_contract = build_keysuri_weather_visual_prompt_contract(
+            "keysuri_global_tech",
+            self.global_ctx,
+            use_daily_wardrobe_prompt_snippet=True,
+        )
+        korea_contract = build_keysuri_weather_visual_prompt_contract(
+            "keysuri_korea_tech",
+            self.korea_ctx,
+            use_daily_wardrobe_prompt_snippet=True,
+        )
+        g_pos = global_contract["positive_prompt"]
+        k_pos = korea_contract["positive_prompt"]
+        g_clause = _extract_wardrobe_prompt_clause(
+            "Charcoal fitted suit with ivory blouse, pencil skirt, fitted premium business "
+            "silhouette. Same private Korean AI tech secretary Kee-Suri identity:"
+        )
+        self.assertIn(g_clause.lower().rstrip("."), g_pos.lower())
+        self.assertIn(g_clause.lower().rstrip("."), k_pos.lower())
+        self.assertIn("daytime or early afternoon", g_pos.lower())
+        self.assertIn("winter 18:30", k_pos.lower())
+        self.assertIn("tablet held simply", g_pos.lower())
+        self.assertIn("tablet is optional", k_pos.lower())
+
+    def test_opt_in_2026_06_05_graphite_champagne(self) -> None:
+        ctx = deepcopy(self.global_ctx)
+        ctx["weather_date"] = "2026-06-05"
+        contract = build_keysuri_weather_visual_prompt_contract(
+            "keysuri_global_tech",
+            ctx,
+            use_daily_wardrobe_prompt_snippet=True,
+        )
+        pos = contract["positive_prompt"].lower()
+        self.assertIn("muted graphite fitted suit with champagne blouse", pos)
+        self.assertIn("fitted premium business silhouette", pos)
+        self.assertNotIn("ivory or soft cream blouse", pos)
+        self.assertEqual(
+            contract["daily_wardrobe"]["wardrobe_profile_id"],
+            "profile_03_graphite_champagne",
+        )
+
+    def test_report_default_path_production_flags_false(self) -> None:
+        report = _report()
+        self.assertFalse(report["ready_for_production_auto_call"])
+        self.assertFalse(report["ready_for_image_api_call"])
+        self.assertFalse(report["side_effects"]["called_image_api"])
+        pos = report["prompt_contracts"]["keysuri_global_tech"]["positive_prompt"].lower()
+        self.assertNotIn("fitted premium business silhouette", pos)
 
 
 class KeysuriPromptContractNegativeTests(unittest.TestCase):
