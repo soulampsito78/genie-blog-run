@@ -1,0 +1,28 @@
+{
+  "_fixture_note": "Sanitized Seoul live weather canary lock — no API keys or raw provider payloads.",
+  "lock_type": "seoul_weather_live_canary",
+  "provider": "openweather",
+  "canary_status": "pass",
+  "request_count": 1,
+  "location": "Seoul",
+  "weather_condition": "cloudy",
+  "weather_date": "2026-06-04",
+  "observed_or_forecast_time_kst": "17:37",
+  "consumer_contexts_built": [
+    "today_geenee",
+    "keysuri_global_tech",
+    "keysuri_korea_tech"
+  ],
+  "secrets_exposed": false,
+  "raw_provider_payload_saved": false,
+  "runtime_side_effects": {
+    "called_weather_api": true,
+    "called_gemini": false,
+    "called_image_api": false,
+    "fetched_live_news": false,
+    "sent_email": false,
+    "published_naver": false,
+    "changed_scheduler": false
+  },
+  "operational_status": "review_required"
+}
