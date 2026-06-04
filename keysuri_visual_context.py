@@ -30,7 +30,19 @@ ALLOWED_WEATHER_CONDITIONS = frozenset(
         "haze",
     }
 )
-ALLOWED_SOURCE_MODES = frozenset({"offline_fixture", "runtime_weather_api"})
+ALLOWED_SOURCE_MODES = frozenset(
+    {"offline_fixture", "runtime_weather_api", "sanitized_canary_lock"}
+)
+FORBIDDEN_SOURCE_MODES = frozenset(
+    {
+        "automatic_live_weather_api_call",
+        "scheduler_invoked_weather_call",
+        "production_auto_call",
+        "raw_provider_payload",
+        "tomorrow_geenee",
+        "tomorrow_genie",
+    }
+)
 ALLOWED_FINE_DUST_LEVELS = frozenset({"good", "moderate", "bad", "very_bad"})
 
 FORBIDDEN_IDENTITY_KO = ("테크 앵커", "뉴스 앵커", "아나운서")
@@ -225,7 +237,17 @@ def validate_keysuri_weather_context(weather_context: dict) -> List[dict]:
         )
 
     source_mode = str(weather_context.get("source_mode") or "").strip()
-    if source_mode not in ALLOWED_SOURCE_MODES:
+    if not source_mode:
+        issues.append(_issue("source_mode_missing", "source_mode is required", "source_mode"))
+    elif source_mode in FORBIDDEN_SOURCE_MODES:
+        issues.append(
+            _issue(
+                "source_mode_forbidden",
+                f"source_mode {source_mode!r} is not allowed",
+                "source_mode",
+            )
+        )
+    elif source_mode not in ALLOWED_SOURCE_MODES:
         issues.append(
             _issue(
                 "source_mode_invalid",

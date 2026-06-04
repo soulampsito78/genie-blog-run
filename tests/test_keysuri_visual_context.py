@@ -7,7 +7,10 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 
+from genie_runtime_weather_binding import load_weather_context_from_canary_lock
+
 from keysuri_visual_context import (
+    FORBIDDEN_SOURCE_MODES,
     IDENTITY_LABEL,
     build_keysuri_image_prompt,
     build_keysuri_image_prompt_text,
@@ -89,7 +92,22 @@ class KeysuriWeatherValidationTests(unittest.TestCase):
         bad = deepcopy(_weather("sunny"))
         bad["source_mode"] = ""
         codes = {i["code"] for i in validate_keysuri_weather_context(bad)}
-        self.assertIn("source_mode_invalid", codes)
+        self.assertTrue({"source_mode_missing", "source_mode_invalid"} & codes)
+
+    def test_sanitized_canary_lock_accepted(self) -> None:
+        lock_path = _REPO / "ops" / "feeds" / "genie_weather_live_canary_lock_2026-06-04.sample.json"
+        ctx = load_weather_context_from_canary_lock(str(lock_path))
+        self.assertEqual(ctx["source_mode"], "sanitized_canary_lock")
+        self.assertEqual(validate_keysuri_weather_context(ctx), [])
+
+    def test_forbidden_source_modes_rejected(self) -> None:
+        bad = deepcopy(_weather("sunny"))
+        for mode in FORBIDDEN_SOURCE_MODES:
+            with self.subTest(mode=mode):
+                bad_mode = deepcopy(bad)
+                bad_mode["source_mode"] = mode
+                codes = {i["code"] for i in validate_keysuri_weather_context(bad_mode)}
+                self.assertIn("source_mode_forbidden", codes)
 
     def test_tomorrow_geenee_fails(self) -> None:
         bad = deepcopy(_weather("sunny"))
