@@ -7,6 +7,7 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 
+from keysuri_daily_wardrobe_resolver import RESOLVER_VERSION
 from keysuri_visual_context import FORBIDDEN_SOURCE_MODES
 from keysuri_weather_binding_integration import (
     KEYSURI_PROGRAMS,
@@ -28,6 +29,7 @@ from keysuri_weather_visual_prompt_integration import (
     VARIATION_MODE,
     WARDROBE_LOCK,
     WEATHER_POLICY,
+    build_daily_wardrobe_metadata,
     build_keysuri_weather_visual_prompt_contract,
     build_keysuri_weather_visual_prompt_contracts_from_integration_result,
     build_keysuri_weather_visual_prompt_report_from_canary_lock,
@@ -37,12 +39,24 @@ from keysuri_weather_visual_prompt_integration import (
 
 _REPO = Path(__file__).resolve().parent.parent
 _LOCK_PATH = _REPO / "ops" / "feeds" / "genie_weather_live_canary_lock_2026-06-04.sample.json"
+_INTEGRATION_PATH = _REPO / "keysuri_weather_visual_prompt_integration.py"
 _OUT_REPORT = (
     _REPO
     / "output"
     / "keysuri_preview"
     / "weather_canary"
     / "keysuri_weather_visual_prompt_report.json"
+)
+
+_DAILY_WARDROBE_METADATA_KEYS = (
+    "wardrobe_group",
+    "wardrobe_date_kst",
+    "wardrobe_palette_version",
+    "wardrobe_profile_id",
+    "daily_wardrobe_seed",
+    "manual_override_applied",
+    "resolver_version",
+    "program_id",
 )
 
 
@@ -312,6 +326,92 @@ class KeysuriProductionProfileTests(unittest.TestCase):
             "premium_private_tech_secretary_professional",
         )
         self.assertEqual(REFERENCE_USAGE_POLICY["variation_mode"], VARIATION_MODE)
+
+
+class KeysuriDailyWardrobeMetadataTests(unittest.TestCase):
+    def setUp(self) -> None:
+        report = _report()
+        self.global_contract = report["prompt_contracts"]["keysuri_global_tech"]
+        self.korea_contract = report["prompt_contracts"]["keysuri_korea_tech"]
+
+    def test_daily_wardrobe_metadata_exists_on_both_programs(self) -> None:
+        for contract in (self.global_contract, self.korea_contract):
+            daily = contract.get("daily_wardrobe")
+            self.assertIsInstance(daily, dict)
+            for key in _DAILY_WARDROBE_METADATA_KEYS:
+                self.assertIn(key, daily)
+
+    def test_same_wardrobe_date_same_profile_and_seed(self) -> None:
+        g_daily = self.global_contract["daily_wardrobe"]
+        k_daily = self.korea_contract["daily_wardrobe"]
+        self.assertEqual(g_daily["wardrobe_date_kst"], "2026-06-04")
+        self.assertEqual(k_daily["wardrobe_date_kst"], "2026-06-04")
+        self.assertEqual(g_daily["wardrobe_profile_id"], k_daily["wardrobe_profile_id"])
+        self.assertEqual(g_daily["daily_wardrobe_seed"], k_daily["daily_wardrobe_seed"])
+        self.assertEqual(g_daily["wardrobe_group"], "keysuri_daily")
+        self.assertEqual(g_daily["resolver_version"], RESOLVER_VERSION)
+        self.assertFalse(g_daily["manual_override_applied"])
+
+    def test_daily_wardrobe_program_id_differs_by_program(self) -> None:
+        self.assertEqual(
+            self.global_contract["daily_wardrobe"]["program_id"],
+            "keysuri_global_tech",
+        )
+        self.assertEqual(
+            self.korea_contract["daily_wardrobe"]["program_id"],
+            "keysuri_korea_tech",
+        )
+
+    def test_positive_prompt_still_uses_static_charcoal_ivory_wording(self) -> None:
+        for contract in (self.global_contract, self.korea_contract):
+            pos = contract["positive_prompt"].lower()
+            self.assertIn("charcoal fitted suit", pos)
+            self.assertIn("ivory or soft cream blouse", pos)
+
+    def test_positive_prompt_does_not_include_resolver_prompt_snippet(self) -> None:
+        for contract in (self.global_contract, self.korea_contract):
+            pos = contract["positive_prompt"].lower()
+            self.assertNotIn("not a lounge or glamour shoot", pos)
+            self.assertNotIn("private korean ai tech secretary kee-suri identity:", pos)
+
+    def test_include_daily_wardrobe_metadata_false_omits_field(self) -> None:
+        integration = _integration()
+        contract = build_keysuri_weather_visual_prompt_contract(
+            "keysuri_global_tech",
+            integration["visual_contexts"]["keysuri_global_tech"],
+            include_daily_wardrobe_metadata=False,
+        )
+        self.assertNotIn("daily_wardrobe", contract)
+
+    def test_missing_weather_date_fails_closed_for_metadata(self) -> None:
+        integration = _integration()
+        ctx = deepcopy(integration["visual_contexts"]["keysuri_global_tech"])
+        del ctx["weather_date"]
+        with self.assertRaises(ValueError) as exc:
+            build_keysuri_weather_visual_prompt_contract(
+                "keysuri_global_tech",
+                ctx,
+                include_daily_wardrobe_metadata=True,
+            )
+        self.assertIn("weather_date", str(exc.exception))
+
+    def test_build_daily_wardrobe_metadata_helper(self) -> None:
+        integration = _integration()
+        ctx = integration["visual_contexts"]["keysuri_global_tech"]
+        metadata = build_daily_wardrobe_metadata("keysuri_global_tech", ctx)
+        self.assertEqual(metadata["wardrobe_date_kst"], "2026-06-04")
+        self.assertEqual(metadata["wardrobe_profile_id"], "profile_01_charcoal_ivory")
+
+    def test_no_forbidden_wardrobe_imports_in_integration_module(self) -> None:
+        source = _INTEGRATION_PATH.read_text(encoding="utf-8")
+        import_lines = [
+            line.strip()
+            for line in source.splitlines()
+            if line.startswith("import ") or line.startswith("from ")
+        ]
+        for mod in ("image_exec_suffixes", "weather_image_context"):
+            self.assertFalse(any(mod in line for line in import_lines), msg=mod)
+        self.assertTrue(any("keysuri_daily_wardrobe_resolver" in line for line in import_lines))
 
 
 class KeysuriPromptContractNegativeTests(unittest.TestCase):

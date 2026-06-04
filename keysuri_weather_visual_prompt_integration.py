@@ -5,6 +5,7 @@ import re
 from typing import Any, Dict, List
 
 from genie_runtime_weather_binding import RUNTIME_BINDING_STATUS
+from keysuri_daily_wardrobe_resolver import resolve_keysuri_daily_wardrobe
 from keysuri_visual_context import FORBIDDEN_SOURCE_MODES, IDENTITY_LABEL
 from keysuri_weather_binding_integration import (
     INTEGRATION_TYPE,
@@ -457,9 +458,51 @@ def _build_negative_prompt(program_id: str) -> str:
     return ", ".join(phrases)
 
 
+_DAILY_WARDROBE_METADATA_KEYS = (
+    "wardrobe_group",
+    "wardrobe_date_kst",
+    "wardrobe_palette_version",
+    "wardrobe_profile_id",
+    "daily_wardrobe_seed",
+    "manual_override_applied",
+    "resolver_version",
+    "program_id",
+)
+
+
+def _extract_wardrobe_date_kst(visual_context: dict) -> str:
+    date_str = str(visual_context.get("weather_date") or "").strip()
+    if not date_str:
+        raise ValueError("visual_context.weather_date is required for daily wardrobe metadata")
+    return date_str
+
+
+def build_daily_wardrobe_metadata(
+    program_id: str,
+    visual_context: dict,
+) -> dict:
+    """Resolve Kee-Suri daily wardrobe metadata for prompt contracts (no prompt injection)."""
+    pid = (program_id or "").strip()
+    wardrobe_date_kst = _extract_wardrobe_date_kst(visual_context)
+    result = resolve_keysuri_daily_wardrobe(wardrobe_date_kst, pid)
+    debug = result.debug
+    return {
+        "wardrobe_group": debug.wardrobe_group,
+        "wardrobe_date_kst": debug.wardrobe_date_kst,
+        "wardrobe_palette_version": debug.wardrobe_palette_version,
+        "wardrobe_profile_id": debug.wardrobe_profile_id,
+        "daily_wardrobe_seed": debug.daily_wardrobe_seed,
+        "manual_override_applied": debug.manual_override_applied,
+        "resolver_version": debug.resolver_version,
+        "program_id": debug.program_id,
+    }
+
+
 def build_keysuri_weather_visual_prompt_contract(
     program_id: str,
     visual_context: dict,
+    *,
+    include_daily_wardrobe_metadata: bool = True,
 ) -> dict:
     """Build weather-aware image prompt contract for one Kee-Suri program."""
     pid = (program_id or "").strip()
@@ -514,6 +557,8 @@ def build_keysuri_weather_visual_prompt_contract(
         contract["korea_tablet_policy"] = KOREA_TABLET_POLICY
         contract["korea_hand_posture_policy"] = KOREA_HAND_POLICY
         contract["korea_mood"] = KOREA_MOOD
+    if include_daily_wardrobe_metadata:
+        contract["daily_wardrobe"] = build_daily_wardrobe_metadata(pid, visual_context)
     return contract
 
 
@@ -700,6 +745,35 @@ def validate_keysuri_weather_visual_prompt_contract(contract: dict) -> List[dict
                         "wardrobe_forbidden_missing",
                         f"wardrobe_lock.forbidden must include {term!r}",
                         "wardrobe_lock.forbidden",
+                    )
+                )
+
+    daily_wardrobe = contract.get("daily_wardrobe")
+    if daily_wardrobe is not None:
+        if not isinstance(daily_wardrobe, dict):
+            issues.append(
+                _issue(
+                    "daily_wardrobe_invalid",
+                    "daily_wardrobe must be a dict when present",
+                    "daily_wardrobe",
+                )
+            )
+        else:
+            for key in _DAILY_WARDROBE_METADATA_KEYS:
+                if key not in daily_wardrobe:
+                    issues.append(
+                        _issue(
+                            "daily_wardrobe_missing_field",
+                            f"daily_wardrobe must include {key!r}",
+                            f"daily_wardrobe.{key}",
+                        )
+                    )
+            if daily_wardrobe.get("program_id") and daily_wardrobe.get("program_id") != pid:
+                issues.append(
+                    _issue(
+                        "daily_wardrobe_program_mismatch",
+                        "daily_wardrobe.program_id must match contract program_id",
+                        "daily_wardrobe.program_id",
                     )
                 )
 
