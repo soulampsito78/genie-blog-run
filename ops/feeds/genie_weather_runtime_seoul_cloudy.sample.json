@@ -1,0 +1,22 @@
+{
+  "_fixture_note": "Staged offline GENIE weather runtime payload — not live API data.",
+  "provider": "genie_staged_weather",
+  "provider_mode": "offline_fixture",
+  "location": {
+    "city": "Seoul",
+    "country": "KR",
+    "timezone": "Asia/Seoul"
+  },
+  "weather_date": "2026-06-04",
+  "observed_or_forecast_time_kst": "12:00",
+  "condition_code": "cloudy",
+  "condition_label": "흐림",
+  "temperature_c": 21,
+  "feels_like_c": 21,
+  "precipitation_probability": 20,
+  "precipitation_type": "none",
+  "humidity_percent": 62,
+  "fine_dust_level": "moderate",
+  "source_label": "GENIE staged runtime weather fixture (cloudy Seoul)",
+  "notes": "Sample cloudy daytime Seoul for Kee-Suri Global visual context."
+}

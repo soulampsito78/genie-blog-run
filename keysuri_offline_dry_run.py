@@ -17,11 +17,13 @@ from keysuri_news_contract import KEYSURI_PROGRAM_IDS
 from keysuri_prompt_input import build_keysuri_prompt_input
 from keysuri_renderer import render_keysuri_owner_review_html
 from keysuri_source_gate import GateIssue, GateResult, run_keysuri_source_gate
+from keysuri_visual_context import build_keysuri_image_prompt, validate_keysuri_weather_context
 
 _REPO_ROOT = Path(__file__).resolve().parent
 _FEEDS_DIR = _REPO_ROOT / "ops" / "feeds"
 
 PROMPT_TEXT_PREVIEW_MAX = 600
+IMAGE_PROMPT_TEXT_PREVIEW_MAX = 800
 
 RUNTIME_SIDE_EFFECTS: Dict[str, bool] = {
     "called_gemini": False,
@@ -80,11 +82,36 @@ def _top5_count(prompt_input: Optional[dict]) -> int:
     return 0
 
 
-def _prompt_text_preview(prompt_text: str) -> str:
+def _prompt_text_preview(prompt_text: str, *, max_len: int = PROMPT_TEXT_PREVIEW_MAX) -> str:
     text = (prompt_text or "").strip()
-    if len(text) <= PROMPT_TEXT_PREVIEW_MAX:
+    if len(text) <= max_len:
         return text
-    return text[:PROMPT_TEXT_PREVIEW_MAX] + "\n... [truncated for dry-run report]"
+    return text[:max_len] + "\n... [truncated for dry-run report]"
+
+
+def _visual_prompt_summary(image_prompt: dict) -> Dict[str, Any]:
+    return {
+        "program_id": image_prompt.get("program_id"),
+        "weather_condition": image_prompt.get("weather_condition"),
+        "schedule_time_kst": image_prompt.get("schedule_time_kst"),
+        "visual_time_band": image_prompt.get("visual_time_band"),
+        "identity_label": image_prompt.get("identity_label"),
+        "source_mode": image_prompt.get("source_mode"),
+    }
+
+
+def _attach_weather_fields(result: Dict[str, Any], **fields: Any) -> Dict[str, Any]:
+    result.update(
+        {
+            "weather_context_status": fields.get("weather_context_status", "not_supplied"),
+            "visual_prompt_status": fields.get("visual_prompt_status", "not_requested"),
+            "visual_prompt_summary": fields.get("visual_prompt_summary") or {},
+            "image_prompt_text_preview": fields.get("image_prompt_text_preview", ""),
+        }
+    )
+    if fields.get("image_prompt_object") is not None:
+        result["image_prompt_object"] = fields["image_prompt_object"]
+    return result
 
 
 def _prompt_contract_summary(contract: dict) -> Dict[str, Any]:
@@ -142,43 +169,121 @@ def _base_result(
         "rendered_html": rendered_html,
         "identity_label": IDENTITY_TITLE,
         "runtime_side_effects": dict(RUNTIME_SIDE_EFFECTS),
+        "weather_context_status": "not_supplied",
+        "visual_prompt_status": "not_requested",
+        "visual_prompt_summary": {},
+        "image_prompt_text_preview": "",
     }
+
+
+def _validate_weather_for_dry_run(
+    weather_context: Optional[dict],
+) -> tuple[Optional[dict], List[Dict[str, str]], str, str]:
+    """Return (context, issues, weather_context_status, visual_prompt_status)."""
+    if weather_context is None:
+        return None, [], "not_supplied", "not_requested"
+    if not isinstance(weather_context, dict):
+        return (
+            None,
+            [_issue("weather_context_invalid", "weather_context must be a dict", "weather_context")],
+            "invalid",
+            "invalid",
+        )
+    w_issues = validate_keysuri_weather_context(weather_context)
+    if w_issues:
+        issues = [
+            _issue(
+                str(i.get("code", "weather_context_invalid")),
+                str(i.get("message", "weather context invalid")),
+                str(i.get("path", "weather_context")),
+            )
+            for i in w_issues
+        ]
+        return weather_context, issues, "invalid", "invalid"
+    return weather_context, [], "normalized", "not_requested"
+
+
+def _build_visual_prompt_for_dry_run(
+    program_id: str,
+    weather_context: dict,
+    prompt_input: Optional[dict],
+) -> tuple[Optional[dict], List[Dict[str, str]], str]:
+    """Build image prompt; return (image_prompt, issues, visual_prompt_status)."""
+    try:
+        image_prompt = build_keysuri_image_prompt(
+            program_id, weather_context, prompt_input
+        )
+        return image_prompt, [], "built"
+    except ValueError as exc:
+        return (
+            None,
+            [_issue("visual_prompt_build_failed", str(exc), "visual_prompt")],
+            "invalid",
+        )
 
 
 def run_keysuri_offline_dry_run(
     program_id: str,
     source_pack: dict,
     raw_response_text: str,
+    weather_context: dict | None = None,
 ) -> dict:
     """Run the full staged Kee-Suri pipeline offline using a fixture raw model response."""
     issues: List[Dict[str, str]] = []
     pid = (program_id or "").strip()
 
+    w_ctx, w_issues, w_status, v_status = _validate_weather_for_dry_run(weather_context)
+    issues.extend(w_issues)
+    weather_fields: Dict[str, Any] = {
+        "weather_context_status": w_status,
+        "visual_prompt_status": v_status,
+        "visual_prompt_summary": {},
+        "image_prompt_text_preview": "",
+    }
+
+    def _finish(result: Dict[str, Any], **extra: Any) -> dict:
+        merged = {**result, **weather_fields, **extra}
+        return _attach_weather_fields(merged, **merged)
+
+    if w_status == "invalid":
+        return _finish(
+            _base_result(
+                dry_run_status="block",
+                program_id=pid or str(program_id),
+                issues=issues,
+                source_gate_result=None,
+            )
+        )
+
     if pid not in KEYSURI_PROGRAM_IDS:
         issues.append(
             _issue("unsupported_program_id", f"Unsupported program_id: {program_id!r}", "program_id")
         )
-        return _base_result(
-            dry_run_status="block",
-            program_id=pid or str(program_id),
-            issues=issues,
-            source_gate_result=None,
+        return _finish(
+            _base_result(
+                dry_run_status="block",
+                program_id=pid or str(program_id),
+                issues=issues,
+                source_gate_result=None,
+            )
         )
 
     if not isinstance(source_pack, dict):
         issues.append(_issue("source_pack_invalid", "source_pack must be a dict", "source_pack"))
-        return _base_result(dry_run_status="block", program_id=pid, issues=issues)
+        return _finish(_base_result(dry_run_status="block", program_id=pid, issues=issues))
 
     gate_result = run_keysuri_source_gate(source_pack)
     source_gate_result = gate_result.verdict
     issues.extend(_gate_issues_to_dicts(gate_result))
 
     if gate_result.verdict == "block":
-        return _base_result(
-            dry_run_status="block",
-            program_id=pid,
-            issues=issues,
-            source_gate_result=source_gate_result,
+        return _finish(
+            _base_result(
+                dry_run_status="block",
+                program_id=pid,
+                issues=issues,
+                source_gate_result=source_gate_result,
+            )
         )
 
     prompt_input: Optional[dict] = None
@@ -189,12 +294,41 @@ def run_keysuri_offline_dry_run(
         prompt_input = build_keysuri_prompt_input(pid, source_pack, gate_result)
     except ValueError as exc:
         issues.append(_issue("prompt_input_build_failed", str(exc), "prompt_input"))
-        return _base_result(
-            dry_run_status="block",
-            program_id=pid,
-            issues=issues,
-            source_gate_result=source_gate_result,
+        return _finish(
+            _base_result(
+                dry_run_status="block",
+                program_id=pid,
+                issues=issues,
+                source_gate_result=source_gate_result,
+            )
         )
+
+    def _apply_visual_prompt(base: Dict[str, Any]) -> Dict[str, Any]:
+        nonlocal weather_fields
+        if w_ctx is None:
+            return base
+        img, v_issues, v_stat = _build_visual_prompt_for_dry_run(pid, w_ctx, prompt_input)
+        weather_fields["visual_prompt_status"] = v_stat
+        if v_issues:
+            merged_issues = list(base.get("issues") or []) + v_issues
+            weather_fields["visual_prompt_summary"] = {}
+            weather_fields["image_prompt_text_preview"] = ""
+            return {
+                **base,
+                "dry_run_status": "block",
+                "issues": merged_issues,
+                **weather_fields,
+            }
+        if img:
+            weather_fields["visual_prompt_status"] = "built"
+            weather_fields["visual_prompt_summary"] = _visual_prompt_summary(img)
+            weather_fields["image_prompt_text_preview"] = _prompt_text_preview(
+                str(img.get("image_prompt_text") or ""),
+                max_len=IMAGE_PROMPT_TEXT_PREVIEW_MAX,
+            )
+            out = {**base, **weather_fields, "image_prompt_object": img}
+            return out
+        return {**base, **weather_fields}
 
     prompt_status = str(prompt_input.get("prompt_status") or "").strip()
 
@@ -223,7 +357,7 @@ def run_keysuri_offline_dry_run(
         except ValueError as exc:
             issues.append(_issue("render_failed", str(exc), "rendered_html"))
             rendered_html = None
-        return _base_result(
+        hold_result = _base_result(
             dry_run_status="hold_review_required",
             program_id=pid,
             issues=issues,
@@ -234,6 +368,7 @@ def run_keysuri_offline_dry_run(
             parse_status="skipped_hold",
             rendered_html=rendered_html,
         )
+        return _apply_visual_prompt(hold_result)
 
     contract = build_keysuri_generation_prompt_contract(prompt_input)
     prompt_contract_summary = _prompt_contract_summary(contract)
@@ -257,7 +392,7 @@ def run_keysuri_offline_dry_run(
             rendered_html = render_keysuri_owner_review_html(prompt_input, generated_briefing)
         except ValueError as exc:
             issues.append(_issue("render_failed", str(exc), "rendered_html"))
-            return _base_result(
+            invalid_result = _base_result(
                 dry_run_status="parsed_invalid",
                 program_id=pid,
                 issues=issues,
@@ -268,7 +403,12 @@ def run_keysuri_offline_dry_run(
                 parse_status=parse_status,
                 rendered_html=None,
             )
-        return _base_result(
+            blocked = _apply_visual_prompt(invalid_result)
+            if w_ctx is not None and blocked.get("dry_run_status") == "block":
+                return blocked
+            return blocked
+
+        pass_result = _base_result(
             dry_run_status="pass",
             program_id=pid,
             issues=issues,
@@ -280,6 +420,10 @@ def run_keysuri_offline_dry_run(
             rendered_html=rendered_html,
             generated_status=GENERATED_STATUS_REQUIRED,
         )
+        blocked = _apply_visual_prompt(pass_result)
+        if w_ctx is not None and blocked.get("dry_run_status") == "block":
+            return blocked
+        return blocked
 
     rendered_html: Optional[str] = None
     if prompt_input is not None:
@@ -289,7 +433,7 @@ def run_keysuri_offline_dry_run(
             issues.append(_issue("render_placeholder_failed", str(exc), "rendered_html"))
 
     if parse_status == "parse_failed":
-        return _base_result(
+        failed = _base_result(
             dry_run_status="parse_failed",
             program_id=pid,
             issues=issues,
@@ -300,8 +444,12 @@ def run_keysuri_offline_dry_run(
             parse_status=parse_status,
             rendered_html=rendered_html,
         )
+        blocked = _apply_visual_prompt(failed)
+        if w_ctx is not None and blocked.get("dry_run_status") == "block":
+            return blocked
+        return blocked
 
-    return _base_result(
+    invalid_final = _base_result(
         dry_run_status="parsed_invalid",
         program_id=pid,
         issues=issues,
@@ -312,6 +460,10 @@ def run_keysuri_offline_dry_run(
         parse_status=parse_status,
         rendered_html=rendered_html,
     )
+    blocked = _apply_visual_prompt(invalid_final)
+    if w_ctx is not None and blocked.get("dry_run_status") == "block":
+        return blocked
+    return blocked
 
 
 def run_keysuri_global_offline_dry_run() -> dict:
@@ -334,4 +486,10 @@ def dry_run_report_for_json(result: dict) -> dict:
     html = report.pop("rendered_html", None)
     report["rendered_html_included"] = html is not None
     report["rendered_html_length"] = len(html) if isinstance(html, str) else 0
+    img_obj = report.pop("image_prompt_object", None)
+    report["image_prompt_object_included"] = img_obj is not None
+    if img_obj is not None:
+        report["visual_prompt_summary"] = report.get("visual_prompt_summary") or _visual_prompt_summary(
+            img_obj
+        )
     return report

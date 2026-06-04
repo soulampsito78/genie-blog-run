@@ -1,0 +1,15 @@
+{
+  "_fixture_note": "Invalid fixture — non-Seoul location must fail validation.",
+  "provider": "genie_staged_weather",
+  "provider_mode": "offline_fixture",
+  "location": {
+    "city": "Busan",
+    "country": "KR",
+    "timezone": "Asia/Seoul"
+  },
+  "weather_date": "2026-06-04",
+  "observed_or_forecast_time_kst": "12:00",
+  "condition_code": "clear",
+  "condition_label": "맑음",
+  "source_label": "GENIE invalid non-Seoul fixture"
+}

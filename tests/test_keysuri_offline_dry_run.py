@@ -7,6 +7,11 @@ from pathlib import Path
 
 from keysuri_generation_prompt import ACTIVE_SCHEDULER_RULES, IDENTITY_TITLE
 from keysuri_generated_briefing import GENERATED_STATUS_REQUIRED
+from genie_weather_runtime_adapter import (
+    load_genie_runtime_weather_payload_fixture,
+    normalize_genie_runtime_weather_payload,
+)
+from keysuri_visual_context import IDENTITY_LABEL
 from keysuri_offline_dry_run import (
     RUNTIME_SIDE_EFFECTS,
     dry_run_report_for_json,
@@ -212,6 +217,102 @@ class KeysuriOfflineDryRunGuardTests(unittest.TestCase):
         self.assertNotIn("Tomorrow_Geenee", html)
         self.assertNotIn("tomorrow_genie", html)
         self.assertNotRegex(html, r"18:00\s*KST")
+
+
+class KeysuriOfflineDryRunWeatherVisualTests(unittest.TestCase):
+    def test_without_weather_unchanged(self) -> None:
+        result = run_keysuri_global_offline_dry_run()
+        self.assertEqual(result["dry_run_status"], "pass")
+        self.assertEqual(result["weather_context_status"], "not_supplied")
+        self.assertEqual(result["visual_prompt_status"], "not_requested")
+
+    def test_global_with_normalized_weather_builds_visual(self) -> None:
+        payload = load_genie_runtime_weather_payload_fixture(
+            str(_FEEDS / "genie_weather_runtime_seoul_cloudy.sample.json")
+        )
+        weather = normalize_genie_runtime_weather_payload(payload)
+        result = run_keysuri_offline_dry_run(
+            "keysuri_global_tech",
+            _load_pack("keysuri_global_sources.sample.json"),
+            _load_raw("keysuri_global_raw_response.valid.sample.txt"),
+            weather_context=weather,
+        )
+        self.assertEqual(result["dry_run_status"], "pass")
+        self.assertEqual(result["weather_context_status"], "normalized")
+        self.assertEqual(result["visual_prompt_status"], "built")
+        vsum = result.get("visual_prompt_summary") or {}
+        self.assertEqual(vsum.get("schedule_time_kst"), "12:30")
+        self.assertEqual(vsum.get("visual_time_band"), "daytime")
+        preview = result.get("image_prompt_text_preview") or ""
+        self.assertIn(IDENTITY_LABEL, preview)
+
+    def test_korea_rainy_evening_visual(self) -> None:
+        payload = load_genie_runtime_weather_payload_fixture(
+            str(_FEEDS / "genie_weather_runtime_seoul_rain.sample.json")
+        )
+        weather = normalize_genie_runtime_weather_payload(payload)
+        result = run_keysuri_offline_dry_run(
+            "keysuri_korea_tech",
+            _load_pack("keysuri_korea_sources.sample.json"),
+            _load_raw("keysuri_korea_raw_response.valid.sample.txt"),
+            weather_context=weather,
+        )
+        self.assertEqual(result["dry_run_status"], "pass")
+        self.assertEqual(result["visual_prompt_status"], "built")
+        preview = (result.get("image_prompt_text_preview") or "").lower()
+        self.assertEqual(result["visual_prompt_summary"]["schedule_time_kst"], "18:30")
+        self.assertEqual(result["visual_prompt_summary"]["visual_time_band"], "early_evening")
+        self.assertIn("rain", preview)
+        self.assertIn("interior", preview)
+
+    def test_korea_fine_dust_hazy_visual(self) -> None:
+        payload = load_genie_runtime_weather_payload_fixture(
+            str(_FEEDS / "genie_weather_runtime_seoul_fine_dust.sample.json")
+        )
+        weather = normalize_genie_runtime_weather_payload(payload)
+        result = run_keysuri_offline_dry_run(
+            "keysuri_korea_tech",
+            _load_pack("keysuri_korea_sources.sample.json"),
+            _load_raw("keysuri_korea_raw_response.valid.sample.txt"),
+            weather_context=weather,
+        )
+        preview = (result.get("image_prompt_text_preview") or "").lower()
+        self.assertIn("haz", preview)
+
+    def test_invalid_weather_context_blocks(self) -> None:
+        bad_weather = {
+            "location": "Busan",
+            "timezone": "Asia/Seoul",
+            "weather_date": "2026-06-04",
+            "observed_or_forecast_time_kst": "12:00",
+            "weather_condition": "sunny",
+            "source_mode": "offline_fixture",
+            "source_label": "bad",
+        }
+        result = run_keysuri_offline_dry_run(
+            "keysuri_global_tech",
+            _load_pack("keysuri_global_sources.sample.json"),
+            _load_raw("keysuri_global_raw_response.valid.sample.txt"),
+            weather_context=bad_weather,
+        )
+        self.assertEqual(result["dry_run_status"], "block")
+        self.assertEqual(result["weather_context_status"], "invalid")
+        self.assertEqual(result["visual_prompt_status"], "invalid")
+
+    def test_weather_report_json_omits_full_image_prompt_object(self) -> None:
+        payload = load_genie_runtime_weather_payload_fixture(
+            str(_FEEDS / "genie_weather_runtime_seoul_cloudy.sample.json")
+        )
+        weather = normalize_genie_runtime_weather_payload(payload)
+        result = run_keysuri_offline_dry_run(
+            "keysuri_global_tech",
+            _load_pack("keysuri_global_sources.sample.json"),
+            _load_raw("keysuri_global_raw_response.valid.sample.txt"),
+            weather_context=weather,
+        )
+        report = dry_run_report_for_json(result)
+        self.assertNotIn("image_prompt_object", report)
+        self.assertTrue(report.get("image_prompt_object_included"))
 
 
 class KeysuriOfflineDryRunLoaderTests(unittest.TestCase):

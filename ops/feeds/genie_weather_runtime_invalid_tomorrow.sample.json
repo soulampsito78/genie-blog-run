@@ -1,0 +1,15 @@
+{
+  "_fixture_note": "Invalid fixture — Tomorrow_Geenee reference must fail validation.",
+  "provider": "genie_staged_weather",
+  "provider_mode": "offline_fixture",
+  "location": {
+    "city": "Seoul",
+    "country": "KR",
+    "timezone": "Asia/Seoul"
+  },
+  "weather_date": "2026-06-04",
+  "observed_or_forecast_time_kst": "12:00",
+  "condition_code": "clear",
+  "condition_label": "맑음",
+  "source_label": "Tomorrow_Geenee legacy weather payload"
+}

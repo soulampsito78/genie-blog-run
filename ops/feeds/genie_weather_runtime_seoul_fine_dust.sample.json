@@ -1,0 +1,23 @@
+{
+  "_fixture_note": "Staged offline GENIE weather runtime payload — not live API data.",
+  "provider": "genie_staged_weather",
+  "provider_mode": "offline_fixture",
+  "location": {
+    "city": "Seoul",
+    "country": "KR",
+    "timezone": "Asia/Seoul"
+  },
+  "weather_date": "2026-06-04",
+  "observed_or_forecast_time_kst": "17:50",
+  "condition_code": "haze",
+  "condition_label": "미세먼지",
+  "temperature_c": 20,
+  "feels_like_c": 20,
+  "precipitation_probability": 10,
+  "precipitation_type": "none",
+  "humidity_percent": 55,
+  "fine_dust_level": "bad",
+  "ultra_fine_dust_level": "moderate",
+  "source_label": "GENIE staged runtime weather fixture (fine dust Seoul)",
+  "notes": "Sample hazy fine-dust evening Seoul for Kee-Suri Korea visual context."
+}

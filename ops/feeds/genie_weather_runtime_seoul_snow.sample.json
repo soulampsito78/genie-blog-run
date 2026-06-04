@@ -1,0 +1,22 @@
+{
+  "_fixture_note": "Staged offline GENIE weather runtime payload — not live API data.",
+  "provider": "genie_staged_weather",
+  "provider_mode": "offline_fixture",
+  "location": {
+    "city": "Seoul",
+    "country": "KR",
+    "timezone": "Asia/Seoul"
+  },
+  "weather_date": "2026-01-20",
+  "observed_or_forecast_time_kst": "07:00",
+  "condition_code": "snow",
+  "condition_label": "눈",
+  "temperature_c": -4,
+  "feels_like_c": -7,
+  "precipitation_probability": 70,
+  "precipitation_type": "snow",
+  "humidity_percent": 75,
+  "fine_dust_level": "good",
+  "source_label": "GENIE staged runtime weather fixture (snow Seoul)",
+  "notes": "Sample snowy Seoul morning for shared weather consumers."
+}

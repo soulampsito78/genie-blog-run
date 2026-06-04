@@ -1,0 +1,24 @@
+{
+  "_fixture_note": "Staged offline GENIE weather runtime payload — not live API data.",
+  "provider": "genie_staged_weather",
+  "provider_mode": "offline_fixture",
+  "location": {
+    "city": "Seoul",
+    "country": "KR",
+    "timezone": "Asia/Seoul"
+  },
+  "weather_date": "2026-06-04",
+  "observed_or_forecast_time_kst": "06:15",
+  "condition_code": "clear",
+  "condition_label": "맑음",
+  "temperature_c": 22,
+  "feels_like_c": 23,
+  "precipitation_probability": 5,
+  "precipitation_type": "none",
+  "humidity_percent": 48,
+  "wind_speed_mps": 2.1,
+  "fine_dust_level": "good",
+  "ultra_fine_dust_level": "good",
+  "source_label": "GENIE staged runtime weather fixture (clear Seoul)",
+  "notes": "Sample clear morning Seoul weather for Today_Geenee and Kee-Suri consumers."
+}

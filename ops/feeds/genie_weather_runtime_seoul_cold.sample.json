@@ -1,0 +1,22 @@
+{
+  "_fixture_note": "Staged offline GENIE weather runtime payload — not live API data.",
+  "provider": "genie_staged_weather",
+  "provider_mode": "offline_fixture",
+  "location": {
+    "city": "Seoul",
+    "country": "KR",
+    "timezone": "Asia/Seoul"
+  },
+  "weather_date": "2026-01-15",
+  "observed_or_forecast_time_kst": "11:30",
+  "condition_code": "cold",
+  "condition_label": "추움",
+  "temperature_c": -2,
+  "feels_like_c": -5,
+  "precipitation_probability": 15,
+  "precipitation_type": "none",
+  "humidity_percent": 40,
+  "fine_dust_level": "moderate",
+  "source_label": "GENIE staged runtime weather fixture (cold Seoul)",
+  "notes": "Sample cold winter Seoul for shared weather consumers."
+}
