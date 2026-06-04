@@ -1,0 +1,67 @@
+{
+  "program_id": "keysuri_global_tech",
+  "generated_at": "2026-06-04T11:00:00+09:00",
+  "notes": "Sample staged source pack for Kee-Suri global tech briefing (example URLs only).",
+  "sources": [
+    {
+      "source_id": "global-t0-ai-official",
+      "source_name": "Example AI Product Official Release",
+      "source_url": "https://example.com/source/global-ai-official",
+      "source_tier": "T0_OFFICIAL_PRIMARY",
+      "fetched_at": "2026-06-04T10:30:00+09:00",
+      "title": "Example Corp publishes enterprise AI model update",
+      "publisher": "Example Corp IR",
+      "snippet": "Official product brief describing inference latency improvements."
+    },
+    {
+      "source_id": "global-t2-semi-wire",
+      "source_name": "Example Tier-1 Wire Semiconductor Desk",
+      "source_url": "https://example.com/source/global-semi-wire",
+      "source_tier": "T2_TIER1_WIRE",
+      "fetched_at": "2026-06-04T10:45:00+09:00",
+      "title": "Advanced packaging demand signals remain firm",
+      "publisher": "Example Wire",
+      "snippet": "Wire report on HBM and advanced packaging supply chain."
+    },
+    {
+      "source_id": "global-t3-platform-press",
+      "source_name": "Example Quality Press Platform Policy",
+      "source_url": "https://example.com/source/global-platform-policy-press",
+      "source_tier": "T3_QUALITY_PRESS",
+      "fetched_at": "2026-06-04T10:50:00+09:00",
+      "title": "Platform policy update may shift developer monetization",
+      "publisher": "Example Tech Press",
+      "snippet": "Analysis of app store policy changes and developer economics."
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "global-claim-ai-product",
+      "statement": "Example Corp confirmed a new enterprise AI inference tier with lower latency.",
+      "claim_type": "product_spec",
+      "source_ids": ["global-t0-ai-official"],
+      "confidence_label": "confirmed"
+    },
+    {
+      "claim_id": "global-claim-semi-demand",
+      "statement": "Wire sources report advanced packaging demand remains elevated for AI accelerators.",
+      "claim_type": "numeric",
+      "source_ids": ["global-t2-semi-wire"],
+      "confidence_label": "reported"
+    },
+    {
+      "claim_id": "global-claim-platform-policy",
+      "statement": "Quality press reports platform policy changes may affect developer revenue share.",
+      "claim_type": "law_policy",
+      "source_ids": ["global-t3-platform-press"],
+      "confidence_label": "reported"
+    },
+    {
+      "claim_id": "global-claim-business-opportunity",
+      "statement": "Enterprise AI tooling vendors may see expanded procurement windows as latency improves.",
+      "claim_type": "interpretation",
+      "source_ids": ["global-t0-ai-official", "global-t2-semi-wire"],
+      "confidence_label": "reported"
+    }
+  ]
+}

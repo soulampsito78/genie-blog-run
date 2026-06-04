@@ -1,0 +1,60 @@
+{
+  "program_id": "keysuri_korea_tech",
+  "generated_at": "2026-06-04T17:00:00+09:00",
+  "notes": "Sample staged source pack for Kee-Suri Korea tech briefing (example URLs only).",
+  "sources": [
+    {
+      "source_id": "korea-t0-policy-official",
+      "source_name": "Example Korea AI Support Policy Notice",
+      "source_url": "https://example.com/source/korea-policy-official",
+      "source_tier": "T0_OFFICIAL_PRIMARY",
+      "fetched_at": "2026-06-04T16:30:00+09:00",
+      "title": "Example ministry announces AI startup support program criteria",
+      "publisher": "Example Ministry",
+      "snippet": "Official notice on eligibility and application windows."
+    },
+    {
+      "source_id": "korea-t2-startup-wire",
+      "source_name": "Example Korea Startup Wire",
+      "source_url": "https://example.com/source/korea-startup-wire",
+      "source_tier": "T2_TIER1_WIRE",
+      "fetched_at": "2026-06-04T16:40:00+09:00",
+      "title": "Domestic AI startups expand platform partnerships",
+      "publisher": "Example Korea Wire",
+      "snippet": "Wire coverage of domestic AI startup ecosystem activity."
+    },
+    {
+      "source_id": "korea-t3-platform-press",
+      "source_name": "Example Korea Platform Press",
+      "source_url": "https://example.com/source/korea-platform-press",
+      "source_tier": "T3_QUALITY_PRESS",
+      "fetched_at": "2026-06-04T16:45:00+09:00",
+      "title": "Local platform operators adjust AI marketplace fees",
+      "publisher": "Example Korea Tech Press",
+      "snippet": "Press analysis of domestic platform fee and support policy shifts."
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "korea-claim-policy-support",
+      "statement": "Official notice confirms expanded AI startup support program eligibility criteria.",
+      "claim_type": "law_policy",
+      "source_ids": ["korea-t0-policy-official"],
+      "confidence_label": "confirmed"
+    },
+    {
+      "claim_id": "korea-claim-startup-partnership",
+      "statement": "Wire sources report domestic AI startups are expanding platform partnerships.",
+      "claim_type": "general",
+      "source_ids": ["korea-t2-startup-wire"],
+      "confidence_label": "reported"
+    },
+    {
+      "claim_id": "korea-claim-platform-opportunity",
+      "statement": "Quality press reports local platform fee adjustments may create vendor onboarding opportunities.",
+      "claim_type": "interpretation",
+      "source_ids": ["korea-t3-platform-press", "korea-t2-startup-wire"],
+      "confidence_label": "reported"
+    }
+  ]
+}
