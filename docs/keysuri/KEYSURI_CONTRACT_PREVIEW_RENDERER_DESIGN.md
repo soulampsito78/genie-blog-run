@@ -12,6 +12,7 @@
 
 - `docs/keysuri/KEYSURI_TITLE_AND_BODY_SECTION_CONTRACT.md` — title/body contract (§10–§15)
 - `docs/keysuri/KEYSURI_HTML_PREVIEW_VALIDATOR_IMPLEMENTATION_PLAN.md` — validator boundary
+- `docs/REVIEW_OPERATION_BOX_POLICY.md` — **shared Genie/Kee-Suri review and operation box policy** (admin box, customer review confirmation, validation, operation metadata, rights footer taxonomy)
 - `keysuri_html_preview_validation.py` — read-only html_test validator (v0)
 - `scripts/validate_keysuri_html_preview.py` — CLI entrypoint
 - `tests/test_keysuri_renderer_validator_compat.py` — documents current FAIL matrix
@@ -38,6 +39,22 @@ This document designs a **new dedicated contract preview renderer** that:
 4. Supports **owner visual review and contract validation** — not production sending, not scheduler jobs, not email delivery, not image API calls.
 
 **Non-purpose:** Replacing, extending, or retrofitting the owner-review renderer in the first implementation pass.
+
+### Multi-box surface note
+
+The contract preview renderer is a **multi-box contract-validation preview surface**. A single generated HTML file may contain all of the following, each as a separate component:
+
+| Component | DOM id | Role |
+|-----------|--------|------|
+| Customer review confirmation box | `review-confirmation-box` | Human review/send lifecycle state — customer-safe copy |
+| Validation result box | `validation-result-box` | Automated contract/quality checks — internal only |
+| Operation metadata box | `operation-metadata` | Server/run context — internal only |
+| Rights policy footer | `rights-policy` | Copyright footer — customer-safe |
+| Contract compliance checklist | `compliance-checklist` | Internal contract checks |
+
+These are **separate components and must not be collapsed**. See `docs/REVIEW_OPERATION_BOX_POLICY.md` for the full shared taxonomy.
+
+**This surface (`html_test/`) is not the final customer email.** Admin operation controls (`재발행`, `다시 생성`, `수정요청`) must not appear in the customer review confirmation box on any surface.
 
 ---
 
@@ -236,6 +253,10 @@ Communicate **human review / send lifecycle state** to the owner during visual r
 | `review_passed` | Requires **explicit owner approval** input — not inferred from validator PASS |
 | `sent_archived` | May **only** be used when a **real send-completion record** exists — not from renderer alone |
 | “발송되었습니다” timing | Do **not** use send-complete language before actual send completion |
+| Validation PASS ≠ 검수완료 | Automated validator PASS does **not** imply owner `검수완료` — they are separate states |
+| Owner preview ≠ customer sent | Owner-preview generation does **not** equal customer send completion |
+| No admin controls | Must **not** contain `재발행`, `다시 생성`, `수정요청` controls |
+| No scheduler/debug paths | Must **not** expose scheduler metadata, debug info, or internal preview paths |
 | vs validation result box | Review confirmation box **must not replace** validation result box |
 | vs operation metadata | Review confirmation box **must not replace** operation metadata |
 | Korea placement | **Before** **국내 18:30 따뜻한 마무리** |
@@ -250,6 +271,8 @@ Communicate **human review / send lifecycle state** to the owner during visual r
 ```
 
 **Note:** Validator v0 (`keysuri_html_preview_validation.py`) does **not** yet enforce review confirmation box presence. Contract preview renderer tests should assert it; a future validator v1 task may add optional checks after owner approval.
+
+**English heading note:** The current renderer implementation uses `<h2>Review confirmation</h2>` as the box heading. This is an implementation label that may be localized to Korean in a later pass. The policy texts inside the box are already Korean (see §6.2). No code change is required at this stage.
 
 ---
 

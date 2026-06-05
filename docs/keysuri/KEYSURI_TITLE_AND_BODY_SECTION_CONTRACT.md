@@ -29,6 +29,7 @@ Code-aligned sources (reference only — no code changes in this document):
 - `keysuri_renderer.py` — renderer layout and identity display
 - `keysuri_html_preview_validation.py` — read-only HTML preview validator (`038c4b4`)
 - `scripts/validate_keysuri_html_preview.py` — CLI entrypoint for §15 checks
+- `docs/REVIEW_OPERATION_BOX_POLICY.md` — **shared Genie/Kee-Suri review and operation box policy** (admin box, customer review confirmation, validation result box, operation metadata, rights footer taxonomy and forbidden mixing rules)
 
 ---
 
@@ -474,6 +475,7 @@ Each **키수리의 딥-다이브** should identify **at least one** side-effect
 [키수리의 딥-다이브 — 1/2/3 layered when dense]
 [원-라인 체크포인트]
 [18:30 bottom-shot — placeholder or production-promoted image]
+[review confirmation box — customer-safe 검수 확인 문구, see REVIEW_OPERATION_BOX_POLICY.md §B]
 [국내 18:30 따뜻한 마무리 — §11, when production-promoted]
 [마무리 및 출처 리스트]
 [rights policy footer — §13]
@@ -483,10 +485,15 @@ Each **키수리의 딥-다이브** should identify **at least one** side-effect
 
 **Placement rules (Korea 18:30 — validated):**
 
-- Bottom-shot comes **before** warm close
-- Warm close comes **below** bottom-shot
+- Bottom-shot comes **before** review confirmation box
+- Review confirmation box comes **before** warm close
+- Review confirmation box is **customer-safe copy** — admin operation controls must not appear here
+- Warm close comes **below** bottom-shot and review confirmation box
 - Warm close comes **before** **마무리 및 출처 리스트**
 - Rights policy comes **after** **마무리 및 출처 리스트** and **before** operation metadata
+- Validation result box and operation metadata are preview/internal sections — not customer emotional closing copy
+- MirAI:ON rights footer is **separate** from review confirmation box
+- Image watermark is **separate** from rights footer
 
 ### 10.1 MirAI:ON image watermark policy
 
@@ -577,17 +584,26 @@ Full file-copy tracking, forensic watermarking, and per-download invisible water
 - Must **not** replace **원-라인 체크포인트**
 - Must **not** replace **마무리 및 출처 리스트**
 
-**Confirmed Korea 18:30 order** (validated HTML preview):
+**Confirmed Korea 18:30 order** (validated HTML preview, aligned with `docs/REVIEW_OPERATION_BOX_POLICY.md`):
 
 ```
 원-라인 체크포인트
   → 18:30 bottom-shot
+  → review confirmation box  (검수 확인 문구 — customer-safe, see REVIEW_OPERATION_BOX_POLICY.md §B)
   → 국내 18:30 따뜻한 마무리
   → 마무리 및 출처 리스트
   → rights policy footer
   → operation metadata
   → validation result box (preview only)
 ```
+
+**Review confirmation placement notes:**
+
+- Review confirmation box is **customer-safe copy** — it shows 검수 대기/통과/발송 state only.
+- Admin operation box (`재발행`, `다시 생성`, `수정요청` controls) is **not** part of this customer-facing section order.
+- Validation result box and operation metadata are preview/internal contract sections — not customer emotional closing copy.
+- MirAI:ON rights footer is **separate** from review confirmation — see §13 and §10.1.
+- Image watermark is **separate** from rights footer — both are required on their respective surfaces.
 
 ### 11.3 Copy (owner-locked)
 
@@ -786,7 +802,9 @@ Must **not** contain:
 
 **G. Placement validation (Korea 18:30)**
 
-- Warm close **below** bottom-shot placeholder
+- Bottom-shot **before** review confirmation box
+- Review confirmation box **before** warm close
+- Warm close **below** bottom-shot placeholder and review confirmation box
 - Rights policy **after** **마무리 및 출처 리스트**
 - Rights policy **before** operation metadata
 - Operation metadata **before** validation result box (validation box last)
@@ -1137,7 +1155,19 @@ keysuri_html_preview_validation.py + CLI (038c4b4)
 [future] prompt/renderer alignment
 ```
 
-## Appendix B — Production boundary reminders
+## Appendix B — Forbidden mixing rules (review/operation box policy)
+
+These rules apply to all Kee-Suri output surfaces. Full shared policy: `docs/REVIEW_OPERATION_BOX_POLICY.md`.
+
+- Customer-facing output must **not** contain admin operation controls (`재발행`, `다시 생성`, `수정요청`).
+- Customer-facing output must **not** expose scheduler metadata, debug info, or internal preview paths.
+- Validation PASS does **not** equal owner `검수완료` — they are separate states.
+- Owner-preview generation does **not** equal customer send completion.
+- `발송되었습니다` wording requires **real send/archive completion** — not preview alone.
+- MirAI:ON rights footer must **not** be treated as review confirmation.
+- Review confirmation box, validation result box, and operation metadata box are **separate components** — they must not be collapsed.
+
+## Appendix C — Production boundary reminders
 
 | Surface | Current state |
 |---------|---------------|
@@ -1147,7 +1177,7 @@ keysuri_html_preview_validation.py + CLI (038c4b4)
 | offduty_02C bottom-shot | `PROMPT_DIRECTION_ONLY` (`07a98ac`) |
 | Warm close §11 | Future rhythm — not active production |
 
-## Appendix C — Related commits
+## Appendix D — Related commits
 
 | Commit | Document |
 |--------|----------|
@@ -1160,7 +1190,7 @@ keysuri_html_preview_validation.py + CLI (038c4b4)
 | `1b23bcf` | Document Kee-Suri scheduler state and future wiring design |
 | `038c4b4` | Add Kee-Suri HTML preview validator |
 
-## Appendix D — Validated HTML preview reference
+## Appendix E — Validated HTML preview reference
 
 | Field | Value |
 |-------|-------|
