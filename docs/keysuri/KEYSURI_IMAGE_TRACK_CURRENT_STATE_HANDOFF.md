@@ -28,9 +28,9 @@ The Kee-Suri image track has progressed through **R5 (closed)**, **R6 (full-body
 | **R6** | **Planning complete** | Asset 02 classified `KEEP_AS_SILHOUETTE_REFERENCE`; full-body generation rules documented |
 | **R6B** | **Planning complete** | 18:30-only bottom-shot slot defined; fixed CEO-door background + broad off-duty wardrobe rotation |
 
-**Current state in one sentence:** Business briefing wardrobe (Wardrobe v4) is locked as direction; full-body reference rules are classified; bottom-shot emotional lock-in is designed but **not yet generated**.
+**Current state in one sentence:** Business briefing wardrobe (Wardrobe v4) is locked as direction; R6B first canary **NOT_ACCEPTED**; Asset 02 is now **default** full-body reference for R6B bottom shots.
 
-**Next likely step:** **R6B first bottom-shot candidate design** — prompt package + operator approval → one-live-call generation → visual QA. **Do not generate until approval draft exists.**
+**Next likely step:** **`offduty_02_elegant_knit_slim_skirt`** candidate package + Asset 02 reference + operator approval → one-live-call → visual QA. **Do not retry offduty_01 immediately.**
 
 ---
 
@@ -45,7 +45,10 @@ The Kee-Suri image track has progressed through **R5 (closed)**, **R6 (full-body
 | `bc78c4f` | Add Kee-Suri Image Track R6 full-body asset plan |
 | `0c7a6f0` | Update Kee-Suri R6 full-body asset classification |
 | `03c31a7` | Add Kee-Suri R6B bottom-shot emotional lock-in plan |
+| `5819c11` | Add Kee-Suri R6B first bottom-shot candidate package |
 | `2246c64` | Expand Kee-Suri R6B bottom-shot wardrobe rotation |
+
+**Uncommitted QA:** R6B first canary `offduty_01` → `keysuri_global_canary_20260605_101845.jpg` — **NOT_ACCEPTED**
 
 ### Primary documentation index
 
@@ -113,38 +116,49 @@ These decisions are **not open for re-debate** unless operator explicitly reopen
 
 ## 4. Asset Role Split
 
-### Asset 01 — primary identity
+### Asset 01 — identity / face family
 
 **Path:** `assets/keysuri/reference/image_keysuri_asset_01_main_briefing.png`
 
 **Role:**
 
-- Primary identity anchor
-- Face, bob, thin glasses, upper-body briefing reference
-- Cross-check identity after every generation
+- Identity / face family anchor
+- Short bob, thin glasses, refined Korean Kee-Suri impression
+- Post-generation identity QA cross-check (especially when Asset 02 is attached reference)
 
-### Asset 02 — silhouette only
+### Asset 02 — default R6B full-body framing reference
 
 **Path:** `assets/keysuri/reference/image_keysuri_asset_02_full_body.png`
 
 **Classification:** `KEEP_AS_SILHOUETTE_REFERENCE` (commit `0c7a6f0`)
 
+**R6B policy (updated after offduty_01 failure):** For **3/4 and full-body** bottom-shot generation, Asset 02 is the **default attached reference**. Do not infer full-body form from prompt text alone.
+
+**Asset 02 must anchor:**
+
+- Full-body proportion
+- Standing silhouette
+- Skirt length / leg line
+- Shoe visibility
+- Full-length framing
+- Body posture baseline
+
 **Allowed:**
 
-- Silhouette reference
-- Proportion reference
-- Full-body framing hint (one reference per call)
+- Silhouette, proportion, full-length framing (attached reference per call)
 
-**Forbidden:**
+**Forbidden transfer:**
 
-- Production asset as-is
-- Outfit copy (charcoal suit + champagne blouse)
+- Charcoal suit, champagne blouse
 - Tablet-at-waist pose
 - Command-center / data-wall background
+- Stiff briefing mood
+- Production asset as-is
 - Wardrobe-fit reference
-- Primary identity replacement for Asset 01
 
-**Do not replace Asset 02 in repo.** New full-body production images require separate approved generation.
+**Reference split:** One image per API call — attach Asset 02; enforce Asset 01 identity via prompt + QA.
+
+**Do not replace Asset 02 in repo.**
 
 ### Wardrobe v4 — business briefing
 
@@ -276,8 +290,8 @@ Customer desire is **intentionally used** but must remain **premium, tasteful, K
 
 | Profile ID | Cluster | Drift risk |
 |------------|---------|------------|
-| `offduty_01_soft_classic_cardigan_silk_blouse` | A | low — **suggested first candidate** |
-| `offduty_02_elegant_knit_slim_skirt` | B | low |
+| `offduty_01_soft_classic_cardigan_silk_blouse` | A | low — **NOT_ACCEPTED** first canary |
+| `offduty_02_elegant_knit_slim_skirt` | B | low — **next candidate** |
 | `offduty_03_smoky_blue_blouse_ivory_cardigan` | C | low |
 | `offduty_04_shirt_dress_thin_belt` | D | low–medium |
 | `offduty_05_cashmere_knit_pencil_skirt` | E | low |
@@ -287,7 +301,19 @@ Customer desire is **intentionally used** but must remain **premium, tasteful, K
 
 Full spec per profile: `docs/keysuri/KEYSURI_R6B_BOTTOM_SHOT_EMOTIONAL_LOCKIN_PLAN.md` §12.
 
-**R6B status:** Planning complete. **No bottom-shot image generated yet.**
+**R6B status:** First canary **NOT_ACCEPTED** (`offduty_01`, `keysuri_global_canary_20260605_101845.jpg`). Asset 02 now **default** for 3/4/full-body framing. Next: `offduty_02`.
+
+### R6B offduty_01 first canary failure
+
+| QA axis | Result |
+|---------|--------|
+| Background lock | PASS |
+| Off-duty wardrobe concept | PARTIAL |
+| No tablet | PASS |
+| Identity / age / charm | FAIL — motherly/older guardian |
+| Reference strategy | FAIL — Asset 01 only; Asset 02 not used |
+
+**Lesson:** Prompt-only full-body interpretation failed. Future R6B bottom shots must attach **Asset 02** by default.
 
 ---
 
@@ -314,31 +340,22 @@ Do **not** do these without explicit operator approval and a documented decision
 
 ## 10. Recommended Next Step
 
-### R6B first bottom-shot candidate design package
+### R6B second bottom-shot candidate — offduty_02
 
-**Do not generate yet.** First create prompt package and approval draft.
-
-### Suggested first candidate
-
-**Profile:** `offduty_01_soft_classic_cardigan_silk_blouse`
-
-**Purpose:** Validate fixed CEO office wood-door background + off-duty wardrobe + farewell gesture system end-to-end.
-
-### Suggested visual direction
+**Do not retry offduty_01.** Create new package for **`offduty_02_elegant_knit_slim_skirt`**.
 
 | Field | Value |
 |-------|-------|
-| **Slot** | 18:30 only |
-| **Background** | Fixed CEO/chairman office wood door; wood-paneled wall; warm evening executive-floor light |
-| **Outfit** | Soft ivory cardigan over silk blouse + beige slim skirt |
-| **Prop** | Small structured handbag **or** thin notebook |
-| **Gesture** | Slight bow or small hand farewell |
-| **Expression** | Warm but composed |
-| **Emotional temperature** | medium |
-| **Taste cluster** | A — Soft Classic |
-| **Drift risk** | low |
-| **Framing** | 3/4 body (operator may choose full-body with Asset 02 silhouette-only) |
-| **Reference** | Asset 01 identity policy; Asset 02 only if full-body and silhouette-only |
+| **Profile** | `offduty_02_elegant_knit_slim_skirt` |
+| **Taste cluster** | B — Elegant Office Casual |
+| **Reason** | Avoids cardigan motherly risk; modern attractive knit + slim skirt silhouette |
+| **Reference** | **Asset 02 default attached** — Asset 01 identity in prompt + post-gen QA |
+| **Slot** | 18:30 bottom-shot only |
+| **Background** | Fixed CEO/chairman office wood-door entrance |
+
+### Retired: offduty_01 immediate retry
+
+First canary `keysuri_global_canary_20260605_101845.jpg` — **NOT_ACCEPTED**. See `KEYSURI_R6B_FIRST_BOTTOM_SHOT_CANDIDATE_PACKAGE.md` §11.
 
 ### Pre-generation checklist (summary)
 
@@ -371,7 +388,7 @@ Use this template when creating the **R6B bottom-shot candidate prompt package**
 | Emotional temperature | low / medium / warm |
 | Drift risk | low / medium / high |
 | Framing | 3/4 body OR full-body |
-| Reference strategy | Asset 01 identity; Asset 02 silhouette-only if full-body |
+| Reference strategy | Asset 02 default attached; Asset 01 identity in prompt |
 | Previous accepted bottom shot | none / [profile_id] — confirm not too close |
 | One-live-call approval | PENDING / APPROVED |
 
@@ -433,6 +450,11 @@ Use this template when creating the **R6B bottom-shot candidate prompt package**
 
 ## 7. QA criteria (post-generation)
 
+- [ ] Asset 02-like full-body proportion without copying Asset 02 outfit
+- [ ] Kee-Suri reads mid-to-late 30s, not older/motherly
+- [ ] Outfit modern and attractive, not motherly cardigan mood
+- [ ] Pose avoids hands-clasped conservative greeting
+- [ ] Scene remains CEO/chairman wood-door background
 - [ ] Identity stable vs Asset 01
 - [ ] CEO wood-door background fixed and recognizable
 - [ ] Off-duty outfit from profile — not v4 briefing uniform
@@ -486,16 +508,18 @@ SCHEDULE
   18:30  TOP + BOTTOM    v4 top + R6B off-duty bottom
 
 NEXT ACTION
-  Create R6B prompt package for offduty_01 → approve → one live call → QA
-  DO NOT GENERATE without approval draft
+  R6B  FIRST CANARY NOT_ACCEPTED → offduty_01 failed; Asset 02 now default reference
+  NEXT offduty_02 + Asset 02 → approve → one live call → QA
+  DO NOT retry offduty_01 immediately
 
 NEVER
   commit output/**  |  git add -A  |  wire Scheduler  |  bottom at 12:30
   clone Asset 02 outfit/tablet/bg  |  color-only wardrobe roulette
+  R6B bottom shot with Asset 01-only reference (prompt-only full-body)
 ```
 
 ---
 
 ## Summary
 
-Kee-Suri image track handoff: **R5 closed with Wardrobe v4 direction**, **R6 classified Asset 02 as silhouette-only**, **R6B designed 18:30 bottom-shot lock-in with fixed CEO-door background and broad off-duty wardrobe rotation**. Infrastructure for guarded one-live-call canaries is committed. **No R6B image has been generated.** Next step is **`offduty_01` prompt package + approval** — not blind generation.
+Kee-Suri image track handoff: **R5 closed with Wardrobe v4 direction**, **R6 classified Asset 02 as silhouette-only (now default R6B attached reference)**, **R6B first canary NOT_ACCEPTED** (`offduty_01`). Background lock worked; identity/age/charm failed with Asset 01-only reference. **Next:** `offduty_02_elegant_knit_slim_skirt` with **Asset 02 default** — not blind retry.

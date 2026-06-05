@@ -139,6 +139,22 @@ Operator inspection of the tracked full-body reference asset is **complete**. Th
 
 One reference asset per generation call (per visual asset guide). When Asset 02 is attached, identity continuity is enforced through **prompt policy aligned with Asset 01**, not by attaching both files in one call.
 
+### R6B bottom-shot default (added after first canary failure)
+
+For **R6B 18:30 bottom-shot** generation at **3/4 or full-body** framing:
+
+| Policy | Rule |
+|--------|------|
+| **Attached reference** | **Asset 02 is default** — not optional |
+| **Asset 02 anchors** | Full-body proportion, standing silhouette, skirt length/leg line, shoe visibility, full-length framing, body posture baseline |
+| **Asset 01 role** | Identity / face family via prompt policy + post-gen QA — not a substitute for Asset 02 body framing |
+| **Prompt carries** | Off-duty outfit, expression, gesture, fixed CEO wood-door background, emotional temperature, anti-copy blocks, age/charm guardrails |
+| **Must not infer body from prompt alone** | First canary (`offduty_01`, `keysuri_global_canary_20260605_101845.jpg`) failed partly because Asset 01-only reference produced older/motherly full-body interpretation |
+
+**Asset 02 must not transfer:** charcoal suit, champagne blouse, tablet-at-waist pose, command-center background, stiff briefing mood.
+
+**Next R6B candidate:** `offduty_02_elegant_knit_slim_skirt` — must attach Asset 02. Do not retry `offduty_01` immediately.
+
 ### 3. Strengths of Asset 02
 
 - **Full head-to-toe view** — only tracked Kee-Suri asset showing complete standing frame
@@ -194,15 +210,18 @@ Future full-body production prompts must **combine roles in prompt text**, even 
 | Source | Contributes |
 |--------|-------------|
 | **Asset 01 policy** | Identity — face, short bob, thin glasses, Korean private AI tech secretary impression (via prompt language; attach 01 if call is upper-body or identity-critical) |
-| **Asset 02 (when attached)** | Silhouette / proportion / full-length framing **only** |
-| **Wardrobe v4 profile** | Outfit structure — garment clauses, seasonal band, prop rules |
+| **Asset 02 (default for R6B 3/4 and full-body bottom shot)** | Silhouette / proportion / full-length framing / standing posture baseline **only** — **attached reference** |
+| **Wardrobe v4 profile** | Outfit structure — garment clauses, seasonal band, prop rules (business briefing) |
+| **R6B off-duty profile** | Off-duty outfit, expression, gesture (bottom shot) |
 | **Explicit anti-copy block** | Forbid copying Asset 02 outfit, tablet pose, command-center background, and composition |
 
 Example anti-copy language (required when Asset 02 is attached):
 
-> Use reference image for body proportion and full-length framing only. Do not copy the reference outfit, tablet, pose, command-center background, or composition. Apply Wardrobe v4 profile wardrobe clause for all garments and props.
+> Use the full-body reference only for body proportion, full-length framing, standing silhouette, skirt/leg/shoe balance, and posture. Do not copy the full-body reference outfit, tablet pose, or command-center background.
 
-Operator QA must cross-check **identity against Asset 01** and **outfit against Wardrobe v4** even when Asset 02 was the attached reference.
+> Kee-Suri must remain a refined Korean woman in her mid-to-late 30s with a fresh, modern, attractive off-duty presence. Avoid motherly, matronly, older guardian, conservative family-meeting mood.
+
+Operator QA must cross-check **identity against Asset 01** and **outfit against Wardrobe v4 or R6B off-duty profile** even when Asset 02 was the attached reference.
 
 ---
 

@@ -638,7 +638,7 @@ Season must be chosen **before** prompt packaging — do not mix summer knit wit
 | **Tone** | Warm but premium |
 | **Moment** | Subtle private glimpse — reader catches Kee-Suri off-duty at the same door each evening |
 
-If full-body framing is used, Asset 02 may attach as **silhouette-only** reference per R6 classification (`0c7a6f0`). Do not copy Asset 02 outfit, tablet pose, or command-center background.
+For **3/4 body or full-body** R6B bottom-shot generation, **Asset 02 is the default attached reference** per R6 classification (`0c7a6f0`). The model must **not** infer full-body form from prompt text alone. Do not copy Asset 02 outfit, tablet pose, or command-center background.
 
 ---
 
@@ -646,8 +646,8 @@ If full-body framing is used, Asset 02 may attach as **silhouette-only** referen
 
 | Asset / layer | Bottom-shot role |
 |---------------|------------------|
-| **Asset 01** | **Primary identity** — face, bob, thin glasses, secretary persona |
-| **Asset 02** | **Silhouette only** if full-body bottom shot — proportion/framing; never outfit/tablet/background |
+| **Asset 01** | **Identity / face family** — short bob, thin glasses, refined Korean Kee-Suri impression (prompt policy + post-gen QA cross-check) |
+| **Asset 02** | **Default full-body framing reference** for 3/4 and full-body bottom shots — proportion, silhouette, posture baseline; never outfit/tablet/background |
 | **Wardrobe v4** | **Business briefing only** — narrow trust-oriented catalog; not used for bottom shot |
 | **Bottom-shot profile catalog (§12)** | **Outfit source of truth** for R6B — broad taste-oriented rotation |
 | **Taste clusters (§9)** | **Rotation organization** — prevents color-only repetition |
@@ -656,6 +656,59 @@ If full-body framing is used, Asset 02 may attach as **silhouette-only** referen
 | **Asset 02 anti-patterns** | Explicitly forbidden: charcoal suit + champagne blouse, tablet-at-waist, command-center |
 
 Bottom shot is a **third visual layer** in the Kee-Suri content stack — it does not replace hero briefing images or extend v4 into after-hours without a separate profile.
+
+### Reference split (R6B bottom shot)
+
+| Source | Role |
+|--------|------|
+| **Asset 01** | Identity / face family — short bob, thin glasses, refined Korean Kee-Suri impression |
+| **Asset 02** | **Default attached reference** — full-body framing, silhouette, posture/proportion, full-length composition |
+| **Prompt text** | Off-duty outfit, expression, gesture, fixed CEO/chairman wood-door background, emotional temperature, anti-copy constraints, age/charm guardrails |
+
+**One reference image per API call** (visual asset guide): attach **Asset 02** for 3/4 and full-body bottom shots. Enforce Asset 01 identity through **prompt policy aligned with Asset 01** and post-generation identity QA cross-check against Asset 01 — do not attach both files in one call.
+
+**Asset 02 must anchor:**
+
+- Full-body proportion
+- Standing silhouette
+- Skirt length / leg line
+- Shoe visibility
+- Full-length framing
+- Body posture baseline
+
+**Asset 02 must not transfer:**
+
+- Charcoal suit
+- Champagne blouse
+- Tablet-at-waist pose
+- Command-center background
+- Stiff briefing mood
+
+---
+
+## 16A. R6B offduty_01 First Canary Failure Note
+
+First R6B bottom-shot live canary — **NOT_ACCEPTED**.
+
+| Field | Value |
+|-------|-------|
+| **Profile** | `offduty_01_soft_classic_cardigan_silk_blouse` |
+| **Output** | `output/keysuri_preview/image_canary/keysuri_global_canary_20260605_101845.jpg` |
+| **Reference used** | Asset 01 only (identity) — **Asset 02 not attached** |
+| **Result** | **NOT_ACCEPTED** |
+
+| QA axis | Outcome |
+|---------|---------|
+| Background lock (CEO wood-door entrance) | **PASS** |
+| Off-duty wardrobe concept | **PARTIAL** — cardigan/blouse/skirt visible but read motherly |
+| No tablet | **PASS** |
+| Identity / age / charm | **FAIL** — older/motherly/guardian impression; not modern attractive off-duty Kee-Suri |
+| Greeting gesture | **PARTIAL** — hands clasped, not bow/hand farewell |
+| Full-body proportion anchor | **FAIL** — prompt-only interpretation without Asset 02 |
+
+**Root cause:** Full-body bottom-shot relied too much on prompt interpretation and not enough on **Asset 02 full-body framing reference**.
+
+**Policy correction:** Future R6B **3/4 and full-body** bottom shots must use **Asset 02 as default silhouette/full-body reference**. Do not retry `offduty_01` immediately. Next candidate: **`offduty_02_elegant_knit_slim_skirt`** — avoids cardigan motherly risk; must use Asset 02 for framing.
 
 ---
 
@@ -721,12 +774,27 @@ Future bottom-shot prompts must be structured in this order:
 - No revealing outfit, bedroom, bar, cafe, street, hotel, nightclub, overt flirtation
 - No broad background roulette — no cafe, home, lounge, street, or hotel as substitute default
 - No color-only variation without structure change
+- No motherly, matronly, older guardian, conservative family-meeting mood
+- No hands-clasped conservative greeting pose
 - No readable text, logos, fake UI
 
-### Reference attachment rule
+### Reference attachment rule (R6B)
 
-- One reference asset per call (visual asset guide)
-- If Asset 02 attached: silhouette/proportion only + full anti-copy block
+- **Default for 3/4 and full-body bottom shots:** attach **Asset 02** as full-body/silhouette framing reference
+- **Asset 01:** identity/face policy in prompt text — not a substitute for Asset 02 body framing
+- One reference **image** per API call — Asset 02 attached; Asset 01 identity enforced via prompt + post-gen QA
+- Full anti-copy block required whenever Asset 02 is attached
+
+### Prompt implication — Asset 02 body reference
+
+Future R6B bottom-shot prompts must include:
+
+> Use the full-body reference only for body proportion, full-length framing, standing silhouette, skirt/leg/shoe balance, and posture. Do not copy the full-body reference outfit, tablet pose, or command-center background.
+
+> Kee-Suri must remain a refined Korean woman in her **mid-to-late 30s** with a fresh, modern, attractive off-duty presence.
+
+> Avoid motherly, matronly, older guardian, conservative family-meeting mood. Avoid hands-clasped conservative greeting pose.
+
 - Identity QA cross-check against Asset 01 after generation
 
 ---
@@ -738,6 +806,10 @@ Operator must complete before any bottom-shot output is accepted as QA PASS or p
 ### Identity and persona
 
 - [ ] **Identity stable** — same Kee-Suri face, bob, glasses; no identity drift
+- [ ] **Asset 02-like full-body proportion** preserved — without copying Asset 02 outfit
+- [ ] **Kee-Suri reads mid-to-late 30s** — not older, not motherly/matronly/guardian
+- [ ] **Outfit feels modern and attractive** — not motherly cardigan/conservative family-meeting mood
+- [ ] **Pose avoids hands-clasped conservative greeting** — prefer bow, hand farewell, or natural prop pose
 - [ ] **Emotionally warmer** than briefing hero — visible softening acceptable
 - [ ] **Respectful register** — warm toward 대표님/reader, not flirtatious
 - [ ] **Emotional temperature controlled** — matches declared low / medium / warm; warm not overused
@@ -796,7 +868,7 @@ No bottom-shot image API call until **all** conditions are satisfied:
 | 11 | **Bottom-shot background confirmed fixed** — default CEO/chairman office wood-door entrance unless explicit override with written reason |
 | 12 | **Profile not too close to previous accepted bottom shot** — different taste cluster or clearly different structure; operator confirms |
 | 13 | **Bottom-shot variation axis** declared — outfit / expression / gesture / prop / season — **not background** |
-| 14 | **Reference strategy** declared — Asset 01 identity policy in prompt; Asset 02 attached **only if** full-body and **only as** silhouette reference |
+| 14 | **Reference strategy declared** — **Asset 02 default** for 3/4 or full-body framing; Asset 01 identity policy in prompt; explicit no-copy block for Asset 02 outfit/prop/background |
 | 15 | **Production prompt package** written — includes §17 required blocks; background locked before character variables |
 | 16 | **Operator approval** — date, slot time, cluster, profile id, season, emotional temperature, drift risk, framing, background lock, operator ref |
 | 17 | Preflight PASS; dry-run `request_count=0`, `called_image_api=false` |
@@ -819,6 +891,6 @@ R6B defines a **bottom-shot emotional lock-in slot** for Kee-Suri — off-duty, 
 - **Fixed background:** CEO/chairman office wood-door entrance — status and ritual
 - **Variable character:** outfit, expression, gesture, prop, season, emotional temperature
 
-**Schedule rule:** 12:30 = top shot only; 18:30 = top + bottom. Asset 01 anchors identity; Asset 02 may anchor silhouette only. **No generation until decision gate §19 passes.**
+**Schedule rule:** 12:30 = top shot only; 18:30 = top + bottom. **Asset 02 default** for 3/4/full-body bottom-shot framing; Asset 01 identity via prompt + QA. First canary `offduty_01` **NOT_ACCEPTED** — next candidate `offduty_02`. **No generation until decision gate §19 passes.**
 
-**Next action:** Commit when approved. **Do not generate** until slot time, taste cluster, profile id, season, emotional temperature, drift risk, framing, background lock, and prompt package are operator-approved.
+**Next action:** Commit when approved. **Do not generate** until slot time, taste cluster, profile id, season, emotional temperature, drift risk, framing, background lock, Asset 02 reference strategy, and prompt package are operator-approved.
