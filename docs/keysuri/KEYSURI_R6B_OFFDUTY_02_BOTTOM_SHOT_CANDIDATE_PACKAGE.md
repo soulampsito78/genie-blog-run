@@ -1,7 +1,7 @@
 # KEYSURI R6B — offduty_02 Bottom-Shot Candidate Design Package
 
 Status:
-Design package only / **not approved for generation** / no image API in this document
+**Canary executed — NOT_ACCEPTED** / documentation only / no further image API in this document
 
 Candidate:
 `offduty_02_elegant_knit_slim_skirt`
@@ -39,10 +39,39 @@ Non-scope:
 | **expression target** | **Fresh composed smile** / **싱그러운 미소** |
 | **drift risk** | **low** |
 | **background** | Fixed CEO/chairman office wood-door entrance |
-| **framing** | 3/4 body or full-body — **Asset 02 default attached reference** |
-| **status** | **Design package only — not approved for generation yet** |
+| **framing** | 3/4 body or full-body — Asset 02 attached (policy superseded after QA) |
+| **status** | **NOT_ACCEPTED** — `keysuri_global_canary_20260605_103238.jpg` |
+| **next candidate** | `offduty_02B_elegant_knit_kneeup_farewell` — knee-up, Asset 01 identity priority |
 
 **Validation goal:** Prove a **more modern, attractive, fresh** R6B bottom-shot direction after `offduty_01` failure — while preserving fixed CEO-door background, Asset 02 full-body framing, fresh composed smile expression, and no motherly/guardian drift.
+
+**Canary outcome:** Gesture/pose direction **validated**; identity/proportion **failed**. Strategy updated — see §11 Visual QA Result and §12 Next Candidate Direction.
+
+---
+
+## 1A. Visual QA Result (operator)
+
+| Field | Value |
+|-------|-------|
+| **profile_id** | `offduty_02_elegant_knit_slim_skirt` |
+| **result** | **NOT_ACCEPTED** |
+| **output** | `output/keysuri_preview/image_canary/keysuri_global_canary_20260605_103238.jpg` |
+| **reference used** | Asset 02 attached |
+
+| QA axis | Outcome |
+|---------|---------|
+| CEO/chairman wood-door background | **PASS** |
+| No tablet | **PASS** |
+| Modern knit + slim skirt wardrobe direction | **PASS** |
+| Small hand gesture / pose direction | **PASS** |
+| Off-duty bottom-shot concept | **PASS** |
+| Face identity consistency | **FAIL** — Kee-Suri did not read as same character |
+| Full-body proportion (Asset 02 reference quality) | **FAIL** |
+| Expression + face regeneration | **FAIL** — identity drift; face too small/unstable at full-body |
+
+**Operator note:** “표정이 들어가면서 얼굴 일관성이 무너졌고, 전신 비율이 전혀 달라. 다만 제스츄어나 포즈는 참 좋아.”
+
+**Lesson:** Gesture works; **full-body framing plus expression caused identity drift**. For R6B bottom-shot emotional lock-in, **identity and expression matter more than full-body proportion**. Do not continue R6B as full-body-first.
 
 ---
 
@@ -141,12 +170,14 @@ Kee-Suri stands at the **chairman/CEO office entrance** — **large premium wood
 
 ## 5. Reference Strategy
 
-### Reference split
+> **Historical note:** This section reflects the **pre-canary design** (Asset 02 default). Canary **NOT_ACCEPTED** — policy superseded. Current R6B policy: **Asset 01 primary**, 3/4 or knee-up preferred. See R6B plan §16B and §12 Next Candidate.
+
+### Reference split (as executed — superseded)
 
 | Source | Role |
 |--------|------|
-| **Asset 02** (attached) | **Default** full-body/silhouette reference for 3/4 or full-body bottom shot |
-| **Asset 01** (prompt + QA) | Identity / face family — short bob, thin glasses, refined Kee-Suri impression |
+| **Asset 02** (attached) | Full-body/silhouette reference — **caused identity drift at full-body scale** |
+| **Asset 01** (prompt + QA) | Identity / face family — insufficient as sole prompt policy when Asset 02 forced full-body |
 | **Prompt** | Off-duty outfit, expression, gesture, fixed CEO wood-door background, emotional temperature, anti-copy blocks |
 
 ### Asset 02 must anchor
@@ -331,7 +362,7 @@ harsh flash photography, cold fluorescent only, no visible wooden door
 | **output_path_policy** | `output/keysuri_preview/image_canary/` — QA reference only; **never commit** |
 | **operator_ref** | ___________ |
 | **approval_date** | ___________ |
-| **one_live_call_approval** | `PENDING` / `APPROVED` |
+| **one_live_call_approval** | `APPROVED` (executed) → result **NOT_ACCEPTED** |
 
 **Generation gate:** R6B plan §19 decision gate + this package §6 + preflight PASS + dry-run `request_count=0`, `called_image_api=false`.
 
@@ -341,6 +372,12 @@ harsh flash photography, cold fluorescent only, no visible wooden door
 
 Complete after one-live-call output. All items must PASS before any promotion discussion.
 
+### Face identity gate (evaluate first — mandatory)
+
+- [ ] **Face identity must PASS before wardrobe/gesture can be accepted**
+- [ ] **If face identity fails, image is NOT_ACCEPTED** — even if background/gesture pass
+- [x] **offduty_02 result:** face identity **FAIL** — image NOT_ACCEPTED despite gesture PASS
+
 ### Identity and expression
 
 - [ ] **Identity stable** — same Kee-Suri face, bob, glasses vs Asset 01
@@ -349,9 +386,15 @@ Complete after one-live-call output. All items must PASS before any promotion di
 - [ ] **Expression reads fresh and modern** — refreshing off-duty, not family-meeting polite
 - [ ] **Not cheap girlfriend fantasy**; **not sexualized**; **not submissive**
 
+### Framing (R6B bottom-shot)
+
+- [ ] **3/4 body or knee-up evaluated as valid bottom-shot framing** — face clearly visible
+- [ ] **Full-body is not required** for R6B bottom-shot
+- [ ] **Full-body belongs to separate R6 production asset track** unless explicitly approved
+
 ### Reference and proportion
 
-- [ ] **Asset 02-like full-body proportion preserved** — without copying Asset 02 outfit
+- [ ] **Asset 02-like full-body proportion preserved** — without copying Asset 02 outfit (not required for R6B knee-up default)
 - [ ] **No Asset 02 outfit clone** — no charcoal suit, champagne blouse
 - [ ] **No command-center / data-wall background** from reference
 
@@ -422,10 +465,48 @@ Complete after one-live-call output. All items must PASS before any promotion di
 - Update package or select alternate gesture/prop
 - **New approval required** before any subsequent live call
 
+**offduty_02 executed:** NOT_ACCEPTED — do not retry full-body under same profile.
+
+---
+
+## 11. Visual QA Result (record)
+
+See §1A for full operator QA record. Summary:
+
+| Passed | Failed |
+|--------|--------|
+| CEO wood-door background | Face identity consistency |
+| No tablet | Kee-Suri same-character read |
+| Knit + slim skirt wardrobe direction | Full-body proportion vs Asset 02 intent |
+| Gesture / pose direction | Expression-caused identity drift |
+
+---
+
+## 12. Next Candidate Direction — offduty_02B
+
+Do **not** simply move to `offduty_03` full-body. Next candidate:
+
+| Field | Value |
+|-------|-------|
+| **profile_id** | `offduty_02B_elegant_knit_kneeup_farewell` |
+| **framing** | **3/4 body or knee-up** — face clearly visible; **no full-body requirement** |
+| **reference** | **Asset 01 identity priority**; Asset 02 optional silhouette support only if multi-reference approved without identity drift |
+| **wardrobe** | Modern fitted knit top; slim skirt partially visible |
+| **gesture** | Small hand farewell — **carry forward from offduty_02 PASS** |
+| **expression** | Fresh composed smile / 싱그러운 미소 |
+| **background** | Fixed CEO/chairman wood-door entrance |
+| **hard negatives** | No full-body default; no hands-clasped pose; no motherly smile |
+
+**Prompt implication for offduty_02B:**
+
+> 3/4 body or knee-up composition, face clearly visible, Kee-Suri identity priority, fresh composed smile, small hand farewell, CEO wood-door background.
+
+Avoid **full-body** as default framing language.
+
 ---
 
 ## Summary
 
-**offduty_02_elegant_knit_slim_skirt** is the second R6B bottom-shot candidate — **Elegant Office Casual** with **modern fitted knit + slim skirt**, **fresh composed smile / 싱그러운 미소**, **Asset 02 default framing**, and **fixed CEO wood-door background**. Designed to correct `offduty_01` motherly/guardian failure. **Status: not approved for generation.**
+**offduty_02_elegant_knit_slim_skirt** canary **NOT_ACCEPTED** (`keysuri_global_canary_20260605_103238.jpg`). Gesture/pose direction validated; identity/proportion failed at full-body + Asset 02 default. R6B strategy updated: **3/4 or knee-up preferred**, **Asset 01 identity priority**, full-body reserved for R6 production track.
 
-**Next action:** Operator review → complete §7 approval → one-live-call (only if approved).
+**Next action:** Design `offduty_02B_elegant_knit_kneeup_farewell` package → operator approval → one-live-call (only if approved).

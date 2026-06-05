@@ -139,21 +139,40 @@ Operator inspection of the tracked full-body reference asset is **complete**. Th
 
 One reference asset per generation call (per visual asset guide). When Asset 02 is attached, identity continuity is enforced through **prompt policy aligned with Asset 01**, not by attaching both files in one call.
 
-### R6B bottom-shot default (added after first canary failure)
+### R6B bottom-shot vs R6 production full-body (updated after offduty_02 failure)
 
-For **R6B 18:30 bottom-shot** generation at **3/4 or full-body** framing:
+**R6B bottom-shot** and **R6 production full-body asset track** are **separate framing policies**. Do not conflate them.
+
+#### R6B 18:30 bottom-shot (emotional lock-in)
 
 | Policy | Rule |
 |--------|------|
-| **Attached reference** | **Asset 02 is default** — not optional |
-| **Asset 02 anchors** | Full-body proportion, standing silhouette, skirt length/leg line, shoe visibility, full-length framing, body posture baseline |
-| **Asset 01 role** | Identity / face family via prompt policy + post-gen QA — not a substitute for Asset 02 body framing |
-| **Prompt carries** | Off-duty outfit, **fresh composed smile / refreshing off-duty expression**, gesture, fixed CEO wood-door background, emotional temperature, anti-copy blocks, age/charm guardrails |
-| **Must not infer body from prompt alone** | First canary (`offduty_01`, `keysuri_global_canary_20260605_101845.jpg`) failed partly because Asset 01-only reference and **“warm smile”** language produced older/motherly full-body interpretation |
+| **Default framing** | **3/4 body or knee-up** — face clearly visible; identity and expression stability first |
+| **Full-body** | **Not default** — only when explicitly operator-approved; otherwise use R6 production track |
+| **Attached reference** | **Asset 01 primary** — face/identity anchor |
+| **Asset 02 role** | **Optional** silhouette/proportion support when lower-body framing explicitly required — must not override face identity or force full-body composition |
+| **Prompt carries** | Off-duty outfit, gesture, fixed CEO wood-door background, **fresh composed smile**, emotional temperature, anti-copy blocks |
+| **QA gate** | **Reject if face does not read as Kee-Suri** — even when background/gesture/wardrobe pass |
 
-**Asset 02 must not transfer:** charcoal suit, champagne blouse, tablet-at-waist pose, command-center background, stiff briefing mood.
+**Canary lessons:**
 
-**Next R6B candidate:** `offduty_02_elegant_knit_slim_skirt` — must attach Asset 02. Do not retry `offduty_01` immediately.
+| Canary | Failure mode | Lesson |
+|--------|--------------|--------|
+| `offduty_01` (`keysuri_global_canary_20260605_101845.jpg`) | Motherly/matronly drift; Asset 01-only | Fresh composed smile; avoid warm smile + cardigan + hands-clasped |
+| `offduty_02` (`keysuri_global_canary_20260605_103238.jpg`) | Identity/proportion drift despite good gesture | **Do not treat R6B as full-body-first**; Asset 02 default caused face instability at expression |
+
+**Next R6B candidate:** `offduty_02B_elegant_knit_kneeup_farewell` — Asset 01 identity priority, knee-up/3/4 framing, same gesture direction as offduty_02.
+
+#### R6 production full-body asset track
+
+| Policy | Rule |
+|--------|------|
+| **Purpose** | Full-length v4 wardrobe validation, landing/thumbnail/intro candidates |
+| **Attached reference** | Asset 02 for silhouette/proportion when full-body explicitly scoped |
+| **Asset 01 role** | Identity QA cross-check |
+| **Scope** | Business briefing Wardrobe v4 profiles — separate from R6B off-duty bottom shot |
+
+**Asset 02 must not transfer (both tracks):** charcoal suit, champagne blouse, tablet-at-waist pose, command-center background, stiff briefing mood.
 
 ### 3. Strengths of Asset 02
 
@@ -210,20 +229,27 @@ Future full-body production prompts must **combine roles in prompt text**, even 
 | Source | Contributes |
 |--------|-------------|
 | **Asset 01 policy** | Identity — face, short bob, thin glasses, Korean private AI tech secretary impression (via prompt language; attach 01 if call is upper-body or identity-critical) |
-| **Asset 02 (default for R6B 3/4 and full-body bottom shot)** | Silhouette / proportion / full-length framing / standing posture baseline **only** — **attached reference** |
+| **Asset 01 (default for R6B bottom shot)** | Primary face/identity reference — attached for 3/4 body or knee-up emotional lock-in |
+| **Asset 02 (R6 production full-body; optional R6B support)** | Silhouette / proportion / full-length framing **only** when full-body explicitly scoped — must not override Asset 01 identity |
 | **Wardrobe v4 profile** | Outfit structure — garment clauses, seasonal band, prop rules (business briefing) |
-| **R6B off-duty profile** | Off-duty outfit, expression, gesture (bottom shot) |
+| **R6B off-duty profile** | Off-duty outfit, expression, gesture, fixed CEO-door background (bottom shot) |
 | **Explicit anti-copy block** | Forbid copying Asset 02 outfit, tablet pose, command-center background, and composition |
 
-Example anti-copy language (required when Asset 02 is attached):
+R6B bottom-shot prompt language (default):
 
-> Use the full-body reference only for body proportion, full-length framing, standing silhouette, skirt/leg/shoe balance, and posture. Do not copy the full-body reference outfit, tablet pose, or command-center background.
+> **3/4 body or knee-up composition, face clearly visible, Kee-Suri identity priority, fresh composed smile, small hand farewell, CEO wood-door background.**
+
+> Avoid **full-body** as default framing for R6B bottom shot. Full-body belongs to R6 production asset track unless explicitly approved.
+
+Example anti-copy language (required when Asset 02 is optionally attached):
+
+> Use the full-body reference only for silhouette/proportion hints. Do not copy outfit, tablet pose, or command-center background. Do not let reference override face identity.
 
 > Kee-Suri must remain a refined Korean woman in her mid-to-late 30s with a fresh, modern, attractive off-duty presence. Avoid motherly, matronly, older guardian, conservative family-meeting mood.
 
 > Prefer **fresh composed smile, refreshing off-duty expression, modern attractive presence** over **warm smile** alone. Avoid hands-clasped conservative greeting pose.
 
-Operator QA must cross-check **identity against Asset 01** and **outfit against Wardrobe v4 or R6B off-duty profile** even when Asset 02 was the attached reference.
+Operator QA must evaluate **face identity against Asset 01 first** — FAIL if face does not read as Kee-Suri even when pose/background pass. Cross-check outfit against Wardrobe v4 or R6B off-duty profile.
 
 ---
 

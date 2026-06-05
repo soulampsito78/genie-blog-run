@@ -7,7 +7,7 @@ Purpose:
 Let a **new chat or new developer** continue the Kee-Suri image track without repeated discovery questions.
 
 Last updated:
-After commit `2246c64` (R6B wardrobe rotation expansion)
+After offduty_02 NOT_ACCEPTED visual QA — R6B framing strategy revision (documentation only)
 
 Non-scope:
 
@@ -28,9 +28,9 @@ The Kee-Suri image track has progressed through **R5 (closed)**, **R6 (full-body
 | **R6** | **Planning complete** | Asset 02 classified `KEEP_AS_SILHOUETTE_REFERENCE`; full-body generation rules documented |
 | **R6B** | **Planning complete** | 18:30-only bottom-shot slot defined; fixed CEO-door background + broad off-duty wardrobe rotation |
 
-**Current state in one sentence:** Business briefing wardrobe (Wardrobe v4) is locked as direction; R6B first canary **NOT_ACCEPTED**; Asset 02 is now **default** full-body reference for R6B bottom shots.
+**Current state in one sentence:** Business briefing wardrobe (Wardrobe v4) is locked as direction; R6B canaries `offduty_01` and `offduty_02` **NOT_ACCEPTED**; R6B default framing is now **3/4 body or knee-up** with **Asset 01 identity priority** — not full-body-first.
 
-**Next likely step:** **`offduty_02_elegant_knit_slim_skirt`** candidate package + Asset 02 reference + operator approval → one-live-call → visual QA. **Do not retry offduty_01 immediately.**
+**Next likely step:** **`offduty_02B_elegant_knit_kneeup_farewell`** — knee-up framing, Asset 01 primary reference, same gesture direction as offduty_02 → operator approval → one-live-call → visual QA. **Do not retry offduty_01 or offduty_02 full-body immediately.**
 
 ---
 
@@ -48,7 +48,10 @@ The Kee-Suri image track has progressed through **R5 (closed)**, **R6 (full-body
 | `5819c11` | Add Kee-Suri R6B first bottom-shot candidate package |
 | `2246c64` | Expand Kee-Suri R6B bottom-shot wardrobe rotation |
 
-**Uncommitted QA:** R6B first canary `offduty_01` → `keysuri_global_canary_20260605_101845.jpg` — **NOT_ACCEPTED**
+**Uncommitted QA:**
+
+- R6B first canary `offduty_01` → `keysuri_global_canary_20260605_101845.jpg` — **NOT_ACCEPTED** (motherly/matronly drift)
+- R6B second canary `offduty_02` → `keysuri_global_canary_20260605_103238.jpg` — **NOT_ACCEPTED** (identity/proportion drift; gesture PASS)
 
 ### Primary documentation index
 
@@ -116,36 +119,31 @@ These decisions are **not open for re-debate** unless operator explicitly reopen
 
 ## 4. Asset Role Split
 
-### Asset 01 — identity / face family
+### Asset 01 — primary identity / face family (R6B default attached reference)
 
 **Path:** `assets/keysuri/reference/image_keysuri_asset_01_main_briefing.png`
 
 **Role:**
 
-- Identity / face family anchor
-- Short bob, thin glasses, refined Korean Kee-Suri impression
-- Post-generation identity QA cross-check (especially when Asset 02 is attached reference)
+- Identity / face family anchor — short bob, thin glasses, refined Korean Kee-Suri impression
+- **Primary attached reference** for R6B 3/4 body or knee-up bottom shots (updated after offduty_02 failure)
+- Post-generation identity QA cross-check — **face identity gate must PASS first**
 
-### Asset 02 — default R6B full-body framing reference
+### Asset 02 — silhouette reference (R6 production track; optional R6B support)
 
 **Path:** `assets/keysuri/reference/image_keysuri_asset_02_full_body.png`
 
 **Classification:** `KEEP_AS_SILHOUETTE_REFERENCE` (commit `0c7a6f0`)
 
-**R6B policy (updated after offduty_01 failure):** For **3/4 and full-body** bottom-shot generation, Asset 02 is the **default attached reference**. Do not infer full-body form from prompt text alone.
+**R6 production full-body track:** Asset 02 supports full-length v4 wardrobe validation and production asset candidates — **separate from default R6B bottom-shot framing**.
 
-**Asset 02 must anchor:**
+**R6B optional role:** Silhouette/proportion support when lower-body framing is **explicitly operator-approved** — must not override Asset 01 face identity or force full-body composition.
 
-- Full-body proportion
-- Standing silhouette
-- Skirt length / leg line
-- Shoe visibility
-- Full-length framing
+**Asset 02 may support (when explicitly approved):**
+
+- Standing silhouette hint
+- Skirt length / leg line (partial at knee-up)
 - Body posture baseline
-
-**Allowed:**
-
-- Silhouette, proportion, full-length framing (attached reference per call)
 
 **Forbidden transfer:**
 
@@ -153,10 +151,10 @@ These decisions are **not open for re-debate** unless operator explicitly reopen
 - Tablet-at-waist pose
 - Command-center / data-wall background
 - Stiff briefing mood
-- Production asset as-is
-- Wardrobe-fit reference
+- Overriding face identity
+- Forcing full-body as default R6B framing
 
-**Reference split:** One image per API call — attach Asset 02; enforce Asset 01 identity via prompt + QA.
+**Reference split:** One image per API call — attach **Asset 01** by default for R6B; Asset 02 only with explicit approval.
 
 **Do not replace Asset 02 in repo.**
 
@@ -292,8 +290,9 @@ Customer desire is **intentionally used** but must remain **premium, tasteful, K
 
 | Profile ID | Cluster | Drift risk |
 |------------|---------|------------|
-| `offduty_01_soft_classic_cardigan_silk_blouse` | A | low — **NOT_ACCEPTED** first canary |
-| `offduty_02_elegant_knit_slim_skirt` | B | low — **next candidate** |
+| `offduty_01_soft_classic_cardigan_silk_blouse` | A | low — **NOT_ACCEPTED** (motherly/matronly drift) |
+| `offduty_02_elegant_knit_slim_skirt` | B | low — **NOT_ACCEPTED** (identity drift; gesture PASS) |
+| `offduty_02B_elegant_knit_kneeup_farewell` | B | low–medium — **next candidate** |
 | `offduty_03_smoky_blue_blouse_ivory_cardigan` | C | low |
 | `offduty_04_shirt_dress_thin_belt` | D | low–medium |
 | `offduty_05_cashmere_knit_pencil_skirt` | E | low |
@@ -303,7 +302,7 @@ Customer desire is **intentionally used** but must remain **premium, tasteful, K
 
 Full spec per profile: `docs/keysuri/KEYSURI_R6B_BOTTOM_SHOT_EMOTIONAL_LOCKIN_PLAN.md` §12.
 
-**R6B status:** First canary **NOT_ACCEPTED** (`offduty_01`, `keysuri_global_canary_20260605_101845.jpg`). Asset 02 now **default** for 3/4/full-body framing. Next: `offduty_02`.
+**R6B status:** Two canaries **NOT_ACCEPTED**. Default framing revised to **3/4 or knee-up**, **Asset 01 identity priority**. Next: **`offduty_02B_elegant_knit_kneeup_farewell`**.
 
 ### R6B offduty_01 first canary failure
 
@@ -313,9 +312,28 @@ Full spec per profile: `docs/keysuri/KEYSURI_R6B_BOTTOM_SHOT_EMOTIONAL_LOCKIN_PL
 | Off-duty wardrobe concept | PARTIAL |
 | No tablet | PASS |
 | Identity / age / charm | FAIL — motherly/older guardian; **“warm smile”** phrasing contributed |
-| Reference strategy | FAIL — Asset 01 only; Asset 02 not used |
+| Reference strategy | FAIL — Asset 01 only; insufficient proportion anchor |
 
-**Lesson:** Prompt-only full-body interpretation failed. **“Warm smile”** + cardigan/beige/hands-clasped drifted motherly. Future R6B bottom shots must attach **Asset 02** and target **fresh composed smile**, not warm motherly smile.
+**Lesson:** **“Warm smile”** + cardigan/beige/hands-clasped drifted motherly. Target **fresh composed smile**, not warm motherly smile.
+
+### R6B offduty_02 second canary failure
+
+| Field | Value |
+|-------|-------|
+| **Output** | `keysuri_global_canary_20260605_103238.jpg` |
+| **Reference** | Asset 02 attached (full-body default — superseded) |
+
+| QA axis | Result |
+|---------|--------|
+| Background lock | PASS |
+| Wardrobe direction (knit + slim skirt) | PASS |
+| No tablet | PASS |
+| Gesture / pose | PASS — operator: “제스처나 포즈는 참 좋아” |
+| Face identity consistency | FAIL — Kee-Suri not same character |
+| Full-body proportion | FAIL — did not preserve Asset 02 reference quality |
+| Expression + face | FAIL — identity drift; face too small/unstable at full-body |
+
+**Lesson:** Gesture works; **full-body-first + Asset 02 default caused identity drift** when expression applied. For R6B emotional lock-in, **identity and expression matter more than full-body proportion**. Do not continue R6B as full-body-first.
 
 ---
 
@@ -342,24 +360,33 @@ Do **not** do these without explicit operator approval and a documented decision
 
 ## 10. Recommended Next Step
 
-### R6B second bottom-shot candidate — offduty_02
+### R6B third bottom-shot candidate — offduty_02B
 
-**Do not retry offduty_01.** Create new package for **`offduty_02_elegant_knit_slim_skirt`**.
+**Do not retry offduty_01 or offduty_02 full-body.** Next package: **`offduty_02B_elegant_knit_kneeup_farewell`**.
 
 | Field | Value |
 |-------|-------|
-| **Profile** | `offduty_02_elegant_knit_slim_skirt` |
+| **Profile** | `offduty_02B_elegant_knit_kneeup_farewell` |
 | **Taste cluster** | B — Elegant Office Casual |
-| **Reason** | Avoids cardigan motherly risk; **fresh composed smile** replaces failed “warm smile” pattern |
-| **Expression** | **Fresh composed smile** — modern attractive off-duty; no hands-clasped conservative greeting |
-| **Gesture** | Small hand farewell **or** over-the-shoulder glance |
-| **Reference** | **Asset 02 default attached** — Asset 01 identity in prompt + post-gen QA |
+| **Reason** | Carry offduty_02 gesture PASS; fix identity drift with knee-up framing |
+| **Framing** | **3/4 body or knee-up** — face clearly visible; **no full-body requirement** |
+| **Expression** | **Fresh composed smile / 싱그러운 미소** |
+| **Gesture** | Small hand farewell — same direction as offduty_02 PASS |
+| **Reference** | **Asset 01 primary** — Asset 02 optional silhouette support only if approved |
+| **Wardrobe** | Modern fitted knit top; slim skirt partially visible |
 | **Slot** | 18:30 bottom-shot only |
 | **Background** | Fixed CEO/chairman office wood-door entrance |
 
-### Retired: offduty_01 immediate retry
+**Prompt implication:**
 
-First canary `keysuri_global_canary_20260605_101845.jpg` — **NOT_ACCEPTED**. See `KEYSURI_R6B_FIRST_BOTTOM_SHOT_CANDIDATE_PACKAGE.md` §11.
+> 3/4 body or knee-up composition, face clearly visible, Kee-Suri identity priority, fresh composed smile, small hand farewell, CEO wood-door background.
+
+### Retired: immediate retries
+
+| Profile | Output | Status |
+|---------|--------|--------|
+| `offduty_01` | `keysuri_global_canary_20260605_101845.jpg` | NOT_ACCEPTED — motherly/matronly |
+| `offduty_02` | `keysuri_global_canary_20260605_103238.jpg` | NOT_ACCEPTED — identity/proportion drift |
 
 ### Pre-generation checklist (summary)
 
@@ -391,8 +418,8 @@ Use this template when creating the **R6B bottom-shot candidate prompt package**
 | Season | spring/summer OR fall/winter |
 | Emotional temperature | low / medium / warm |
 | Drift risk | low / medium / high |
-| Framing | 3/4 body OR full-body |
-| Reference strategy | Asset 02 default attached; Asset 01 identity in prompt |
+| Framing | 3/4 body OR knee-up preferred; full-body only if explicitly approved |
+| Reference strategy | Asset 01 primary; Asset 02 optional silhouette support |
 | Previous accepted bottom shot | none / [profile_id] — confirm not too close |
 | One-live-call approval | PENDING / APPROVED |
 
@@ -458,11 +485,13 @@ Use this template when creating the **R6B bottom-shot candidate prompt package**
 
 ## 7. QA criteria (post-generation)
 
+- [ ] **Face identity PASS first** — FAIL = NOT_ACCEPTED even if gesture/background pass
+- [ ] **3/4 body or knee-up valid** — full-body not required for R6B
 - [ ] Expression reads **fresh** rather than motherly
 - [ ] Smile keeps Kee-Suri in **mid-to-late 30s modern attractive** range
 - [ ] Image avoids **guardian / family-meeting** mood
 - [ ] Gesture avoids **hands-clasped conservative politeness**
-- [ ] Asset 02-like full-body proportion without copying Asset 02 outfit
+- [ ] Face reads as same Kee-Suri vs Asset 01 — identity gate before wardrobe/gesture acceptance
 - [ ] Kee-Suri reads mid-to-late 30s, not older/motherly
 - [ ] Outfit modern and attractive, not motherly cardigan mood
 - [ ] Pose avoids hands-clasped conservative greeting
@@ -519,20 +548,26 @@ SCHEDULE
   12:30  TOP only        Wardrobe v4
   18:30  TOP + BOTTOM    v4 top + R6B off-duty bottom
 
+CANARY RESULTS
+  offduty_01 NOT_ACCEPTED → motherly/matronly drift (101845.jpg)
+  offduty_02 NOT_ACCEPTED → identity/proportion drift; gesture PASS (103238.jpg)
+
 NEXT ACTION
-  R6B  FIRST CANARY NOT_ACCEPTED → offduty_01 failed; Asset 02 now default reference
+  R6B  framing = 3/4 or knee-up preferred, NOT full-body-first
+  R6B  reference = Asset 01 identity priority; Asset 02 optional only
   R6B  expression = fresh composed smile, NOT warm motherly smile
-  NEXT offduty_02 + Asset 02 + fresh expression → approve → one live call → QA
-  DO NOT retry offduty_01 immediately
+  NEXT offduty_02B knee-up identity-priority → approve → one live call → QA
+  DO NOT retry offduty_01 or offduty_02 full-body immediately
 
 NEVER
   commit output/**  |  git add -A  |  wire Scheduler  |  bottom at 12:30
   clone Asset 02 outfit/tablet/bg  |  color-only wardrobe roulette
-  R6B bottom shot with Asset 01-only reference  |  prompt "warm smile" without fresh composed smile guard
+  R6B full-body as default framing  |  prompt "warm smile" without fresh composed smile guard
+  accept gesture/background PASS when face identity FAILs
 ```
 
 ---
 
 ## Summary
 
-Kee-Suri image track handoff: **R5 closed with Wardrobe v4 direction**, **R6 classified Asset 02 as silhouette-only (now default R6B attached reference)**, **R6B first canary NOT_ACCEPTED** (`offduty_01`). Background lock worked; identity/age/charm failed with Asset 01-only reference. **Next:** `offduty_02_elegant_knit_slim_skirt` with **Asset 02 default** — not blind retry.
+Kee-Suri image track handoff: **R5 closed with Wardrobe v4 direction**, **R6 classified Asset 02 as silhouette-only**, **R6B canaries offduty_01 and offduty_02 NOT_ACCEPTED**. Strategy revised: **3/4 or knee-up framing**, **Asset 01 identity priority**, gesture direction from offduty_02 preserved. **Next:** `offduty_02B_elegant_knit_kneeup_farewell` — not full-body retry.
