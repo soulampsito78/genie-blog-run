@@ -27,6 +27,8 @@ Code-aligned sources (reference only — no code changes in this document):
 - `keysuri_news_contract.py` — `SECTION_TOP5_GLOBAL`, `SECTION_TOP5_KOREA`
 - `keysuri_prompt_profiles.py` — prompt profile section rules
 - `keysuri_renderer.py` — renderer layout and identity display
+- `keysuri_html_preview_validation.py` — read-only HTML preview validator (`038c4b4`)
+- `scripts/validate_keysuri_html_preview.py` — CLI entrypoint for §15 checks
 
 ---
 
@@ -712,6 +714,71 @@ Must **not** contain:
 - Rights policy **before** operation metadata
 - Operation metadata **before** validation result box (validation box last)
 
+### 15.4 Implementation reference
+
+Committed validator v0 (`038c4b4` — Add Kee-Suri HTML preview validator):
+
+| Component | Path |
+|-----------|------|
+| Validator module | `keysuri_html_preview_validation.py` |
+| CLI | `scripts/validate_keysuri_html_preview.py` |
+| Tests | `tests/test_keysuri_html_preview_validation.py` |
+
+The validator is **read-only**. It inspects existing HTML files; it does not mutate previews or inject validation boxes.
+
+### 15.5 CLI validation workflow
+
+**Rule:** Every manually generated Kee-Suri HTML preview under `output/keysuri_preview/html_test/` **must** be validated with the CLI **before** owner visual review.
+
+**Single file:**
+
+```bash
+python3 scripts/validate_keysuri_html_preview.py \
+  output/keysuri_preview/html_test/<preview_file>.html \
+  --pretty
+```
+
+**Batch (all previews in directory):**
+
+```bash
+python3 scripts/validate_keysuri_html_preview.py \
+  'output/keysuri_preview/html_test/*.html' \
+  --pretty
+```
+
+Replace `<preview_file>.html` with the timestamped preview filename (e.g. `keysuri_korea_1830_bottom_close_sample_revised_20260605_130753.html`).
+
+### 15.6 Result handling
+
+| Outcome | Meaning | Action |
+|---------|---------|--------|
+| **PASS** | All contract checks passed | Preview may be opened for owner visual review |
+| **FAIL** | One or more checks failed | Do **not** treat preview as owner-review ready; fix preview or contract mismatch first |
+
+**Exit codes:**
+
+- `0` — all files passed
+- non-zero — at least one file failed, or input was invalid
+
+Review the JSON `issues` list for failing check codes. If the HTML validation result box claims `validation_status: PASS` but the CLI reports **FAIL**, treat the embedded claim as incorrect and fix before owner review.
+
+### 15.7 Scope warning (validator v0)
+
+| Rule | Detail |
+|------|--------|
+| Target path | `output/keysuri_preview/html_test/` contract-validation previews only |
+| Not a production renderer validator | Do not use to gate `keysuri_renderer.py` output without a compatibility pass |
+| Not a Genie / Today_Geenee validator | Do not reuse for `today_genie` / `tomorrow_genie` JSON or email HTML |
+| No pipeline wiring | Must **not** be connected to scheduler, email, or image API without a **separate owner-approved task** |
+
+### 15.8 Known v0 limitations
+
+- Expects **contract-validation preview structure** (§15.3 sections, validation result box, item-level TOP 5 source blocks).
+- May be **too strict** for raw draft previews missing the validation result box or full section set.
+- Does **not mutate HTML** or inject validation results — operator or a separate approved writer must update preview files.
+- **Renderer integration** (`news-card` markup vs `data-top-item` blocks, etc.) requires a separate compatibility pass before CI gating on renderer output.
+- Korea 18:30 warm-close order checks apply only when filename or metadata **explicitly** indicates the 18:30 slot (not from timestamp suffix alone).
+
 ---
 
 ## 16. Product language guardrails
@@ -854,8 +921,13 @@ Before treating any generated briefing as contract-compliant:
 - [ ] Operation metadata does not dominate customer copy
 - [ ] No **원-다이브** / **원포인트** / **One-Dive** / **One-Point** label drift
 - [ ] Body works without images
+- [ ] **HTML preview generated with timestamped filename** under `output/keysuri_preview/html_test/`
+- [ ] **CLI validation run** — `scripts/validate_keysuri_html_preview.py` (§15.5)
+- [ ] **`validation_status` PASS confirmed** by CLI (not hand-written claim alone)
 - [ ] **HTML preview includes validation result box** (§15)
 - [ ] **Validation status is honest PASS/FAIL**
+- [ ] **`output/**` remains uncommitted** — preview artifacts stay gitignored
+- [ ] **No image API / scheduler / email invoked** during preview generation or validation
 
 ---
 
@@ -951,9 +1023,9 @@ no_production_implication: PASS | FAIL
 
 | Step | Action | Gate |
 |------|--------|------|
-| 1 | Commit contract updates with preview validation rules | Operator request |
+| 1 | Run CLI validator on HTML previews before owner review | `038c4b4` — validator committed |
 | 2 | Align prompt profiles / generation prompts to §6 source fields + §7 layers | After contract commit |
-| 3 | Align renderer to rights policy + validation box for HTML previews | After contract commit |
+| 3 | Align renderer to rights policy + validation box for HTML previews | After validator PASS on previews |
 | 4 | Owner review global markdown sample + Korea HTML preview | Ongoing |
 | 5 | Renderer warm-close placement | After R6B bottom-shot production promotion |
 | 6 | Scheduler / email wiring | Separate explicit approval (`1b23bcf`) |
@@ -973,7 +1045,9 @@ KEYSURI_TITLE_AND_BODY_SECTION_CONTRACT.md (this document)
         ↓
 KEYSURI_TITLE_BODY_SAMPLE_GLOBAL_TECH_V0.md (02d703e)
         ↓
-Korea 18:30 HTML preview — revised, validated PASS (20260605_130753)
+Korea 18:30 HTML preview — revised, CLI validated PASS (20260605_130753)
+        ↓
+keysuri_html_preview_validation.py + CLI (038c4b4)
         ↓
 [future] prompt/renderer alignment
 ```
@@ -999,12 +1073,13 @@ Korea 18:30 HTML preview — revised, validated PASS (20260605_130753)
 | `8313281` | Update Kee-Suri R6B promotion checklist decision state |
 | `07a98ac` | Record Kee-Suri R6B offduty_02C prompt-direction decision |
 | `1b23bcf` | Document Kee-Suri scheduler state and future wiring design |
+| `038c4b4` | Add Kee-Suri HTML preview validator |
 
 ## Appendix D — Validated HTML preview reference
 
 | Field | Value |
 |-------|-------|
 | File | `output/keysuri_preview/html_test/keysuri_korea_1830_bottom_close_sample_revised_20260605_130753.html` |
-| Validation | **PASS** |
+| Validation | **PASS** (CLI — `scripts/validate_keysuri_html_preview.py`) |
 | Validated additions | Item-level TOP 5 sources, 딥-다이브 1/2/3 layers, rights policy footer, validation result box, no hashtags |
 | Not committed | Preview artifact — `output/**` gitignored |
