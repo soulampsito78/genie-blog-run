@@ -550,18 +550,19 @@ Initial profile IDs for R6B wardrobe rotation. Expand over time; each new profil
 
 | Field | Value |
 |-------|-------|
-| **Taste cluster** | B — Elegant Office Casual (luxury upgrade) |
-| **Season fit** | Spring / summer / all-season |
-| **Outfit** | Luxury fitted knit or **silk-knit top**; soft boat-neck / square-neck / elegant shallow V-neck; **satin or silk-blend high-waisted structured skirt** |
-| **Accessories** | Premium mini handbag; delicate earrings; slim watch |
+| **Taste cluster** | B — Elegant Office Casual / E — Luxury Quiet hybrid |
+| **Season fit** | All-season |
+| **Outfit** | Luxury silk-knit boat-neck top; satin/silk-blend high-waisted structured champagne skirt |
+| **Accessories** | Premium mini handbag; pearl earrings; slim watch |
 | **Prop** | Premium mini handbag |
-| **Gesture** | Small hand farewell — carry forward from offduty_02B PASS |
+| **Gesture** | Small hand farewell — validated |
 | **Expression** | **Fresh composed smile / 싱그러운 미소** |
 | **Framing** | **3/4 body or knee-up** — face clearly visible; Asset 01 primary |
-| **Reference** | **Asset 01 primary** (identity); Asset 02 optional only |
-| **Emotional temperature** | medium |
+| **Reference** | **Asset 01 primary** (identity); Asset 02 not default |
+| **Emotional temperature** | medium-warm but fresh |
 | **Drift risk** | medium |
-| **Risk notes** | **Next candidate** — more attractive and premium than offduty_02B; not plain office casual; not motherly; not cheap fantasy; not lounge/glamour |
+| **Canary result** | **PASS_DIRECTION** — `keysuri_global_canary_20260605_105936.jpg` |
+| **Risk notes** | **First accepted R6B bottom-shot direction** — identity-first framing + premium off-duty luxury validated; QA reference only, not production asset |
 
 ### offduty_03_smoky_blue_blouse_ivory_cardigan
 
@@ -866,7 +867,34 @@ Third R6B bottom-shot live canary — **NOT_ACCEPTED**.
 | Bottom shot = softer everyday clothes | Bottom shot = **private, attractive, premium closing image** — must justify placement vs briefing hero |
 | Avoid glamour = avoid plain | **Tasteful magnetism allowed** — more luxurious and slightly sexier OK; not lounge/cheap fantasy |
 
-**Next candidate:** **`offduty_02C_luxury_knit_silk_skirt_farewell`** — keep knee-up framing, Asset 01, gesture, background; **upgrade wardrobe luxury**.
+**Next candidate (superseded by §16D):** offduty_02C executed — see §16D.
+
+---
+
+## 16D. R6B offduty_02C First PASS_DIRECTION Note
+
+Fourth R6B bottom-shot live canary — **PASS_DIRECTION**.
+
+| Field | Value |
+|-------|-------|
+| **Profile** | `offduty_02C_luxury_knit_silk_skirt_farewell` |
+| **Output** | `output/keysuri_preview/image_canary/keysuri_global_canary_20260605_105936.jpg` |
+| **Reference used** | Asset 01 primary |
+| **Result** | **PASS_DIRECTION** |
+
+**Operator rationale:** Identity-first 3/4 framing, premium off-duty luxury wardrobe, CEO wood-door background, fresh composed smile, and farewell gesture successfully created Kee-Suri bottom-shot emotional lock-in direction.
+
+| Validated stack | Detail |
+|-----------------|--------|
+| **Framing** | Knee-up / 3/4 body; face clearly visible; Asset 01 identity |
+| **Wardrobe** | Premium off-duty luxury — silk-knit, satin skirt, premium accessories |
+| **Background** | Fixed CEO/chairman wood-door entrance |
+| **Expression** | Fresh composed smile / 싱그러운 미소 |
+| **Gesture** | Small hand farewell |
+
+**R6B direction lock-in:** This profile establishes the **accepted bottom-shot formula** after offduty_01/02/02B failures: identity-first knee-up + premium off-duty luxury + fixed CEO door + fresh smile + farewell gesture.
+
+**Not production:** QA JPG remains gitignored direction reference until separate promotion decision.
 
 ---
 
@@ -1093,6 +1121,6 @@ R6B defines a **bottom-shot emotional lock-in slot** for Kee-Suri — off-duty, 
 - **Fixed background:** CEO/chairman office wood-door entrance — status and ritual
 - **Variable character:** outfit, expression, gesture, prop, season, emotional temperature
 
-**Schedule rule:** 12:30 = top shot only; 18:30 = top + bottom. **R6B default framing: 3/4 body or knee-up** — face identity first; **Asset 01 primary** reference. **Wardrobe: premium off-duty luxury** — not plain casual; may be more attractive/luxurious/slightly sexier than briefing while tasteful. Canaries `offduty_01`, `offduty_02`, `offduty_02B` **NOT_ACCEPTED** — next candidate **`offduty_02C_luxury_knit_silk_skirt_farewell`**. **No generation until decision gate §19 passes.**
+**Schedule rule:** 12:30 = top shot only; 18:30 = top + bottom. **R6B default framing: 3/4 body or knee-up** — face identity first; **Asset 01 primary** reference. **Wardrobe: premium off-duty luxury**. **`offduty_02C` PASS_DIRECTION** — first accepted bottom-shot emotional lock-in direction (`keysuri_global_canary_20260605_105936.jpg`). Prior canaries `offduty_01`, `offduty_02`, `offduty_02B` **NOT_ACCEPTED**.
 
-**Next action:** Commit when approved. **Do not generate** until slot time, taste cluster, profile id, season, emotional temperature, drift risk, framing, **luxury wardrobe spec**, background lock, Asset 01 reference strategy, and prompt package are operator-approved.
+**Next action:** Use offduty_02C as **direction reference** for R6B rotation. New canaries require decision gate §19. Production promotion is separate track.

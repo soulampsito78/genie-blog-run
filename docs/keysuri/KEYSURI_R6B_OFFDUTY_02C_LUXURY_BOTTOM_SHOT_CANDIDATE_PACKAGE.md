@@ -1,7 +1,7 @@
 # KEYSURI R6B — offduty_02C Luxury Bottom-Shot Candidate Design Package
 
 Status:
-Design package only / **not approved for generation** / no image API in this document
+**Canary executed — PASS_DIRECTION** / documentation only / no further image API in this document
 
 Candidate:
 `offduty_02C_luxury_knit_silk_skirt_farewell`
@@ -43,9 +43,38 @@ Non-scope:
 | **drift risk** | **medium** |
 | **background** | Fixed CEO/chairman office wood-door entrance |
 | **reference** | **Asset 01 primary** (identity); Asset 02 **not default** |
-| **status** | **Design package only — not approved for generation yet** |
+| **status** | **PASS_DIRECTION** — `keysuri_global_canary_20260605_105936.jpg` |
+| **visual_qa** | Operator PASS — see §1A |
 
 **Validation goal:** Keep the **validated offduty_02B structure** (knee-up/3/4 framing, visible face, CEO wood-door, small hand farewell, no tablet, fresh composed smile) while **upgrading wardrobe luxury** to deliver premium off-duty charm and emotional lock-in value stronger than plain office casual or briefing-adjacent basics.
+
+**Canary outcome:** **PASS_DIRECTION** — first accepted R6B bottom-shot emotional lock-in direction. Not a production asset until separate promotion decision.
+
+---
+
+## 1A. Visual QA Result (operator)
+
+| Field | Value |
+|-------|-------|
+| **profile_id** | `offduty_02C_luxury_knit_silk_skirt_farewell` |
+| **result** | **PASS_DIRECTION** |
+| **output** | `output/keysuri_preview/image_canary/keysuri_global_canary_20260605_105936.jpg` |
+| **reference used** | Asset 01 primary |
+
+**Operator rationale:** Identity-first 3/4 framing, premium off-duty luxury wardrobe, CEO wood-door background, fresh composed smile, and farewell gesture successfully created Kee-Suri bottom-shot emotional lock-in direction.
+
+| QA axis | Outcome |
+|---------|---------|
+| Face identity gate | **PASS** |
+| Wardrobe quality gate | **PASS** — premium off-duty luxury vs offduty_02B plain knit/skirt |
+| Knee-up / 3/4 framing | **PASS** |
+| CEO/chairman wood-door background | **PASS** |
+| Small hand farewell gesture | **PASS** |
+| Fresh composed smile / 싱그러운 미소 | **PASS** |
+| Emotional lock-in value | **PASS** |
+| No tablet | **PASS** |
+
+**Boundaries:** QA JPG is **direction reference only** — gitignored under `output/`; not production publication; no Scheduler/default opt-in.
 
 ---
 
@@ -370,7 +399,7 @@ overly casual streetwear, sneakers, hoodie
 | **output_path_policy** | `output/keysuri_preview/image_canary/` — QA reference only; **never commit** |
 | **operator_ref** | ___________ |
 | **approval_date** | ___________ |
-| **one_live_call_approval** | `PENDING` / `APPROVED` |
+| **one_live_call_approval** | `APPROVED` (executed) → **PASS_DIRECTION** |
 
 **Generation gate:** R6B plan §19 decision gate + this package §6 + preflight PASS + dry-run `request_count=0`, `called_image_api=false`.
 
@@ -451,10 +480,11 @@ Complete after one-live-call output. **Face identity gate first**, then **wardro
 | Step | Status |
 |------|--------|
 | Design package complete | **Yes** — this document |
-| Operator review | **Ready** — awaiting approval |
+| Operator review | **Complete** — PASS_DIRECTION recorded |
+| One-live-call executed | **Yes** — `keysuri_global_canary_20260605_105936.jpg` |
+| Visual QA | **PASS_DIRECTION** |
 | offduty_02B plain wardrobe retry | **Forbidden** |
-| Image generation | **Do not generate until approved** |
-| Live call policy | **One-live-call only if approved** — **no retry under same approval** |
+| Production promotion | **Separate decision** — not automatic |
 
 ### Recommended execution sequence (after approval)
 
@@ -478,6 +508,6 @@ Complete after one-live-call output. **Face identity gate first**, then **wardro
 
 ## Summary
 
-**offduty_02C_luxury_knit_silk_skirt_farewell** is the fourth R6B bottom-shot candidate — **premium off-duty luxury upgrade** on the proven offduty_02B base (knee-up/3/4 framing, Asset 01 identity, CEO wood-door, small hand farewell, fresh composed smile). Wardrobe elevates to **luxury silk-knit, satin/silk-blend skirt, premium mini handbag, delicate jewelry** — tasteful but magnetic, more attractive than plain office casual. **Status: not approved for generation.**
+**offduty_02C_luxury_knit_silk_skirt_farewell** is the **first PASS_DIRECTION** R6B bottom-shot candidate (`keysuri_global_canary_20260605_105936.jpg`). Identity-first 3/4 framing + Asset 01 + premium off-duty luxury wardrobe + CEO wood-door + fresh composed smile + farewell gesture **validated** as Kee-Suri bottom-shot emotional lock-in direction.
 
-**Next action:** Operator review → complete §7 approval → one-live-call (only if approved).
+**Next action:** Use as **direction reference** for R6B rotation and future profile variants. Production promotion requires separate decision gate — not automatic.
