@@ -361,6 +361,7 @@ class KeysuriImageAssetManifestWriteTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             nested = root / "nested"
+            nested.mkdir(parents=True, exist_ok=True)
             source = nested / "source.jpg"
             watermarked = nested / "source_mirai_on_watermarked.jpg"
             _make_portrait_sample(source)
