@@ -15,6 +15,12 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from keysuri_image_asset_manifest import (  # noqa: E402
+    REVIEW_STATUS_PENDING,
+    VALID_REVIEW_STATUSES,
+    build_keysuri_image_asset_manifest,
+    write_keysuri_image_asset_manifest,
+)
 from keysuri_image_overlay import (  # noqa: E402
     DEFAULT_POSITION,
     DEFAULT_WATERMARK_TEXT,
@@ -25,6 +31,11 @@ from keysuri_image_overlay import (  # noqa: E402
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 VALID_POSITIONS = ("bottom_right", "bottom_left")
 VALID_ROLES = ("top_shot", "bottom_shot")
+VALID_PROGRAMS = ("keysuri_global_tech", "keysuri_korea_tech")
+
+DEFAULT_PROGRAM = "keysuri_global_tech"
+DEFAULT_SLOT = "manual_canary"
+DEFAULT_REVIEW_STATUS = REVIEW_STATUS_PENDING
 
 EXIT_OK = 0
 EXIT_FAIL = 1
@@ -60,6 +71,12 @@ def _build_payload(
     label: str,
     role: str | None,
     overlay_applied: bool,
+    manifest_written: bool = False,
+    manifest_path: str | None = None,
+    program_id: str | None = None,
+    slot: str | None = None,
+    image_role: str | None = None,
+    review_status: str | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
@@ -70,9 +87,20 @@ def _build_payload(
         "label": label,
         "watermark_text": DEFAULT_WATERMARK_TEXT,
         "overlay_applied": overlay_applied,
+        "manifest_written": manifest_written,
     }
     if role is not None:
         payload["role"] = role
+    if manifest_path is not None:
+        payload["manifest_path"] = manifest_path
+    if program_id is not None:
+        payload["program_id"] = program_id
+    if slot is not None:
+        payload["slot"] = slot
+    if image_role is not None:
+        payload["image_role"] = image_role
+    if review_status is not None:
+        payload["review_status"] = review_status
     if error:
         payload["error"] = error
     return payload
@@ -93,6 +121,14 @@ def run_apply_keysuri_image_watermark(
     label: str = DEFAULT_WATERMARK_TEXT,
     role: str | None = None,
     pretty: bool = False,
+    write_manifest: bool = False,
+    program: str = DEFAULT_PROGRAM,
+    slot: str = DEFAULT_SLOT,
+    review_status: str = DEFAULT_REVIEW_STATUS,
+    review_notes: str = "",
+    prompt_profile: str = "",
+    source_generation_id: str | None = None,
+    manifest_output: str | None = None,
 ) -> int:
     """Apply overlay and print JSON result to stdout. Returns process exit code."""
     resolved_input = _resolve_path(input_path)
@@ -125,6 +161,34 @@ def run_apply_keysuri_image_watermark(
         _emit(payload, pretty=pretty)
         return EXIT_INPUT_ERROR
 
+    if program not in VALID_PROGRAMS:
+        payload = _build_payload(
+            status="FAIL",
+            input_path=str(resolved_input),
+            output_path=None,
+            position=position,
+            label=label,
+            role=role,
+            overlay_applied=False,
+            error=f"unsupported program: {program!r}",
+        )
+        _emit(payload, pretty=pretty)
+        return EXIT_INPUT_ERROR
+
+    if review_status not in VALID_REVIEW_STATUSES:
+        payload = _build_payload(
+            status="FAIL",
+            input_path=str(resolved_input),
+            output_path=None,
+            position=position,
+            label=label,
+            role=role,
+            overlay_applied=False,
+            error=f"unsupported review_status: {review_status!r}",
+        )
+        _emit(payload, pretty=pretty)
+        return EXIT_INPUT_ERROR
+
     if role is not None and role not in VALID_ROLES:
         payload = _build_payload(
             status="FAIL",
@@ -135,6 +199,23 @@ def run_apply_keysuri_image_watermark(
             role=role,
             overlay_applied=False,
             error=f"unsupported role: {role!r}",
+        )
+        _emit(payload, pretty=pretty)
+        return EXIT_INPUT_ERROR
+
+    if write_manifest and role is None:
+        payload = _build_payload(
+            status="FAIL",
+            input_path=str(resolved_input),
+            output_path=None,
+            position=position,
+            label=label,
+            role=None,
+            overlay_applied=False,
+            program_id=program,
+            slot=slot,
+            review_status=review_status,
+            error="--role is required when --write-manifest is set",
         )
         _emit(payload, pretty=pretty)
         return EXIT_INPUT_ERROR
@@ -192,6 +273,54 @@ def run_apply_keysuri_image_watermark(
         _emit(payload, pretty=pretty)
         return EXIT_FAIL
 
+    if not write_manifest:
+        payload = _build_payload(
+            status="PASS",
+            input_path=str(resolved_input),
+            output_path=str(result_path),
+            position=position,
+            label=normalized_label,
+            role=role,
+            overlay_applied=True,
+            manifest_written=False,
+        )
+        _emit(payload, pretty=pretty)
+        return EXIT_OK
+
+    try:
+        manifest = build_keysuri_image_asset_manifest(
+            source_image_path=resolved_input,
+            watermarked_image_path=result_path,
+            program_id=program,
+            slot=slot,
+            image_role=role,
+            watermark_position=position,
+            review_status=review_status,
+            review_notes=review_notes,
+            prompt_profile=prompt_profile,
+            source_generation_id=source_generation_id,
+        )
+        manifest_target = _resolve_path(manifest_output) if manifest_output else None
+        manifest_path = write_keysuri_image_asset_manifest(manifest, manifest_target)
+    except Exception as exc:  # noqa: BLE001 — surface manifest failure as JSON
+        payload = _build_payload(
+            status="FAIL",
+            input_path=str(resolved_input),
+            output_path=str(result_path),
+            position=position,
+            label=normalized_label,
+            role=role,
+            overlay_applied=True,
+            manifest_written=False,
+            program_id=program,
+            slot=slot,
+            image_role=role,
+            review_status=review_status,
+            error=f"manifest write failed: {exc}",
+        )
+        _emit(payload, pretty=pretty)
+        return EXIT_FAIL
+
     payload = _build_payload(
         status="PASS",
         input_path=str(resolved_input),
@@ -200,6 +329,12 @@ def run_apply_keysuri_image_watermark(
         label=normalized_label,
         role=role,
         overlay_applied=True,
+        manifest_written=True,
+        manifest_path=str(manifest_path),
+        program_id=program,
+        slot=slot,
+        image_role=role,
+        review_status=review_status,
     )
     _emit(payload, pretty=pretty)
     return EXIT_OK
@@ -229,6 +364,40 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional image role metadata (top_shot or bottom_shot).",
     )
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
+    parser.add_argument(
+        "--write-manifest",
+        action="store_true",
+        help="Write sidecar manifest JSON after successful overlay.",
+    )
+    parser.add_argument(
+        "--program",
+        default=DEFAULT_PROGRAM,
+        choices=VALID_PROGRAMS,
+        help=f"Kee-Suri program id for manifest (default: {DEFAULT_PROGRAM}).",
+    )
+    parser.add_argument(
+        "--slot",
+        default=DEFAULT_SLOT,
+        help=f"Schedule slot label for manifest (default: {DEFAULT_SLOT}).",
+    )
+    parser.add_argument(
+        "--review-status",
+        default=DEFAULT_REVIEW_STATUS,
+        choices=VALID_REVIEW_STATUSES,
+        help=f"Manifest review status (default: {DEFAULT_REVIEW_STATUS}).",
+    )
+    parser.add_argument("--review-notes", default="", help="Optional manifest review notes.")
+    parser.add_argument("--prompt-profile", default="", help="Optional wardrobe/profile id for manifest.")
+    parser.add_argument(
+        "--source-generation-id",
+        default=None,
+        help="Optional source generation id for manifest.",
+    )
+    parser.add_argument(
+        "--manifest-output",
+        default=None,
+        help="Optional explicit manifest JSON output path.",
+    )
     args = parser.parse_args(argv)
 
     return run_apply_keysuri_image_watermark(
@@ -238,6 +407,14 @@ def main(argv: list[str] | None = None) -> int:
         label=args.label,
         role=args.role,
         pretty=args.pretty,
+        write_manifest=args.write_manifest,
+        program=args.program,
+        slot=args.slot,
+        review_status=args.review_status,
+        review_notes=args.review_notes,
+        prompt_profile=args.prompt_profile,
+        source_generation_id=args.source_generation_id,
+        manifest_output=args.manifest_output,
     )
 
 

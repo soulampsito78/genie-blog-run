@@ -304,5 +304,160 @@ class KeysuriImageWatermarkScriptTests(unittest.TestCase):
                 self.assertTrue(path.resolve().is_relative_to(root.resolve()))
 
 
+def _manifest_write_args(
+    input_path: Path,
+    *,
+    output_path: Path | None = None,
+    role: str = "bottom_shot",
+    review_status: str = "pending",
+    program: str = "keysuri_global_tech",
+    slot: str = "manual_canary",
+    extra: tuple[str, ...] = (),
+) -> list[str]:
+    args = [
+        "--input",
+        str(input_path),
+        "--write-manifest",
+        "--role",
+        role,
+        "--program",
+        program,
+        "--slot",
+        slot,
+        "--review-status",
+        review_status,
+        *extra,
+    ]
+    if output_path is not None:
+        args.extend(["--output", str(output_path)])
+    return args
+
+
+class KeysuriImageWatermarkManifestScriptTests(unittest.TestCase):
+    def test_default_behavior_without_write_manifest_does_not_create_manifest(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            input_path = root / "input.jpg"
+            _make_portrait_sample(input_path)
+            proc = _run_script(root, "--input", str(input_path))
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr or proc.stdout)
+            payload = json.loads(proc.stdout)
+            self.assertFalse(payload["manifest_written"])
+            manifest_files = list(root.glob("*.manifest.json"))
+            self.assertEqual(manifest_files, [])
+
+    def test_write_manifest_creates_sidecar_beside_output_image(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            input_path = root / "input.jpg"
+            output_path = root / "out.jpg"
+            _make_portrait_sample(input_path)
+            proc = _run_script(root, *_manifest_write_args(input_path, output_path=output_path))
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr or proc.stdout)
+            payload = json.loads(proc.stdout)
+            manifest_path = Path(payload["manifest_path"])
+            expected = output_path.with_suffix(".manifest.json")
+            self.assertEqual(manifest_path.resolve(), expected.resolve())
+            self.assertTrue(manifest_path.exists())
+
+    def test_manifest_json_contains_required_fields(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            input_path = root / "input.jpg"
+            output_path = root / "out.jpg"
+            _make_portrait_sample(input_path)
+            proc = _run_script(
+                root,
+                *_manifest_write_args(
+                    input_path,
+                    output_path=output_path,
+                    role="top_shot",
+                    review_status="pass_direction",
+                ),
+            )
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr or proc.stdout)
+            payload = json.loads(proc.stdout)
+            manifest = json.loads(Path(payload["manifest_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(manifest["schema_version"], "keysuri_image_asset_manifest_v0")
+            self.assertEqual(manifest["watermark_text"], "MirAI:ON")
+            self.assertTrue(manifest["overlay_applied"])
+            self.assertFalse(manifest["production_ready"])
+            self.assertEqual(manifest["image_role"], "top_shot")
+            self.assertEqual(manifest["review_status"], "pass_direction")
+            self.assertTrue(manifest["source_sha256"])
+            self.assertTrue(manifest["watermarked_sha256"])
+            self.assertNotEqual(manifest["source_sha256"], manifest["watermarked_sha256"])
+
+    def test_manifest_output_writes_explicit_path_and_creates_parent_dir(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            input_path = root / "input.jpg"
+            output_path = root / "out.jpg"
+            manifest_path = root / "nested" / "custom.manifest.json"
+            _make_portrait_sample(input_path)
+            proc = _run_script(
+                root,
+                *_manifest_write_args(input_path, output_path=output_path),
+                "--manifest-output",
+                str(manifest_path),
+            )
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr or proc.stdout)
+            payload = json.loads(proc.stdout)
+            self.assertEqual(Path(payload["manifest_path"]).resolve(), manifest_path.resolve())
+            self.assertTrue(manifest_path.exists())
+
+    def test_write_manifest_without_role_fails_non_zero(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            input_path = root / "input.jpg"
+            _make_portrait_sample(input_path)
+            proc = _run_script(root, "--input", str(input_path), "--write-manifest")
+            self.assertEqual(proc.returncode, 2, msg=proc.stderr or proc.stdout)
+            payload = json.loads(proc.stdout)
+            self.assertEqual(payload["status"], "FAIL")
+            self.assertIn("role", payload["error"].lower())
+            self.assertFalse(list(root.glob("*.manifest.json")))
+
+    def test_forbidden_label_with_write_manifest_writes_neither_output_nor_manifest(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            input_path = root / "input.jpg"
+            _make_portrait_sample(input_path)
+            proc = _run_script(
+                root,
+                "--input",
+                str(input_path),
+                "--write-manifest",
+                "--role",
+                "top_shot",
+                "--label",
+                "Today_Geenee",
+            )
+            self.assertEqual(proc.returncode, 1, msg=proc.stderr or proc.stdout)
+            payload = json.loads(proc.stdout)
+            self.assertEqual(payload["status"], "FAIL")
+            self.assertFalse(payload["overlay_applied"])
+            self.assertFalse(list(root.glob("*_mirai_on_watermarked*")))
+            self.assertFalse(list(root.glob("*.manifest.json")))
+
+    def test_json_includes_manifest_written_and_manifest_path(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            input_path = root / "input.jpg"
+            _make_portrait_sample(input_path)
+            proc = _run_script(
+                root,
+                *_manifest_write_args(input_path, role="bottom_shot", review_status="pending"),
+            )
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr or proc.stdout)
+            payload = json.loads(proc.stdout)
+            self.assertTrue(payload["manifest_written"])
+            self.assertTrue(payload["manifest_path"])
+            self.assertEqual(payload["program_id"], "keysuri_global_tech")
+            self.assertEqual(payload["slot"], "manual_canary")
+            self.assertEqual(payload["image_role"], "bottom_shot")
+            self.assertEqual(payload["review_status"], "pending")
+
+
 if __name__ == "__main__":
     unittest.main()
