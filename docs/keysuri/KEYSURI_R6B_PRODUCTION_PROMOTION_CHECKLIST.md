@@ -7,6 +7,7 @@ This document defines the **checklist and decision gate** required before any Ke
 Clarifications:
 
 - **PASS_DIRECTION is not production approval.**
+- **`PROMPT_DIRECTION_ONLY` is creative/prompt direction only** — not a production asset, not scheduler-ready, not email-attachment-ready.
 - **Production promotion is a separate decision gate** from creative direction validation.
 - This checklist **blocks accidental wiring** of QA canary images into email, scheduler, or production content.
 - This file does **not** connect Cloud Scheduler, enable image API auto-calls, or send email.
@@ -15,6 +16,7 @@ Clarifications:
 Related documents:
 
 - `docs/keysuri/KEYSURI_SCHEDULER_STATE_AND_FUTURE_WIRING_DESIGN.md` — scheduler state (commit `1b23bcf`)
+- `docs/keysuri/KEYSURI_R6B_OFFDUTY_02C_PROMPT_DIRECTION_ONLY_DECISION.md` — offduty_02C `PROMPT_DIRECTION_ONLY` decision (commit `07a98ac`)
 - `docs/keysuri/KEYSURI_R6B_OFFDUTY_02C_LUXURY_BOTTOM_SHOT_CANDIDATE_PACKAGE.md` — offduty_02C PASS_DIRECTION record
 - `docs/keysuri/KEYSURI_R6B_BOTTOM_SHOT_EMOTIONAL_LOCKIN_PLAN.md` — R6B slot and creative rules
 - `docs/keysuri/KEYSURI_PRODUCTION_WIRING_DESIGN.md` — image/profile production wiring design
@@ -45,11 +47,28 @@ It does **not** automatically authorize:
 | Scheduler fires before promotion | **Block** — `SKIP_NO_PRODUCTION_PROMOTION` until checklist passes |
 | Genie program image confusion | **Block** — Today/Tomorrow_Geenee forbidden |
 
-### 1.3 Current default status
+### 1.3 Current promotion status
 
-**All R6B bottom-shot assets: NOT_PROMOTED**
+**`offduty_02C`: `PROMPT_DIRECTION_ONLY` — recorded**
 
-No production promotion decision has been recorded. `offduty_02C` remains **PASS_DIRECTION only**.
+A **`PROMPT_DIRECTION_ONLY`** decision has been recorded in:
+
+- `docs/keysuri/KEYSURI_R6B_OFFDUTY_02C_PROMPT_DIRECTION_ONLY_DECISION.md`
+- Commit: `07a98ac` — Record Kee-Suri R6B offduty_02C prompt-direction decision
+
+`offduty_02C` remains **PASS_DIRECTION** at the canary QA level. That PASS validates creative direction only.
+
+**Higher promotion levels remain blocked:**
+
+| Level | Status |
+|-------|--------|
+| `PROMOTE_PROMPT_DIRECTION_ONLY` | **APPROVED** — commit `07a98ac` |
+| `PROMOTE_STATIC_REFERENCE_FOR_DESIGN_ONLY` | Optional / not required |
+| `PROMOTE_PRODUCTION_IMAGE_ASSET` | **NOT_APPROVED** |
+| `PROMOTE_PRODUCTION_PROMPT_DEFAULT` | **NOT_APPROVED** |
+| `PROMOTE_SCHEDULED_SLOT_ATTACHMENT` | **NOT_APPROVED** |
+
+**Operational flags (unchanged):** `production_asset=false`, `scheduler_ready=false`, `email_attachment_ready=false`. QA JPG under `output/` remains non-production and must not be committed or copied to `static/email/`.
 
 ---
 
@@ -65,10 +84,12 @@ No production promotion decision has been recorded. `offduty_02C` remains **PASS
 | **full local path** | `output/keysuri_preview/image_canary/keysuri_global_canary_20260605_105936.jpg` |
 | **reference used** | Asset 01 primary — `assets/keysuri/reference/image_keysuri_asset_01_main_briefing.png` |
 | **intended slot** | 18:30 bottom-shot (`keysuri_korea_tech`) — validated via global canary for direction only |
+| **promotion level** | **`PROMPT_DIRECTION_ONLY`** — commit `07a98ac` |
+| **production asset** | **false** |
 
 ### 2.2 Accepted direction formula
 
-The following creative formula is **validated for prompt steering** — not yet promoted as production asset:
+The following creative formula is **approved for prompt steering** (`PROMPT_DIRECTION_ONLY`) — **not** promoted as production asset:
 
 | Element | Accepted direction |
 |---------|-------------------|
@@ -91,7 +112,7 @@ Identity-first 3/4 framing, premium off-duty luxury wardrobe, CEO wood-door back
 
 ## 3. Non-production boundary
 
-The following rules are **mandatory today** and remain until an explicit promotion decision is recorded in §9.
+The following rules are **mandatory today** and remain until a **higher** promotion level is explicitly approved in §9 (above `PROMPT_DIRECTION_ONLY`).
 
 | Rule | Detail |
 |------|--------|
@@ -102,7 +123,8 @@ The following rules are **mandatory today** and remain until an explicit promoti
 | Do not schedule automatic generation | No Cloud Scheduler / orchestrator bottom-shot job |
 | Do not flip `scheduler_allowed` | `keysuri_image_provider_contract.py` remains `false` |
 | Do not flip `ready_for_scheduler` | Canary client remains `false` |
-| Do not use PASS_DIRECTION as final production asset approval | Separate promotion decision required |
+| Do not use PASS_DIRECTION as final production asset approval | `PROMPT_DIRECTION_ONLY` recorded — production asset still requires separate approval |
+| No scheduler/email/static asset wiring approved | `scheduler_ready=false`, `email_attachment_ready=false`; no `static/email/` copy |
 | Do not wire Today/Tomorrow_Geenee | Forbidden program paths for Kee-Suri image ops |
 
 **Default operational mode:** Manual canary only; text/briefing pipeline separate; bottom-shot **not attached** to any production delivery surface.
@@ -115,7 +137,7 @@ The following rules are **mandatory today** and remain until an explicit promoti
 
 | Level | Code | Meaning | Typical use |
 |-------|------|---------|-------------|
-| Prompt direction only | `PROMOTE_PROMPT_DIRECTION_ONLY` | Lock creative formula in prompt/docs; **no** committed image asset; **no** email attachment | Current recommended level |
+| Prompt direction only | `PROMOTE_PROMPT_DIRECTION_ONLY` | Lock creative formula in prompt/docs; **no** committed image asset; **no** email attachment | **Recorded for offduty_02C** — commit `07a98ac` |
 | Static reference for design | `PROMOTE_STATIC_REFERENCE_FOR_DESIGN_ONLY` | Committed design reference under `assets/keysuri/` for human/design review — **not** email attachment | Future design lock |
 | Production image asset | `PROMOTE_PRODUCTION_IMAGE_ASSET` | Approved image copied to committed production asset path; may attach to email when policy allows | Requires full §5–§7 checks |
 | Production prompt default | `PROMOTE_PRODUCTION_PROMPT_DEFAULT` | Profile becomes default bottom-shot prompt template for scheduled generation | Requires asset or stable prompt lock |
@@ -133,18 +155,22 @@ PROMOTE_PROMPT_DIRECTION_ONLY
         → PROMOTE_SCHEDULED_SLOT_ATTACHMENT
 ```
 
-### 4.3 Current recommended level
+### 4.3 Current recorded level
 
-**`PROMOTE_PROMPT_DIRECTION_ONLY`**
+**`PROMOTE_PROMPT_DIRECTION_ONLY`** — **APPROVED** for `offduty_02C` (commit `07a98ac`)
 
-Rationale:
+Decision record: `docs/keysuri/KEYSURI_R6B_OFFDUTY_02C_PROMPT_DIRECTION_ONLY_DECISION.md`
+
+Rationale at time of decision:
 
 - Creative direction is validated (PASS_DIRECTION)
-- QA image remains local and gitignored
-- No production asset path exists yet
-- Scheduler is not connected
-- Email sender is not connected for Kee-Suri
+- QA image remains local and gitignored — **not** a production asset
+- No production asset path exists
+- Scheduler is not connected (`scheduler_ready=false`)
+- Email sender is not connected for Kee-Suri (`email_attachment_ready=false`)
 - Bottom-shot rotation variants may still be explored before locking a single production asset
+
+**Higher levels remain NOT_APPROVED:** `PRODUCTION_IMAGE_ASSET`, `PRODUCTION_PROMPT_DEFAULT`, `SCHEDULED_SLOT_READY`.
 
 **Do not skip to `PROMOTE_SCHEDULED_SLOT_ATTACHMENT` without completing intermediate gates.**
 
@@ -245,10 +271,22 @@ Exact filename and version suffix to be recorded in §9 promotion decision templ
 
 Use this table during promotion review. Mark each row **PASS**, **FAIL**, or **N/A** (for prompt-direction-only level).
 
+### 8.1 Promotion level status (offduty_02C)
+
+| Promotion level | Status |
+|-----------------|--------|
+| `PROMPT_DIRECTION_ONLY` | **APPROVED** — commit `07a98ac` |
+| `STATIC_REFERENCE_FOR_DESIGN_ONLY` | Optional / not required |
+| `PRODUCTION_IMAGE_ASSET` | **NOT_APPROVED** |
+| `PRODUCTION_PROMPT_DEFAULT` | **NOT_APPROVED** |
+| `SCHEDULED_SLOT_READY` | **NOT_APPROVED** |
+
+### 8.2 Checklist rows
+
 | Check | PASS/FAIL | Evidence | Required action if FAIL | Blocking level |
 |-------|-----------|----------|-------------------------|----------------|
 | PASS_DIRECTION recorded | PASS | `KEYSURI_R6B_OFFDUTY_02C_LUXURY_BOTTOM_SHOT_CANDIDATE_PACKAGE.md` §1A | Complete canary QA first | **BLOCK** all promotion |
-| Promotion level selected | N/A | Default: `PROMOTE_PROMPT_DIRECTION_ONLY` | Record decision in §9 | **BLOCK** asset/scheduler |
+| Promotion level selected | PASS | `PROMPT_DIRECTION_ONLY` — commit `07a98ac` | Record decision in decision doc / §9 | **BLOCK** asset/scheduler |
 | Face identity vs Asset 01 | PASS | Operator QA §1A | Re-run canary or reject promotion | **BLOCK** asset |
 | Age impression mid-to-late 30s | PASS | Operator QA | Adjust expression/wardrobe prompt | **BLOCK** asset |
 | Short bob + thin glasses | PASS | Operator QA | Re-run with Asset 01 lock | **BLOCK** asset |
@@ -275,22 +313,46 @@ Use this table during promotion review. Mark each row **PASS**, **FAIL**, or **N
 | `ready_for_scheduler` unchanged | PASS | Canary client = false | Do not flip without approval | **BLOCK** scheduler |
 | No email send wired | PASS | No Kee-Suri orchestrator path | Do not connect SMTP | **BLOCK** delivery |
 | Scheduler design doc committed | PASS | Commit `1b23bcf` | Commit scheduler doc first | **BLOCK** scheduler |
-| Promotion decision recorded | FAIL | **Not yet filled** | Complete §9 template | **BLOCK** asset/scheduler |
+| Promotion decision recorded | PASS | `KEYSURI_R6B_OFFDUTY_02C_PROMPT_DIRECTION_ONLY_DECISION.md` — commit `07a98ac` | Complete §9 for higher levels only | **BLOCK** asset/scheduler above prompt-direction |
+| `PRODUCTION_IMAGE_ASSET` approved | FAIL | Not approved | Complete §5–§7; separate decision | **BLOCK** asset |
+| `PRODUCTION_PROMPT_DEFAULT` approved | FAIL | Not approved | Asset or stable prompt lock required | **BLOCK** default prompt |
+| `SCHEDULED_SLOT_READY` approved | FAIL | Not approved | Scheduler + asset + gate required | **BLOCK** scheduler attachment |
 
-**Current summary:** Creative direction checks **PASS** for prompt-direction level. Asset, delivery, and scheduler checks remain **N/A** or **FAIL (not recorded)** — **no production promotion approved.**
+**Current summary:** **`PROMPT_DIRECTION_ONLY` APPROVED** for `offduty_02C` (commit `07a98ac`). Creative direction checks **PASS**. Asset, delivery, and scheduler promotion levels remain **NOT_APPROVED** — **no production asset, no scheduler wiring, no email attachment approved.**
 
 ---
 
 ## 9. Promotion decision template
 
-Copy and complete this section when a promotion decision is made. **Default: leave blank / NOT_PROMOTED.**
+### 9.0 Recorded decision (offduty_02C)
+
+**`PROMPT_DIRECTION_ONLY` is recorded** — see authoritative decision doc:
+
+- `docs/keysuri/KEYSURI_R6B_OFFDUTY_02C_PROMPT_DIRECTION_ONLY_DECISION.md`
+- Commit: `07a98ac`
+
+| Field | Value |
+|-------|-------|
+| Decision | **PROMPT_DIRECTION_ONLY** |
+| profile_id | `offduty_02C_luxury_knit_silk_skirt_farewell` |
+| canary status | PASS_DIRECTION |
+| production_asset | **false** |
+| scheduler_ready | **false** |
+| email_attachment_ready | **false** |
+| asset path | **none** |
+| scheduler impact | **none** |
+| email impact | **none** |
+
+Use the template below only when recording a **new or higher** promotion decision.
+
+### 9.1 Template for future promotion decisions
 
 ```markdown
 ## R6B Promotion Decision Record
 
 ### Decision
-- [ ] NOT_PROMOTED                    ← current default
-- [ ] PROMPT_DIRECTION_ONLY
+- [ ] NOT_PROMOTED
+- [x] PROMPT_DIRECTION_ONLY              ← offduty_02C recorded in 07a98ac
 - [ ] PRODUCTION_ASSET
 - [ ] PRODUCTION_PROMPT_DEFAULT
 - [ ] SCHEDULED_SLOT_READY
@@ -318,12 +380,12 @@ Copy and complete this section when a promotion decision is made. **Default: lea
 - [ ] No output/ path in production config
 ```
 
-### 9.1 Decision definitions
+### 9.2 Decision definitions
 
 | Decision | Meaning |
 |----------|---------|
-| `NOT_PROMOTED` | Default — PASS_DIRECTION only; no production wiring |
-| `PROMPT_DIRECTION_ONLY` | Creative formula locked in docs/prompts; no committed asset |
+| `NOT_PROMOTED` | PASS_DIRECTION only; no promotion decision recorded |
+| `PROMPT_DIRECTION_ONLY` | Creative formula locked in docs/prompts; no committed asset — **offduty_02C recorded (`07a98ac`)** |
 | `PRODUCTION_ASSET` | Image copied to committed `assets/keysuri/production/` path |
 | `PRODUCTION_PROMPT_DEFAULT` | Profile becomes default generation template for 18:30 bottom-shot |
 | `SCHEDULED_SLOT_READY` | Approved for scheduled generation/attachment when scheduler gate passes |
@@ -357,7 +419,7 @@ Scheduler wiring for Kee-Suri **cannot proceed** until all of the following are 
 | # | Prerequisite | Current status |
 |---|--------------|----------------|
 | 1 | Production promotion checklist exists | **This document** |
-| 2 | Promotion decision approved at required level | **NOT_PROMOTED** (default) |
+| 2 | Promotion decision at required level | **`PROMPT_DIRECTION_ONLY` only** — higher levels **NOT_APPROVED** |
 | 3 | Schedule gate design documented | **Done** — `KEYSURI_SCHEDULER_STATE_AND_FUTURE_WIRING_DESIGN.md` (`1b23bcf`) |
 | 4 | `keysuri_schedule_gate.py` implemented and tested | **Not started** |
 | 5 | Weekend skip behavior tested | **Not started** |
@@ -379,13 +441,15 @@ Execute in this order:
 
 | Step | Action | Status |
 |------|--------|--------|
-| 1 | Commit this checklist | Pending operator request |
-| 2 | Decide promotion level for `offduty_02C` | **Recommended: `PROMPT_DIRECTION_ONLY`** |
-| 3 | If `PRODUCTION_ASSET` candidate — complete §6 technical checks on a **new** approved render (not necessarily the QA JPG) | Not started |
-| 4 | If `SCHEDULED_SLOT_READY` — implement schedule gate first | Not started |
-| 5 | Only after explicit approval — scheduler wiring | **Do not implement before step 2 decision** |
+| 1 | Commit this checklist | **Done** — `8c8b9a8` |
+| 2 | Record `PROMPT_DIRECTION_ONLY` for `offduty_02C` | **Done** — `07a98ac` |
+| 3 | Update this checklist to reflect prompt-direction decision | Pending operator request |
+| 4 | Decide second PASS_DIRECTION candidate (other taste cluster) or `PRODUCTION_ASSET` review | Not started |
+| 5 | If `PRODUCTION_ASSET` candidate — complete §6 technical checks on a **new** approved render (not necessarily the QA JPG) | Not started |
+| 6 | If `SCHEDULED_SLOT_READY` — implement schedule gate first | Not started |
+| 7 | Only after explicit approval — scheduler wiring | **Blocked** — `SCHEDULED_SLOT_READY` not approved |
 
-**Do not implement scheduler before promotion level decision is recorded in §9.**
+**Do not implement scheduler or email attachment while only `PROMPT_DIRECTION_ONLY` is approved.**
 
 ---
 
@@ -407,6 +471,8 @@ Prior NOT_ACCEPTED canaries inform promotion checks:
 
 | Commit | Message |
 |--------|---------|
+| `07a98ac` | Record Kee-Suri R6B offduty_02C prompt-direction decision |
+| `8c8b9a8` | Add Kee-Suri R6B production promotion checklist |
 | `1b23bcf` | Document Kee-Suri scheduler state and future wiring design |
 | `e9a54da` | Record Kee-Suri R6B offduty_02C PASS_DIRECTION |
 | `02a68a8` | Add Kee-Suri R6B offduty_02C luxury candidate package |
