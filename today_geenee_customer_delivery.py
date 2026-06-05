@@ -12,6 +12,14 @@ from renderers import today_genie_email_inline_cid_pair
 
 logger = logging.getLogger(__name__)
 
+REVIEW_CONFIRMATION_STATE_REVIEW_PASSED = "review_passed"
+
+REVIEW_PASSED_CONFIRMATION_TEXT = (
+    "본 브리핑은 운영책임자의 직접 검수를 통과했습니다."
+)
+
+_GENIE_CUSTOMER_OUTBOUND_REVIEW_STATES = frozenset({REVIEW_CONFIRMATION_STATE_REVIEW_PASSED})
+
 _OPERATIONAL_HANDOFF_RE = re.compile(
     r'<section[^>]*\bid=["\']genie-operational-handoff["\'][^>]*>.*?</section>',
     re.IGNORECASE | re.DOTALL,
@@ -79,13 +87,43 @@ def build_customer_final_subject(meta: Dict[str, Any], saved_html: str) -> str:
     return drafts_subj
 
 
-def prepare_customer_final_html(saved_html: str) -> str:
+def render_genie_review_confirmation_box(review_state: str) -> str:
+    """Customer-safe review confirmation box for approved outbound email only."""
+    if review_state not in _GENIE_CUSTOMER_OUTBOUND_REVIEW_STATES:
+        raise ValueError(
+            "unsupported review_confirmation_state for Genie customer outbound email: "
+            f"{review_state!r}"
+        )
+    return (
+        f'<section id="review-confirmation-box" '
+        f'data-review-state="{review_state}" '
+        'style="margin-top:24px;padding:16px 18px;border:1px solid #d9d9d9;'
+        'border-radius:8px;background:#fafafa;">'
+        f'<p class="review-confirmation-text" style="margin:0;font-size:14px;'
+        f'line-height:1.65;color:#1a1a1a;">{REVIEW_PASSED_CONFIRMATION_TEXT}</p>'
+        "</section>"
+    )
+
+
+def prepare_customer_final_html(
+    saved_html: str,
+    *,
+    review_confirmation_state: str | None = None,
+) -> str:
     html_body = strip_owner_operational_handoff(saved_html)
     if customer_html_contains_naver_markers(html_body):
         raise ValueError("customer final HTML contains forbidden Naver markers")
     if not html_body.strip():
         raise ValueError("customer final HTML is empty after stripping operational handoff")
-    return html_body
+    if review_confirmation_state is None:
+        return html_body
+    if review_confirmation_state not in _GENIE_CUSTOMER_OUTBOUND_REVIEW_STATES:
+        raise ValueError(
+            "unsupported review_confirmation_state for Genie customer outbound email: "
+            f"{review_confirmation_state!r}"
+        )
+    review_box = render_genie_review_confirmation_box(review_confirmation_state)
+    return f"{html_body}\n{review_box}"
 
 
 def send_today_geenee_customer_final_email(
@@ -102,7 +140,10 @@ def send_today_geenee_customer_final_email(
         return False
 
     try:
-        html_body = prepare_customer_final_html(saved_html)
+        html_body = prepare_customer_final_html(
+            saved_html,
+            review_confirmation_state=REVIEW_CONFIRMATION_STATE_REVIEW_PASSED,
+        )
     except ValueError as exc:
         logger.warning("send_today_geenee_customer_final_email: %s", exc)
         return False

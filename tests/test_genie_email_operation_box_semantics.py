@@ -1,8 +1,10 @@
-"""TDD tests for Genie email operation box semantics (pre-implementation).
+"""TDD tests for Genie email operation box semantics.
 
-Defines intended owner/admin vs customer label separation before changing
-main.py / renderers.py. Some tests are expected to FAIL until the semantics
-fix patch lands — see docs/genie/GENIE_EMAIL_OPERATION_BOX_SEMANTICS_FIX_PLAN.md.
+Defines intended owner/admin vs customer label separation and customer
+review-confirmation-box behavior before implementation lands.
+
+Some tests are expected to FAIL until the review-confirmation patch lands —
+see docs/genie/GENIE_EMAIL_OPERATION_BOX_SEMANTICS_FIX_PLAN.md.
 
 Reference:
 - docs/REVIEW_OPERATION_BOX_POLICY.md
@@ -12,6 +14,7 @@ from __future__ import annotations
 
 import re
 import unittest
+from unittest.mock import patch
 
 from main import email_operational_handoff_meta
 from orchestrator import OrchestrationResult, build_run_artifact_metadata
@@ -19,6 +22,7 @@ from publishing_policy import PublishingDecision
 from renderers import render_email_operational_box
 from today_geenee_customer_delivery import (
     prepare_customer_final_html,
+    send_today_geenee_customer_final_email,
     strip_owner_operational_handoff,
 )
 
@@ -36,6 +40,24 @@ _ALLOWED_FUTURE_DELIVERY_LABELS = frozenset(
         "운영자 검수 메일 상태 미확인",
         "운영자 검수 메일 미발송",
     }
+)
+
+_REVIEW_PASSED_TEXT = "본 브리핑은 운영책임자의 직접 검수를 통과했습니다."
+_GENIE_FORBIDDEN_REVIEW_CONFIRMATION_STATES = (
+    "preview_pending",
+    "sent_archived",
+    "invalid_state",
+)
+_CUSTOMER_REVIEW_BOX_FORBIDDEN_FRAGMENTS = (
+    "발송되었습니다",
+    "sent_archived",
+    "재발행",
+    "다시 생성",
+    "수정요청",
+    "수정 요청",
+    "운영자 검수 상태",
+    'id="genie-operational-handoff"',
+    "genie-operational-handoff",
 )
 
 _OPERATIONAL_HANDOFF_RE = re.compile(
@@ -75,6 +97,35 @@ def _sample_owner_operational_html() -> str:
         )
         .replace("운영 안내", "운영자 검수 상태", 2)
     )
+
+
+def _sample_saved_artifact_html() -> str:
+    """Artifact-like HTML: editorial + bottom slot + owner operational handoff."""
+    handoff = _extract_operational_handoff_block(_sample_owner_operational_html())
+    return (
+        "<p>editorial briefing body</p>"
+        '<section id="bottom-image-slot"><img src="cid:genie-bottom" alt="bottom" /></section>'
+        + handoff
+    )
+
+
+def _assert_customer_review_box_absent(case: unittest.TestCase, html: str) -> None:
+    normalized = html.lower().replace("_", "-")
+    case.assertNotIn('id="review-confirmation-box"', html)
+    case.assertNotIn("review-confirmation", normalized)
+    case.assertNotIn(_REVIEW_PASSED_TEXT, html)
+
+
+def _assert_review_passed_customer_box(case: unittest.TestCase, html: str) -> None:
+    case.assertIn('id="review-confirmation-box"', html)
+    case.assertIn('data-review-state="review_passed"', html)
+    case.assertIn(_REVIEW_PASSED_TEXT, html)
+    for forbidden in _CUSTOMER_REVIEW_BOX_FORBIDDEN_FRAGMENTS:
+        case.assertNotIn(
+            forbidden,
+            html,
+            msg=f"customer review HTML must not contain {forbidden!r}",
+        )
 
 
 class GenieEmailOperationalMetaSemanticsTests(unittest.TestCase):
@@ -180,10 +231,98 @@ class GenieCustomerFinalHtmlSemanticsTests(unittest.TestCase):
         self.assertNotIn('id="genie-operational-handoff"', out)
         self.assertIn("briefing body", out)
 
+    def test_default_customer_final_html_has_no_review_confirmation_box(self) -> None:
+        html = _sample_saved_artifact_html()
+        out = prepare_customer_final_html(html)
+        _assert_customer_review_box_absent(self, out)
+        self.assertIn("editorial briefing body", out)
+
     def test_customer_final_html_has_no_review_confirmation_box_yet(self) -> None:
+        """Backward-compatible alias for minimal body-only strip path."""
         html = "<p>body only</p>"
         out = prepare_customer_final_html(html)
-        self.assertNotIn("review-confirmation", out.lower().replace("_", "-"))
+        _assert_customer_review_box_absent(self, out)
+
+
+class GenieCustomerReviewConfirmationBoxTests(unittest.TestCase):
+    """Customer #review-confirmation-box on approved delivery path (TDD)."""
+
+    def test_explicit_review_passed_state_inserts_customer_safe_review_box(self) -> None:
+        html = _sample_saved_artifact_html()
+        out = prepare_customer_final_html(
+            html,
+            review_confirmation_state="review_passed",
+        )
+        _assert_review_passed_customer_box(self, out)
+        self.assertIn("editorial briefing body", out)
+        self.assertIn("bottom-image-slot", out)
+
+    def test_unsupported_review_confirmation_states_raise_value_error(self) -> None:
+        html = _sample_saved_artifact_html()
+        for state in _GENIE_FORBIDDEN_REVIEW_CONFIRMATION_STATES:
+            with self.subTest(state=state):
+                with self.assertRaises(ValueError):
+                    prepare_customer_final_html(
+                        html,
+                        review_confirmation_state=state,
+                    )
+
+    def test_review_confirmation_inserted_after_operational_handoff_stripped(self) -> None:
+        html = _sample_saved_artifact_html()
+        self.assertIn('id="genie-operational-handoff"', html)
+        out = prepare_customer_final_html(
+            html,
+            review_confirmation_state="review_passed",
+        )
+        _assert_review_passed_customer_box(self, out)
+        self.assertNotIn('id="genie-operational-handoff"', out)
+        self.assertNotIn("재발행", out)
+        self.assertNotIn("수정 요청", out)
+        self.assertNotIn("운영자 검수 상태", out)
+
+    def test_review_passed_exact_copy_matches_policy(self) -> None:
+        html = _sample_saved_artifact_html()
+        out = prepare_customer_final_html(
+            html,
+            review_confirmation_state="review_passed",
+        )
+        self.assertIn(_REVIEW_PASSED_TEXT, out)
+        self.assertNotIn("발송되었습니다", out)
+
+    def setUp(self) -> None:
+        self._env_patch = patch.dict(
+            "os.environ",
+            {
+                "GENIE_CUSTOMER_EMAIL_TO": "customer@example.com",
+                "SMTP_HOST": "smtp.example.com",
+                "SMTP_USER": "user@example.com",
+                "SMTP_PASSWORD": "secret",
+            },
+            clear=False,
+        )
+        self._env_patch.start()
+
+    def tearDown(self) -> None:
+        self._env_patch.stop()
+
+    @patch("today_geenee_customer_delivery.send_genie_email")
+    @patch("today_geenee_customer_delivery._resolve_today_genie_inline_jpeg_parts")
+    def test_send_path_passes_review_passed_into_customer_html(
+        self,
+        mock_inline,
+        mock_send,
+    ) -> None:
+        mock_inline.return_value = [("/tmp/top.jpg", "cid.top", "top.jpg")]
+        mock_send.return_value = True
+        saved_html = _sample_saved_artifact_html()
+        meta = {"mode": "today_genie", "email_subject": "[운영자 검토] 오늘의 지니"}
+        self.assertTrue(
+            send_today_geenee_customer_final_email(saved_html, meta),
+        )
+        mock_send.assert_called_once()
+        outbound_html = mock_send.call_args.args[0]
+        _assert_review_passed_customer_box(self, outbound_html)
+        self.assertIn("editorial briefing body", outbound_html)
 
 
 class GenieOwnerVsCustomerDeliveryMetadataTests(unittest.TestCase):

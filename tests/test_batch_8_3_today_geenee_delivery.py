@@ -200,6 +200,52 @@ class Batch83ApproveRouteTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(err, "already_approved")
 
+    @patch("today_geenee_customer_delivery.send_genie_email")
+    @patch("today_geenee_customer_delivery._resolve_today_genie_inline_jpeg_parts")
+    def test_approve_post_outbound_html_contains_review_confirmation_box(
+        self,
+        mock_inline: MagicMock,
+        mock_send: MagicMock,
+    ) -> None:
+        """Full approve path must pass review_passed customer HTML to SMTP (TDD)."""
+        mock_inline.return_value = [("/tmp/top.jpg", "cid.top", "top.jpg")]
+        mock_send.return_value = True
+        run_id = "20260604_131500_today_genie_aabbcc11"
+        email_html = (
+            "<p>brief</p>"
+            '<section id="bottom-image-slot"><img src="cid:bottom" /></section>'
+            '<section id="genie-operational-handoff"><p>재발행 admin copy</p></section>'
+        )
+        save_run_artifact(
+            {
+                "run_id": run_id,
+                "mode": "today_genie",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "reason_summary": "ok",
+            },
+            email_html=email_html,
+        )
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        resp = self.client.post(
+            f"/admin/runs/{run_id}/approve",
+            data={"approve_note": "ok"},
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        mock_send.assert_called_once()
+        outbound_html = mock_send.call_args.args[0]
+        self.assertIn('id="review-confirmation-box"', outbound_html)
+        self.assertIn('data-review-state="review_passed"', outbound_html)
+        self.assertIn(
+            "본 브리핑은 운영책임자의 직접 검수를 통과했습니다.",
+            outbound_html,
+        )
+        self.assertNotIn("genie-operational-handoff", outbound_html)
+        self.assertNotIn("재발행", outbound_html)
+        self.assertNotIn("발송되었습니다", outbound_html)
+
     def test_duplicate_approve_blocked(self) -> None:
         run_id = "20260604_140000_today_genie_ccddeeff"
         meta = {
