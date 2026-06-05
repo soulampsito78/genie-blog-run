@@ -38,7 +38,7 @@ Non-scope:
 | **framing (recommended)** | 3/4 body or full-body — **Asset 02 required as attached reference** |
 | **status** | **NOT_ACCEPTED** — first canary failed visual QA (see §11) |
 
-**Validation goal:** First live proof of the R6B system — fixed executive-door background + attractive off-duty outfit + warm farewell gesture + medium emotional temperature.
+**Validation goal:** First live proof of the R6B system — fixed executive-door background + attractive off-duty outfit + **fresh composed smile** farewell gesture + medium emotional temperature.
 
 ---
 
@@ -75,10 +75,10 @@ Kee-Suri stands in front of a **large premium wooden CEO/chairman office door** 
 | **Inner** | **Silk blouse** — elegant, office-appropriate, modest neckline |
 | **Bottom** | **Slim skirt** — beige or muted charcoal |
 | **Prop** | **Small elegant structured handbag** OR **thin notebook** — operator chooses one at approval |
-| **Expression** | **Warm but composed** — softer than briefing hero; restrained smile |
-| **Gesture** | **Slight bow** OR **small hand farewell** — respectful, not submissive |
+| **Expression** | **Fresh composed smile** — refreshing off-duty; softer than briefing hero; **not warm motherly smile** |
+| **Gesture** | **Slight bow** OR **small hand farewell** OR **over-the-shoulder glance** — respectful, not submissive; **no hands-clasped conservative greeting** |
 | **Eye contact** | Direct but respectful — acknowledges reader / 대표님 |
-| **Mood** | Warm, personal, premium — **not** romance, lounge, or glamour |
+| **Mood** | Personally warm in tone, **fresh and modern in visible expression** — premium; **not** romance, lounge, glamour, or motherly guardian |
 
 ### Hard mood limits
 
@@ -114,8 +114,8 @@ Kee-Suri stands in front of a **large premium wooden CEO/chairman office door** 
 | Skirt tone | Beige, muted taupe, or soft charcoal |
 | Prop | Small structured handbag **or** thin notebook — **one only** |
 | Gesture | Slight bow **or** small hand farewell |
-| Smile intensity | Medium temperature — soft visible smile, not wide/grinning |
-| Emotional warmth | Medium — gently personal, not flirtatious |
+| Smile intensity | Medium temperature — **fresh composed smile**, not wide/grinning or motherly warm smile |
+| Emotional warmth | Medium — gently personal in tone; **face reads fresh/modern**, not flirtatious or guardian-like |
 
 **Do not vary:** background location, scene type, lighting mood (daytime cafe, nightclub, home), or briefing Wardrobe v4 outfit structure.
 
@@ -206,9 +206,9 @@ Kee-Suri has changed out of formal briefing wardrobe into attractive tasteful of
 Soft ivory or light beige fine-knit cardigan worn open or loosely over a refined silk blouse — elegant, modest neckline, office-appropriate.
 Slim skirt in beige, muted taupe, or soft charcoal — knee-length, premium tailoring.
 Small elegant structured handbag at her side OR a thin closed notebook held naturally — NO tablet.
-Slight respectful bow OR small hand farewell gesture toward the viewer — calm leaving-work greeting.
-Warm but composed expression — soft restrained smile, emotionally warmer than a briefing hero image.
-Direct but respectful eye contact — acknowledges the representative reader with personal warmth, not flirtation.
+Slight respectful bow OR small hand farewell OR over-the-shoulder glance toward the viewer — calm leaving-work greeting. NO hands-clasped conservative matron pose.
+Fresh composed smile, refreshing off-duty expression — emotionally warmer than briefing hero but NOT motherly warm smile.
+Direct gentle fresh eye contact — acknowledges the representative reader with personal warmth, not flirtation.
 Emotional temperature: MEDIUM — gently personal farewell, not romantic, not submissive.
 3/4 body framing recommended — respectful distance, not bust-only close-up.
 Premium Korean private AI tech secretary — intelligent, calm, competent, tasteful.
@@ -221,7 +221,8 @@ Kee-Suri, refined Korean woman, sleek short bob, thin glasses, premium private A
 standing at chairman CEO office entrance, large premium wooden door, dignified wood-paneled executive wall,
 warm evening executive-floor light, off-duty closing farewell,
 soft ivory cardigan over silk blouse, slim beige skirt, small elegant handbag,
-warm composed smile, slight respectful bow, direct respectful eye contact,
+fresh composed smile, refreshing off-duty expression, slight respectful bow or small hand farewell,
+direct gentle fresh eye contact, modern attractive off-duty presence,
 attractive tasteful off-duty office casual, leaving-work greeting mood,
 same identity new image, premium calm personal warmth, 3/4 body
 ```
@@ -230,6 +231,7 @@ same identity new image, premium calm personal warmth, 3/4 body
 
 ```
 cheap girlfriend fantasy, sexualized lounge hostess, idol fan-service, submissive secretary fantasy,
+warm motherly smile, guardian-like smile, conservative family-meeting expression, hands-clasped polite matron pose,
 romantic couple framing, flirtatious pose, blown kiss, inviting recline,
 glamour model, fashion editorial, catalog showroom, weathercaster, news anchor desk,
 deep neckline, revealing outfit, exposed cleavage, bedroom, home interior,
@@ -296,9 +298,12 @@ Complete after one-live-call output. All items must PASS before any promotion di
 
 - [ ] **Identity stable** — same Kee-Suri face, bob, thin glasses vs Asset 01
 - [ ] **Asset 02-like full-body proportion** — without copying Asset 02 outfit
+- [ ] **Expression reads fresh** — not motherly, not guardian-like
+- [ ] **Smile is fresh composed smile** — mid-to-late 30s modern attractive range
 - [ ] **Kee-Suri reads mid-to-late 30s** — not older/motherly/matronly
 - [ ] **Outfit modern and attractive** — not motherly conservative mood
-- [ ] **Pose avoids hands-clasped conservative greeting**
+- [ ] **Image avoids guardian / family-meeting mood**
+- [ ] **Gesture avoids hands-clasped conservative politeness**
 - [ ] **Scene remains CEO/chairman wood-door background**
 - [ ] **Expression warmer than briefing image** — visible softening, not identical to hero
 - [ ] **Not cheap girlfriend fantasy**
@@ -340,7 +345,7 @@ Complete after one-live-call output. All items must PASS before any promotion di
 | **Too casual** | Medium | Prompt emphasizes premium off-duty office casual; QA rejects streetwear/sneakers |
 | **Too romantic** | Medium | Hard negatives on girlfriend fantasy, flirtation; medium not warm temperature |
 | **Too showroom / catalog** | Medium | Avoid fashion editorial framing; 3/4 body not full editorial wide |
-| **Too stiff** | Medium | Require visible soft smile + greeting gesture; medium emotional temperature |
+| **Too stiff** | Medium | Require **fresh composed smile** + active greeting gesture; medium emotional temperature |
 | **Background not door-like enough** | Medium–High | Background lock block stresses visible wooden executive door; QA fails if door absent |
 | **Outfit too similar to business wardrobe** | Medium | Explicit anti-v4 blocks; off-duty cardigan+blouse+skirt distinct from v4 jacket/suit |
 | **Face drift** | Low–Medium | Asset 01 identity reference; post-gen cross-check vs Asset 01 |
@@ -368,7 +373,7 @@ First live R6B bottom-shot canary — **NOT_ACCEPTED**.
 | Background lock | **PASS** |
 | Off-duty wardrobe concept | **PARTIAL** |
 | No tablet | **PASS** |
-| Identity / age / charm | **FAIL** — motherly/older guardian read |
+| Identity / age / charm | **FAIL** — motherly/older guardian read; **“warm smile”** phrasing contributed |
 | Full-body proportion anchor | **FAIL** — prompt-only interpretation |
 
 **Reason:** Prompt-only full-body interpretation produced older/motherly impression. Future R6B full-body bottom shots **must use Asset 02 as default silhouette reference**.
@@ -381,10 +386,19 @@ First live R6B bottom-shot canary — **NOT_ACCEPTED**.
 
 **Next profile:** `offduty_02_elegant_knit_slim_skirt`
 
+| Requirement | Detail |
+|-------------|--------|
+| **Expression** | **Fresh composed smile** — modern attractive off-duty expression |
+| **Gesture** | Small hand farewell **or** over-the-shoulder glance |
+| **Avoid** | Hands-clasped conservative greeting; motherly / matronly / older guardian read |
+| **Reference** | **Asset 02 default attached** |
+| **Outfit** | Refined knit + slim skirt — avoids cardigan motherly risk |
+
 | Reason | Detail |
 |--------|--------|
 | Avoids cardigan motherly risk | Knit + slim skirt reads more modern |
 | Better personal charm | Office-appropriate but attractive off-duty silhouette |
+| Expression correction | Fresh composed smile replaces failed “warm smile” pattern |
 | Asset 02 required | Must attach Asset 02 for full-body/3/4 framing — do not use Asset 01-only |
 
 Create new candidate package for `offduty_02` before next one-live-call.

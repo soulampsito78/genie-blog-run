@@ -278,13 +278,15 @@ Customer desire is **intentionally used** but must remain **premium, tasteful, K
 | **G** | Fall/Winter Warm | Camel cardigan / trench; cozy executive |
 | **H** | Personal but Premium | Knit dress + trench; **higher drift risk — use carefully** |
 
-### Emotional temperature scale
+### Emotional temperature and expression scale
+
+**Expression rule:** Visible face = **fresh composed smile**, not **warm motherly smile**. Tone may carry warmth; expression must read **fresh, modern, attractive off-duty**.
 
 | Level | Read | Use |
 |-------|------|-----|
-| **low** | Polite farewell; restrained smile; formal warmth | Default-safe; high-drift clusters |
-| **medium** | Softer smile; gentle eye contact; slightly personal | Standard 18:30 target |
-| **warm** | More familiar farewell; relaxed off-duty expression | **Sparingly** — never sexualized or submissive |
+| **low** | Polite but **fresh** farewell; **restrained fresh smile** | Default-safe; high-drift clusters |
+| **medium** | **Fresh composed smile**; gentle fresh eye contact; attractive off-duty presence | Standard 18:30 target |
+| **warm** | More familiar **lively** farewell — **still fresh, not motherly** | **Sparingly** — never sexualized, submissive, or guardian-like |
 
 ### Bottom-shot draft profile catalog
 
@@ -310,10 +312,10 @@ Full spec per profile: `docs/keysuri/KEYSURI_R6B_BOTTOM_SHOT_EMOTIONAL_LOCKIN_PL
 | Background lock | PASS |
 | Off-duty wardrobe concept | PARTIAL |
 | No tablet | PASS |
-| Identity / age / charm | FAIL — motherly/older guardian |
+| Identity / age / charm | FAIL — motherly/older guardian; **“warm smile”** phrasing contributed |
 | Reference strategy | FAIL — Asset 01 only; Asset 02 not used |
 
-**Lesson:** Prompt-only full-body interpretation failed. Future R6B bottom shots must attach **Asset 02** by default.
+**Lesson:** Prompt-only full-body interpretation failed. **“Warm smile”** + cardigan/beige/hands-clasped drifted motherly. Future R6B bottom shots must attach **Asset 02** and target **fresh composed smile**, not warm motherly smile.
 
 ---
 
@@ -348,7 +350,9 @@ Do **not** do these without explicit operator approval and a documented decision
 |-------|-------|
 | **Profile** | `offduty_02_elegant_knit_slim_skirt` |
 | **Taste cluster** | B — Elegant Office Casual |
-| **Reason** | Avoids cardigan motherly risk; modern attractive knit + slim skirt silhouette |
+| **Reason** | Avoids cardigan motherly risk; **fresh composed smile** replaces failed “warm smile” pattern |
+| **Expression** | **Fresh composed smile** — modern attractive off-duty; no hands-clasped conservative greeting |
+| **Gesture** | Small hand farewell **or** over-the-shoulder glance |
 | **Reference** | **Asset 02 default attached** — Asset 01 identity in prompt + post-gen QA |
 | **Slot** | 18:30 bottom-shot only |
 | **Background** | Fixed CEO/chairman office wood-door entrance |
@@ -416,13 +420,14 @@ Use this template when creating the **R6B bottom-shot candidate prompt package**
 - Fabric hints: [silk, fine knit, etc.]
 - Prop: [small handbag OR thin notebook — no tablet]
 - Gesture: [slight bow OR small hand farewell]
-- Expression: [warm but composed; per emotional temperature]
+- Expression: **fresh composed smile**; refreshing off-duty expression; per emotional temperature (§11 R6B plan)
 - Posture: [paused at door; natural hands]
 
 ## 4. Emotional register
 
 - Temperature: [low / medium / warm]
-- Warm farewell to representative/reader
+- Warm farewell to representative/reader in **tone**
+- **Fresh composed smile** on face — NOT warm motherly smile
 - Subtle personal warmth — NOT romance
 - NO cheap girlfriend fantasy
 - NO sexualized lounge mood
@@ -431,6 +436,9 @@ Use this template when creating the **R6B bottom-shot candidate prompt package**
 
 ## 5. Hard negatives
 
+- No warm motherly smile, guardian-like smile, conservative family-meeting expression
+- No hands-clasped polite-matron pose
+- Prefer fresh composed smile, refreshing off-duty expression, modern attractive presence over warm smile alone
 - No tablet-at-waist; no tablet in hands
 - No Asset 02 outfit clone (charcoal suit, champagne blouse)
 - No command-center / data-wall
@@ -450,6 +458,10 @@ Use this template when creating the **R6B bottom-shot candidate prompt package**
 
 ## 7. QA criteria (post-generation)
 
+- [ ] Expression reads **fresh** rather than motherly
+- [ ] Smile keeps Kee-Suri in **mid-to-late 30s modern attractive** range
+- [ ] Image avoids **guardian / family-meeting** mood
+- [ ] Gesture avoids **hands-clasped conservative politeness**
 - [ ] Asset 02-like full-body proportion without copying Asset 02 outfit
 - [ ] Kee-Suri reads mid-to-late 30s, not older/motherly
 - [ ] Outfit modern and attractive, not motherly cardigan mood
@@ -509,13 +521,14 @@ SCHEDULE
 
 NEXT ACTION
   R6B  FIRST CANARY NOT_ACCEPTED → offduty_01 failed; Asset 02 now default reference
-  NEXT offduty_02 + Asset 02 → approve → one live call → QA
+  R6B  expression = fresh composed smile, NOT warm motherly smile
+  NEXT offduty_02 + Asset 02 + fresh expression → approve → one live call → QA
   DO NOT retry offduty_01 immediately
 
 NEVER
   commit output/**  |  git add -A  |  wire Scheduler  |  bottom at 12:30
   clone Asset 02 outfit/tablet/bg  |  color-only wardrobe roulette
-  R6B bottom shot with Asset 01-only reference (prompt-only full-body)
+  R6B bottom shot with Asset 01-only reference  |  prompt "warm smile" without fresh composed smile guard
 ```
 
 ---

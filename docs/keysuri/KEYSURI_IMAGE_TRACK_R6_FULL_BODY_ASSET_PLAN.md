@@ -148,8 +148,8 @@ For **R6B 18:30 bottom-shot** generation at **3/4 or full-body** framing:
 | **Attached reference** | **Asset 02 is default** — not optional |
 | **Asset 02 anchors** | Full-body proportion, standing silhouette, skirt length/leg line, shoe visibility, full-length framing, body posture baseline |
 | **Asset 01 role** | Identity / face family via prompt policy + post-gen QA — not a substitute for Asset 02 body framing |
-| **Prompt carries** | Off-duty outfit, expression, gesture, fixed CEO wood-door background, emotional temperature, anti-copy blocks, age/charm guardrails |
-| **Must not infer body from prompt alone** | First canary (`offduty_01`, `keysuri_global_canary_20260605_101845.jpg`) failed partly because Asset 01-only reference produced older/motherly full-body interpretation |
+| **Prompt carries** | Off-duty outfit, **fresh composed smile / refreshing off-duty expression**, gesture, fixed CEO wood-door background, emotional temperature, anti-copy blocks, age/charm guardrails |
+| **Must not infer body from prompt alone** | First canary (`offduty_01`, `keysuri_global_canary_20260605_101845.jpg`) failed partly because Asset 01-only reference and **“warm smile”** language produced older/motherly full-body interpretation |
 
 **Asset 02 must not transfer:** charcoal suit, champagne blouse, tablet-at-waist pose, command-center background, stiff briefing mood.
 
@@ -220,6 +220,8 @@ Example anti-copy language (required when Asset 02 is attached):
 > Use the full-body reference only for body proportion, full-length framing, standing silhouette, skirt/leg/shoe balance, and posture. Do not copy the full-body reference outfit, tablet pose, or command-center background.
 
 > Kee-Suri must remain a refined Korean woman in her mid-to-late 30s with a fresh, modern, attractive off-duty presence. Avoid motherly, matronly, older guardian, conservative family-meeting mood.
+
+> Prefer **fresh composed smile, refreshing off-duty expression, modern attractive presence** over **warm smile** alone. Avoid hands-clasped conservative greeting pose.
 
 Operator QA must cross-check **identity against Asset 01** and **outfit against Wardrobe v4 or R6B off-duty profile** even when Asset 02 was the attached reference.
 

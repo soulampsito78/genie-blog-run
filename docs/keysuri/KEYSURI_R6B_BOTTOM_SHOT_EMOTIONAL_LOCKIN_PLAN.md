@@ -132,9 +132,9 @@ The image should feel like a **brief, private moment after work** — the reader
 
 ### Kee-Suri may show (bottom shot only)
 
-- Softer expression than briefing hero
+- Softer expression than briefing hero — **fresh composed smile**, not motherly warm smile
 - Off-duty side — still polished, not sloppy
-- Personal warmth — eye contact that acknowledges the reader’s day
+- Personal warmth through tone and eye contact — **visible face reads fresh and modern**, not guardian-like
 - Relaxed but elegant everyday clothing — rotated across taste clusters (§9)
 - Quiet farewell mood — pausing at the executive office door before leaving
 
@@ -231,7 +231,7 @@ For bottom-shot generation, **prioritize person-level variation**:
 | Priority axis | Examples |
 |---------------|----------|
 | **Outfit** | Taste-cluster rotation; knit + skirt; shirt dress; cardigan + blouse; seasonal materials |
-| **Expression** | Per emotional temperature — restrained to warm farewell |
+| **Expression** | Per emotional temperature — **fresh composed smile** at medium; restrained fresh smile at low |
 | **Eye contact** | Respectful, reader-facing |
 | **Gesture** | Small bow; hand greeting |
 | **Prop** | Small handbag; thin notebook |
@@ -325,8 +325,8 @@ Eight taste clusters organize bottom-shot wardrobe rotation. Each profile in §1
 |---------|-----------|
 | Outfit | Silk blouse + cardigan; beige skirt |
 | Prop | Small handbag |
-| Expression | Warm smile |
-| Read | Safest emotional lock-in; default-friendly |
+| Expression | **Fresh composed smile** — refreshing off-duty, not motherly warm smile |
+| Read | Safest emotional lock-in when expression stays fresh/modern; cardigan cluster needs extra QA |
 
 ### B. Elegant Office Casual
 
@@ -334,8 +334,8 @@ Eight taste clusters organize bottom-shot wardrobe rotation. Each profile in §1
 |---------|-----------|
 | Outfit | Refined knit top + slim skirt; low heels |
 | Prop | Thin notebook |
-| Expression | Calm farewell |
-| Read | Daily repeat-friendly; intelligent everyday elegance |
+| Expression | Calm farewell; **fresh composed smile** |
+| Read | Daily repeat-friendly; intelligent everyday elegance — **preferred next candidate after offduty_01 failure** |
 
 ### C. Cool Executive Off-Duty
 
@@ -416,36 +416,61 @@ Bottom-shot wardrobe roulette must **rotate across taste clusters** (§9). Do no
 
 ---
 
-## 11. Emotional Temperature Scale
+## 11. Emotional Temperature and Expression Scale
 
-Emotional temperature controls how warm the farewell reads. Independent of taste cluster but must align with persona boundary (§4).
+### R6B expression target (operator correction)
+
+For R6B bottom shots, the **visible facial expression target** is:
+
+**`fresh composed smile`** — not **`warm motherly smile`**.
+
+The bottom shot may carry **emotional warmth** in tone, farewell mood, and eye contact. The **face must read fresh, attractive, and modern off-duty** — not motherly, matronly, or guardian-like.
+
+| Prefer | Avoid |
+|--------|-------|
+| Fresh composed smile | Warm motherly smile |
+| Refreshing off-duty smile | Guardian-like smile |
+| Lively but restrained smile | Conservative family-meeting expression |
+| Gentle fresh eye contact | Hands-clasped polite-matron pose |
+| Modern attractive off-duty expression | Older guardian / matron read |
+
+**Explicit avoid list:**
+
+- Motherly warmth in visible facial expression
+- Guardian-like smile
+- Conservative family-meeting expression
+- Hands-clasped polite-matron pose
+
+**Operator lesson (offduty_01):** Generic **“warm smile”** combined with cardigan, beige tones, and hands-clasped pose drifted into motherly/matronly read. Future prompts must prefer **fresh composed smile** language over **warm smile** alone.
+
+Emotional temperature controls farewell **intensity**. It must align with persona boundary (§4) and the expression target above.
 
 ### Low
 
 | Element | Direction |
 |---------|-----------|
-| Farewell | Polite, professional |
-| Smile | Restrained |
-| Eye contact | Respectful, brief warmth |
+| Farewell | Polite but **fresh** farewell |
+| Smile | **Restrained fresh smile** |
+| Eye contact | Respectful, brief — gentle fresh eye contact |
 | Use | Default-safe; new profiles; high-drift clusters |
 
 ### Medium
 
 | Element | Direction |
 |---------|-----------|
-| Farewell | Softer, gently personal |
-| Smile | Softer smile |
-| Eye contact | Gentle, sustained but respectful |
+| Farewell | Gently personal — still fresh, not motherly |
+| Smile | **Fresh composed smile** |
+| Eye contact | Gentle fresh eye contact; attractive off-duty presence |
 | Use | Standard 18:30 lock-in target |
 
 ### Warm
 
 | Element | Direction |
 |---------|-----------|
-| Farewell | More familiar — “you worked hard today” energy |
-| Expression | Relaxed off-duty; visibly warmer than briefing hero |
+| Farewell | More familiar and **lively** farewell — “you worked hard today” energy |
+| Expression | Relaxed off-duty; **still fresh, not motherly** |
 | Use | **Sparingly** — not every rotation |
-| Hard limit | **Never sexualized or submissive** |
+| Hard limit | **Never sexualized, submissive, or motherly/guardian-like** |
 
 Warm temperature requires explicit operator choice in decision gate (§19). Do not default to warm for convenience.
 
@@ -464,10 +489,10 @@ Initial profile IDs for R6B wardrobe rotation. Expand over time; each new profil
 | **Outfit** | Ivory cardigan + silk blouse + beige slim skirt |
 | **Prop** | Small structured handbag |
 | **Gesture** | Handbag at side; slight pause at door |
-| **Expression** | Warm restrained smile |
+| **Expression** | ~~Warm restrained smile~~ **NOT_ACCEPTED pattern** — use fresh composed smile for future profiles |
 | **Emotional temperature** | medium |
-| **Drift risk** | low |
-| **Risk notes** | Safest default profile; ideal first live candidate |
+| **Drift risk** | low → **elevated** when “warm smile” + cardigan + beige + hands-clasped combine |
+| **Risk notes** | First canary failed on motherly read; **do not retry immediately** |
 
 ### offduty_02_elegant_knit_slim_skirt
 
@@ -478,10 +503,11 @@ Initial profile IDs for R6B wardrobe rotation. Expand over time; each new profil
 | **Outfit** | Refined lightweight knit top + slim beige skirt; low heels |
 | **Prop** | Thin notebook |
 | **Gesture** | Notebook held naturally at side |
-| **Expression** | Calm farewell; composed |
-| **Emotional temperature** | low–medium |
+| **Expression** | **Fresh composed smile** — modern attractive off-duty |
+| **Gesture** | Small hand farewell **or** over-the-shoulder glance — **no hands-clasped conservative greeting** |
+| **Emotional temperature** | medium |
 | **Drift risk** | low |
-| **Risk notes** | Daily repeat-friendly; avoid fashion-editorial posing |
+| **Risk notes** | **Next candidate after offduty_01 failure**; requires Asset 02; avoid motherly/matronly/guardian read |
 
 ### offduty_03_smoky_blue_blouse_ivory_cardigan
 
@@ -702,13 +728,13 @@ First R6B bottom-shot live canary — **NOT_ACCEPTED**.
 | Background lock (CEO wood-door entrance) | **PASS** |
 | Off-duty wardrobe concept | **PARTIAL** — cardigan/blouse/skirt visible but read motherly |
 | No tablet | **PASS** |
-| Identity / age / charm | **FAIL** — older/motherly/guardian impression; not modern attractive off-duty Kee-Suri |
+| Identity / age / charm | **FAIL** — older/motherly/guardian impression; **“warm smile” + cardigan + beige + hands-clasped** contributed |
 | Greeting gesture | **PARTIAL** — hands clasped, not bow/hand farewell |
 | Full-body proportion anchor | **FAIL** — prompt-only interpretation without Asset 02 |
 
 **Root cause:** Full-body bottom-shot relied too much on prompt interpretation and not enough on **Asset 02 full-body framing reference**.
 
-**Policy correction:** Future R6B **3/4 and full-body** bottom shots must use **Asset 02 as default silhouette/full-body reference**. Do not retry `offduty_01` immediately. Next candidate: **`offduty_02_elegant_knit_slim_skirt`** — avoids cardigan motherly risk; must use Asset 02 for framing.
+**Policy correction:** Future R6B **3/4 and full-body** bottom shots must use **Asset 02 as default silhouette/full-body reference**. Expression target: **fresh composed smile**, not warm motherly smile. Do not retry `offduty_01` immediately. Next candidate: **`offduty_02_elegant_knit_slim_skirt`** — fresh composed smile, modern attractive off-duty expression, Asset 02 required.
 
 ---
 
@@ -757,7 +783,8 @@ Future bottom-shot prompts must be structured in this order:
 
 ### Emotional register
 
-- Warm farewell to the representative / reader
+- Warm farewell to the representative / reader in **tone and mood**
+- **Fresh composed smile** on face — refreshing off-duty expression; **not warm motherly smile**
 - Emotional temperature explicitly set — low / medium / warm (§11)
 - Subtle emotional intimacy — personal warmth, not romance
 - Calm “you worked hard today” energy without readable text in frame
@@ -766,6 +793,8 @@ Future bottom-shot prompts must be structured in this order:
 
 - No cheap girlfriend fantasy
 - No sexualized lounge mood
+- No warm motherly smile, guardian-like smile, conservative family-meeting expression
+- No hands-clasped polite-matron pose
 - No idol fan-service
 - No submissive secretary fantasy
 - No tablet-at-waist; no tablet in hands
@@ -793,6 +822,8 @@ Future R6B bottom-shot prompts must include:
 
 > Kee-Suri must remain a refined Korean woman in her **mid-to-late 30s** with a fresh, modern, attractive off-duty presence.
 
+> Prefer **fresh composed smile, refreshing off-duty expression, modern attractive presence** over **warm smile** alone.
+
 > Avoid motherly, matronly, older guardian, conservative family-meeting mood. Avoid hands-clasped conservative greeting pose.
 
 - Identity QA cross-check against Asset 01 after generation
@@ -807,9 +838,12 @@ Operator must complete before any bottom-shot output is accepted as QA PASS or p
 
 - [ ] **Identity stable** — same Kee-Suri face, bob, glasses; no identity drift
 - [ ] **Asset 02-like full-body proportion** preserved — without copying Asset 02 outfit
+- [ ] **Expression reads fresh** — not motherly, not guardian-like, not family-meeting polite
+- [ ] **Smile is fresh composed smile** — mid-to-late 30s modern attractive range; not warm motherly smile
 - [ ] **Kee-Suri reads mid-to-late 30s** — not older, not motherly/matronly/guardian
 - [ ] **Outfit feels modern and attractive** — not motherly cardigan/conservative family-meeting mood
-- [ ] **Pose avoids hands-clasped conservative greeting** — prefer bow, hand farewell, or natural prop pose
+- [ ] **Pose avoids hands-clasped conservative greeting** — prefer bow, hand farewell, over-shoulder glance, or natural prop pose
+- [ ] **Image avoids guardian / family-meeting mood**
 - [ ] **Emotionally warmer** than briefing hero — visible softening acceptable
 - [ ] **Respectful register** — warm toward 대표님/reader, not flirtatious
 - [ ] **Emotional temperature controlled** — matches declared low / medium / warm; warm not overused
