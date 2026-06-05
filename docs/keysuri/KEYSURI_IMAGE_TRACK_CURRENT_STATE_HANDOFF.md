@@ -79,6 +79,20 @@ The Kee-Suri image track has progressed through **R5 (closed)**, **R6 (full-body
 | Preflight tests | `tests/test_keysuri_manual_canary_preflight.py` |
 | Run script | `scripts/run_keysuri_manual_opt_in_canary.py` |
 
+### MirAI:ON image watermark — current gap
+
+| Item | Status |
+|------|--------|
+| HTML rights footer (§13) | **Committed** — contract preview renderer + html_test validator |
+| Image post-process overlay | **Not implemented** — no committed `keysuri_image_overlay.py` yet |
+| Genie reference pattern | Prompt negatives forbid model watermark; `genie_image_overlay.py` applies `MirAI:ON` after generation (Genie overlay utility currently **untracked** in working tree) |
+| Manual canary outputs | `output/keysuri_preview/image_canary/*.jpg` are **unwatermarked** until overlay step exists |
+| Brand rule | **MirAI:ON only** on Kee-Suri — do not use `© Heemang & Tobak` or Today_Geenee strings |
+
+**Policy (documented in contract §10.1):** no model-generated watermark + required post-process `MirAI:ON` overlay on top-shot and bottom-shot before preview/output handoff. Contract preview HTML placeholders mean `watermark: post_process_required`.
+
+**Next doc/code step (separate owner-approved task):** implement overlay utility + canary hook; optional internal asset manifest with `overlay_applied` / `watermark_text`.
+
 ---
 
 ## 3. Current Locked Decisions
@@ -397,6 +411,8 @@ Do **not** do these without explicit operator approval and a documented decision
 | Today_Geenee / Tomorrow_Geenee | Do not modify unless explicitly scoped |
 | Asset 02 cloning | No outfit / tablet / command-center copy |
 | Bottom shot at 12:30 | Forbidden |
+| Image watermark via model prompt | Forbidden — use post-process overlay (`MirAI:ON`) per §10.1 |
+| Heemang & Tobak strings on Kee-Suri assets | Forbidden |
 
 ---
 

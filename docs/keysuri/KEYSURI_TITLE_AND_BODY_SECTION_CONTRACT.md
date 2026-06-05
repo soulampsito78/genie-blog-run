@@ -488,6 +488,73 @@ Each **키수리의 딥-다이브** should identify **at least one** side-effect
 - Warm close comes **before** **마무리 및 출처 리스트**
 - Rights policy comes **after** **마무리 및 출처 리스트** and **before** operation metadata
 
+### 10.1 MirAI:ON image watermark policy
+
+**Inspection basis (Genie, 2026-06):** Genie image workflows use **prompt negatives** to forbid model-generated text/watermarks, then apply **`MirAI:ON` by post-processing overlay** (`genie_image_overlay.py` pattern). Kee-Suri adopts the same architecture with **MirAI:ON only** — not legacy `© Heemang & Tobak`, not Today_Geenee / Tomorrow_Geenee strings.
+
+All Kee-Suri generated raster images intended for preview or output must include a **visible pixel-level** ownership mark.
+
+**Required watermark text:**
+
+```
+MirAI:ON
+```
+
+**Optional legal text when image safe-area allows:**
+
+```
+Copyright Ⓒ MirAI:ON. All rights reserved.
+```
+
+| Rule | Detail |
+|------|--------|
+| Top-shot + bottom-shot | **Both** require watermark before preview/output handoff |
+| Visible on pixels | Watermark must appear on the image itself — not HTML-only |
+| HTML §13 footer | **Does not replace** image watermark — both are required on their respective surfaces |
+| Metadata-only | EXIF/XMP or sidecar metadata **alone** is insufficient |
+| Prompt-only | Asking the image model to render watermark text is **insufficient** and discouraged |
+| Model generation | **Do not** ask the image model to render the watermark text |
+| Post-process overlay | **Required** for exact `MirAI:ON` text fidelity after generation |
+| Prompt negatives | Keep `no text`, `no logo`, `no watermark`, `no text overlay` (and equivalent) to prevent garbled model text |
+| Contamination vs ownership | Model-generated readable text/watermarks = **QA FAIL**; required `MirAI:ON` overlay = **QA PASS** after post-process |
+| Forbidden strings on Kee-Suri assets | `© Heemang & Tobak`, Today_Geenee, Tomorrow_Geenee |
+
+**Placement (recommended):**
+
+| Attribute | Rule |
+|-----------|------|
+| Position | Bottom-right or lower safe area |
+| Legibility | Small but clearly readable |
+| Tone | Premium neutral — consistent opacity |
+| Safe margin | Inside crop zone so email/mobile layout does not clip the mark |
+| Avoid covering | Face, eyes, hands, tablet, key UI, outfit silhouette, briefing gesture |
+
+**Genie pattern reference (read-only):** `prompts.py` forbids in-image watermark; `genie_image_overlay.apply_today_genie_brand_footer()` applies `MirAI:ON` after generation. Kee-Suri should mirror **no model watermark + post-process overlay**, not Genie's legacy Heemang JSON/PDF strings.
+
+### 10.2 Future asset manifest recommendation
+
+Not a file-copy tracking system. Internal QA/ownership manifest per generated image:
+
+| Field | Purpose |
+|-------|---------|
+| `asset_id` | Stable internal id |
+| `program_id` | `keysuri_global_tech` \| `keysuri_korea_tech` |
+| `slot` | `12:30` \| `18:30` |
+| `image_role` | `top_shot` \| `bottom_shot` |
+| `source_generation_id` | Provider/run id when available |
+| `generated_at` | Timestamp |
+| `overlay_applied` | `true` \| `false` |
+| `watermark_text` | `MirAI:ON` |
+| `review_status` | QA / promotion state |
+| `file_path` | Local path under `output/**` (gitignored) |
+| `hash_sha256` | Optional integrity fingerprint |
+
+### 10.3 Image watermark non-goals
+
+Full file-copy tracking, forensic watermarking, and per-download invisible watermarking are **out of scope** for the current Kee-Suri preview pipeline. May be considered later only after preview/output workflow stabilizes.
+
+**Future code candidates (not implemented):** `keysuri_image_overlay.py` or shared `mirai_on_image_overlay.py`; `tests/test_keysuri_image_overlay.py`; manual canary runner post-generation hook; manifest writer (later).
+
 ---
 
 ## 11. Domestic 18:30 bottom-shot warm closing contract
@@ -606,6 +673,16 @@ Validated in Korea 18:30 HTML preview (`validation_status: PASS`).
 | Styling | Small but clearly visible legal/copyright footer — premium neutral tone |
 | Operation metadata | Must **not** look like operation metadata box |
 | Global + Korea | Applies to both programs in preview/output surfaces |
+
+### 13.3 Image watermark vs HTML rights footer
+
+| Surface | Policy |
+|---------|--------|
+| HTML preview / customer page | §13 exact footer text — validated by `keysuri_html_preview_validation.py` v0 |
+| Raster image (top-shot, bottom-shot) | Visible `MirAI:ON` watermark via post-process overlay — §10.1 |
+| Relationship | **Complementary, not substitutable** — HTML footer protects the page; image watermark protects the asset |
+
+Contract preview renderer placeholders (`top-shot-placeholder`, `bottom-shot-placeholder`) indicate **`watermark: post_process_required`**. A placeholder does **not** mean overlay has been applied. Approved image assets must be **overlay-verified** before preview/output handoff.
 
 ---
 
@@ -874,6 +951,7 @@ Model must obey locked `section_heading` values and forbidden rename rules in `k
 | Item-level source box placement | Renderer — after interpretation fields |
 | 딥-다이브 layer/card formatting | Renderer — mobile-readable structure |
 | Rights policy footer placement | Renderer — §13 |
+| Image placeholder watermark note | Renderer — `watermark: post_process_required` on top/bottom placeholders (§10.1, §13.3) |
 | Validation result box | Renderer — HTML preview only, §15 |
 | Identity subtitle display | Renderer — `프라이빗 테크 인사이트 브리핑` is renderer candidate only per terminology lock §9 |
 
@@ -911,6 +989,13 @@ Before treating any generated briefing as contract-compliant:
 - [ ] Directional judgment is bold but bounded — no investment advice
 - [ ] **원-라인 체크포인트** is a **decision cue**, not recap
 - [ ] **Rights policy footer included exactly** (§13)
+- [ ] **Top-shot image watermark applied** — visible `MirAI:ON` on pixels (§10.1)
+- [ ] **Bottom-shot image watermark applied** when bottom-shot is in scope (§10.1)
+- [ ] **Watermark text is `MirAI:ON`** — not Heemang & Tobak / Genie bleed
+- [ ] **Watermark does not cover** face, eyes, hands, tablet, silhouette, or briefing gesture
+- [ ] **Prompt-generated watermark contamination absent** — no model-rendered readable text/logo
+- [ ] **Overlay-applied watermark confirmed** before preview/output handoff
+- [ ] **HTML rights footer present separately** from image watermark (§13.3)
 - [ ] **No hashtag section by default** (§14)
 - [ ] Domestic warm close limited to **18:30 Korea** slot
 - [ ] **Korea 18:30 warm close placement validated** — below bottom-shot, before 마무리

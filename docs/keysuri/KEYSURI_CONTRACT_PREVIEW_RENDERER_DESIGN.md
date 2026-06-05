@@ -292,6 +292,8 @@ Copyright Ⓒ MirAI:ON. All rights reserved.
 무단 전재, 재배포 및 AI학습 이용 절대 금지
 ```
 
+**Note:** §13 protects the **HTML page**. It does **not** replace raster image watermarking — see §7.6.
+
 ### 7.4 Hashtags
 
 **No hashtag section by default** — contract §14. Validator v0 enforces `no_hashtags: PASS`.
@@ -305,6 +307,43 @@ Contract preview HTML must **not** contain:
 - `production_ready: true`, `scheduler_ready: true`, `email_ready: true`
 - `static/email` paths or image API output paths presented as production assets
 - **테크 앵커** / **뉴스 앵커** identity bleed
+
+### 7.6 Image watermark and placeholder policy
+
+**Genie inspection pattern (read-only):** prompt negatives forbid model-generated watermarks; post-process overlay applies exact `MirAI:ON` (`genie_image_overlay.py`). Kee-Suri uses **MirAI:ON only** — not `© Heemang & Tobak`, not Today_Geenee / Tomorrow_Geenee.
+
+Contract preview renderer top-shot and bottom-shot placeholders must indicate:
+
+| Attribute | Value |
+|-----------|-------|
+| `watermark` | `post_process_required` |
+| Meaning | Placeholder HTML does **not** mean overlay was applied |
+| Handoff rule | Approved raster assets must be **overlay-verified** before preview/output use |
+
+**Required raster watermark:** visible `MirAI:ON` on image pixels (top-shot and bottom-shot). Optional when safe-area allows: `Copyright Ⓒ MirAI:ON. All rights reserved.`
+
+**Placement:** bottom-right or lower safe area; small but legible; premium neutral tone; consistent opacity; safe margin inside crop zone; do not cover face, eyes, hands, tablet, key UI, outfit silhouette, or briefing gesture.
+
+**Rules:**
+
+- Do not ask the image model to render watermark text.
+- Keep prompt negatives (`no text`, `no logo`, `no watermark`, `no text overlay`).
+- Apply required ownership mark **after generation** by overlay.
+- Metadata-only watermark is insufficient.
+- HTML §13 footer remains required separately.
+
+**Future asset manifest (recommendation):** per-image record with `asset_id`, `program_id`, `slot`, `image_role`, `source_generation_id`, `generated_at`, `overlay_applied`, `watermark_text: MirAI:ON`, `review_status`, `file_path`, optional `hash_sha256` — internal QA manifest, not file-copy tracking.
+
+**Non-goal:** Full file-copy tracking, forensic watermarking, and per-download invisible watermarking are out of scope until preview/output workflow stabilizes.
+
+**Future code candidates (do not implement in this design doc):**
+
+| Candidate | Purpose |
+|-----------|---------|
+| `keysuri_image_overlay.py` or `mirai_on_image_overlay.py` | Post-process `MirAI:ON` overlay |
+| `tests/test_keysuri_image_overlay.py` | Overlay text, placement, safe-zone regression |
+| Manual canary runner hook | Apply overlay after generation |
+| Manifest writer | Record `overlay_applied` / `watermark_text` |
 
 ---
 
@@ -380,6 +419,7 @@ Preferred sequence (each step is a separate owner-approved task):
 | Genie validator reuse | Kee-Suri HTML rules stay in `keysuri_html_preview_validation.py` |
 | Source/fact verification | Contract display only — verification pipeline separate |
 | Automatic `sent_archived` state | Requires future send-completion record |
+| Forensic / invisible watermarking | Out of scope — §7.6 |
 
 ---
 
@@ -393,6 +433,13 @@ A generated contract preview is **acceptable** only if **all** of the following 
 - [ ] TOP 5 item-level sources visible (name, URL, verification status per item)
 - [ ] **키수리의 딥-다이브** readable layer structure present when content is dense
 - [ ] Rights policy footer visible with exact §13 text
+- [ ] Image placeholders note `watermark: post_process_required` (§7.6)
+- [ ] When wired images are used: top-shot watermark `MirAI:ON` applied on pixels
+- [ ] When wired images are used: bottom-shot watermark `MirAI:ON` applied on pixels (Korea 18:30)
+- [ ] Watermark does not cover face, hands, tablet, or silhouette
+- [ ] No model-generated watermark contamination
+- [ ] Overlay verified before preview/output handoff
+- [ ] HTML rights footer present separately from image watermark
 - [ ] Review confirmation box present with correct state text (default: `preview_pending`)
 - [ ] No hashtag section
 - [ ] No Today_Geenee / Tomorrow_Geenee bleed
@@ -434,4 +481,4 @@ Documented by commit `1e28fe0` / `tests/test_keysuri_renderer_validator_compat.p
 
 `KEYSURI_TITLE_AND_BODY_SECTION_CONTRACT.md` §15.8 notes renderer integration requires a **separate compatibility pass**. This design implements that pass as a **new renderer**, not as a breaking change to the owner-review renderer.
 
-Recommended contract doc update (future, separate task): add cross-reference to this design under §17.2 (renderer responsibility split).
+Contract doc cross-reference: `KEYSURI_TITLE_AND_BODY_SECTION_CONTRACT.md` §10.1 (image watermark), §13.3 (HTML vs image), §17.2 (renderer responsibility split).

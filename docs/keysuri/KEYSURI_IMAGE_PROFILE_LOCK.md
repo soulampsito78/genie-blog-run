@@ -195,6 +195,28 @@ Block or treat as fail in QA if present visually or in unconstrained prompts:
 
 - Readable fake UI text
 - Collage / split screen
+- **Model-generated watermark / readable logo text** — contamination; distinct from required post-process `MirAI:ON` overlay (contract §10.1)
+
+---
+
+## 9.1 MirAI:ON image watermark policy
+
+**Genie pattern (inspection):** forbid watermark in image prompts; apply `MirAI:ON` by **post-processing overlay** after generation. Kee-Suri adopts the same split with **stricter brand lock**:
+
+| Rule | Detail |
+|------|--------|
+| Required mark | Visible `MirAI:ON` on raster pixels — top-shot **and** bottom-shot |
+| Post-process | Overlay after generation for exact text fidelity |
+| Prompt negatives | Keep `no text`, `no logo`, `no watermark`, `no text overlay` in generation prompts |
+| HTML §13 footer | Required on HTML surfaces — **does not replace** image watermark |
+| Forbidden on Kee-Suri assets | `© Heemang & Tobak`, Today_Geenee, Tomorrow_Geenee |
+| Placement | Bottom-right or lower safe area; do not cover face, eyes, hands, tablet, silhouette |
+
+**Current state:** overlay utility **not committed**; canary JPGs under `output/keysuri_preview/image_canary/` are QA references only and may lack overlay until implemented.
+
+**Future candidates:** `keysuri_image_overlay.py`, `tests/test_keysuri_image_overlay.py`, canary runner hook, optional asset manifest (`overlay_applied`, `watermark_text`).
+
+**Non-goal:** File-copy tracking, forensic watermarking, invisible per-download marks — out of scope until preview/output workflow stabilizes.
 
 ---
 
@@ -213,6 +235,10 @@ Use before connecting Kee-Suri image generation to scheduler or production runti
 - [ ] Confirm generated images remain gitignored
 - [ ] Confirm no output images/reports are committed
 - [ ] Confirm no secrets/raw provider payloads are saved
+- [ ] Confirm top-shot and bottom-shot images receive post-process `MirAI:ON` overlay (§9.1)
+- [ ] Confirm watermark does not cover face, hands, tablet, or silhouette
+- [ ] Confirm no model-generated watermark contamination
+- [ ] Confirm HTML §13 rights footer remains separate from image watermark
 
 ---
 
