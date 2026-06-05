@@ -621,8 +621,8 @@ _REVISION_REQUEST_REASONS = (
 
 def render_email_operational_box(meta: Dict[str, Any]) -> str:
     """
-    Read-only 운영 안내 + staged 재발행 요청 (internal_state revision_request).
-    JS: (1) 재발행 요청 → show reason dropdown (2) reason chosen → show 재발행 요청 제출.
+    Read-only 운영자 검수 상태 + staged 재발행 요청 (internal_state revision_request).
+    Owner/admin email only — stripped before customer final delivery.
     POST URL is server-owned (main.py); not an immediate rerun.
     """
     mode_line = _safe(meta.get("mode_label", ""))
@@ -654,8 +654,8 @@ def render_email_operational_box(meta: Dict[str, Any]) -> str:
         else "수정 요청은 운영자 검토 후 별도 안내됩니다."
     )
     return f"""
-<section id="genie-operational-handoff" aria-label="운영 안내" style="margin-top:32px;padding:20px 20px 22px 20px;border:1px solid #cbd5e1;border-radius:10px;background:#f1f5f9;">
-  <p style="margin:0 0 16px 0;padding-bottom:12px;border-bottom:1px solid #cbd5e1;font-size:13px;line-height:1.45;color:#334155;font-weight:800;letter-spacing:-0.01em;">운영 안내</p>
+<section id="genie-operational-handoff" aria-label="운영자 검수 상태" style="margin-top:32px;padding:20px 20px 22px 20px;border:1px solid #cbd5e1;border-radius:10px;background:#f1f5f9;">
+  <p style="margin:0 0 16px 0;padding-bottom:12px;border-bottom:1px solid #cbd5e1;font-size:13px;line-height:1.45;color:#334155;font-weight:800;letter-spacing:-0.01em;">운영자 검수 상태</p>
   <div style="margin:0 0 12px 0;padding:0;">
     {row.format(label="모드", value=mode_line)}
     {row.format(label="현재 상태", value=status_line)}

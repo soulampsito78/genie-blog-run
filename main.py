@@ -949,8 +949,9 @@ def email_operational_handoff_meta(
     validation_result: str,
 ) -> Dict[str, Any]:
     """
-    Server-owned, customer-facing labels for the email 운영 안내 block only.
+    Server-owned labels for the owner/admin 운영자 검수 상태 block only.
     No raw internal state strings (e.g. draft_only, validated) are exposed here.
+    Labels must not imply customer send completion or human 검수완료 from validation pass alone.
     """
     kst_now = datetime.now(ZoneInfo("Asia/Seoul"))
     exec_ts = kst_now.strftime("%Y-%m-%d %H:%M:%S KST")
@@ -963,9 +964,11 @@ def email_operational_handoff_meta(
         mode_label = "지니 브리핑"
 
     if validation_result == "pass":
-        status_label = "기본 검수 통과"
-        result_summary = "초안 생성과 기본 검수를 통과했습니다."
-        email_delivery_label = "이메일 발송 완료"
+        status_label = "자동 검증 통과"
+        result_summary = (
+            "초안 생성과 자동 검증을 통과했습니다. 운영자 검수 후 전달 여부를 확정합니다."
+        )
+        email_delivery_label = "운영자 검수 메일 발송 전"
     elif validation_result == "draft_only":
         status_label = "운영 검토 필요"
         result_summary = (
