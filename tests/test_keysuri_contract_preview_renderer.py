@@ -5,6 +5,7 @@ Implementation-dependent tests skip with:
   keysuri_contract_preview_renderer not implemented yet
 
 Reference:
+- docs/REVIEW_OPERATION_BOX_POLICY.md
 - docs/keysuri/KEYSURI_CONTRACT_PREVIEW_RENDERER_DESIGN.md
 - docs/keysuri/KEYSURI_TITLE_AND_BODY_SECTION_CONTRACT.md
 - keysuri_html_preview_validation.py
@@ -42,6 +43,37 @@ _FORBIDDEN_BLEED_MARKERS = (
     "scheduler_ready: true",
     "email_ready: true",
     "static/email/",
+)
+
+_WARM_CLOSE_WEEKDAY = "오늘도 수고하셨습니다. 내일 다시 뵙겠습니다."
+_WARM_CLOSE_FRIDAY = (
+    "이번 주도 수고하셨습니다. 주말 잘 보내시고 월요일에 다시 뵙겠습니다."
+)
+
+_FORBIDDEN_ADMIN_CONTROLS_IN_REVIEW_CONFIRMATION = (
+    "재발행",
+    "다시 생성",
+    "수정요청",
+    "보류",
+    "scheduler",
+    "preview_path",
+    "manifest_path",
+    "validation_status",
+)
+
+_FORBIDDEN_INTERNAL_METADATA_IN_REVIEW_CONFIRMATION = (
+    "program_id",
+    "mode",
+    "slot",
+    "preview_path",
+    "manifest_path",
+    "scheduler",
+    "debug",
+)
+
+_REVIEW_CONFIRMATION_BLOCK_RE = re.compile(
+    r'<section[^>]*\bid=["\']review-confirmation-box["\'][^>]*>.*?</section>',
+    re.IGNORECASE | re.DOTALL,
 )
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -235,6 +267,24 @@ def _anchor_pos(html: str, *needles: str) -> list[int]:
     return positions
 
 
+def _extract_review_confirmation_block(html: str) -> str:
+    match = _REVIEW_CONFIRMATION_BLOCK_RE.search(html)
+    if not match:
+        raise AssertionError('Missing <section id="review-confirmation-box"> block')
+    return match.group(0)
+
+
+def _extract_block_by_id(html: str, element_id: str) -> str:
+    pattern = re.compile(
+        rf'<(?:section|div)[^>]*\bid=["\']{re.escape(element_id)}["\'][^>]*>.*?</(?:section|div)>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(html)
+    if not match:
+        raise AssertionError(f'Missing block with id="{element_id}"')
+    return match.group(0)
+
+
 class KeysuriContractPreviewFixtureTests(unittest.TestCase):
     """Fixture builders — run before renderer exists."""
 
@@ -321,6 +371,147 @@ class KeysuriContractPreviewReviewConfirmationTests(unittest.TestCase):
                 self.assertNotIn(_REVIEW_CONFIRMATION_TEXT["sent_archived"], html)
             if state == "review_passed":
                 self.assertNotIn("발송되었습니다", html.replace(expected_text, ""))
+
+
+class KeysuriContractPreviewReviewBoxSeparationTests(unittest.TestCase):
+    """Review/operation box separation — locks shared policy on html_test surface."""
+
+    @_require_contract_renderer
+    def test_review_confirmation_box_dom_hooks(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        html = _render_contract_html(mod, build_korea_contract_fixture())
+        self.assertIn('id="review-confirmation-box"', html)
+        self.assertRegex(html, r'data-review-state=["\']preview_pending["\']')
+
+    @_require_contract_renderer
+    def test_review_confirmation_exact_korean_copy_per_state(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        for state, expected_text in _REVIEW_CONFIRMATION_TEXT.items():
+            with self.subTest(state=state):
+                html = _render_contract_html(
+                    mod, build_korea_contract_fixture(review_state=state)
+                )
+                block = _extract_review_confirmation_block(html)
+                self.assertIn(expected_text, block)
+                self.assertRegex(
+                    html,
+                    rf'data-review-state=["\']{re.escape(state)}["\']',
+                )
+
+    @_require_contract_renderer
+    def test_review_confirmation_separate_from_validation_box(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        html = _render_contract_html(mod, build_korea_contract_fixture())
+        self.assertIn('id="review-confirmation-box"', html)
+        self.assertIn('id="validation-result-box"', html)
+
+        review_block = _extract_review_confirmation_block(html)
+        validation_block = _extract_block_by_id(html, "validation-result-box")
+        self.assertNotEqual(review_block.strip(), validation_block.strip())
+        self.assertNotIn("validation-result-box", review_block)
+        self.assertNotIn("review-confirmation-box", validation_block)
+
+        review_pos = html.find('id="review-confirmation-box"')
+        validation_pos = html.find('id="validation-result-box"')
+        self.assertGreater(validation_pos, review_pos)
+
+    @_require_contract_renderer
+    def test_review_confirmation_separate_from_operation_metadata(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        html = _render_contract_html(mod, build_korea_contract_fixture())
+        self.assertIn('id="review-confirmation-box"', html)
+        self.assertIn('id="operation-metadata"', html)
+
+        review_block = _extract_review_confirmation_block(html)
+        operation_block = _extract_block_by_id(html, "operation-metadata")
+        self.assertNotEqual(review_block.strip(), operation_block.strip())
+        self.assertNotIn("operation-metadata", review_block)
+        self.assertNotIn("review-confirmation-box", operation_block)
+
+        for term in _FORBIDDEN_INTERNAL_METADATA_IN_REVIEW_CONFIRMATION:
+            with self.subTest(term=term):
+                self.assertNotIn(term, review_block)
+
+    @_require_contract_renderer
+    def test_review_confirmation_customer_safe_no_admin_controls(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        for fixture in (
+            build_korea_contract_fixture(),
+            build_global_contract_fixture(),
+        ):
+            html = _render_contract_html(mod, fixture)
+            review_block = _extract_review_confirmation_block(html)
+            for term in _FORBIDDEN_ADMIN_CONTROLS_IN_REVIEW_CONFIRMATION:
+                with self.subTest(program=fixture["program_id"], term=term):
+                    self.assertNotIn(term, review_block)
+
+    @_require_contract_renderer
+    def test_korea_bottom_shot_review_confirmation_warm_close_order(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        html = _render_contract_html(mod, build_korea_contract_fixture())
+        positions = _anchor_pos(
+            html,
+            "bottom-shot-placeholder",
+            'id="review-confirmation-box"',
+            _WARM_CLOSE_WEEKDAY,
+        )
+        self.assertEqual(positions, sorted(positions))
+
+    @_require_contract_renderer
+    def test_korea_friday_warm_close_after_review_confirmation(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        fixture = build_korea_contract_fixture()
+        fixture["warm_close_text"] = _WARM_CLOSE_FRIDAY
+        html = _render_contract_html(mod, fixture)
+        positions = _anchor_pos(
+            html,
+            'id="review-confirmation-box"',
+            _WARM_CLOSE_FRIDAY,
+        )
+        self.assertEqual(positions, sorted(positions))
+
+    @_require_contract_renderer
+    def test_sent_archived_renderable_for_fixture_only_not_production_gate(self) -> None:
+        """sent_archived is renderable for explicit fixture/testing only.
+
+        Production paths must gate sent_archived on a real send/archive completion
+        record — see docs/REVIEW_OPERATION_BOX_POLICY.md §5.
+        """
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        html = _render_contract_html(
+            mod, build_korea_contract_fixture(review_state="sent_archived")
+        )
+        block = _extract_review_confirmation_block(html)
+        self.assertIn(_REVIEW_CONFIRMATION_TEXT["sent_archived"], block)
+        self.assertRegex(html, r'data-review-state=["\']sent_archived["\']')
+
+    @_require_contract_renderer
+    def test_default_review_state_preview_pending_when_omitted(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        fixture = build_korea_contract_fixture()
+        fixture.pop("review_state", None)
+        html = _render_contract_html(mod, fixture)
+        block = _extract_review_confirmation_block(html)
+        self.assertIn(_REVIEW_CONFIRMATION_TEXT["preview_pending"], block)
+        self.assertRegex(html, r'data-review-state=["\']preview_pending["\']')
+
+    @_require_contract_renderer
+    def test_english_review_confirmation_heading_allowed(self) -> None:
+        """Heading localization is optional — do not require Korean heading yet."""
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        html = _render_contract_html(mod, build_korea_contract_fixture())
+        block = _extract_review_confirmation_block(html)
+        self.assertIn("Review confirmation", block)
 
 
 class KeysuriContractPreviewRendererTests(unittest.TestCase):
