@@ -157,10 +157,11 @@ The image should feel like a **brief, private moment after work** — the reader
 
 ### Allowed
 
-- Elegant **off-duty office casual** — still premium, not streetwear
-- Full range of taste-cluster outfits (§9, §12)
-- Understated earrings / slim watch
-- Small handbag or thin notebook (not tablet-at-waist)
+- **Premium off-duty styling** — luxury private-secretary off-duty look; **not plain everyday office wear**
+- **Elevated casual luxury** — refined attractive after-work outfit; may be **more attractive, more luxurious, and slightly sexier** than briefing wardrobe while remaining tasteful and high-end
+- Full range of taste-cluster outfits (§9, §12) — silk knit, satin/silk-blend skirt, refined blouse with subtle sheen, premium mini handbag
+- Delicate earrings / slim watch / tasteful jewelry
+- Small premium handbag or thin notebook (not tablet-at-waist)
 - **Default setting:** chairman/CEO office entrance — dignified wood-paneled wall, large premium wooden office door, quiet executive-floor corridor or private office entrance (see §6)
 - Warm evening executive-floor light
 - Calm farewell pose — pausing before leaving, not rushing toward camera
@@ -181,6 +182,8 @@ The image should feel like a **brief, private moment after work** — the reader
 - Submissive fantasy framing — bowed head, imploring gaze, maid/hostess register
 - Color-only wardrobe variation without structure change (same as R5 lesson)
 - Readable text, logos, fake UI, watermark contamination
+- **Plain market clothes** — cheap mall fashion, basic office-worker casual, dull knit, generic beige skirt
+- **Outfit cheaper than business briefing wardrobe** — bottom shot must justify emotional lock-in with premium appeal
 
 ---
 
@@ -313,6 +316,23 @@ Because readers have **different tastes**, the R6B bottom-shot wardrobe must sup
 
 Bottom-shot wardrobe remains **premium, tasteful, and Kee-Suri-consistent** — broader does not mean cheaper, louder, or more revealing.
 
+### Wardrobe quality principle (operator correction — offduty_02B)
+
+R6B bottom-shot wardrobe must be **broader and more premium than ordinary casual office wear**. The goal is **not generic everyday clothes**.
+
+| Requirement | Direction |
+|-------------|-----------|
+| **Quality floor** | Outfit must feel **premium enough to justify bottom-shot placement** — not cheaper than briefing wardrobe |
+| **Appeal ceiling** | May be **more attractive, more luxurious, slightly sexier** than briefing — tasteful but **magnetic** |
+| **Register** | **Private, attractive, premium off-duty closing image** — luxury private-secretary off-duty look |
+| **Forbidden read** | Plain market clothes, cheap mall fashion, basic office-worker casual, low-quality everyday outfit |
+
+**Weak language to avoid in prompts:** “everyday clothing” alone, “modern fitted knit top” without luxury qualifiers, “slim beige skirt” without fabric elevation.
+
+**Preferred language:** premium off-duty styling, luxury fitted silk-knit top, satin or silk-blend skirt, elevated casual luxury, tasteful but magnetic private-secretary presence.
+
+**Operator lesson (offduty_02B):** Identity-first knee-up framing worked; plain knit/skirt read as **시장 옷 / 평상복** — charm dropped vs business briefing; bottom-shot meaning weakened. Next candidates must **upgrade wardrobe luxury** while keeping framing/gesture wins.
+
 ---
 
 ## 9. Taste Cluster Model
@@ -332,10 +352,10 @@ Eight taste clusters organize bottom-shot wardrobe rotation. Each profile in §1
 
 | Element | Direction |
 |---------|-----------|
-| Outfit | Refined knit top + slim skirt; low heels |
-| Prop | Thin notebook |
+| Outfit | **Luxury fitted silk-knit or refined blouse** + **satin/silk-blend or high-waisted structured skirt**; premium mini handbag; delicate jewelry |
+| Prop | Premium mini handbag; slim watch |
 | Expression | Calm farewell; **fresh composed smile** |
-| Read | Daily repeat-friendly; intelligent everyday elegance — **preferred cluster for offduty_02B knee-up retry** |
+| Read | Daily repeat-friendly — **must read elevated luxury**, not plain office casual; **preferred cluster for offduty_02C wardrobe upgrade** |
 
 ### C. Cool Executive Off-Duty
 
@@ -515,15 +535,33 @@ Initial profile IDs for R6B wardrobe rotation. Expand over time; each new profil
 |-------|-------|
 | **Taste cluster** | B — Elegant Office Casual |
 | **Season fit** | Spring / summer / all-season |
-| **Outfit** | Modern fitted knit top + slim skirt (partially visible at knee-up) |
+| **Outfit** | Modern fitted knit top + slim skirt (partially visible at knee-up) — **too plain in canary** |
 | **Prop** | Small elegant handbag |
-| **Gesture** | Small hand farewell — carry forward from offduty_02 PASS |
-| **Expression** | **Fresh composed smile / 싱그러운 미소** |
-| **Framing** | **3/4 body or knee-up** — face clearly visible; **not full-body** |
-| **Reference** | **Asset 01 primary** (identity); Asset 02 optional silhouette support only when explicitly approved |
+| **Gesture** | Small hand farewell — **PASS in QA** |
+| **Expression** | **Fresh composed smile / 싱그러운 미소** — direction PASS |
+| **Framing** | **3/4 body or knee-up** — **PASS**; face visibility improved |
+| **Reference** | **Asset 01 primary** (identity) |
 | **Emotional temperature** | medium |
 | **Drift risk** | low–medium |
-| **Risk notes** | **Next candidate** after offduty_02 identity/proportion failure; identity and expression stability first |
+| **Canary result** | **NOT_ACCEPTED** — `keysuri_global_canary_20260605_104257.jpg` |
+| **Risk notes** | Framing/gesture/background worked; **wardrobe quality failed** — do not retry plain knit/skirt; use **`offduty_02C_luxury_knit_silk_skirt_farewell`** |
+
+### offduty_02C_luxury_knit_silk_skirt_farewell
+
+| Field | Value |
+|-------|-------|
+| **Taste cluster** | B — Elegant Office Casual (luxury upgrade) |
+| **Season fit** | Spring / summer / all-season |
+| **Outfit** | Luxury fitted knit or **silk-knit top**; soft boat-neck / square-neck / elegant shallow V-neck; **satin or silk-blend high-waisted structured skirt** |
+| **Accessories** | Premium mini handbag; delicate earrings; slim watch |
+| **Prop** | Premium mini handbag |
+| **Gesture** | Small hand farewell — carry forward from offduty_02B PASS |
+| **Expression** | **Fresh composed smile / 싱그러운 미소** |
+| **Framing** | **3/4 body or knee-up** — face clearly visible; Asset 01 primary |
+| **Reference** | **Asset 01 primary** (identity); Asset 02 optional only |
+| **Emotional temperature** | medium |
+| **Drift risk** | medium |
+| **Risk notes** | **Next candidate** — more attractive and premium than offduty_02B; not plain office casual; not motherly; not cheap fantasy; not lounge/glamour |
 
 ### offduty_03_smoky_blue_blouse_ivory_cardigan
 
@@ -788,7 +826,47 @@ Second R6B bottom-shot live canary — **NOT_ACCEPTED**.
 | Full-body proportion as R6B priority | **Face identity + expression stability first**; gesture, outfit, background next |
 | Full-body required for bottom shot | **Not required** — full-body belongs to separate **R6 production asset track** |
 
-**Next candidate:** **`offduty_02B_elegant_knit_kneeup_farewell`** — same wardrobe/gesture direction as offduty_02, but **knee-up / 3/4 framing**, **Asset 01 identity priority**, no full-body requirement. Do not simply move to `offduty_03` full-body.
+**Next candidate (superseded by §16C):** offduty_02B — see §16C for wardrobe quality lesson.
+
+---
+
+## 16C. R6B offduty_02B Third Canary Failure Note
+
+Third R6B bottom-shot live canary — **NOT_ACCEPTED**.
+
+| Field | Value |
+|-------|-------|
+| **Profile** | `offduty_02B_elegant_knit_kneeup_farewell` |
+| **Output** | `output/keysuri_preview/image_canary/keysuri_global_canary_20260605_104257.jpg` |
+| **Reference used** | Asset 01 primary (identity) |
+| **Result** | **NOT_ACCEPTED** |
+
+| QA axis | Outcome |
+|---------|---------|
+| Knee-up / 3/4 framing | **PASS** |
+| Face visibility | **PASS** — improved vs offduty_02 |
+| Background lock (CEO wood-door) | **PASS** |
+| No tablet | **PASS** |
+| Small hand farewell gesture | **PASS** |
+| Fresh composed smile direction | **PASS** |
+| Off-duty bottom-shot concept | **PASS** |
+| Wardrobe quality / luxury appeal | **FAIL** — plain everyday office wear / market clothes |
+| Premium off-duty charm | **FAIL** — charm dropped vs business briefing wardrobe |
+| Emotional lock-in value | **FAIL** — bottom-shot meaning weakened |
+
+**Operator note:** “훨씬 나아지긴 했는데. 근무복보다 퀄리티가 정말 떨어지는 평상복이네? 옷장에 시장 옷밖에 없나? 정말 매력이 뚝 떨어지네. 이러면 바텀샷의 의미가 없어. 더 섹시해도 되고, 더 부티나도 돼.”
+
+**Root cause:** Identity-first framing strategy **validated**; **plain knit + generic skirt** insufficient for R6B emotional lock-in. Bottom-shot wardrobe must be **premium off-duty luxury** — broader, more attractive, and optionally slightly sexier than briefing — while staying tasteful.
+
+**Policy correction:**
+
+| Prior assumption | Updated policy |
+|------------------|----------------|
+| “Elegant office casual” = refined knit + slim skirt | **Luxury elevated off-duty** — silk knit, satin/silk-blend skirt, premium accessories |
+| Bottom shot = softer everyday clothes | Bottom shot = **private, attractive, premium closing image** — must justify placement vs briefing hero |
+| Avoid glamour = avoid plain | **Tasteful magnetism allowed** — more luxurious and slightly sexier OK; not lounge/cheap fantasy |
+
+**Next candidate:** **`offduty_02C_luxury_knit_silk_skirt_farewell`** — keep knee-up framing, Asset 01, gesture, background; **upgrade wardrobe luxury**.
 
 ---
 
@@ -830,10 +908,12 @@ Future bottom-shot prompts must be structured in this order:
 
 ### Wardrobe and body
 
-- Attractive but **tasteful everyday clothing** from profile catalog (§12)
-- Taste cluster named in prompt — structure variation, not color-only
+- **Premium off-duty styling** from profile catalog (§12) — luxury private-secretary off-duty look; **not plain everyday office wear**
+- **Elevated casual luxury** — may be more attractive, luxurious, and slightly sexier than briefing wardrobe; tasteful but magnetic
+- Taste cluster named in prompt — structure + fabric elevation, not color-only
 - Season-appropriate layers (§14)
 - No business v4 blazer structure; no briefing uniform repeat
+- Outfit must **not look cheaper than briefing wardrobe**
 
 ### Emotional register
 
@@ -860,6 +940,9 @@ Future bottom-shot prompts must be structured in this order:
 - No motherly, matronly, older guardian, conservative family-meeting mood
 - No hands-clasped conservative greeting pose
 - No readable text, logos, fake UI
+- No plain market clothes, cheap mall fashion, basic office-worker casual
+- No dull knit top, generic beige skirt, low-quality everyday outfit
+- No outfit that looks cheaper than business briefing wardrobe
 
 ### Reference attachment rule (R6B)
 
@@ -874,6 +957,8 @@ Future R6B bottom-shot prompts must include:
 
 > **3/4 body or knee-up composition, face clearly visible, Kee-Suri identity priority, fresh composed smile, small hand farewell, CEO wood-door background.**
 
+> **Luxury fitted silk-knit top, elevated off-duty styling, satin or silk-blend skirt, premium mini handbag, delicate jewelry, tasteful but magnetic private-secretary presence.**
+
 > Kee-Suri must remain a refined Korean woman in her **mid-to-late 30s** with a fresh, modern, attractive off-duty presence — same Kee-Suri face family as identity reference.
 
 > Prefer **fresh composed smile, refreshing off-duty expression, modern attractive presence** over **warm smile** alone.
@@ -881,6 +966,8 @@ Future R6B bottom-shot prompts must include:
 > Avoid motherly, matronly, older guardian, conservative family-meeting mood. Avoid hands-clasped conservative greeting pose.
 
 **Avoid** using **“full-body”** as default framing language for R6B bottom shot. Reserve full-body for separate R6 production asset track unless explicitly approved.
+
+**Avoid** using **“modern fitted knit top”** alone — insufficient for bottom-shot lock-in. Use luxury fabric and elevated styling language per §8 wardrobe quality principle.
 
 When Asset 02 is optionally attached:
 
@@ -920,11 +1007,20 @@ Operator must complete before any bottom-shot output is accepted as QA PASS or p
 - [ ] **Respectful register** — warm toward 대표님/reader, not flirtatious
 - [ ] **Emotional temperature controlled** — matches declared low / medium / warm; warm not overused
 
+### Wardrobe quality and emotional lock-in (mandatory)
+
+- [ ] **Outfit looks premium enough to justify bottom-shot placement** — not cheaper than briefing wardrobe
+- [ ] **Bottom shot feels more emotionally magnetic than a normal briefing image**
+- [ ] **Off-duty outfit clearly more attractive than plain office casual** — elevated luxury, not market clothes
+- [ ] **Avoids market-clothes / cheap-mall-fashion feel**
+- [ ] **Styling tasteful but sufficiently appealing** — magnetic without lounge/glamour/cheap fantasy
+- [ ] **Preserves Kee-Suri premium private-secretary status**
+
 ### Wardrobe and setting
 
-- [ ] **Tasteful off-duty clothing** — from profile catalog (§12), not v4 business uniform
+- [ ] **Premium off-duty styling** — from profile catalog (§12), not v4 business uniform; not plain everyday wear
 - [ ] **Seasonal appropriateness** — matches chosen spring/summer or fall/winter band
-- [ ] **Not too casual** — still premium Korean executive-adjacent everyday elegance
+- [ ] **Not too casual** — elevated casual luxury; not basic office-worker casual
 - [ ] **Outfit serves different reader taste** than previous accepted bottom shot — cluster rotation visible
 - [ ] **Outfit still premium and office-exit appropriate**
 - [ ] **Background remains CEO/chairman office wood-door entrance** — wood-paneled wall, premium wooden door visible
@@ -997,6 +1093,6 @@ R6B defines a **bottom-shot emotional lock-in slot** for Kee-Suri — off-duty, 
 - **Fixed background:** CEO/chairman office wood-door entrance — status and ritual
 - **Variable character:** outfit, expression, gesture, prop, season, emotional temperature
 
-**Schedule rule:** 12:30 = top shot only; 18:30 = top + bottom. **R6B default framing: 3/4 body or knee-up** — face identity and expression first; **Asset 01 primary** reference. Full-body belongs to separate R6 production track unless explicitly approved. Canaries `offduty_01` and `offduty_02` **NOT_ACCEPTED** — next candidate **`offduty_02B_elegant_knit_kneeup_farewell`**. **No generation until decision gate §19 passes.**
+**Schedule rule:** 12:30 = top shot only; 18:30 = top + bottom. **R6B default framing: 3/4 body or knee-up** — face identity first; **Asset 01 primary** reference. **Wardrobe: premium off-duty luxury** — not plain casual; may be more attractive/luxurious/slightly sexier than briefing while tasteful. Canaries `offduty_01`, `offduty_02`, `offduty_02B` **NOT_ACCEPTED** — next candidate **`offduty_02C_luxury_knit_silk_skirt_farewell`**. **No generation until decision gate §19 passes.**
 
-**Next action:** Commit when approved. **Do not generate** until slot time, taste cluster, profile id, season, emotional temperature, drift risk, framing (knee-up/3/4 default), background lock, Asset 01 reference strategy, and prompt package are operator-approved.
+**Next action:** Commit when approved. **Do not generate** until slot time, taste cluster, profile id, season, emotional temperature, drift risk, framing, **luxury wardrobe spec**, background lock, Asset 01 reference strategy, and prompt package are operator-approved.

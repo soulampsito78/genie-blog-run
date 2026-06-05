@@ -1,7 +1,7 @@
 # KEYSURI R6B — offduty_02B Knee-Up Bottom-Shot Candidate Design Package
 
 Status:
-Design package only / **not approved for generation** / no image API in this document
+**Canary executed — NOT_ACCEPTED** / documentation only / no further image API in this document
 
 Candidate:
 `offduty_02B_elegant_knit_kneeup_farewell`
@@ -42,9 +42,40 @@ Non-scope:
 | **drift risk** | **low–medium** |
 | **background** | Fixed CEO/chairman office wood-door entrance |
 | **reference** | **Asset 01 primary** (identity); Asset 02 optional silhouette support only |
-| **status** | **Design package only — not approved for generation yet** |
+| **status** | **NOT_ACCEPTED** — `keysuri_global_canary_20260605_104257.jpg` |
+| **next candidate** | `offduty_02C_luxury_knit_silk_skirt_farewell` — luxury wardrobe upgrade |
 
 **Validation goal:** Retain what worked from `offduty_02` (CEO wood-door background, knit + slim skirt direction, small hand farewell gesture, no tablet, fresh composed smile) while correcting identity failure by using **identity-first knee-up / 3/4 framing** with **Asset 01 attached**.
+
+**Canary outcome:** Framing, face visibility, gesture, and background **validated**; **wardrobe quality failed**. Strategy updated — see §1A and §11 Next Candidate.
+
+---
+
+## 1A. Visual QA Result (operator)
+
+| Field | Value |
+|-------|-------|
+| **profile_id** | `offduty_02B_elegant_knit_kneeup_farewell` |
+| **result** | **NOT_ACCEPTED** |
+| **output** | `output/keysuri_preview/image_canary/keysuri_global_canary_20260605_104257.jpg` |
+| **reference used** | Asset 01 primary |
+
+| QA axis | Outcome |
+|---------|---------|
+| Knee-up / 3/4 framing | **PASS** |
+| Face visibility | **PASS** |
+| CEO/chairman wood-door background | **PASS** |
+| No tablet | **PASS** |
+| Small hand farewell gesture | **PASS** |
+| Fresh composed smile direction | **PASS** |
+| Off-duty bottom-shot concept | **PASS** |
+| Wardrobe quality / luxury appeal | **FAIL** — plain everyday office wear / market clothes |
+| Premium off-duty charm | **FAIL** — charm dropped vs briefing wardrobe |
+| Emotional lock-in value | **FAIL** — bottom-shot meaning weakened |
+
+**Operator note:** “훨씬 나아지긴 했는데. 근무복보다 퀄리티가 정말 떨어지는 평상복이네? 옷장에 시장 옷밖에 없나? 정말 매력이 뚝 떨어지네. 이러면 바텀샷의 의미가 없어. 더 섹시해도 되고, 더 부티나도 돼.”
+
+**Lesson:** Identity-first framing works better; **plain knit/skirt too weak** for bottom-shot lock-in. Next: **luxury wardrobe upgrade** (`offduty_02C`).
 
 ---
 
@@ -383,7 +414,7 @@ identity drift, different person face, face too small to recognize
 | **output_path_policy** | `output/keysuri_preview/image_canary/` — QA reference only; **never commit** |
 | **operator_ref** | ___________ |
 | **approval_date** | ___________ |
-| **one_live_call_approval** | `PENDING` / `APPROVED` |
+| **one_live_call_approval** | `APPROVED` (executed) → result **NOT_ACCEPTED** |
 
 **Generation gate:** R6B plan §19 decision gate + this package §6 + preflight PASS + dry-run `request_count=0`, `called_image_api=false`.
 
@@ -415,11 +446,21 @@ Complete after one-live-call output. **Face identity gate first** — all items 
 - [ ] **Face occupies meaningful visible area** — identity-readable at email/blog bottom width
 - [ ] **Full-body is not required** — knee-up/3/4 is valid R6B bottom-shot
 
+### Wardrobe quality and emotional lock-in
+
+- [ ] **Outfit looks premium enough to justify bottom-shot placement**
+- [ ] **Bottom shot feels more emotionally magnetic than briefing image**
+- [ ] **Off-duty outfit more attractive than plain office casual**
+- [ ] **Avoids market-clothes / cheap-mall-fashion feel**
+- [ ] **Styling tasteful but sufficiently appealing**
+- [ ] **Preserves premium private-secretary status**
+- [x] **offduty_02B result:** wardrobe quality **FAIL** — plain market-clothes read
+
 ### Background and wardrobe
 
 - [ ] **CEO/chairman wood-door background visible** — wood-paneled wall, premium wooden door
-- [ ] **Outfit reads modern/elegant off-duty** — knit + slim skirt; **not** Wardrobe v4 briefing uniform
-- [ ] **Not too casual** — still premium executive-adjacent elegance
+- [ ] **Outfit reads premium off-duty luxury** — not plain knit/skirt; **not** Wardrobe v4 briefing uniform
+- [ ] **Not too casual** — elevated casual luxury; not basic office-worker casual
 - [ ] **Not too glamour / editorial / lounge**
 
 ### Gesture and utility
@@ -447,7 +488,7 @@ Complete after one-live-call output. **Face identity gate first** — all items 
 | **Too casual** | Low–Medium | Fitted knit + slim skirt; reject streetwear/sneakers/hoodie |
 | **Too glamour** | Medium | No editorial posing; knee-up at CEO door, not runway |
 | **Background not door-like enough** | Medium | Background lock block; QA fails if wooden executive door absent |
-| **Outfit too plain** | Medium | Modern attractive knit silhouette; fresh expression; handbag/notebook prop |
+| **Outfit too plain** | **High** — **confirmed in offduty_02B QA** | Luxury silk-knit, satin skirt, premium accessories in offduty_02C; reject plain market clothes |
 | **Prop morphs into tablet** | Medium | Hard negatives; QA rejects tablet shapes |
 | **Framing becomes full-body again** | Medium–High | Framing lock block; QA fails full-body head-to-toe; operator confirms knee-up/3/4 at approval |
 
@@ -481,13 +522,37 @@ Complete after one-live-call output. **Face identity gate first** — all items 
 
 - **Do not retry automatically** under same approval
 - Document failure mode against §9 risks
-- If gesture passes but face fails again: tighten knee-up framing or reduce expression intensity
+- If gesture passes but wardrobe fails: upgrade to **offduty_02C** luxury spec — do not retry plain knit/skirt
 - **New approval required** before any subsequent live call
+
+**offduty_02B executed:** NOT_ACCEPTED — framing/gesture PASS; wardrobe quality FAIL.
+
+---
+
+## 11. Next Candidate Direction — offduty_02C
+
+| Field | Value |
+|-------|-------|
+| **profile_id** | `offduty_02C_luxury_knit_silk_skirt_farewell` |
+| **framing** | Knee-up / 3/4 body — carry forward from offduty_02B PASS |
+| **reference** | Asset 01 identity priority |
+| **background** | Fixed CEO wood-door entrance |
+| **wardrobe** | Luxury fitted knit or **silk-knit top**; soft boat-neck / square-neck / elegant shallow V-neck; **satin or silk-blend high-waisted structured skirt** |
+| **accessories** | Premium mini handbag; delicate earrings; slim watch |
+| **gesture** | Small hand farewell — carry forward PASS |
+| **expression** | Fresh composed smile / 싱그러운 미소 |
+| **appeal** | More attractive and premium than offduty_02B; tasteful but magnetic |
+
+**Prompt implication for offduty_02C:**
+
+> Luxury fitted silk-knit top, elevated off-duty styling, satin or silk-blend skirt, premium mini handbag, delicate jewelry, tasteful but magnetic private-secretary presence.
+
+Avoid **“modern fitted knit top”** alone. Not plain office casual. Not motherly. Not cheap girlfriend fantasy. Not lounge/glamour.
 
 ---
 
 ## Summary
 
-**offduty_02B_elegant_knit_kneeup_farewell** is the third R6B bottom-shot candidate — **Elegant Office Casual** with **knee-up or 3/4 body framing**, **Asset 01 identity priority**, **modern fitted knit + slim skirt**, **small hand farewell** (carried from offduty_02 PASS), **fresh composed smile / 싱그러운 미소**, and **fixed CEO wood-door background**. Designed to correct offduty_02 identity/proportion failure while preserving validated gesture and scene direction. **Status: not approved for generation.**
+**offduty_02B_elegant_knit_kneeup_farewell** canary **NOT_ACCEPTED** (`keysuri_global_canary_20260605_104257.jpg`). Knee-up framing, face visibility, gesture, and background **validated**; **plain knit/skirt wardrobe failed** — charm dropped vs briefing; bottom-shot lock-in value weak.
 
-**Next action:** Operator review → complete §7 approval → one-live-call (only if approved).
+**Next action:** Design and approve **`offduty_02C_luxury_knit_silk_skirt_farewell`** — luxury wardrobe upgrade on proven framing/gesture base.
