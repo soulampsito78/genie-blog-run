@@ -2,6 +2,7 @@
 
 Status:
 Planning only / no production wiring / no image API in this document
+Asset 02 classification: **complete** — `KEEP_AS_SILHOUETTE_REFERENCE`
 
 Scope:
 Define how Kee-Suri **full-body reference assets** should be classified, evaluated, and used in a future R6 track—without repeating R5 blind canary experimentation.
@@ -71,7 +72,7 @@ Full-body asset strategy requires a **separate planning and classification pass*
 | Type | Definition | Primary asset | R5 status | R6 role |
 |------|------------|---------------|-----------|---------|
 | **Identity reference** | Face, bob, glasses, Korean private AI tech secretary impression — **not** outfit, pose, or composition copy | Asset 01 | Used in R5 canaries (identity-only policy) | Continues for upper-body and may supplement full-body identity anchoring |
-| **Silhouette reference** | Standing proportions, body line, full-frame stance, editorial height balance | Asset 02 | Defined in asset guide; **not production-tested in R5** | Classify Asset 02; use for proportion/pose anchoring only if approved |
+| **Silhouette reference** | Standing proportions, body line, full-frame stance, editorial height balance | Asset 02 | Defined in asset guide; **not production-tested in R5** | **Classified:** `KEEP_AS_SILHOUETTE_REFERENCE` — proportion/framing only |
 | **Wardrobe canary** | Guarded one-live-call experiment to test a wardrobe profile; output is QA reference only | Asset 01 (+ v4 prompt override) | R5 complete (`82a0d97`, `fa6f592`) | **Not** the R6 default workflow—no blind retries |
 | **Production asset** | Operator-approved image suitable for landing, thumbnail, intro, or committed static/email use after QA | TBD from R6 workflow | **Does not exist yet** for full-body | R6 target **only after** checklist and decision gate |
 
@@ -109,18 +110,120 @@ An asset may be **reference only**, **production candidate**, or **both sequenti
 
 ---
 
+## Asset 02 Inspection and Classification (Completed)
+
+Operator inspection of the tracked full-body reference asset is **complete**. This section records the binding R6 classification. Do not treat Asset 02 as a production asset or wardrobe source of truth.
+
+### 1. Classification result
+
+| Field | Value |
+|-------|-------|
+| **Path** | `assets/keysuri/reference/image_keysuri_asset_02_full_body.png` |
+| **Classification** | **`KEEP_AS_SILHOUETTE_REFERENCE`** |
+| **Tracked** | Yes (commit `672d5a1`) |
+| **Gitignored** | No |
+| **Type / dimensions** | PNG RGB, 1023 × 1537, ~1.9 MB |
+| **Code constant** | `REFERENCE_ASSET_FULL_BODY` in `keysuri_image_provider_contract.py` |
+| **Role** | Silhouette / body proportion / full-length framing reference **only** |
+
+**Not classified as:** production asset candidate, wardrobe-fit reference, or primary identity anchor.
+
+### 2. Asset role split
+
+| Asset / source | R6 role |
+|----------------|---------|
+| **Asset 01** (`image_keysuri_asset_01_main_briefing.png`) | **Primary** identity / face / upper-body briefing reference |
+| **Asset 02** (`image_keysuri_asset_02_full_body.png`) | **Secondary** silhouette / proportion / full-length framing reference |
+| **Wardrobe v4 profiles** (v4_01, v4_02, v4_03) | **Outfit structure source of truth** — wardrobe clause + R5F structure blocks |
+| **New generated QA JPGs** (under `output/`) | **Candidate production assets only after operator QA PASS** — never by default |
+
+One reference asset per generation call (per visual asset guide). When Asset 02 is attached, identity continuity is enforced through **prompt policy aligned with Asset 01**, not by attaching both files in one call.
+
+### 3. Strengths of Asset 02
+
+- **Full head-to-toe view** — only tracked Kee-Suri asset showing complete standing frame
+- **Skirt hem, shoes, leg line, and standing proportion** clearly visible (Asset 01 cuts at mid-thigh)
+- **Identity-consistent** with Asset 01 — same face, bob, thin glasses, executive secretary persona
+- **Already wired** as `REFERENCE_ASSET_FULL_BODY` — resolver accepts `02` / `full_body` selector
+- Useful for **full-body framing and proportion anchoring** when strict no-outfit-copy blocks are applied
+
+### 4. Weaknesses / anti-patterns (embedded in Asset 02)
+
+| Anti-pattern | Risk |
+|--------------|------|
+| Charcoal suit + champagne high-neck blouse | **R5-failed baseline** — same uniform R5 rejected |
+| Tablet held at waist with both hands | **R5 anti-pattern** — must not become default prop pose |
+| Command-center / data-wall background | Not preferred production setting — private briefing preferred |
+| Catalog-stiff full-body standing pose | Limited natural variation |
+| Same outfit as Asset 01 | **Freezes wardrobe variation** if outfit/prop/background are copied |
+| Low-angle hero framing | May over-elongate legs if copied literally |
+
+Asset 02 is a useful **proportion reference** and a useful **negative example** of what production full-body outputs must not replicate.
+
+### 5. Allowed usage
+
+- **Silhouette reference** — body line, standing stance, full-length framing
+- **Proportion anchor** — head-to-body ratio, leg line, shoe/skirt hem placement
+- **Full-body framing reference** — how Kee-Suri occupies a vertical hero frame
+- **Secondary reference only**, always with strict **no-outfit-copy** prompt block:
+  - Do not copy reference outfit, pose, composition, or background
+  - Wardrobe v4 clause defines garments; Asset 02 does not
+
+### 6. Forbidden usage
+
+- **Production asset as-is** — not for landing, thumbnail, intro, or static/email publication
+- **Outfit reference** — do not use embedded charcoal/champagne suit as wardrobe template
+- **Tablet pose reference** — do not replicate tablet-at-waist grip
+- **Command-center background reference** — do not replicate data-wall / war-room staging
+- **Default identity anchor** — Asset 01 remains primary for face/upper-body identity
+- **Wardrobe v4 replacement** — v4 profiles remain outfit source of truth; Asset 02 does not override them
+
+### 7. R6 next decision
+
+| Question | Decision |
+|----------|----------|
+| Replace Asset 02 in repo? | **No** — keep tracked file as silhouette reference |
+| Generate new images now? | **No** — not without explicit one-call approval after decision gate |
+| What generation is for? | **New production full-body QA JPGs only** — v4-profile outputs under `output/`, not Asset 02 replacement |
+| When to generate? | Only after production prompt package + operator sign-off + preflight + dry-run |
+
+### 8. R6 production prompt implication
+
+Future full-body production prompts must **combine roles in prompt text**, even when only one reference image is attached per call:
+
+| Source | Contributes |
+|--------|-------------|
+| **Asset 01 policy** | Identity — face, short bob, thin glasses, Korean private AI tech secretary impression (via prompt language; attach 01 if call is upper-body or identity-critical) |
+| **Asset 02 (when attached)** | Silhouette / proportion / full-length framing **only** |
+| **Wardrobe v4 profile** | Outfit structure — garment clauses, seasonal band, prop rules |
+| **Explicit anti-copy block** | Forbid copying Asset 02 outfit, tablet pose, command-center background, and composition |
+
+Example anti-copy language (required when Asset 02 is attached):
+
+> Use reference image for body proportion and full-length framing only. Do not copy the reference outfit, tablet, pose, command-center background, or composition. Apply Wardrobe v4 profile wardrobe clause for all garments and props.
+
+Operator QA must cross-check **identity against Asset 01** and **outfit against Wardrobe v4** even when Asset 02 was the attached reference.
+
+---
+
 ## 4. What the Full-Body Asset Is Good For
 
-Asset 02 and future full-body **production** outputs are appropriate for:
+Asset 02 (**classified `KEEP_AS_SILHOUETTE_REFERENCE`**) is appropriate for:
 
 | Use case | Notes |
 |----------|-------|
-| **Silhouette and proportion anchoring** | 8.5–9 head-tall editorial proportion; slim professional line; natural standing stance |
-| **Full-body outfit fit validation** | Verify v4 garment structures (jacket length, skirt line, folder prop at side) read correctly at full length |
-| **Landing / hero / intro visuals** | Premium Korean executive secretary presence; private AI tech briefing mood at wider framing |
-| **Thumbnail candidates** | When composition retains identity clarity at smaller sizes |
-| **Seasonal wardrobe presentation** | v4_03 summer lightweight vs v4_02 fall/winter suit—full-body makes seasonal read visible |
-| **Rotation proof at full length** | Demonstrate same Kee-Suri identity across v4 profiles without cloning one hero frame |
+| **Silhouette and proportion anchoring** | Standing height, leg line, shoe/skirt hem — with no-outfit-copy blocks |
+| **Full-length framing reference** | How Kee-Suri occupies a vertical portrait frame |
+
+Future full-body **production** outputs (new QA JPGs, not Asset 02 itself) may additionally target:
+
+| Use case | Notes |
+|----------|-------|
+| **Full-body outfit fit validation** | Verify v4 garment structures (jacket length, skirt line, folder prop at side) at full length |
+| **Landing / hero / intro visuals** | Premium Korean executive secretary; private AI tech briefing mood — **only after QA PASS on new generation** |
+| **Thumbnail candidates** | Identity and outfit readable at reduced size |
+| **Seasonal wardrobe presentation** | v4_03 summer vs v4_02 fall/winter at full length |
+| **Rotation proof at full length** | Same identity across v4 profiles without cloning one hero frame |
 
 Full-body generation should **extend** Wardrobe v4 PASS_DIRECTION profiles, not invent a parallel wardrobe track.
 
@@ -131,7 +234,7 @@ Full-body generation should **extend** Wardrobe v4 PASS_DIRECTION profiles, not 
 | Prohibited use | Reason |
 |----------------|--------|
 | **Random canary input** | R5 proved structure variation requires planned profiles—not ad hoc full-body retries |
-| **Outfit cloning source** | Reproduces failed R5 baseline uniform (dark blazer + pale blouse + tablet) |
+| **Outfit cloning source** | Reproduces failed R5 baseline uniform (Asset 02: charcoal suit + champagne blouse + tablet) |
 | **Identity + outfit lock combined** | Over-locks both face and clothes; blocks v4 rotation |
 | **Collage / split-screen / multi-subject** | Violates generation rules in asset guide |
 | **News anchor / CEO / weathercaster framing** | Wrong persona read for Kee-Suri |
@@ -149,7 +252,7 @@ Full-body generation should **extend** Wardrobe v4 PASS_DIRECTION profiles, not 
 
 | v4 profile | Full-body intent | Reference strategy |
 |------------|------------------|-------------------|
-| **v4_01** cream jacket + black inner | All-season structure-break hero | Asset 02 for proportion; v4_01 wardrobe clause for garments; Asset 01 optional for face cross-check |
+| **v4_01** cream jacket + black inner | All-season structure-break hero | Asset 02 for proportion only; v4_01 wardrobe clause for garments; Asset 01 for identity QA cross-check |
 | **v4_02** black suit + bow blouse + clutch | Fall/winter full-length executive read | Strong bow blouse visibility at full length; clutch at side—not waist tablet |
 | **v4_03** summer ivory jacket + cool beige inner | Spring/summer lightweight full-body | Brighter daylight; short/3-4 sleeve visible; thin light folder |
 
@@ -180,7 +283,7 @@ Operator must complete this checklist before any full-body output is promoted fr
 
 ### Reference and prompt
 
-- [ ] Asset 02 (or successor) inspected and classified (silhouette / proportion / fit reference roles declared)
+- [ ] Asset 02 classified **`KEEP_AS_SILHOUETTE_REFERENCE`** — silhouette/proportion only; not outfit reference
 - [ ] Wardrobe v4 profile selected (v4_01, v4_02, or v4_03)
 - [ ] Production prompt package written and reviewed—not improvised at call time
 - [ ] Decision gate approved (§ below)
@@ -230,21 +333,21 @@ R6 is **plan → classify → package → approve → generate (if approved) →
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ 1. Inspect existing full-body asset (Asset 02)                 │
+│ 1. Inspect existing full-body asset (Asset 02)          [DONE] │
 │    - File: image_keysuri_asset_02_full_body.png               │
-│    - Note embedded outfit, pose, proportion, lighting         │
+│    - Embedded outfit/pose/background documented               │
 └────────────────────────────┬────────────────────────────────────┘
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ 2. Classify asset roles                                         │
-│    - Silhouette / proportion / fit reference                    │
-│    - NOT production asset until separate output passes QA       │
+│ 2. Classify asset roles                                   [DONE] │
+│    - KEEP_AS_SILHOUETTE_REFERENCE                             │
+│    - NOT production asset; NOT wardrobe-fit reference         │
 └────────────────────────────┬────────────────────────────────────┘
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ 3. Decide: reference only vs regenerate production asset        │
-│    - If Asset 02 outfit conflicts with v4 → reference only    │
-│    - If regeneration needed → select v4 profile + use case      │
+│ 3. Decide: reference only vs regenerate production asset [DONE] │
+│    - Asset 02 stays in repo as silhouette reference only       │
+│    - New v4 full-body QA JPGs require separate generation       │
 └────────────────────────────┬────────────────────────────────────┘
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -311,7 +414,7 @@ No full-body image API call may proceed unless **all** gate conditions are satis
 
 | # | Condition |
 |---|-----------|
-| 1 | R6 plan reviewed; Asset 02 classified with declared reference roles |
+| 1 | R6 plan reviewed; Asset 02 classified **`KEEP_AS_SILHOUETTE_REFERENCE`** with declared reference roles |
 | 2 | Target v4 profile and use case documented (landing / thumbnail / intro / fit validation) |
 | 3 | Production prompt package written—not ad hoc |
 | 4 | Operator approval record: date, profile id, reference asset role, operator ref |
@@ -326,6 +429,6 @@ If any condition fails: **stop**. Do not call image API. Do not retry without up
 
 ## Summary
 
-R5 validated Wardrobe v4 **upper-body** structure variation using Asset 01 for identity only. **Asset 02 full-body reference was intentionally not production-tested in R5.** R6 defines safe classification and workflow: silhouette and proportion reference—not outfit roulette; v4 profiles supply garment structure; production assets require prompt packages, decision gate, one guarded call, and full-body QA before any promotion.
+R5 validated Wardrobe v4 **upper-body** structure variation using Asset 01 for identity only. **Asset 02** has been inspected and classified **`KEEP_AS_SILHOUETTE_REFERENCE`** — silhouette and proportion only; not production, not wardrobe-fit, not primary identity anchor. v4 profiles supply outfit structure; new QA JPGs under `output/` are candidate production assets only after operator QA. Production assets require prompt packages, decision gate, one guarded call, and full-body QA before any promotion.
 
-**Next action:** Commit this plan when approved. **Do not generate** until Asset 02 is inspected, classified, and a production prompt package passes the decision gate.
+**Next action:** Commit this classification update when approved. **Do not generate** until a production prompt package passes the decision gate (workflow steps 4–5 onward).
