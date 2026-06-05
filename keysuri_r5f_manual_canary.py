@@ -15,6 +15,8 @@ R5F_APPROVED_STRUCTURE_VARIATION_PASS = "R5F_APPROVED_STRUCTURE_VARIATION_PASS"
 ENV_R5F_STRUCTURE_VARIATION = "GENIE_KEYSURI_R5F_STRUCTURE_VARIATION"
 R5F_PALETTE_VERSION = "v4"
 R5F_PROFILE_V4_01 = "profile_v4_01_cream_short_jacket_black_silk_inner"
+R5F_PROFILE_V4_02 = "profile_v4_02_black_suit_silk_bow_blouse_clutch_folder"
+R5F_PROFILE_V4_03 = "profile_v4_03_summer_ivory_jacket_cool_beige_inner_thin_folder"
 
 R5F_WARDROBE_CLAUSE_V4_01 = (
     "Cream structured short jacket as the dominant upper garment, black silk inner blouse, "
@@ -22,18 +24,99 @@ R5F_WARDROBE_CLAUSE_V4_01 = (
     "low at her side, premium Korean executive secretary private AI tech briefing look."
 )
 
-R5F_CANARY_PROFILES: Dict[str, dict] = {
-    R5F_PROFILE_V4_01: {
-        "wardrobe_profile_id": R5F_PROFILE_V4_01,
-        "wardrobe_clause": R5F_WARDROBE_CLAUSE_V4_01,
-        "wardrobe_palette_version": R5F_PALETTE_VERSION,
-        "visual_qa_status": "PASS_DIRECTION",
-        "visual_qa_reason": (
-            "Cream structured jacket + black inner + no tablet-in-hand broke repeated dark "
-            "blazer / pale blouse / tablet structure."
-        ),
-    },
-}
+R5F_WARDROBE_CLAUSE_V4_02 = (
+    "Elegant black tailored suit with a visible ivory silk bow blouse or tie-neck blouse, "
+    "slim black pencil skirt, small silver earrings and slim watch, holding a clutch-style "
+    "black leather document folder low at her side, premium Korean executive secretary "
+    "private AI tech briefing look."
+)
+
+R5F_WARDROBE_CLAUSE_V4_03 = (
+    "Summer-appropriate ivory lightweight structured short-sleeve or three-quarter sleeve jacket, "
+    "cool beige or pale champagne silk blouse, charcoal or muted taupe pencil skirt, slim silver "
+    "watch, small earrings, holding a thin light beige executive document folder or notebook low "
+    "at her side, premium Korean executive secretary private AI tech briefing look."
+)
+
+R5F_V4_02_STRUCTURE_BLOCKS = (
+    "Do not copy the reference outfit, pose, or composition.",
+    "The black tailored suit must read as an elegant executive suit — not a generic dark "
+    "blazer plus plain pale blouse template.",
+    "The ivory silk bow blouse or tie-neck blouse detail must be clearly visible at neck "
+    "and chest. Do not use a plain pale blouse without visible bow or tie-neck detail.",
+    "Do not repeat the previous dark blazer plus plain pale blouse plus tablet-at-waist "
+    "structure.",
+    "Do not place a tablet in her hands. Do not use tablet-at-waist pose.",
+    "Hold a clutch-style black leather document folder low at her side as the primary hand "
+    "prop. Natural variation in pose and camera angle is allowed within a premium private "
+    "briefing. Hands must remain natural, simple, and clean.",
+)
+
+R5F_V4_03_STRUCTURE_BLOCKS = (
+    "Do not copy the reference outfit, pose, or composition.",
+    "Summer-appropriate outfit: the ivory lightweight structured jacket must look clearly "
+    "lighter and more seasonal than a heavy black suit or winter-heavy dark blazer.",
+    "The jacket sleeve length may be short sleeve or three-quarter sleeve and must read as "
+    "summer office-appropriate.",
+    "The cool beige or pale champagne silk blouse must be elegant and office-appropriate, "
+    "not revealing.",
+    "Do not use a heavy black suit. Do not use a winter-heavy dark blazer as the dominant "
+    "upper garment.",
+    "Do not repeat the previous dark blazer plus plain pale blouse plus tablet-at-waist "
+    "structure.",
+    "Do not place a tablet in her hands. Do not use tablet-at-waist pose.",
+    "Hold a thin light beige executive document folder or notebook low at her side as the "
+    "primary hand prop. Natural variation in pose and camera angle is allowed within a premium "
+    "private briefing with brighter summer daylight. Hands must remain natural, simple, and clean.",
+)
+
+R5F_V4_01_VALIDATION_REQUIRED = (
+    "same kee-suri identity, not same image",
+    "do not repeat the previous dark blazer and pale blouse outfit structure",
+    "do not use a dark blazer as the dominant upper garment",
+    "cream structured short jacket",
+    "dominant upper garment",
+    "black silk inner blouse",
+    "charcoal pencil skirt",
+    "slim black leather document folder",
+    "instead of a tablet",
+    "calm intelligent expression with subtle life",
+    "private ai tech secretary",
+    "premium private office briefing",
+)
+
+R5F_V4_02_VALIDATION_REQUIRED = (
+    "same kee-suri identity, not same image",
+    "black tailored suit",
+    "ivory silk bow blouse",
+    "tie-neck blouse",
+    "clutch-style black leather document folder",
+    "do not place a tablet in her hands",
+    "do not use tablet-at-waist pose",
+    "plain pale blouse",
+    "calm intelligent expression with subtle life",
+    "private ai tech secretary",
+    "premium private office briefing",
+)
+
+R5F_V4_03_VALIDATION_REQUIRED = (
+    "same kee-suri identity, not same image",
+    "ivory lightweight",
+    "short-sleeve or three-quarter sleeve",
+    "cool beige or pale champagne",
+    "charcoal or muted taupe pencil skirt",
+    "thin light beige",
+    "document folder or notebook",
+    "do not place a tablet in her hands",
+    "do not use tablet-at-waist pose",
+    "heavy black suit",
+    "winter-heavy dark blazer",
+    "summer-appropriate",
+    "brighter summer daylight",
+    "calm intelligent expression with subtle life",
+    "private ai tech secretary",
+    "premium private office briefing",
+)
 
 R5F_REFERENCE_IDENTITY_ONLY = (
     "Use reference image for face, short bob, thin glasses, and refined Korean private AI "
@@ -62,6 +145,49 @@ R5F_MOOD_BLOCK = (
     "not fashion editorial. Private AI tech secretary — not public news anchor, not CEO portrait, "
     "not weathercaster, not lounge or glamour shoot."
 )
+
+R5F_CANARY_PROFILES: Dict[str, dict] = {
+    R5F_PROFILE_V4_01: {
+        "wardrobe_profile_id": R5F_PROFILE_V4_01,
+        "wardrobe_clause": R5F_WARDROBE_CLAUSE_V4_01,
+        "wardrobe_palette_version": R5F_PALETTE_VERSION,
+        "visual_qa_status": "PASS_DIRECTION",
+        "visual_qa_reason": (
+            "Cream structured jacket + black inner + no tablet-in-hand broke repeated dark "
+            "blazer / pale blouse / tablet structure."
+        ),
+        "structure_prompt_blocks": (
+            R5F_ANTI_BLAZER_BLOCK,
+            R5F_JACKET_BLOUSE_BLOCK,
+            R5F_PROP_POSE_BLOCK,
+        ),
+        "validation_required_phrases": R5F_V4_01_VALIDATION_REQUIRED,
+    },
+    R5F_PROFILE_V4_02: {
+        "wardrobe_profile_id": R5F_PROFILE_V4_02,
+        "wardrobe_clause": R5F_WARDROBE_CLAUSE_V4_02,
+        "wardrobe_palette_version": R5F_PALETTE_VERSION,
+        "visual_qa_status": "PASS_DIRECTION",
+        "visual_qa_reason": (
+            "Black tailored suit with visible ivory bow/tie-neck blouse and clutch-style folder "
+            "confirmed wardrobe rotation; heavier fall/winter mood."
+        ),
+        "structure_prompt_blocks": R5F_V4_02_STRUCTURE_BLOCKS,
+        "validation_required_phrases": R5F_V4_02_VALIDATION_REQUIRED,
+    },
+    R5F_PROFILE_V4_03: {
+        "wardrobe_profile_id": R5F_PROFILE_V4_03,
+        "wardrobe_clause": R5F_WARDROBE_CLAUSE_V4_03,
+        "wardrobe_palette_version": R5F_PALETTE_VERSION,
+        "visual_qa_status": "PASS_DIRECTION",
+        "visual_qa_reason": (
+            "Summer-appropriate ivory/lightweight jacket, cool beige silk inner, and thin light "
+            "folder confirmed seasonal wardrobe variation."
+        ),
+        "structure_prompt_blocks": R5F_V4_03_STRUCTURE_BLOCKS,
+        "validation_required_phrases": R5F_V4_03_VALIDATION_REQUIRED,
+    },
+}
 
 R5F_NEGATIVE_PHRASES = (
     "not a public news anchor",
@@ -154,6 +280,7 @@ def build_r5f_positive_prompt(
     visual_context: dict,
     *,
     wardrobe_clause: str,
+    structure_prompt_blocks: tuple[str, ...] = (),
 ) -> str:
     if program_id != "keysuri_global_tech":
         raise ValueError("R5F manual canary MVP supports keysuri_global_tech only")
@@ -173,11 +300,9 @@ def build_r5f_positive_prompt(
         identity_prefix,
         R5F_REFERENCE_IDENTITY_ONLY,
         R5F_IDENTITY_VARIATION_BLOCK,
-        R5F_ANTI_BLAZER_BLOCK,
-        R5F_JACKET_BLOUSE_BLOCK,
+        *structure_prompt_blocks,
         wardrobe_clause.strip(),
         R5F_EXPRESSION_BLOCK,
-        R5F_PROP_POSE_BLOCK,
         R5F_MOOD_BLOCK,
         "Premium office layout may vary — desk, window, and monitor arrangement may differ from prior images.",
         _GLOBAL_SCENE_WEATHER_STEM,
@@ -218,10 +343,13 @@ def build_r5f_opt_in_prompt_source(
 
     ctx = deepcopy(contexts[program_id])
     ctx["weather_date"] = wardrobe_date_kst
+    profile_meta = R5F_CANARY_PROFILES[target.wardrobe_profile_id]
+    structure_blocks = tuple(profile_meta.get("structure_prompt_blocks") or ())
     positive = build_r5f_positive_prompt(
         program_id,
         ctx,
         wardrobe_clause=target.wardrobe_clause,
+        structure_prompt_blocks=structure_blocks,
     )
     return {
         "source": "keysuri_r5f_manual_structure_variation",
@@ -238,23 +366,13 @@ def build_r5f_opt_in_prompt_source(
     }
 
 
-def validate_r5f_positive_prompt(positive_prompt: str) -> List[str]:
+def validate_r5f_positive_prompt(positive_prompt: str, *, profile_id: str) -> List[str]:
     issues: List[str] = []
     lower = (positive_prompt or "").lower()
-    required = (
-        "same kee-suri identity, not same image",
-        "do not repeat the previous dark blazer and pale blouse outfit structure",
-        "do not use a dark blazer as the dominant upper garment",
-        "cream structured short jacket",
-        "dominant upper garment",
-        "black silk inner blouse",
-        "charcoal pencil skirt",
-        "slim black leather document folder",
-        "instead of a tablet",
-        "calm intelligent expression with subtle life",
-        "private ai tech secretary",
-        "premium private office briefing",
-    )
+    profile = R5F_CANARY_PROFILES.get((profile_id or "").strip())
+    if profile is None:
+        return [f"unknown R5F profile id: {profile_id!r}"]
+    required = tuple(profile.get("validation_required_phrases") or ())
     for phrase in required:
         if phrase not in lower:
             issues.append(f"missing required R5F phrase: {phrase!r}")

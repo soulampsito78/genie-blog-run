@@ -615,6 +615,15 @@ class KeysuriR5FManualCanaryAcceptedDirectionTests(unittest.TestCase):
         self.assertIn("do not use a dark blazer as the dominant upper garment", pos)
         self.assertNotIn("charcoal fitted suit continuity", pos)
 
+    def test_v4_pass_direction_catalog_metadata(self) -> None:
+        v4_02 = R5F_CANARY_PROFILES["profile_v4_02_black_suit_silk_bow_blouse_clutch_folder"]
+        v4_03 = R5F_CANARY_PROFILES["profile_v4_03_summer_ivory_jacket_cool_beige_inner_thin_folder"]
+        self.assertEqual(v4_02["visual_qa_status"], "PASS_DIRECTION")
+        self.assertEqual(v4_03["visual_qa_status"], "PASS_DIRECTION")
+        self.assertIn("bow/tie-neck blouse", v4_02["visual_qa_reason"])
+        self.assertIn("fall/winter", v4_02["visual_qa_reason"])
+        self.assertIn("seasonal wardrobe variation", v4_03["visual_qa_reason"])
+
     def test_r5f_one_live_call_mock_exactly_once(self) -> None:
         env = _r5f_env(GENIE_KEYSURI_APPROVED_ONE_LIVE_CALL="1")
         calls: list[Path] = []

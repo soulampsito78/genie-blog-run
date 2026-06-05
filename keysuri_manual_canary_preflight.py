@@ -781,7 +781,10 @@ def _run_r5f_manual_canary_preflight(
                         "positive_prompt",
                     )
                 )
-            for msg in validate_r5f_positive_prompt(opt_in_prompt):
+            for msg in validate_r5f_positive_prompt(
+                opt_in_prompt,
+                profile_id=target.wardrobe_profile_id,
+            ):
                 issues.append(_issue("r5f_prompt_invalid", msg, "positive_prompt"))
 
     production_flags_false, flag_issues = _check_production_flags(resolved_path)
