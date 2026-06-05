@@ -23,6 +23,9 @@ from keysuri_manual_opt_in_canary_runner import (
     run_keysuri_manual_opt_in_canary,
 )
 from keysuri_image_api_canary_client import DEFAULT_LOCK_PATH, run_keysuri_image_api_canary
+from keysuri_r5d_manual_canary import R5D_CANARY_PROFILES
+from keysuri_r5e_manual_canary import R5E_CANARY_PROFILES
+from keysuri_r5f_manual_canary import R5F_CANARY_PROFILES
 
 _REPO = Path(__file__).resolve().parent.parent
 _LOCK = _REPO / DEFAULT_LOCK_PATH
@@ -108,12 +111,23 @@ class KeysuriManualOptInRunnerBlockTests(unittest.TestCase):
         )
         self.assertEqual(result.runner_status, BLOCKED_ENV_CLI_MISMATCH)
 
-    def test_live_call_not_enabled_without_dry_run(self) -> None:
+    def test_live_call_not_enabled_without_one_live_call_env(self) -> None:
         env = _valid_env()
         with mock.patch.object(runner, "run_keysuri_image_api_canary") as canary_mock:
             result = run_keysuri_manual_opt_in_canary(environ=env)
         canary_mock.assert_not_called()
         self.assertEqual(result.runner_status, LIVE_CALL_NOT_ENABLED_IN_R5B_II)
+
+    def test_one_live_call_and_dry_run_conflict(self) -> None:
+        env = _valid_env(GENIE_KEYSURI_APPROVED_ONE_LIVE_CALL="1")
+        with mock.patch.object(runner, "run_keysuri_image_api_canary") as canary_mock:
+            result = run_keysuri_manual_opt_in_canary(
+                dry_run=True,
+                one_live_call=True,
+                environ=env,
+            )
+        canary_mock.assert_not_called()
+        self.assertEqual(result.runner_status, "blocked_conflicting_run_mode")
 
 
 class KeysuriManualOptInRunnerSuccessTests(unittest.TestCase):
@@ -127,7 +141,7 @@ class KeysuriManualOptInRunnerSuccessTests(unittest.TestCase):
         canary_mock.assert_not_called()
         self.assertEqual(result.runner_status, PREFLIGHT_ONLY_PASS)
         self.assertEqual(result.preflight_status, "PREFLIGHT_PASS_FOR_ONE_MANUAL_CALL")
-        self.assertIn("No image API was called in R5B-II implementation mode.", result.audit_text)
+        self.assertIn("No image API was called in this runner mode.", result.audit_text)
 
     def test_dry_run_reaches_canary_client_once(self) -> None:
         env = _valid_env()
@@ -166,6 +180,27 @@ class KeysuriManualOptInRunnerSuccessTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(result.canary_report["request_count"], 1)
         self.assertEqual(result.canary_report["canary_status"], "called_once")
+
+    def test_one_live_call_env_with_mock_calls_once(self) -> None:
+        env = _valid_env(GENIE_KEYSURI_APPROVED_ONE_LIVE_CALL="1")
+        calls: list[Path] = []
+
+        def _mock_generate(output_path: Path, **kwargs: object) -> Path:
+            calls.append(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"MOCK")
+            return output_path
+
+        result = run_keysuri_manual_opt_in_canary(
+            environ=env,
+            one_live_call=True,
+            _generate_image_fn=_mock_generate,
+            _allow_mock_generate_for_tests=True,
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertIn("output/keysuri_preview/image_canary/", str(calls[0]).replace("\\", "/"))
+        self.assertEqual(result.canary_report["request_count"], 1)
+        self.assertEqual(result.runner_status, "called_once")
 
     def test_mock_failure_does_not_retry(self) -> None:
         env = _valid_env()
@@ -230,8 +265,9 @@ class KeysuriManualOptInRunnerSafetyTests(unittest.TestCase):
     def test_script_exists_and_default_blocks(self) -> None:
         self.assertTrue(_SCRIPT_PATH.is_file())
         buf = io.StringIO()
-        with redirect_stdout(buf):
-            code = main([])
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with redirect_stdout(buf):
+                code = main([])
         self.assertNotEqual(code, 0)
         self.assertIn(BLOCKED_NO_WARDROBE_APPROVAL, buf.getvalue())
 
@@ -277,6 +313,327 @@ class KeysuriImageApiCanaryOverrideTests(unittest.TestCase):
         self.assertEqual(report["canary_status"], "dry_run_ready")
         self.assertTrue(report["wardrobe_prompt_injected"])
         self.assertIn("fitted premium business silhouette", report["prompt_source"]["positive_prompt"].lower())
+
+
+_PROFILE_V2_01 = "profile_v2_01_deep_navy_cream_silver"
+_SEED_2026_06_06 = "keysuri_daily|2026-06-06|v2|profile_v2_01_deep_navy_cream_silver"
+
+
+def _r5d_env(**overrides: str) -> dict[str, str]:
+    base = {
+        "GENIE_KEYSURI_IMAGE_MANUAL_APPROVAL": "1",
+        "GENIE_KEYSURI_APPROVED_WARDROBE_DATE_KST": "2026-06-06",
+        "GENIE_KEYSURI_APPROVED_PROGRAM_ID": "keysuri_global_tech",
+        "GENIE_KEYSURI_APPROVED_PROFILE_ID": _PROFILE_V2_01,
+        "GENIE_KEYSURI_APPROVED_SEED": _SEED_2026_06_06,
+        "GENIE_KEYSURI_APPROVED_OPERATOR_REF": "test-r5d",
+        "GENIE_KEYSURI_R5D_CREATIVE_VARIATION": "1",
+        "GENIE_VERTEX_PROJECT_ID": "test-project",
+    }
+    base.update(overrides)
+    return base
+
+
+class KeysuriR5DManualCanaryFailureHistoryTests(unittest.TestCase):
+    def test_v2_profile_without_r5d_flag_blocks(self) -> None:
+        env = _r5d_env()
+        env.pop("GENIE_KEYSURI_R5D_CREATIVE_VARIATION")
+        with mock.patch.object(runner, "run_keysuri_image_api_canary") as canary_mock:
+            result = run_keysuri_manual_opt_in_canary(
+                check_preflight_only=True,
+                environ=env,
+            )
+        canary_mock.assert_not_called()
+        self.assertEqual(result.runner_status, "blocked_r5d_mode_invalid")
+
+    def test_r5d_flag_with_v1_profile_blocks(self) -> None:
+        env = _r5d_env(
+            GENIE_KEYSURI_APPROVED_PROFILE_ID=_PROFILE_01,
+            GENIE_KEYSURI_APPROVED_SEED=_SEED_2026_06_04,
+            GENIE_KEYSURI_APPROVED_WARDROBE_DATE_KST="2026-06-04",
+        )
+        result = run_keysuri_manual_opt_in_canary(
+            check_preflight_only=True,
+            environ=env,
+        )
+        self.assertEqual(result.runner_status, "blocked_override_profile_mismatch")
+
+    def test_wrong_v2_seed_blocks(self) -> None:
+        env = _r5d_env(GENIE_KEYSURI_APPROVED_SEED="keysuri_daily|2026-06-06|v2|wrong")
+        result = run_keysuri_manual_opt_in_canary(
+            check_preflight_only=True,
+            environ=env,
+        )
+        self.assertEqual(result.runner_status, BLOCKED_PREFLIGHT_FAILED)
+
+    def test_r5d_preflight_only_pass(self) -> None:
+        env = _r5d_env()
+        with mock.patch.object(runner, "run_keysuri_image_api_canary") as canary_mock:
+            result = run_keysuri_manual_opt_in_canary(
+                check_preflight_only=True,
+                environ=env,
+            )
+        canary_mock.assert_not_called()
+        self.assertEqual(result.runner_status, PREFLIGHT_ONLY_PASS)
+        self.assertEqual(result.preflight_status, "R5D_APPROVED_MANUAL_OVERRIDE_PASS")
+        self.assertTrue(result.r5d_creative_variation)
+        meta = R5D_CANARY_PROFILES[_PROFILE_V2_01]
+        self.assertEqual(meta["visual_qa_status"], "NOT_ACCEPTED")
+
+    def test_r5d_dry_run_injects_failure_history_prompt(self) -> None:
+        env = _r5d_env()
+        with mock.patch.object(
+            runner,
+            "run_keysuri_image_api_canary",
+            wraps=run_keysuri_image_api_canary,
+        ) as canary_mock:
+            result = run_keysuri_manual_opt_in_canary(
+                dry_run=True,
+                environ=env,
+            )
+        canary_mock.assert_called_once()
+        pos = result.canary_report["prompt_source"]["positive_prompt"].lower()
+        self.assertIn("deep navy", pos)
+        self.assertIn("cream silk", pos)
+        self.assertIn("silver brooch", pos)
+        self.assertIn("same kee-suri identity, not same image", pos)
+        self.assertNotIn("charcoal fitted suit continuity", pos)
+        self.assertNotIn("ivory or soft cream blouse continuity", pos)
+        self.assertNotIn("do not require large pose or composition change", pos)
+
+    def test_r5d_one_live_call_mock_exactly_once(self) -> None:
+        env = _r5d_env(GENIE_KEYSURI_APPROVED_ONE_LIVE_CALL="1")
+        calls: list[Path] = []
+
+        def _mock_generate(output_path: Path, **kwargs: object) -> Path:
+            calls.append(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"MOCK")
+            return output_path
+
+        result = run_keysuri_manual_opt_in_canary(
+            environ=env,
+            one_live_call=True,
+            _generate_image_fn=_mock_generate,
+            _allow_mock_generate_for_tests=True,
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result.canary_report["request_count"], 1)
+        self.assertEqual(result.runner_status, "called_once")
+
+    def test_v1_resolver_default_unchanged_for_2026_06_04(self) -> None:
+        source = build_opt_in_prompt_source(
+            lock_path=_LOCK,
+            program_id="keysuri_global_tech",
+            wardrobe_date_kst="2026-06-04",
+        )
+        self.assertEqual(source["wardrobe_profile_id"], _PROFILE_01)
+
+
+_PROFILE_V3_01 = "profile_v3_01_navy_tie_neck_secretary"
+_SEED_2026_06_07 = "keysuri_daily|2026-06-07|v3|profile_v3_01_navy_tie_neck_secretary"
+
+
+def _r5e_env(**overrides: str) -> dict[str, str]:
+    base = {
+        "GENIE_KEYSURI_IMAGE_MANUAL_APPROVAL": "1",
+        "GENIE_KEYSURI_APPROVED_WARDROBE_DATE_KST": "2026-06-07",
+        "GENIE_KEYSURI_APPROVED_PROGRAM_ID": "keysuri_global_tech",
+        "GENIE_KEYSURI_APPROVED_PROFILE_ID": _PROFILE_V3_01,
+        "GENIE_KEYSURI_APPROVED_SEED": _SEED_2026_06_07,
+        "GENIE_KEYSURI_APPROVED_OPERATOR_REF": "test-r5e",
+        "GENIE_KEYSURI_R5E_STRUCTURE_VARIATION": "1",
+        "GENIE_VERTEX_PROJECT_ID": "test-project",
+    }
+    base.update(overrides)
+    return base
+
+
+class KeysuriR5EManualCanaryFailureHistoryTests(unittest.TestCase):
+    def test_v3_profile_without_r5e_flag_blocks(self) -> None:
+        env = _r5e_env()
+        env.pop("GENIE_KEYSURI_R5E_STRUCTURE_VARIATION")
+        result = run_keysuri_manual_opt_in_canary(
+            check_preflight_only=True,
+            environ=env,
+        )
+        self.assertEqual(result.runner_status, "blocked_r5e_mode_invalid")
+
+    def test_r5e_flag_with_v1_profile_blocks(self) -> None:
+        env = _r5e_env(
+            GENIE_KEYSURI_APPROVED_PROFILE_ID=_PROFILE_01,
+            GENIE_KEYSURI_APPROVED_SEED=_SEED_2026_06_04,
+            GENIE_KEYSURI_APPROVED_WARDROBE_DATE_KST="2026-06-04",
+        )
+        result = run_keysuri_manual_opt_in_canary(
+            check_preflight_only=True,
+            environ=env,
+        )
+        self.assertEqual(result.runner_status, "blocked_override_profile_mismatch")
+
+    def test_wrong_v3_seed_blocks(self) -> None:
+        env = _r5e_env(GENIE_KEYSURI_APPROVED_SEED="keysuri_daily|2026-06-07|v3|wrong")
+        result = run_keysuri_manual_opt_in_canary(
+            check_preflight_only=True,
+            environ=env,
+        )
+        self.assertEqual(result.runner_status, BLOCKED_PREFLIGHT_FAILED)
+
+    def test_r5e_preflight_only_pass(self) -> None:
+        env = _r5e_env()
+        with mock.patch.object(runner, "run_keysuri_image_api_canary") as canary_mock:
+            result = run_keysuri_manual_opt_in_canary(
+                check_preflight_only=True,
+                environ=env,
+            )
+        canary_mock.assert_not_called()
+        self.assertEqual(result.runner_status, PREFLIGHT_ONLY_PASS)
+        self.assertEqual(result.preflight_status, "R5E_APPROVED_STRUCTURE_VARIATION_PASS")
+        self.assertTrue(result.r5e_structure_variation)
+        meta = R5E_CANARY_PROFILES[_PROFILE_V3_01]
+        self.assertEqual(meta["visual_qa_status"], "REVIEW_NOT_ACCEPTED")
+
+    def test_r5e_dry_run_injects_failure_history_prompt(self) -> None:
+        env = _r5e_env()
+        with mock.patch.object(
+            runner,
+            "run_keysuri_image_api_canary",
+            wraps=run_keysuri_image_api_canary,
+        ) as canary_mock:
+            result = run_keysuri_manual_opt_in_canary(
+                dry_run=True,
+                environ=env,
+            )
+        canary_mock.assert_called_once()
+        pos = result.canary_report["prompt_source"]["positive_prompt"].lower()
+        self.assertIn("deep navy", pos)
+        self.assertIn("tie-neck", pos)
+        self.assertIn("executive document folder", pos)
+        self.assertIn("same kee-suri identity, not same image", pos)
+        self.assertIn(
+            "do not repeat the previous dark blazer and pale blouse outfit structure",
+            pos,
+        )
+        self.assertNotIn("charcoal fitted suit continuity", pos)
+        self.assertNotIn("ivory or soft cream blouse continuity", pos)
+
+    def test_r5e_one_live_call_mock_exactly_once(self) -> None:
+        env = _r5e_env(GENIE_KEYSURI_APPROVED_ONE_LIVE_CALL="1")
+        calls: list[Path] = []
+
+        def _mock_generate(output_path: Path, **kwargs: object) -> Path:
+            calls.append(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"MOCK")
+            return output_path
+
+        result = run_keysuri_manual_opt_in_canary(
+            environ=env,
+            one_live_call=True,
+            _generate_image_fn=_mock_generate,
+            _allow_mock_generate_for_tests=True,
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result.canary_report["request_count"], 1)
+        self.assertEqual(result.runner_status, "called_once")
+
+
+_PROFILE_V4_01 = "profile_v4_01_cream_short_jacket_black_silk_inner"
+_SEED_2026_06_08 = "keysuri_daily|2026-06-08|v4|profile_v4_01_cream_short_jacket_black_silk_inner"
+
+
+def _r5f_env(**overrides: str) -> dict[str, str]:
+    base = {
+        "GENIE_KEYSURI_IMAGE_MANUAL_APPROVAL": "1",
+        "GENIE_KEYSURI_APPROVED_WARDROBE_DATE_KST": "2026-06-08",
+        "GENIE_KEYSURI_APPROVED_PROGRAM_ID": "keysuri_global_tech",
+        "GENIE_KEYSURI_APPROVED_PROFILE_ID": _PROFILE_V4_01,
+        "GENIE_KEYSURI_APPROVED_SEED": _SEED_2026_06_08,
+        "GENIE_KEYSURI_APPROVED_OPERATOR_REF": "test-r5f",
+        "GENIE_KEYSURI_R5F_STRUCTURE_VARIATION": "1",
+        "GENIE_VERTEX_PROJECT_ID": "test-project",
+    }
+    base.update(overrides)
+    return base
+
+
+class KeysuriR5FManualCanaryAcceptedDirectionTests(unittest.TestCase):
+    def test_v4_profile_without_r5f_flag_blocks(self) -> None:
+        env = _r5f_env()
+        env.pop("GENIE_KEYSURI_R5F_STRUCTURE_VARIATION")
+        result = run_keysuri_manual_opt_in_canary(
+            check_preflight_only=True,
+            environ=env,
+        )
+        self.assertEqual(result.runner_status, "blocked_r5f_mode_invalid")
+
+    def test_wrong_v4_seed_blocks(self) -> None:
+        env = _r5f_env(GENIE_KEYSURI_APPROVED_SEED="keysuri_daily|2026-06-08|v4|wrong")
+        result = run_keysuri_manual_opt_in_canary(
+            check_preflight_only=True,
+            environ=env,
+        )
+        self.assertEqual(result.runner_status, BLOCKED_PREFLIGHT_FAILED)
+
+    def test_r5f_preflight_only_pass(self) -> None:
+        env = _r5f_env()
+        with mock.patch.object(runner, "run_keysuri_image_api_canary") as canary_mock:
+            result = run_keysuri_manual_opt_in_canary(
+                check_preflight_only=True,
+                environ=env,
+            )
+        canary_mock.assert_not_called()
+        self.assertEqual(result.runner_status, PREFLIGHT_ONLY_PASS)
+        self.assertEqual(result.preflight_status, "R5F_APPROVED_STRUCTURE_VARIATION_PASS")
+        self.assertTrue(result.r5f_structure_variation)
+        meta = R5F_CANARY_PROFILES[_PROFILE_V4_01]
+        self.assertEqual(meta["visual_qa_status"], "PASS_DIRECTION")
+        self.assertIn("PASS_DIRECTION", result.audit_text)
+        self.assertNotIn("creative variation", result.audit_text.lower())
+
+    def test_r5f_dry_run_injects_accepted_direction_prompt(self) -> None:
+        env = _r5f_env()
+        with mock.patch.object(
+            runner,
+            "run_keysuri_image_api_canary",
+            wraps=run_keysuri_image_api_canary,
+        ) as canary_mock:
+            result = run_keysuri_manual_opt_in_canary(
+                dry_run=True,
+                environ=env,
+            )
+        canary_mock.assert_called_once()
+        pos = result.canary_report["prompt_source"]["positive_prompt"].lower()
+        self.assertIn("cream structured short jacket", pos)
+        self.assertIn("black silk inner blouse", pos)
+        self.assertIn("slim black leather document folder", pos)
+        self.assertIn("same kee-suri identity, not same image", pos)
+        self.assertIn(
+            "do not repeat the previous dark blazer and pale blouse outfit structure",
+            pos,
+        )
+        self.assertIn("do not use a dark blazer as the dominant upper garment", pos)
+        self.assertNotIn("charcoal fitted suit continuity", pos)
+
+    def test_r5f_one_live_call_mock_exactly_once(self) -> None:
+        env = _r5f_env(GENIE_KEYSURI_APPROVED_ONE_LIVE_CALL="1")
+        calls: list[Path] = []
+
+        def _mock_generate(output_path: Path, **kwargs: object) -> Path:
+            calls.append(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"MOCK")
+            return output_path
+
+        result = run_keysuri_manual_opt_in_canary(
+            environ=env,
+            one_live_call=True,
+            _generate_image_fn=_mock_generate,
+            _allow_mock_generate_for_tests=True,
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result.canary_report["request_count"], 1)
+        self.assertEqual(result.runner_status, "called_once")
 
 
 if __name__ == "__main__":

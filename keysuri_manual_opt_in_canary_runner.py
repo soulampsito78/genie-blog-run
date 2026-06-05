@@ -1,4 +1,4 @@
-"""Kee-Suri manual opt-in wardrobe canary runner (R5B-II — preflight gate, dry-run/mock only)."""
+"""Kee-Suri manual opt-in wardrobe canary runner (R5B-II/III — preflight gate, guarded one-call live)."""
 from __future__ import annotations
 
 import os
@@ -19,6 +19,27 @@ from keysuri_manual_canary_preflight import (
     ManualCanaryPreflightResult,
     run_keysuri_manual_canary_preflight,
 )
+from keysuri_r5d_manual_canary import (
+    ENV_R5D_CREATIVE_VARIATION,
+    R5D_APPROVED_MANUAL_OVERRIDE_PASS,
+    R5D_CANARY_PROFILES,
+    build_r5d_opt_in_prompt_source,
+    is_r5d_v2_profile_id,
+)
+from keysuri_r5e_manual_canary import (
+    ENV_R5E_STRUCTURE_VARIATION,
+    R5E_APPROVED_STRUCTURE_VARIATION_PASS,
+    R5E_CANARY_PROFILES,
+    build_r5e_opt_in_prompt_source,
+    is_r5e_v3_profile_id,
+)
+from keysuri_r5f_manual_canary import (
+    ENV_R5F_STRUCTURE_VARIATION,
+    R5F_APPROVED_STRUCTURE_VARIATION_PASS,
+    R5F_CANARY_PROFILES,
+    build_r5f_opt_in_prompt_source,
+    is_r5f_v4_profile_id,
+)
 from keysuri_weather_binding_integration import build_keysuri_weather_binding_integration_report
 from keysuri_weather_visual_prompt_integration import build_keysuri_weather_visual_prompt_contract
 
@@ -38,6 +59,16 @@ ENV_APPROVED_PROGRAM = "GENIE_KEYSURI_APPROVED_PROGRAM_ID"
 ENV_APPROVED_PROFILE = "GENIE_KEYSURI_APPROVED_PROFILE_ID"
 ENV_APPROVED_SEED = "GENIE_KEYSURI_APPROVED_SEED"
 ENV_APPROVED_OPERATOR = "GENIE_KEYSURI_APPROVED_OPERATOR_REF"
+ENV_ONE_LIVE_CALL = "GENIE_KEYSURI_APPROVED_ONE_LIVE_CALL"
+
+_PREFLIGHT_PASS_STATUSES = frozenset(
+    {
+        PREFLIGHT_PASS_FOR_ONE_MANUAL_CALL,
+        R5D_APPROVED_MANUAL_OVERRIDE_PASS,
+        R5E_APPROVED_STRUCTURE_VARIATION_PASS,
+        R5F_APPROVED_STRUCTURE_VARIATION_PASS,
+    }
+)
 
 _REPO_ROOT = Path(__file__).resolve().parent
 _DEFAULT_LOCK = _REPO_ROOT / DEFAULT_LOCK_PATH
@@ -53,6 +84,9 @@ class ManualOptInCanaryRunResult:
     expected_daily_wardrobe_seed: str | None
     preflight_status: str | None
     wardrobe_clause: str | None
+    r5d_creative_variation: bool
+    r5e_structure_variation: bool
+    r5f_structure_variation: bool
     dry_run_would_proceed: bool
     preflight_result: ManualCanaryPreflightResult | None
     canary_report: dict | None
@@ -157,6 +191,78 @@ def _resolve_cli_env_values(
     return resolved_date, resolved_program, issues
 
 
+def _r5d_creative_variation_enabled(environ: dict[str, str] | None) -> bool:
+    env = environ if environ is not None else os.environ
+    return parse_bool_manual_approval(env.get(ENV_R5D_CREATIVE_VARIATION))
+
+
+def _r5e_structure_variation_enabled(environ: dict[str, str] | None) -> bool:
+    env = environ if environ is not None else os.environ
+    return parse_bool_manual_approval(env.get(ENV_R5E_STRUCTURE_VARIATION))
+
+
+def _r5f_structure_variation_enabled(environ: dict[str, str] | None) -> bool:
+    env = environ if environ is not None else os.environ
+    return parse_bool_manual_approval(env.get(ENV_R5F_STRUCTURE_VARIATION))
+
+
+def _validate_manual_override_mode(
+    approval: ManualCanaryApproval,
+    environ: dict[str, str] | None,
+) -> List[str]:
+    issues: List[str] = []
+    r5d_enabled = _r5d_creative_variation_enabled(environ)
+    r5e_enabled = _r5e_structure_variation_enabled(environ)
+    r5f_enabled = _r5f_structure_variation_enabled(environ)
+    profile_id = approval.expected_wardrobe_profile_id
+    profile_is_v2 = is_r5d_v2_profile_id(profile_id)
+    profile_is_v3 = is_r5e_v3_profile_id(profile_id)
+    profile_is_v4 = is_r5f_v4_profile_id(profile_id)
+    enabled_count = sum(1 for flag in (r5d_enabled, r5e_enabled, r5f_enabled) if flag)
+
+    if enabled_count > 1:
+        issues.append(
+            _issue_message(
+                "blocked_conflicting_override_mode",
+                "only one of R5D, R5E, or R5F override flags may be enabled",
+            )
+        )
+        return issues
+
+    if profile_is_v4:
+        if not r5f_enabled:
+            issues.append(
+                _issue_message(
+                    "blocked_r5f_flag_missing",
+                    f"{ENV_R5F_STRUCTURE_VARIATION}=1 is required for v4 manual override profiles",
+                )
+            )
+    elif profile_is_v3:
+        if not r5e_enabled:
+            issues.append(
+                _issue_message(
+                    "blocked_r5e_flag_missing",
+                    f"{ENV_R5E_STRUCTURE_VARIATION}=1 is required for v3 manual override profiles",
+                )
+            )
+    elif profile_is_v2:
+        if not r5d_enabled:
+            issues.append(
+                _issue_message(
+                    "blocked_r5d_flag_missing",
+                    f"{ENV_R5D_CREATIVE_VARIATION}=1 is required for v2 manual override profiles",
+                )
+            )
+    elif r5d_enabled or r5e_enabled or r5f_enabled:
+        issues.append(
+            _issue_message(
+                "blocked_override_profile_mismatch",
+                "R5D/R5E/R5F override flags require profile_v2_*, profile_v3_*, or profile_v4_* ids",
+            )
+        )
+    return issues
+
+
 def build_opt_in_prompt_source(
     *,
     lock_path: str | Path,
@@ -189,7 +295,34 @@ def build_opt_in_prompt_source(
     }
 
 
+def _one_live_call_enabled(
+    environ: dict[str, str] | None,
+    one_live_call: bool | None,
+) -> bool:
+    if one_live_call is not None:
+        return bool(one_live_call)
+    env = environ if environ is not None else os.environ
+    return parse_bool_manual_approval(env.get(ENV_ONE_LIVE_CALL))
+
+
+def _profile_visual_qa_line(profile_id: str | None) -> str | None:
+    pid = (profile_id or "").strip()
+    if not pid:
+        return None
+    for catalog in (R5F_CANARY_PROFILES, R5E_CANARY_PROFILES, R5D_CANARY_PROFILES):
+        meta = catalog.get(pid)
+        if meta:
+            status = meta.get("visual_qa_status", "(unknown)")
+            reason = meta.get("visual_qa_reason", "")
+            suffix = f" — {reason}" if reason else ""
+            return f"visual qa status: {status}{suffix}"
+    return None
+
+
 def build_audit_text(result: ManualOptInCanaryRunResult) -> str:
+    canary = result.canary_report or {}
+    side = canary.get("side_effects") or {}
+    image_api_called = side.get("called_image_api") is True
     lines = [
         "KEYSURI R5B-II Manual Opt-In Canary Runner Audit",
         "",
@@ -200,11 +333,24 @@ def build_audit_text(result: ManualOptInCanaryRunResult) -> str:
         f"expected daily wardrobe seed: {result.expected_daily_wardrobe_seed or '(none)'}",
         f"preflight status: {result.preflight_status or '(none)'}",
         f"wardrobe clause: {result.wardrobe_clause or '(none)'}",
-        f"dry-run/mock canary would proceed: {'true' if result.dry_run_would_proceed else 'false'}",
-        f"runner status: {result.runner_status}",
-        "",
-        "issues:",
     ]
+    visual_qa_line = _profile_visual_qa_line(result.expected_wardrobe_profile_id)
+    if visual_qa_line:
+        lines.append(visual_qa_line)
+    lines.extend(
+        [
+            f"R5D failure-history override (NOT_ACCEPTED): {'true' if result.r5d_creative_variation else 'false'}",
+            f"R5E failure-history override (REVIEW_NOT_ACCEPTED): {'true' if result.r5e_structure_variation else 'false'}",
+            f"R5F accepted-direction override (PASS_DIRECTION): {'true' if result.r5f_structure_variation else 'false'}",
+            f"dry-run/mock canary would proceed: {'true' if result.dry_run_would_proceed else 'false'}",
+            f"runner status: {result.runner_status}",
+            f"canary status: {canary.get('canary_status') or '(none)'}",
+            f"request_count: {canary.get('request_count', '(none)')}",
+            f"output_image_path: {canary.get('output_image_path') or '(none)'}",
+            "",
+            "issues:",
+        ]
+    )
     if result.issues:
         lines.extend(f"  - {item}" for item in result.issues)
     else:
@@ -212,7 +358,11 @@ def build_audit_text(result: ManualOptInCanaryRunResult) -> str:
     lines.extend(
         [
             "",
-            "No image API was called in R5B-II implementation mode.",
+            (
+                "Image API was called for this one approved manual opt-in canary."
+                if image_api_called
+                else "No image API was called in this runner mode."
+            ),
             "This runner does not authorize Scheduler, production wiring, automatic retry, or batch generation.",
         ]
     )
@@ -240,6 +390,9 @@ def _blocked_result(
         expected_daily_wardrobe_seed=approval.expected_daily_wardrobe_seed if approval else None,
         preflight_status=preflight_result.status if preflight_result else None,
         wardrobe_clause=preflight_result.wardrobe_clause if preflight_result else None,
+        r5d_creative_variation=False,
+        r5e_structure_variation=False,
+        r5f_structure_variation=False,
         dry_run_would_proceed=False,
         preflight_result=preflight_result,
         canary_report=None,
@@ -256,6 +409,7 @@ def run_keysuri_manual_opt_in_canary(
     reference_asset: str | None = None,
     check_preflight_only: bool = False,
     dry_run: bool = False,
+    one_live_call: bool | None = None,
     lock_path: str | Path | None = None,
     output_dir: str = DEFAULT_OUTPUT_DIR,
     environ: dict[str, str] | None = None,
@@ -282,13 +436,33 @@ def run_keysuri_manual_opt_in_canary(
     if mismatch_issues:
         return _blocked_result(BLOCKED_ENV_CLI_MISMATCH, mismatch_issues, approval_present=True, approval=approval)
 
+    r5d_enabled = _r5d_creative_variation_enabled(environ)
+    r5e_enabled = _r5e_structure_variation_enabled(environ)
+    r5f_enabled = _r5f_structure_variation_enabled(environ)
+    override_issues = _validate_manual_override_mode(approval, environ)
+    if override_issues:
+        if is_r5f_v4_profile_id(approval.expected_wardrobe_profile_id):
+            status = "blocked_r5f_mode_invalid"
+        elif is_r5e_v3_profile_id(approval.expected_wardrobe_profile_id):
+            status = "blocked_r5e_mode_invalid"
+        elif is_r5d_v2_profile_id(approval.expected_wardrobe_profile_id):
+            status = "blocked_r5d_mode_invalid"
+        elif any("blocked_conflicting_override_mode" in item for item in override_issues):
+            status = "blocked_conflicting_override_mode"
+        else:
+            status = "blocked_override_profile_mismatch"
+        return _blocked_result(status, override_issues, approval_present=True, approval=approval)
+
     preflight = run_keysuri_manual_canary_preflight(
         wardrobe_date_kst=resolved_date,
         program_id=resolved_program,
         approval=approval,
         lock_path=resolved_lock,
+        r5d_creative_variation=r5d_enabled,
+        r5e_structure_variation=r5e_enabled,
+        r5f_structure_variation=r5f_enabled,
     )
-    if preflight.status != PREFLIGHT_PASS_FOR_ONE_MANUAL_CALL:
+    if preflight.status not in _PREFLIGHT_PASS_STATUSES:
         issues = [_issue_message(BLOCKED_PREFLIGHT_FAILED, f"preflight status is {preflight.status}")]
         issues.extend(f"[{issue.code}] {issue.message}" for issue in preflight.issues)
         return _blocked_result(
@@ -309,6 +483,9 @@ def run_keysuri_manual_opt_in_canary(
             expected_daily_wardrobe_seed=approval.expected_daily_wardrobe_seed,
             preflight_status=preflight.status,
             wardrobe_clause=preflight.wardrobe_clause,
+            r5d_creative_variation=r5d_enabled,
+            r5e_structure_variation=r5e_enabled,
+            r5f_structure_variation=r5f_enabled,
             dry_run_would_proceed=False,
             preflight_result=preflight,
             canary_report=None,
@@ -317,13 +494,14 @@ def run_keysuri_manual_opt_in_canary(
         )
         return _finalize_result(result)
 
-    if not dry_run and not _allow_mock_generate_for_tests:
+    live_call_enabled = _one_live_call_enabled(environ, one_live_call)
+    if dry_run and live_call_enabled:
         return _blocked_result(
-            LIVE_CALL_NOT_ENABLED_IN_R5B_II,
+            "blocked_conflicting_run_mode",
             [
                 _issue_message(
-                    LIVE_CALL_NOT_ENABLED_IN_R5B_II,
-                    "live image call is not enabled in R5B-II; use --dry-run or --check-preflight-only",
+                    "blocked_conflicting_run_mode",
+                    "dry-run and one-live-call cannot be combined",
                 )
             ],
             approval_present=True,
@@ -331,11 +509,50 @@ def run_keysuri_manual_opt_in_canary(
             preflight_result=preflight,
         )
 
-    prompt_source = build_opt_in_prompt_source(
-        lock_path=resolved_lock,
-        program_id=resolved_program,
-        wardrobe_date_kst=resolved_date,
-    )
+    if not dry_run and not _allow_mock_generate_for_tests and not live_call_enabled:
+        return _blocked_result(
+            LIVE_CALL_NOT_ENABLED_IN_R5B_II,
+            [
+                _issue_message(
+                    LIVE_CALL_NOT_ENABLED_IN_R5B_II,
+                    "live image call requires GENIE_KEYSURI_APPROVED_ONE_LIVE_CALL=1 after preflight pass",
+                )
+            ],
+            approval_present=True,
+            approval=approval,
+            preflight_result=preflight,
+        )
+
+    if r5f_enabled:
+        prompt_source = build_r5f_opt_in_prompt_source(
+            lock_path=str(resolved_lock),
+            program_id=resolved_program,
+            wardrobe_date_kst=resolved_date,
+            wardrobe_profile_id=approval.expected_wardrobe_profile_id,
+            daily_wardrobe_seed=approval.expected_daily_wardrobe_seed,
+        )
+    elif r5e_enabled:
+        prompt_source = build_r5e_opt_in_prompt_source(
+            lock_path=str(resolved_lock),
+            program_id=resolved_program,
+            wardrobe_date_kst=resolved_date,
+            wardrobe_profile_id=approval.expected_wardrobe_profile_id,
+            daily_wardrobe_seed=approval.expected_daily_wardrobe_seed,
+        )
+    elif r5d_enabled:
+        prompt_source = build_r5d_opt_in_prompt_source(
+            lock_path=str(resolved_lock),
+            program_id=resolved_program,
+            wardrobe_date_kst=resolved_date,
+            wardrobe_profile_id=approval.expected_wardrobe_profile_id,
+            daily_wardrobe_seed=approval.expected_daily_wardrobe_seed,
+        )
+    else:
+        prompt_source = build_opt_in_prompt_source(
+            lock_path=resolved_lock,
+            program_id=resolved_program,
+            wardrobe_date_kst=resolved_date,
+        )
 
     use_mock_generate = (
         _allow_mock_generate_for_tests
@@ -371,6 +588,9 @@ def run_keysuri_manual_opt_in_canary(
         expected_daily_wardrobe_seed=approval.expected_daily_wardrobe_seed,
         preflight_status=preflight.status,
         wardrobe_clause=preflight.wardrobe_clause,
+        r5d_creative_variation=r5d_enabled,
+        r5e_structure_variation=r5e_enabled,
+        r5f_structure_variation=r5f_enabled,
         dry_run_would_proceed=dry_run_would_proceed,
         preflight_result=preflight,
         canary_report=canary_report,
@@ -384,10 +604,15 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Kee-Suri manual opt-in wardrobe canary runner (R5B-II dry-run/preflight only).",
+        description="Kee-Suri manual opt-in wardrobe canary runner (preflight / dry-run / guarded one-call live).",
     )
     parser.add_argument("--check-preflight-only", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--one-live-call",
+        action="store_true",
+        help="Allow exactly one live image API call when approval env and preflight pass.",
+    )
     parser.add_argument("--wardrobe-date-kst", default=None)
     parser.add_argument("--program-id", default=None)
     parser.add_argument("--reference-asset", default=None)
@@ -399,10 +624,13 @@ def main(argv: list[str] | None = None) -> int:
         reference_asset=args.reference_asset,
         check_preflight_only=args.check_preflight_only,
         dry_run=args.dry_run,
+        one_live_call=True if args.one_live_call else None,
     )
     print(result.audit_text)
     if result.runner_status in (PREFLIGHT_ONLY_PASS, DRY_RUN_READY, MOCK_CALLED_ONCE, "called_once", "dry_run_ready"):
         return 0
     if result.canary_report and result.canary_report.get("canary_status") == "dry_run_ready":
         return 0
+    if result.canary_report and result.canary_report.get("canary_status") == "api_error":
+        return 1
     return 1

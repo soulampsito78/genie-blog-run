@@ -14,6 +14,36 @@ from keysuri_daily_wardrobe_resolver import (
     resolve_keysuri_daily_wardrobe,
 )
 from keysuri_weather_binding_integration import build_keysuri_weather_binding_integration_report
+from keysuri_r5d_manual_canary import (
+    R5D_APPROVED_MANUAL_OVERRIDE_PASS,
+    R5D_CANARY_PROFILES,
+    VISUAL_QA_STATUS as R5D_VISUAL_QA_STATUS,
+    build_r5d_opt_in_prompt_source,
+    check_r5d_default_prompt_unchanged,
+    is_r5d_v2_profile_id,
+    resolve_r5d_canary_target,
+    validate_r5d_positive_prompt,
+)
+from keysuri_r5e_manual_canary import (
+    R5E_APPROVED_STRUCTURE_VARIATION_PASS,
+    R5E_CANARY_PROFILES,
+    VISUAL_QA_STATUS as R5E_VISUAL_QA_STATUS,
+    build_r5e_opt_in_prompt_source,
+    check_r5e_default_prompt_unchanged,
+    is_r5e_v3_profile_id,
+    resolve_r5e_canary_target,
+    validate_r5e_positive_prompt,
+)
+from keysuri_r5f_manual_canary import (
+    R5F_APPROVED_STRUCTURE_VARIATION_PASS,
+    R5F_CANARY_PROFILES,
+    VISUAL_QA_STATUS as R5F_VISUAL_QA_STATUS,
+    build_r5f_opt_in_prompt_source,
+    check_r5f_default_prompt_unchanged,
+    is_r5f_v4_profile_id,
+    resolve_r5f_canary_target,
+    validate_r5f_positive_prompt,
+)
 from keysuri_weather_visual_prompt_integration import (
     build_keysuri_weather_visual_prompt_contract,
     build_keysuri_weather_visual_prompt_report_from_canary_lock,
@@ -494,6 +524,495 @@ def _validate_manual_approval(
     return not issues, issues
 
 
+def _run_r5d_manual_canary_preflight(
+    *,
+    date_str: str,
+    pid: str,
+    approval: ManualCanaryApproval | None,
+    resolved_path: Path,
+    baseline_reference_path: str | None,
+    baseline_file_exists: bool | None,
+    check_baseline_exists: bool,
+) -> ManualCanaryPreflightResult:
+    """Offline preflight for R5D v2 failure-history canary (NOT_ACCEPTED — not v1 resolver)."""
+    issues: List[PreflightIssue] = []
+    warnings: List[PreflightIssue] = []
+
+    if approval is None:
+        return ManualCanaryPreflightResult(
+            status=BLOCK_LIVE_CALL,
+            target_date=date_str,
+            program_id=pid,
+            wardrobe_profile_id=None,
+            daily_wardrobe_seed=None,
+            wardrobe_clause=None,
+            default_prompt_unchanged=False,
+            opt_in_prompt_changed=False,
+            production_flags_false=False,
+            manual_approval_valid=False,
+            review_required=False,
+            new_visual_qa_required=True,
+            baseline_reference_path=baseline_reference_path,
+            baseline_file_exists=baseline_file_exists,
+            issues=tuple(issues),
+            warnings=tuple(warnings),
+        )
+
+    if not is_r5d_v2_profile_id(approval.expected_wardrobe_profile_id):
+        issues.append(
+            _issue(
+                "r5d_profile_required",
+                "R5D failure-history requires a profile_v2_* wardrobe profile id (NOT_ACCEPTED)",
+                "approval.expected_wardrobe_profile_id",
+            )
+        )
+
+    target, target_issues = resolve_r5d_canary_target(
+        wardrobe_date_kst=date_str,
+        program_id=pid,
+        wardrobe_profile_id=approval.expected_wardrobe_profile_id,
+        expected_daily_wardrobe_seed=approval.expected_daily_wardrobe_seed,
+    )
+    for msg in target_issues:
+        code = msg.split("]", 1)[0].lstrip("[")
+        issues.append(_issue(code, msg, "r5d_target"))
+
+    wardrobe_profile_id = target.wardrobe_profile_id if target else None
+    daily_wardrobe_seed = target.daily_wardrobe_seed if target else None
+    wardrobe_clause = target.wardrobe_clause if target else None
+
+    default_prompt_unchanged = False
+    opt_in_prompt_changed = False
+    if target is not None:
+        default_prompt_unchanged = check_r5d_default_prompt_unchanged(str(resolved_path), pid, date_str)
+        if not default_prompt_unchanged:
+            issues.append(
+                _issue(
+                    "default_prompt_injected",
+                    "default contract must remain unchanged while R5D opt-in runs",
+                    "daily_wardrobe.wardrobe_prompt_injected",
+                )
+            )
+        try:
+            prompt_source = build_r5d_opt_in_prompt_source(
+                lock_path=str(resolved_path),
+                program_id=pid,
+                wardrobe_date_kst=date_str,
+                wardrobe_profile_id=target.wardrobe_profile_id,
+                daily_wardrobe_seed=target.daily_wardrobe_seed,
+            )
+        except ValueError as exc:
+            issues.append(_issue("r5d_prompt_build_failed", str(exc), "r5d_prompt"))
+            prompt_source = None
+
+        if prompt_source is not None:
+            default_contract, _ = _build_contracts(resolved_path, pid, date_str)
+            opt_in_prompt = str(prompt_source.get("positive_prompt") or "")
+            default_prompt = str(default_contract.get("positive_prompt") or "")
+            opt_in_prompt_changed = default_prompt != opt_in_prompt
+            if not opt_in_prompt_changed:
+                issues.append(
+                    _issue(
+                        "r5d_prompt_unchanged",
+                        "R5D opt-in prompt must differ from default prompt",
+                        "positive_prompt",
+                    )
+                )
+            for msg in validate_r5d_positive_prompt(opt_in_prompt):
+                issues.append(_issue("r5d_prompt_invalid", msg, "positive_prompt"))
+
+    production_flags_false, flag_issues = _check_production_flags(resolved_path)
+    issues.extend(flag_issues)
+
+    if approval is not None and target is not None:
+        _, approval_issues = _validate_manual_approval(
+            approval,
+            date_str,
+            pid,
+            target.wardrobe_profile_id,
+            target.daily_wardrobe_seed,
+        )
+        issues.extend(approval_issues)
+
+    warnings.append(
+        _issue(
+            "r5d_not_accepted",
+            f"R5D is failure-history only (visual_qa_status={R5D_VISUAL_QA_STATUS}); not an accepted creative path",
+            "visual_qa_status",
+        )
+    )
+    if target is not None:
+        profile_meta = R5D_CANARY_PROFILES.get(target.wardrobe_profile_id, {})
+        qa_reason = profile_meta.get("visual_qa_reason")
+        if qa_reason:
+            warnings.append(
+                _issue(
+                    "r5d_visual_qa_reason",
+                    str(qa_reason),
+                    "visual_qa_reason",
+                )
+            )
+
+    if issues:
+        status = FAIL
+        manual_approval_valid = False
+    else:
+        status = R5D_APPROVED_MANUAL_OVERRIDE_PASS
+        manual_approval_valid = True
+        warnings.append(
+            _issue(
+                "manual_one_call_only",
+                "approval authorizes one manual image call only; no retry, batch, Scheduler, or production wiring",
+                "approval",
+            )
+        )
+
+    return ManualCanaryPreflightResult(
+        status=status,
+        target_date=date_str,
+        program_id=pid,
+        wardrobe_profile_id=wardrobe_profile_id,
+        daily_wardrobe_seed=daily_wardrobe_seed,
+        wardrobe_clause=wardrobe_clause,
+        default_prompt_unchanged=default_prompt_unchanged,
+        opt_in_prompt_changed=opt_in_prompt_changed,
+        production_flags_false=production_flags_false,
+        manual_approval_valid=manual_approval_valid,
+        review_required=False,
+        new_visual_qa_required=True,
+        baseline_reference_path=baseline_reference_path,
+        baseline_file_exists=baseline_file_exists,
+        issues=tuple(issues),
+        warnings=tuple(warnings),
+    )
+
+
+def _run_r5f_manual_canary_preflight(
+    *,
+    date_str: str,
+    pid: str,
+    approval: ManualCanaryApproval | None,
+    resolved_path: Path,
+    baseline_reference_path: str | None,
+    baseline_file_exists: bool | None,
+    check_baseline_exists: bool,
+) -> ManualCanaryPreflightResult:
+    """Offline preflight for R5F v4 accepted-direction canary (PASS_DIRECTION — not production resolver)."""
+    issues: List[PreflightIssue] = []
+    warnings: List[PreflightIssue] = []
+
+    if approval is None:
+        return ManualCanaryPreflightResult(
+            status=BLOCK_LIVE_CALL,
+            target_date=date_str,
+            program_id=pid,
+            wardrobe_profile_id=None,
+            daily_wardrobe_seed=None,
+            wardrobe_clause=None,
+            default_prompt_unchanged=False,
+            opt_in_prompt_changed=False,
+            production_flags_false=False,
+            manual_approval_valid=False,
+            review_required=False,
+            new_visual_qa_required=True,
+            baseline_reference_path=baseline_reference_path,
+            baseline_file_exists=baseline_file_exists,
+            issues=tuple(issues),
+            warnings=tuple(warnings),
+        )
+
+    if not is_r5f_v4_profile_id(approval.expected_wardrobe_profile_id):
+        issues.append(
+            _issue(
+                "r5f_profile_required",
+                "R5F structure variation requires a profile_v4_* wardrobe profile id",
+                "approval.expected_wardrobe_profile_id",
+            )
+        )
+
+    target, target_issues = resolve_r5f_canary_target(
+        wardrobe_date_kst=date_str,
+        program_id=pid,
+        wardrobe_profile_id=approval.expected_wardrobe_profile_id,
+        expected_daily_wardrobe_seed=approval.expected_daily_wardrobe_seed,
+    )
+    for msg in target_issues:
+        code = msg.split("]", 1)[0].lstrip("[")
+        issues.append(_issue(code, msg, "r5f_target"))
+
+    wardrobe_profile_id = target.wardrobe_profile_id if target else None
+    daily_wardrobe_seed = target.daily_wardrobe_seed if target else None
+    wardrobe_clause = target.wardrobe_clause if target else None
+
+    default_prompt_unchanged = False
+    opt_in_prompt_changed = False
+    if target is not None:
+        default_prompt_unchanged = check_r5f_default_prompt_unchanged(str(resolved_path), pid, date_str)
+        if not default_prompt_unchanged:
+            issues.append(
+                _issue(
+                    "default_prompt_injected",
+                    "default contract must remain unchanged while R5F opt-in runs",
+                    "daily_wardrobe.wardrobe_prompt_injected",
+                )
+            )
+        try:
+            prompt_source = build_r5f_opt_in_prompt_source(
+                lock_path=str(resolved_path),
+                program_id=pid,
+                wardrobe_date_kst=date_str,
+                wardrobe_profile_id=target.wardrobe_profile_id,
+                daily_wardrobe_seed=target.daily_wardrobe_seed,
+            )
+        except ValueError as exc:
+            issues.append(_issue("r5f_prompt_build_failed", str(exc), "r5f_prompt"))
+            prompt_source = None
+
+        if prompt_source is not None:
+            default_contract, _ = _build_contracts(resolved_path, pid, date_str)
+            opt_in_prompt = str(prompt_source.get("positive_prompt") or "")
+            default_prompt = str(default_contract.get("positive_prompt") or "")
+            opt_in_prompt_changed = default_prompt != opt_in_prompt
+            if not opt_in_prompt_changed:
+                issues.append(
+                    _issue(
+                        "r5f_prompt_unchanged",
+                        "R5F opt-in prompt must differ from default prompt",
+                        "positive_prompt",
+                    )
+                )
+            for msg in validate_r5f_positive_prompt(opt_in_prompt):
+                issues.append(_issue("r5f_prompt_invalid", msg, "positive_prompt"))
+
+    production_flags_false, flag_issues = _check_production_flags(resolved_path)
+    issues.extend(flag_issues)
+
+    if approval is not None and target is not None:
+        _, approval_issues = _validate_manual_approval(
+            approval,
+            date_str,
+            pid,
+            target.wardrobe_profile_id,
+            target.daily_wardrobe_seed,
+        )
+        issues.extend(approval_issues)
+
+    warnings.append(
+        _issue(
+            "r5f_pass_direction",
+            f"R5F is the accepted direction candidate (visual_qa_status={R5F_VISUAL_QA_STATUS}); canary-only, not production resolver",
+            "visual_qa_status",
+        )
+    )
+    if target is not None:
+        profile_meta = R5F_CANARY_PROFILES.get(target.wardrobe_profile_id, {})
+        qa_reason = profile_meta.get("visual_qa_reason")
+        if qa_reason:
+            warnings.append(
+                _issue(
+                    "r5f_visual_qa_reason",
+                    str(qa_reason),
+                    "visual_qa_reason",
+                )
+            )
+
+    if issues:
+        status = FAIL
+        manual_approval_valid = False
+    else:
+        status = R5F_APPROVED_STRUCTURE_VARIATION_PASS
+        manual_approval_valid = True
+        warnings.append(
+            _issue(
+                "manual_one_call_only",
+                "approval authorizes one manual image call only; no retry, batch, Scheduler, or production wiring",
+                "approval",
+            )
+        )
+
+    return ManualCanaryPreflightResult(
+        status=status,
+        target_date=date_str,
+        program_id=pid,
+        wardrobe_profile_id=wardrobe_profile_id,
+        daily_wardrobe_seed=daily_wardrobe_seed,
+        wardrobe_clause=wardrobe_clause,
+        default_prompt_unchanged=default_prompt_unchanged,
+        opt_in_prompt_changed=opt_in_prompt_changed,
+        production_flags_false=production_flags_false,
+        manual_approval_valid=manual_approval_valid,
+        review_required=False,
+        new_visual_qa_required=True,
+        baseline_reference_path=baseline_reference_path,
+        baseline_file_exists=baseline_file_exists,
+        issues=tuple(issues),
+        warnings=tuple(warnings),
+    )
+
+
+def _run_r5e_manual_canary_preflight(
+    *,
+    date_str: str,
+    pid: str,
+    approval: ManualCanaryApproval | None,
+    resolved_path: Path,
+    baseline_reference_path: str | None,
+    baseline_file_exists: bool | None,
+    check_baseline_exists: bool,
+) -> ManualCanaryPreflightResult:
+    """Offline preflight for R5E v3 failure-history canary (REVIEW_NOT_ACCEPTED — not production resolver)."""
+    issues: List[PreflightIssue] = []
+    warnings: List[PreflightIssue] = []
+
+    if approval is None:
+        return ManualCanaryPreflightResult(
+            status=BLOCK_LIVE_CALL,
+            target_date=date_str,
+            program_id=pid,
+            wardrobe_profile_id=None,
+            daily_wardrobe_seed=None,
+            wardrobe_clause=None,
+            default_prompt_unchanged=False,
+            opt_in_prompt_changed=False,
+            production_flags_false=False,
+            manual_approval_valid=False,
+            review_required=False,
+            new_visual_qa_required=True,
+            baseline_reference_path=baseline_reference_path,
+            baseline_file_exists=baseline_file_exists,
+            issues=tuple(issues),
+            warnings=tuple(warnings),
+        )
+
+    if not is_r5e_v3_profile_id(approval.expected_wardrobe_profile_id):
+        issues.append(
+            _issue(
+                "r5e_profile_required",
+                "R5E failure-history requires a profile_v3_* wardrobe profile id (REVIEW_NOT_ACCEPTED)",
+                "approval.expected_wardrobe_profile_id",
+            )
+        )
+
+    target, target_issues = resolve_r5e_canary_target(
+        wardrobe_date_kst=date_str,
+        program_id=pid,
+        wardrobe_profile_id=approval.expected_wardrobe_profile_id,
+        expected_daily_wardrobe_seed=approval.expected_daily_wardrobe_seed,
+    )
+    for msg in target_issues:
+        code = msg.split("]", 1)[0].lstrip("[")
+        issues.append(_issue(code, msg, "r5e_target"))
+
+    wardrobe_profile_id = target.wardrobe_profile_id if target else None
+    daily_wardrobe_seed = target.daily_wardrobe_seed if target else None
+    wardrobe_clause = target.wardrobe_clause if target else None
+
+    default_prompt_unchanged = False
+    opt_in_prompt_changed = False
+    if target is not None:
+        default_prompt_unchanged = check_r5e_default_prompt_unchanged(str(resolved_path), pid, date_str)
+        if not default_prompt_unchanged:
+            issues.append(
+                _issue(
+                    "default_prompt_injected",
+                    "default contract must remain unchanged while R5E opt-in runs",
+                    "daily_wardrobe.wardrobe_prompt_injected",
+                )
+            )
+        try:
+            prompt_source = build_r5e_opt_in_prompt_source(
+                lock_path=str(resolved_path),
+                program_id=pid,
+                wardrobe_date_kst=date_str,
+                wardrobe_profile_id=target.wardrobe_profile_id,
+                daily_wardrobe_seed=target.daily_wardrobe_seed,
+            )
+        except ValueError as exc:
+            issues.append(_issue("r5e_prompt_build_failed", str(exc), "r5e_prompt"))
+            prompt_source = None
+
+        if prompt_source is not None:
+            default_contract, _ = _build_contracts(resolved_path, pid, date_str)
+            opt_in_prompt = str(prompt_source.get("positive_prompt") or "")
+            default_prompt = str(default_contract.get("positive_prompt") or "")
+            opt_in_prompt_changed = default_prompt != opt_in_prompt
+            if not opt_in_prompt_changed:
+                issues.append(
+                    _issue(
+                        "r5e_prompt_unchanged",
+                        "R5E opt-in prompt must differ from default prompt",
+                        "positive_prompt",
+                    )
+                )
+            for msg in validate_r5e_positive_prompt(opt_in_prompt):
+                issues.append(_issue("r5e_prompt_invalid", msg, "positive_prompt"))
+
+    production_flags_false, flag_issues = _check_production_flags(resolved_path)
+    issues.extend(flag_issues)
+
+    if approval is not None and target is not None:
+        _, approval_issues = _validate_manual_approval(
+            approval,
+            date_str,
+            pid,
+            target.wardrobe_profile_id,
+            target.daily_wardrobe_seed,
+        )
+        issues.extend(approval_issues)
+
+    warnings.append(
+        _issue(
+            "r5e_review_not_accepted",
+            f"R5E is failure-history only (visual_qa_status={R5E_VISUAL_QA_STATUS}); not an accepted creative path",
+            "visual_qa_status",
+        )
+    )
+    if target is not None:
+        profile_meta = R5E_CANARY_PROFILES.get(target.wardrobe_profile_id, {})
+        qa_reason = profile_meta.get("visual_qa_reason")
+        if qa_reason:
+            warnings.append(
+                _issue(
+                    "r5e_visual_qa_reason",
+                    str(qa_reason),
+                    "visual_qa_reason",
+                )
+            )
+
+    if issues:
+        status = FAIL
+        manual_approval_valid = False
+    else:
+        status = R5E_APPROVED_STRUCTURE_VARIATION_PASS
+        manual_approval_valid = True
+        warnings.append(
+            _issue(
+                "manual_one_call_only",
+                "approval authorizes one manual image call only; no retry, batch, Scheduler, or production wiring",
+                "approval",
+            )
+        )
+
+    return ManualCanaryPreflightResult(
+        status=status,
+        target_date=date_str,
+        program_id=pid,
+        wardrobe_profile_id=wardrobe_profile_id,
+        daily_wardrobe_seed=daily_wardrobe_seed,
+        wardrobe_clause=wardrobe_clause,
+        default_prompt_unchanged=default_prompt_unchanged,
+        opt_in_prompt_changed=opt_in_prompt_changed,
+        production_flags_false=production_flags_false,
+        manual_approval_valid=manual_approval_valid,
+        review_required=False,
+        new_visual_qa_required=True,
+        baseline_reference_path=baseline_reference_path,
+        baseline_file_exists=baseline_file_exists,
+        issues=tuple(issues),
+        warnings=tuple(warnings),
+    )
+
+
 def run_keysuri_manual_canary_preflight(
     *,
     wardrobe_date_kst: str,
@@ -502,6 +1021,9 @@ def run_keysuri_manual_canary_preflight(
     lock_path: str | Path | None = None,
     check_global_korea_parity: bool = True,
     check_baseline_exists: bool = False,
+    r5d_creative_variation: bool = False,
+    r5e_structure_variation: bool = False,
+    r5f_structure_variation: bool = False,
 ) -> ManualCanaryPreflightResult:
     """Run offline preflight for a single manual opt-in wardrobe canary candidate."""
     issues: List[PreflightIssue] = []
@@ -566,6 +1088,39 @@ def run_keysuri_manual_canary_preflight(
             baseline_file_exists=baseline_file_exists,
             issues=tuple(issues),
             warnings=tuple(warnings),
+        )
+
+    if r5f_structure_variation:
+        return _run_r5f_manual_canary_preflight(
+            date_str=date_str,
+            pid=pid,
+            approval=approval,
+            resolved_path=resolved_path,
+            baseline_reference_path=baseline_reference_path,
+            baseline_file_exists=baseline_file_exists,
+            check_baseline_exists=check_baseline_exists,
+        )
+
+    if r5e_structure_variation:
+        return _run_r5e_manual_canary_preflight(
+            date_str=date_str,
+            pid=pid,
+            approval=approval,
+            resolved_path=resolved_path,
+            baseline_reference_path=baseline_reference_path,
+            baseline_file_exists=baseline_file_exists,
+            check_baseline_exists=check_baseline_exists,
+        )
+
+    if r5d_creative_variation:
+        return _run_r5d_manual_canary_preflight(
+            date_str=date_str,
+            pid=pid,
+            approval=approval,
+            resolved_path=resolved_path,
+            baseline_reference_path=baseline_reference_path,
+            baseline_file_exists=baseline_file_exists,
+            check_baseline_exists=check_baseline_exists,
         )
 
     try:
