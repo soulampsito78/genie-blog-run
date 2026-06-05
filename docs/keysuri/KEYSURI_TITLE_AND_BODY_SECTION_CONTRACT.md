@@ -10,6 +10,8 @@ It is built from:
 |-------|-----------------|
 | `docs/keysuri/KEYSURI_TERMINOLOGY_LOCK.md` | `23bed0b` — locked section labels and identity terms |
 | `docs/keysuri/KEYSURI_PROTOTYPE_PUBLICATION_LOGIC_FLOW_EXTRACTION.md` | `cd66dca` — prototype logic-flow assets |
+| `docs/keysuri/KEYSURI_TITLE_BODY_SAMPLE_GLOBAL_TECH_V0.md` | `02d703e` — global contract validation sample |
+| Korea 18:30 HTML preview (validated) | `output/keysuri_preview/html_test/keysuri_korea_1830_bottom_close_sample_revised_20260605_130753.html` — validation **PASS** |
 | Scheduler / promotion / prompt-direction boundaries | `1b23bcf`, `07a98ac`, `8313281` |
 
 Clarifications:
@@ -36,10 +38,13 @@ Code-aligned sources (reference only — no code changes in this document):
 |------|--------|
 | Title / subject direction | Structural movement, currentness, business relevance |
 | Opening lead structure | Signal-first, not greeting-first |
-| TOP 5 item text structure | Signal capture per global/korea scope |
-| **키수리의 딥-다이브** logic | Structural interpretation + side effects + direction |
+| TOP 5 item text structure | Signal capture per global/korea scope + item-level source display |
+| **키수리의 딥-다이브** logic | Structural interpretation + side effects + direction + mobile layer formatting |
 | **원-라인 체크포인트** function | Executive decision cue |
 | **마무리 및 출처 리스트** function | Controlled close + provenance |
+| Rights policy footer | Required visible legal/copyright block |
+| Hashtag policy | Not required at this stage |
+| HTML preview validation | Validation result box rules for `output/keysuri_preview/html_test/` |
 | 18:30 domestic bottom-shot warm closing | Placement rule (promotion-gated) |
 | Model / renderer / server responsibility split | Who owns what |
 
@@ -87,8 +92,17 @@ Step 7: 원-라인 체크포인트
 Step 8: [18:30 Korea only — bottom-shot production-promoted]
         → warm farewell below domestic bottom-shot (§11)
 
-Step 9: 마무리 및 출처 리스트 / operation metadata
-        → closing_message + source_list; server metadata separate
+Step 9: 마무리 및 출처 리스트
+        → closing_message + source_list summary
+
+Step 10: Rights policy footer
+        → MirAI:ON copyright block (§13)
+
+Step 11: Operation metadata
+        → server-rendered review/send flags
+
+Step 12: [HTML preview only] Validation result box
+        → honest PASS/FAIL (§15)
 ```
 
 **Programs:**
@@ -202,18 +216,47 @@ Sentence 3: What lens should the reader use today?
 
 Do not use generic **TOP 5** or prototype-era **TOP 3** as production headings.
 
-### 6.3 Each item must include
+### 6.3 Required item fields
 
-| Element | Purpose |
-|---------|---------|
-| Entity / company / institution | Who moved |
-| Action or event | What happened |
-| Consequence | What shifts downstream |
-| `why_it_matters` | Stakes for the reader |
-| `business_implication` | Work / money / platform read |
-| `risk_note` (optional) | Secondary pressure if needed |
+Every **글로벌 테크 TOP 5** and **국내 테크 TOP 5** item must include:
 
-### 6.4 Preferred item rhythm
+| Field | Required | Purpose |
+|-------|----------|---------|
+| `headline` | Yes | Entity + action + consequence |
+| `what_happened` | Yes | What moved |
+| `why_it_matters` | Yes | Stakes for the reader |
+| `business_implication` | Yes | Work / money / platform read |
+| `risk_note` | Optional | Secondary pressure if needed |
+| `source_name` | Yes | Provenance label — displayed in item block |
+| `source_url` | Yes | Source URL — displayed in item block |
+| `checked_at` / 기준시각 | When available | Sample or runtime timestamp |
+| `verification_status` | Yes | e.g. `sample_only` / `not_verified` — display required; verification separate |
+
+**Applies to both** `keysuri_global_tech` and `keysuri_korea_tech`. Item-level source display is a contract requirement validated in the Korea 18:30 HTML preview (`validation_status: PASS`).
+
+### 6.4 Item-level source display rules
+
+| Rule | Detail |
+|------|--------|
+| Display location | `source_name` and `source_url` must appear **inside each TOP 5 item block** |
+| Source display | **Required** — provenance visible per signal |
+| Source verification | **Separate** — display does not imply fact-checking or approval |
+| Bottom list | **마무리 및 출처 리스트** may summarize or repeat item-level sources — does **not** replace item-level display |
+| URL dominance | Source URL must **not** dominate the article visually |
+| Reading flow | Source metadata must appear **after** `why_it_matters` / `business_implication` — must not interrupt interpretation flow |
+| All URLs at bottom only | **Forbidden** as sole source pattern |
+
+**Preferred visible layout inside each item:**
+
+```
+출처:
+- 출처명: {source_name}
+- URL: {source_url}
+- 기준시각: {checked_at} (when available)
+- 검증 상태: {verification_status}
+```
+
+### 6.5 Preferred item rhythm
 
 ```
 A. What happened
@@ -221,17 +264,19 @@ B. Why it matters
 C. What side effect may follow
 ```
 
-### 6.5 Title shape per item (preferred)
+### 6.6 Title shape per item (preferred)
 
 **Entity + action + consequence** — e.g. who did what, and what pressure follows.
 
-### 6.6 Do not
+### 6.7 Do not
 
-- Lead with source-heavy display before interpretation
+- Lead with source-heavy display **before** interpretation
+- Place all source URLs **only** at the bottom without item-level sources
 - Write generic news digest bullets
 - Use scope-less **TOP 5** heading
 - Turn into Today_Geenee market summary
 - Use **오늘의 핵심 신호** as section replacement
+- Treat source display as source verification
 
 ---
 
@@ -285,6 +330,42 @@ Do not substitute **키수리의 딥-다이브** with:
 - **심층 분석**
 - **원-다이브** / **One-Dive**
 - Generic analysis headings
+
+### 7.7 Mobile-readable layer formatting
+
+When **키수리의 딥-다이브** analysis becomes dense, it **must** support numbered layer formatting. **Mobile readability is a contract requirement**, not merely renderer styling.
+
+**Recommended format:**
+
+```
+1. {first structural layer}
+2. {second structural layer}
+3. {third structural layer}
+```
+
+**Korea 18:30 validated layer model** (accepted in HTML preview — `validation_status: PASS`):
+
+| Layer | Title |
+|-------|-------|
+| 1 | **물리·인프라 병목** |
+| 2 | **규제·주권·조달 압력** |
+| 3 | **워크플로·락인** |
+
+Global 12:30 briefings may use equivalent three-layer structure when density requires it — layer titles should match the day's structural movement, not copy Korea labels blindly.
+
+**Rules:**
+
+| Rule | Detail |
+|------|--------|
+| Paragraph length | Short paragraphs — avoid blocks longer than 3–4 lines on mobile |
+| Structure | Use numbered layer headings, card-like blocks, or subtle separators |
+| Text walls | **Forbidden** — no single giant paragraph for dense analysis |
+| Directional close | Closing judgment line may follow the 1/2/3 layers |
+| CSS / renderer | `.deep-layer`, numbered headings, leverage notes — renderer implements; contract requires readable structure |
+
+**Example closing line** (after layers):
+
+> 진입 장벽은 모델 품질만이 아니라 인프라·정책·라우팅 스택에서 높아지고 있습니다.
 
 ---
 
@@ -368,18 +449,42 @@ Each **키수리의 딥-다이브** should identify **at least one** side-effect
 - `scheduler_allowed=false`, `ready_for_scheduler=false` (`1b23bcf`)
 - No email attachment wiring for Kee-Suri bottom-shot
 
-**Text rhythm:**
+**Text rhythm — global 12:30 (`keysuri_global_tech`):**
 
 ```
 [top-shot — when wired]
 [opening lead]
-[TOP 5]
-[키수리의 딥-다이브]
+[글로벌 테크 TOP 5 — item-level sources inside each item]
+[키수리의 딥-다이브 — layered when dense]
 [원-라인 체크포인트]
-[bottom-shot — 18:30 only, when production-promoted]
-[warm close — §11, when production-promoted]
 [마무리 및 출처 리스트]
+[rights policy footer — §13]
+[operation metadata]
+[validation result box — HTML preview only, §15]
 ```
+
+**Text rhythm — Korea 18:30 (`keysuri_korea_tech`)** — validated order:
+
+```
+[top-shot — when wired]
+[opening lead]
+[국내 테크 TOP 5 — item-level sources inside each item]
+[키수리의 딥-다이브 — 1/2/3 layered when dense]
+[원-라인 체크포인트]
+[18:30 bottom-shot — placeholder or production-promoted image]
+[국내 18:30 따뜻한 마무리 — §11, when production-promoted]
+[마무리 및 출처 리스트]
+[rights policy footer — §13]
+[operation metadata]
+[validation result box — HTML preview only, §15]
+```
+
+**Placement rules (Korea 18:30 — validated):**
+
+- Bottom-shot comes **before** warm close
+- Warm close comes **below** bottom-shot
+- Warm close comes **before** **마무리 및 출처 리스트**
+- Rights policy comes **after** **마무리 및 출처 리스트** and **before** operation metadata
 
 ---
 
@@ -397,10 +502,23 @@ Each **키수리의 딥-다이브** should identify **at least one** side-effect
 
 ### 11.2 Placement
 
-- **Below** domestic bottom-shot image
-- **Before** **마무리 및 출처 리스트** / operation metadata (if renderer policy allows)
+- **Below** domestic bottom-shot image (or bottom-shot placeholder in preview)
+- **Above** **마무리 및 출처 리스트**
+- **Before** rights policy footer (§13) and operation metadata
 - Must **not** replace **원-라인 체크포인트**
 - Must **not** replace **마무리 및 출처 리스트**
+
+**Confirmed Korea 18:30 order** (validated HTML preview):
+
+```
+원-라인 체크포인트
+  → 18:30 bottom-shot
+  → 국내 18:30 따뜻한 마무리
+  → 마무리 및 출처 리스트
+  → rights policy footer
+  → operation metadata
+  → validation result box (preview only)
+```
 
 ### 11.3 Copy (owner-locked)
 
@@ -462,9 +580,143 @@ Until resolved: schema and validators use **`마무리 및 출처 리스트`** e
 
 ---
 
-## 13. Product language guardrails
+## 13. Rights policy footer
 
-### 13.1 Use
+### 13.1 Required visible text
+
+Every Kee-Suri preview and customer-facing output must include this **exact** visible text:
+
+```
+Copyright Ⓒ MirAI:ON. All rights reserved.
+무단 전재, 재배포 및 AI학습 이용 절대 금지
+```
+
+Validated in Korea 18:30 HTML preview (`validation_status: PASS`).
+
+### 13.2 Rules
+
+| Rule | Detail |
+|------|--------|
+| Visibility | Must be **visible** — not hidden in comments or metadata |
+| Placement | **After** **마무리 및 출처 리스트** |
+| Placement | **Before** operation metadata |
+| Source list | Must **not** replace **마무리 및 출처 리스트** or item-level sources |
+| Styling | Small but clearly visible legal/copyright footer — premium neutral tone |
+| Operation metadata | Must **not** look like operation metadata box |
+| Global + Korea | Applies to both programs in preview/output surfaces |
+
+---
+
+## 14. Hashtag policy
+
+| Rule | Detail |
+|------|--------|
+| Current stage | **Hashtags are not required** for Kee-Suri preview/output |
+| Default | Do **not** add a hashtag section by default |
+| Hashtag list | Do **not** include `#키수리` or social hashtag lists unless separately approved |
+| Future change | If hashtags are introduced later, require **separate owner approval** and contract update |
+
+Validated: Korea 18:30 HTML preview contains **no hashtag section** (`no_hashtags: PASS`).
+
+---
+
+## 15. HTML preview validation
+
+### 15.1 Scope
+
+Every generated HTML preview under `output/keysuri_preview/html_test/` must include a **visible validation result box**.
+
+Reference validated preview:
+
+`output/keysuri_preview/html_test/keysuri_korea_1830_bottom_close_sample_revised_20260605_130753.html`
+
+### 15.2 Validation result box — required fields
+
+| Field | Values |
+|-------|--------|
+| `validation_status` | `PASS` or `FAIL` — must be honest |
+| `validation_timestamp` | Generation/check time |
+| `required_sections` | `PASS` / `FAIL` |
+| `top5_sources` | `PASS` / `FAIL` |
+| `deep_dive_readability` | `PASS` / `FAIL` |
+| `rights_policy` | `PASS` / `FAIL` |
+| `no_hashtags` | `PASS` / `FAIL` |
+| `no_production_implication` | `PASS` / `FAIL` |
+
+If any required check fails: `validation_status` must be **`FAIL`**, failed checks reported explicitly — **do not silently claim PASS**.
+
+### 15.3 Validation checks
+
+**A. File validation**
+
+- New HTML file exists under `output/keysuri_preview/html_test/`
+- Filename includes timestamp to seconds (e.g. `_YYYYMMDD_HHMMSS.html`)
+- File is not empty
+- Valid basic HTML structure: `<!DOCTYPE html>`, `<html>`, `<head>`, `<body>`
+
+**B. Required section validation**
+
+- Preview metadata
+- **테크 비서 키수리**
+- **글로벌 테크 TOP 5** or **국내 테크 TOP 5** (per program)
+- **키수리의 딥-다이브**
+- **원-라인 체크포인트**
+- 18:30 bottom-shot preview placeholder (Korea preview)
+- **국내 18:30 따뜻한 마무리** (Korea preview)
+- **마무리 및 출처 리스트**
+- Operation metadata
+- Contract compliance checklist
+- Validation result box
+
+**C. TOP 5 source validation**
+
+Each of the 5 items must contain:
+
+- `source_name` or 출처명
+- `source_url` or URL
+- `verification_status` or 검증 상태 (`sample_only` / `not_verified`)
+
+**D. 딥-다이브 readability validation**
+
+When analysis is dense:
+
+- Numbered layers exist (e.g. 1 / 2 / 3)
+- Layer titles present (Korea model: 물리·인프라 병목, 규제·주권·조달 압력, 워크플로·락인)
+- Not one giant paragraph block
+- Layer/card/separator structure present
+
+**E. Rights policy validation**
+
+Exact visible text:
+
+```
+Copyright Ⓒ MirAI:ON. All rights reserved.
+무단 전재, 재배포 및 AI학습 이용 절대 금지
+```
+
+**F. Negative validation**
+
+Must **not** contain:
+
+- Hashtag section or `#키수리` hashtag list
+- **테크 앵커** / **뉴스 앵커** as identity
+- Today_Geenee / Tomorrow_Geenee language
+- `production_ready: true`, `scheduler_ready: true`, `email_ready: true`
+- `static/email` image paths
+- Image API output paths presented as production assets
+
+**G. Placement validation (Korea 18:30)**
+
+- Warm close **below** bottom-shot placeholder
+- Rights policy **after** **마무리 및 출처 리스트**
+- Rights policy **before** operation metadata
+- Operation metadata **before** validation result box (validation box last)
+
+---
+
+## 16. Product language guardrails
+
+### 16.1 Use
 
 | Term | Role |
 |------|------|
@@ -482,7 +734,7 @@ Until resolved: schema and validators use **`마무리 및 출처 리스트`** e
 | 리스크 신호 | Risk read |
 | 체크포인트 | Within **원-라인 체크포인트** only — not standalone section rename |
 
-### 13.2 Avoid
+### 16.2 Avoid
 
 | Term / tone | Why |
 |-------------|-----|
@@ -497,7 +749,7 @@ Until resolved: schema and validators use **`마무리 및 출처 리스트`** e
 | Idol fan-service | R6B boundary |
 | demo / staging / E2E / generated result | Customer-facing copy forbidden |
 
-### 13.3 Locked section labels (canonical — use exactly)
+### 16.3 Locked section labels (canonical — use exactly)
 
 - **글로벌 테크 TOP 5**
 - **국내 테크 TOP 5**
@@ -505,7 +757,7 @@ Until resolved: schema and validators use **`마무리 및 출처 리스트`** e
 - **원-라인 체크포인트**
 - **마무리 및 출처 리스트**
 
-### 13.4 Rejected section replacements (never use)
+### 16.4 Rejected section replacements (never use)
 
 - 원-다이브 / One-Dive
 - 원포인트 / One-Point
@@ -518,9 +770,9 @@ Until resolved: schema and validators use **`마무리 및 출처 리스트`** e
 
 ---
 
-## 14. Responsibility split
+## 17. Responsibility split
 
-### 14.1 Model responsible (generation / JSON content)
+### 17.1 Model responsible (generation / JSON content)
 
 | Field / section | Owner |
 |-----------------|-------|
@@ -530,6 +782,10 @@ Until resolved: schema and validators use **`마무리 및 출처 리스트`** e
 | `why_it_matters` | Model |
 | `business_implication` | Model |
 | `risk_note` | Model |
+| `source_name` | Model |
+| `source_url` | Model |
+| `checked_at` / 기준시각 | Model — when available |
+| `verification_status` | Model — display field; verification pipeline separate |
 | **키수리의 딥-다이브** (`body`, `key_implications`) | Model |
 | **원-라인 체크포인트** (`body`) | Model |
 | `closing_message` | Model |
@@ -537,7 +793,7 @@ Until resolved: schema and validators use **`마무리 및 출처 리스트`** e
 
 Model must obey locked `section_heading` values and forbidden rename rules in `keysuri_private_briefing.py`.
 
-### 14.2 Renderer responsible (presentation)
+### 17.2 Renderer responsible (presentation)
 
 | Concern | Owner |
 |---------|-------|
@@ -548,9 +804,13 @@ Model must obey locked `section_heading` values and forbidden rename rules in `k
 | Warm closing placement | Renderer — only if approved (§11) |
 | Operation metadata box placement | Renderer |
 | Source list visual treatment | Renderer |
+| Item-level source box placement | Renderer — after interpretation fields |
+| 딥-다이브 layer/card formatting | Renderer — mobile-readable structure |
+| Rights policy footer placement | Renderer — §13 |
+| Validation result box | Renderer — HTML preview only, §15 |
 | Identity subtitle display | Renderer — `프라이빗 테크 인사이트 브리핑` is renderer candidate only per terminology lock §9 |
 
-### 14.3 Server responsible (runtime / gates)
+### 17.3 Server responsible (runtime / gates)
 
 | Concern | Owner |
 |---------|-------|
@@ -567,7 +827,7 @@ Model must obey locked `section_heading` values and forbidden rename rules in `k
 
 ---
 
-## 15. Acceptance checklist
+## 18. Acceptance checklist
 
 Before treating any generated briefing as contract-compliant:
 
@@ -575,13 +835,18 @@ Before treating any generated briefing as contract-compliant:
 - [ ] Title has opening power and structural movement
 - [ ] Opening is **not** greeting-first
 - [ ] TOP 5 items are **signals**, not article dumps
+- [ ] **TOP 5 item-level source name + URL visible** inside each item
+- [ ] **Source display required** / **source verification separate**
 - [ ] Scope heading matches program (**글로벌** vs **국내**)
 - [ ] **키수리의 딥-다이브** gives structural interpretation — not item recap
+- [ ] **딥-다이브 supports 1/2/3 mobile-readable layer structure** when dense
 - [ ] At least one side-effect category identified when input allows
 - [ ] Directional judgment is bold but bounded — no investment advice
 - [ ] **원-라인 체크포인트** is a **decision cue**, not recap
-- [ ] Source verification remains separate from narrative contract
+- [ ] **Rights policy footer included exactly** (§13)
+- [ ] **No hashtag section by default** (§14)
 - [ ] Domestic warm close limited to **18:30 Korea** slot
+- [ ] **Korea 18:30 warm close placement validated** — below bottom-shot, before 마무리
 - [ ] Friday copy uses weekend / Monday wording
 - [ ] No production implication for unpromoted bottom-shot
 - [ ] No Today / Tomorrow_Geenee bleed
@@ -589,10 +854,12 @@ Before treating any generated briefing as contract-compliant:
 - [ ] Operation metadata does not dominate customer copy
 - [ ] No **원-다이브** / **원포인트** / **One-Dive** / **One-Point** label drift
 - [ ] Body works without images
+- [ ] **HTML preview includes validation result box** (§15)
+- [ ] **Validation status is honest PASS/FAIL**
 
 ---
 
-## 16. Example skeleton
+## 19. Example skeleton
 
 Fillable contract skeleton — placeholders only; not factual claims.
 
@@ -612,29 +879,40 @@ Fillable contract skeleton — placeholders only; not factual claims.
 [글로벌 테크 TOP 5 | 국내 테크 TOP 5]
 
 1. {entity} — {action} — {consequence}
-   - what happened: ...
+   - what_happened: ...
    - why_it_matters: ...
    - business_implication: ...
    - risk_note (if needed): ...
+   [source]
+   - source_name: ...
+   - source_url: ...
+   - checked_at: ...
+   - verification_status: sample_only / not_verified
 
-2. ...
+2. ... (repeat source block per item)
 3. ...
 4. ...
 5. ...
 
 [키수리의 딥-다이브]
 
-P1: 오늘의 TOP 5는 결국 {구조적 움직임}으로 읽힙니다.
-P2: {구조 변화 서술}
-P3: {2차 효과 — 규제/자본/인프라/락인/공급망/보안/워크플로/진입장벽}
-P4: {방향 판단 — watch / hold / prepare}
+Opening: 오늘의 TOP 5는 결국 {구조적 움직임}으로 읽힙니다.
 
-key_implications:
-- ...
-- ...
+1. {first structural layer — e.g. 물리·인프라 병목}
+   - short bullets / leverage notes
+
+2. {second structural layer — e.g. 규제·주권·조달 압력}
+   - short paragraphs
+
+3. {third structural layer — e.g. 워크플로·락인}
+   - watch question
+
+Closing line: 진입 장벽은 모델 품질만이 아니라 인프라·정책·라우팅 스택에서 높아지고 있습니다.
 
 [원-라인 체크포인트]
 {핵심 구조 변화}가 진행되면서, {통제권/진입장벽/기회/위험}은 {어디로} 이동하고 있습니다.
+
+[18:30 bottom-shot — Korea only, placeholder or production-promoted]
 
 [Domestic 18:30 bottom-shot warm close — only if production-promoted]
 
@@ -646,27 +924,41 @@ key_implications:
 
 [마무리 및 출처 리스트]
 closing_message: ...
-source_list:
+source_list (summary — may repeat item-level sources):
 - ...
+
+[Rights policy]
+Copyright Ⓒ MirAI:ON. All rights reserved.
+무단 전재, 재배포 및 AI학습 이용 절대 금지
 
 [Operation metadata]
 server-rendered only — review_required, generated_review_required, run time, send status
+
+[Validation result box — HTML preview only]
+validation_status: PASS | FAIL
+validation_timestamp: ...
+required_sections: PASS | FAIL
+top5_sources: PASS | FAIL
+deep_dive_readability: PASS | FAIL
+rights_policy: PASS | FAIL
+no_hashtags: PASS | FAIL
+no_production_implication: PASS | FAIL
 ```
 
 ---
 
-## 17. Recommended next steps
+## 20. Recommended next steps
 
 | Step | Action | Gate |
 |------|--------|------|
-| 1 | Commit this title/body contract | Operator request |
-| 2 | Create **one sample Kee-Suri body** using this contract | After step 1 |
-| 3 | Owner review of sample against §15 checklist | Before prompt/renderer changes |
-| 4 | Prompt profile / generation prompt alignment | After sample approved |
+| 1 | Commit contract updates with preview validation rules | Operator request |
+| 2 | Align prompt profiles / generation prompts to §6 source fields + §7 layers | After contract commit |
+| 3 | Align renderer to rights policy + validation box for HTML previews | After contract commit |
+| 4 | Owner review global markdown sample + Korea HTML preview | Ongoing |
 | 5 | Renderer warm-close placement | After R6B bottom-shot production promotion |
 | 6 | Scheduler / email wiring | Separate explicit approval (`1b23bcf`) |
 
-**Do not implement renderer or prompt code until the sample body is approved.**
+**Do not implement production renderer or prompt code until owner approves updated contract.**
 
 ---
 
@@ -679,7 +971,11 @@ KEYSURI_PROTOTYPE_PUBLICATION_LOGIC_FLOW_EXTRACTION.md (cd66dca)
         ↓
 KEYSURI_TITLE_AND_BODY_SECTION_CONTRACT.md (this document)
         ↓
-[future] sample body → prompt/renderer alignment
+KEYSURI_TITLE_BODY_SAMPLE_GLOBAL_TECH_V0.md (02d703e)
+        ↓
+Korea 18:30 HTML preview — revised, validated PASS (20260605_130753)
+        ↓
+[future] prompt/renderer alignment
 ```
 
 ## Appendix B — Production boundary reminders
@@ -698,6 +994,17 @@ KEYSURI_TITLE_AND_BODY_SECTION_CONTRACT.md (this document)
 |--------|----------|
 | `23bed0b` | Add Kee-Suri terminology lock |
 | `cd66dca` | Extract Kee-Suri prototype publication logic flow |
+| `af449e0` | Add Kee-Suri title and body section contract |
+| `02d703e` | Add Kee-Suri global tech title-body sample |
 | `8313281` | Update Kee-Suri R6B promotion checklist decision state |
 | `07a98ac` | Record Kee-Suri R6B offduty_02C prompt-direction decision |
 | `1b23bcf` | Document Kee-Suri scheduler state and future wiring design |
+
+## Appendix D — Validated HTML preview reference
+
+| Field | Value |
+|-------|-------|
+| File | `output/keysuri_preview/html_test/keysuri_korea_1830_bottom_close_sample_revised_20260605_130753.html` |
+| Validation | **PASS** |
+| Validated additions | Item-level TOP 5 sources, 딥-다이브 1/2/3 layers, rights policy footer, validation result box, no hashtags |
+| Not committed | Preview artifact — `output/**` gitignored |
