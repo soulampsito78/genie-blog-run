@@ -11,12 +11,19 @@ from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from admin_store import (
+    EXECUTABLE_REISSUE_SCOPE,
+    REISSUE_SCOPES,
+    UNSUPPORTED_REISSUE_SCOPES,
     admin_runs_dir,
+    apply_reissue_child_metadata,
     approve_run,
     can_approve_customer_send,
+    customer_delivery_status_label_ko,
     load_run_artifact,
     load_run_email_html,
     list_run_artifacts,
+    owner_review_email_label_ko,
+    record_parent_reissue_audit,
     validate_run_id,
 )
 from orchestrator import execute_orchestrator_run
@@ -33,6 +40,25 @@ REISSUE_REASONS = (
     "구성 품질 이슈",
     "기타",
 )
+
+REISSUE_SCOPE_OPTIONS = (
+    ("text_only", "본문만 재발행", "텍스트, 제목, 출처, 수치, 문장 흐름만 다시 생성합니다. 기존 이미지는 유지합니다."),
+    ("image_only", "이미지만 재발행", "이미지 프롬프트와 이미지 산출물만 다시 생성합니다. 본문은 유지합니다."),
+    (
+        "text_and_image",
+        "본문·이미지 모두 재발행",
+        "본문과 이미지 산출물을 모두 다시 생성합니다. 전체 방향이 틀렸을 때 선택합니다.",
+    ),
+)
+
+_REISSUE_ERROR_MESSAGES = {
+    "invalid_reissue_scope": "재발행 범위가 올바르지 않습니다.",
+    "missing_reissue_scope": "재발행 범위를 선택하세요.",
+    "unsupported_reissue_scope": (
+        "선택한 재발행 범위는 아직 지원되지 않습니다. "
+        "본문·이미지 모두 재발행만 실행할 수 있습니다."
+    ),
+}
 
 _APPROVE_ERROR_MESSAGES = {
     "already_approved": "이미 승인된 실행입니다.",
@@ -72,6 +98,57 @@ def is_logged_in(request: Request) -> bool:
 
 def _esc(text: object) -> str:
     return html.escape(str(text or ""), quote=True)
+
+
+def _render_delivery_report_sections(meta: dict) -> str:
+    owner_label = owner_review_email_label_ko(meta)
+    delivery_status = str(meta.get("customer_delivery_status") or "not_sent")
+    delivery_label = customer_delivery_status_label_ko(delivery_status)
+    delivery_summary = str(meta.get("customer_delivery_error_summary") or "").strip()
+    delivery_summary_row = ""
+    if delivery_summary:
+        delivery_summary_row = (
+            f"<p style=\"margin:8px 0 0 0;font-size:13px;color:#b91c1c;\">"
+            f"오류 요약: {_esc(delivery_summary)}</p>"
+        )
+    helper = (
+        "<p style=\"margin:8px 0 0 0;font-size:12px;line-height:1.6;color:#64748b;\">"
+        "SMTP 접수는 메일 서버가 발송 요청을 받은 상태입니다. 실제 수신함 도착과는 다를 수 있습니다.<br>"
+        "반송/거절/지연 이벤트는 메일 제공자의 회신 또는 웹훅 기준으로 표시됩니다.<br>"
+        "고객 발송은 운영자 승인 후에만 실행됩니다.<br>"
+        "운영자 검토 메일 발송 상태와 고객 이메일 전달 상태는 별도로 표시됩니다."
+        "</p>"
+    )
+    return f"""
+<div class="card">
+<h2>운영자 검토 메일</h2>
+<p style="margin:0;font-size:14px;"><strong>{_esc(owner_label)}</strong></p>
+<p style="margin:8px 0 0 0;font-size:12px;color:#64748b;">고객 최종 배포와 별도입니다.</p>
+</div>
+<div class="card">
+<h2>고객 이메일 전달</h2>
+<p style="margin:0;font-size:14px;"><strong>{_esc(delivery_label)}</strong>
+<span style="color:#64748b;font-size:12px;"> ({_esc(delivery_status)})</span></p>
+{delivery_summary_row}
+{helper}
+</div>
+"""
+
+
+def _render_reissue_scope_field() -> str:
+    rows = []
+    for scope, label, helper in REISSUE_SCOPE_OPTIONS:
+        disabled = " disabled" if scope in UNSUPPORTED_REISSUE_SCOPES else ""
+        checked = " checked" if scope == EXECUTABLE_REISSUE_SCOPE else ""
+        rows.append(
+            f"<label style=\"display:block;margin:0 0 10px 0;\">"
+            f"<input type=\"radio\" name=\"reissue_scope\" value=\"{_esc(scope)}\" required"
+            f"{disabled}{checked}> "
+            f"<strong>{_esc(label)}</strong>"
+            f"<span style=\"display:block;margin:4px 0 0 24px;font-size:12px;color:#64748b;\">"
+            f"{_esc(helper)}</span></label>"
+        )
+    return "\n".join(rows)
 
 
 def _admin_disabled_response() -> HTMLResponse:
@@ -252,20 +329,28 @@ def admin_run_detail(request: Request, run_id: str):
         warn += (
             f'<div class="warn">승인 실패: {_esc(_APPROVE_ERROR_MESSAGES.get(err_code, err_code))}</div>'
         )
+    if request.query_params.get("reissue_error"):
+        err_code = request.query_params.get("reissue_error", "")
+        warn += (
+            f'<div class="warn">재발행 차단: {_esc(_REISSUE_ERROR_MESSAGES.get(err_code, err_code))}</div>'
+        )
     reason_opts = "".join(
         f'<option value="{_esc(o)}">{_esc(o)}</option>' for o in REISSUE_REASONS
     )
+    delivery_sections = _render_delivery_report_sections(meta)
     meta_rows = "".join(
         f"<dt>{_esc(k)}</dt><dd>{_esc(v)}</dd>"
         for k, v in sorted(meta.items())
-        if k not in ("issue_details",)
+        if k not in ("issue_details", "customer_delivery_events")
     )
+    scope_field = _render_reissue_scope_field()
     inner = f"""
 <div style="display:flex;justify-content:space-between;align-items:center;">
 <h1>실행 상세</h1>
 <a href="/admin/runs">← 목록</a>
 </div>
 {warn}
+{delivery_sections}
 <div class="card">
 <dl class="meta">{meta_rows}</dl>
 <p>{email_link}</p>
@@ -273,11 +358,16 @@ def admin_run_detail(request: Request, run_id: str):
 </div>
 <div class="card warn">
 <strong>재발행 안내</strong><br>
-재발행은 새 브리핑을 생성하고 <strong>운영자 검토용 이메일</strong>을 다시 보냅니다. 고객 최종 배포가 아닙니다.
+재발행은 새 브리핑을 생성하고 <strong>운영자 검토용 이메일</strong>을 다시 보냅니다. 고객 최종 배포가 아닙니다.<br>
+현재 실행 경로는 새 본문 생성과 운영자 검토용 이메일 재발송을 수행합니다. 이미지는 현재 최신 이미지 자산을 재사용할 수 있습니다.<br>
+현재 즉시 실행 가능한 경로는 본문·이미지 모두 재발행입니다. 본문만/이미지만 재발행은 범위 보존 및 병합 로직이 준비된 뒤 활성화됩니다.
 </div>
 <div class="card">
 <h2>재발행 요청</h2>
 <form method="post" action="/admin/runs/{_esc(run_id)}/reissue">
+<label>재발행 범위<br>
+{scope_field}
+</label><br>
 <label>사유<br>
 <select name="reason_option" required>{reason_opts}</select>
 </label><br><br>
@@ -369,6 +459,7 @@ def admin_run_reissue(
     run_id: str,
     reason_option: str = Form(...),
     reason_note: str = Form(""),
+    reissue_scope: str = Form(""),
 ):
     need = _require_login(request)
     if need is not None:
@@ -379,13 +470,36 @@ def admin_run_reissue(
     if not parent:
         return HTMLResponse(_layout("Not found", "<p>원본 실행 기록을 찾을 수 없습니다.</p>"), status_code=404)
 
+    scope = str(reissue_scope or "").strip()
+    if not scope:
+        return RedirectResponse(
+            url=f"/admin/runs/{run_id}?reissue_error=missing_reissue_scope",
+            status_code=303,
+        )
+    if scope not in REISSUE_SCOPES:
+        return RedirectResponse(
+            url=f"/admin/runs/{run_id}?reissue_error=invalid_reissue_scope",
+            status_code=303,
+        )
+    if scope in UNSUPPORTED_REISSUE_SCOPES:
+        return RedirectResponse(
+            url=f"/admin/runs/{run_id}?reissue_error=unsupported_reissue_scope",
+            status_code=303,
+        )
+    if scope != EXECUTABLE_REISSUE_SCOPE:
+        return RedirectResponse(
+            url=f"/admin/runs/{run_id}?reissue_error=invalid_reissue_scope",
+            status_code=303,
+        )
+
     mode = str(parent.get("mode") or "").strip()
     if mode not in ("today_genie", "tomorrow_genie"):
         inner = f"<p>재발행할 수 없는 mode: {_esc(mode)}</p><p><a href=\"/admin/runs/{_esc(run_id)}\">돌아가기</a></p>"
         return HTMLResponse(_layout("Reissue failed", inner), status_code=400)
 
-    reason = reason_option.strip()
+    reason_code = reason_option.strip()
     note = reason_note.strip()
+    reason = reason_code
     if note:
         reason = f"{reason} — {note}"
 
@@ -410,6 +524,19 @@ def admin_run_reissue(
             f"<p><a href=\"/admin/runs/{_esc(run_id)}\">돌아가기</a></p>"
         )
         return HTMLResponse(_layout("Reissue failed", inner), status_code=500)
+
+    apply_reissue_child_metadata(
+        new_run_id,
+        reissue_scope=scope,
+        reissue_reason_code=reason_code,
+        reissue_reason_note=note,
+        reissue_scope_status="executed",
+    )
+    record_parent_reissue_audit(
+        run_id,
+        child_run_id=new_run_id,
+        reissue_scope=scope,
+    )
 
     if not email_sent:
         return RedirectResponse(

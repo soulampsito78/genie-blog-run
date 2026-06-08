@@ -17,16 +17,49 @@ OWNER_REVIEW_STATUSES = frozenset(
     {"pending_review", "approved", "reopened", "approval_expired_manual_required"}
 )
 LEGACY_OWNER_REVIEW_STATUSES = frozenset({"auto_sent_after_timeout"})
+REISSUE_SCOPES = frozenset({"text_only", "image_only", "text_and_image"})
+EXECUTABLE_REISSUE_SCOPE = "text_and_image"
+UNSUPPORTED_REISSUE_SCOPES = frozenset({"text_only", "image_only"})
+
 CUSTOMER_DELIVERY_STATUSES = frozenset(
     {
         "not_sent",
+        "send_attempted",
+        "smtp_accepted",
+        "delivery_confirmed",
+        "bounced",
+        "rejected",
+        "delayed",
+        "failed",
+        "unknown",
         "customer_sent_after_approval",
         "sent_after_owner_approval",
-        "failed",
+    }
+)
+_CUSTOMER_DELIVERY_SENT_OR_ACCEPTED = frozenset(
+    {
+        "customer_sent_after_approval",
+        "sent_after_owner_approval",
+        "smtp_accepted",
+        "delivery_confirmed",
     }
 )
 LEGACY_CUSTOMER_DELIVERY_STATUSES = frozenset({"sent_after_timeout"})
 APPROVABLE_MODES = frozenset({"today_genie", "tomorrow_genie"})
+
+_CUSTOMER_DELIVERY_STATUS_LABELS_KO = {
+    "not_sent": "미발송",
+    "send_attempted": "발송 시도 중",
+    "smtp_accepted": "SMTP 접수",
+    "delivery_confirmed": "전달 확인",
+    "bounced": "반송됨",
+    "rejected": "거절됨",
+    "delayed": "지연 중",
+    "failed": "발송 실패",
+    "unknown": "확인 불가",
+    "customer_sent_after_approval": "SMTP 접수",
+    "sent_after_owner_approval": "SMTP 접수",
+}
 
 
 def repo_root() -> Path:
@@ -142,6 +175,69 @@ def _increment_parent_reissue_count(parent_run_id: str) -> None:
     path.write_text(json.dumps(parent, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def sanitize_delivery_error_summary(raw: str, *, max_len: int = 240) -> str:
+    cleaned = re.sub(r"[\x00-\x1f\x7f]+", " ", str(raw or "").strip())
+    if not cleaned:
+        return "Customer email send failed."
+    if len(cleaned) > max_len:
+        return cleaned[: max_len - 3] + "..."
+    return cleaned
+
+
+def customer_delivery_status_label_ko(status: str) -> str:
+    key = str(status or "not_sent").strip() or "not_sent"
+    return _CUSTOMER_DELIVERY_STATUS_LABELS_KO.get(key, key)
+
+
+def owner_review_email_label_ko(meta: Dict[str, Any]) -> str:
+    if meta.get("email_sent"):
+        return "운영자 검토용 이메일 발송됨"
+    return "운영자 검토용 이메일 미발송"
+
+
+def append_customer_delivery_event(meta: Dict[str, Any], event: Dict[str, Any]) -> None:
+    events = meta.get("customer_delivery_events")
+    if not isinstance(events, list):
+        events = []
+    events.append(event)
+    meta["customer_delivery_events"] = events
+
+
+def record_parent_reissue_audit(
+    parent_run_id: str,
+    *,
+    child_run_id: str,
+    reissue_scope: str,
+) -> None:
+    def _mut(parent: Dict[str, Any]) -> None:
+        parent["last_reissue_scope_requested"] = reissue_scope
+        parent["last_reissue_child_run_id"] = child_run_id
+
+    update_run_artifact(parent_run_id, _mut)
+
+
+def apply_reissue_child_metadata(
+    child_run_id: str,
+    *,
+    reissue_scope: str,
+    reissue_reason_code: str,
+    reissue_reason_note: str,
+    reissue_scope_status: str = "executed",
+) -> Optional[Dict[str, Any]]:
+    ts = now_kst_iso()
+
+    def _mut(child: Dict[str, Any]) -> None:
+        child["reissue_scope"] = reissue_scope
+        child["reissue_scope_supported"] = reissue_scope == EXECUTABLE_REISSUE_SCOPE
+        child["reissue_scope_status"] = reissue_scope_status
+        child["reissue_reason_code"] = reissue_reason_code or None
+        child["reissue_reason_note"] = reissue_reason_note or None
+        child["reissue_requested_at"] = ts
+        child["reissue_requested_by"] = "owner_admin"
+
+    return update_run_artifact(child_run_id, _mut)
+
+
 def load_run_artifact(run_id: str) -> Optional[Dict[str, Any]]:
     if not validate_run_id(run_id):
         return None
@@ -221,9 +317,11 @@ def can_approve_customer_send(meta: Dict[str, Any], *, has_email_html: bool) -> 
     if owner_status == "approved":
         return False, "already_approved"
     delivery = str(meta.get("customer_delivery_status") or "not_sent")
-    if delivery not in ("not_sent", ""):
-        if delivery in LEGACY_CUSTOMER_DELIVERY_STATUSES:
-            return False, "legacy_timeout_sent"
+    if delivery in LEGACY_CUSTOMER_DELIVERY_STATUSES:
+        return False, "legacy_timeout_sent"
+    if delivery in _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED:
+        return False, "customer_already_sent"
+    if delivery not in ("not_sent", "", "failed"):
         return False, "customer_already_sent"
     if owner_status not in OWNER_REVIEW_STATUSES:
         return False, "invalid_owner_review_status"
@@ -241,6 +339,57 @@ def can_approve_customer_send(meta: Dict[str, Any], *, has_email_html: bool) -> 
     return True, "ok"
 
 
+def _record_customer_delivery_attempt(meta: Dict[str, Any], *, attempted_at: str) -> None:
+    meta["customer_delivery_attempted_at"] = attempted_at
+    meta["customer_delivery_attempt_count"] = int(meta.get("customer_delivery_attempt_count") or 0) + 1
+    meta["customer_delivery_event_source"] = "approve_run"
+    meta["customer_delivery_status"] = "send_attempted"
+    meta["customer_delivery_last_event_at"] = attempted_at
+
+
+def _record_customer_delivery_failure(
+    meta: Dict[str, Any],
+    *,
+    attempted_at: str,
+    error_summary: str,
+    error_code: str = "smtp_send_failed",
+) -> None:
+    summary = sanitize_delivery_error_summary(error_summary)
+    meta["customer_delivery_status"] = "failed"
+    meta["customer_delivery_error_code"] = error_code
+    meta["customer_delivery_error_summary"] = summary
+    meta["customer_delivery_last_event_at"] = attempted_at
+    append_customer_delivery_event(
+        meta,
+        {
+            "status": "failed",
+            "event_type": "smtp_send_failed",
+            "source": "approve_run",
+            "summary": summary,
+            "at": attempted_at,
+        },
+    )
+
+
+def _record_customer_delivery_smtp_accepted(meta: Dict[str, Any], *, completed_at: str) -> None:
+    meta["customer_delivery_status"] = "smtp_accepted"
+    meta["customer_delivery_legacy_status"] = "customer_sent_after_approval"
+    meta["customer_delivery_completed_at"] = completed_at
+    meta["customer_delivery_last_event_at"] = completed_at
+    meta["customer_delivery_error_code"] = None
+    meta["customer_delivery_error_summary"] = None
+    append_customer_delivery_event(
+        meta,
+        {
+            "status": "smtp_accepted",
+            "event_type": "smtp_send",
+            "source": "approve_run",
+            "summary": "SMTP send accepted by configured mail server.",
+            "at": completed_at,
+        },
+    )
+
+
 def approve_run(run_id: str, note: str = "") -> tuple[Optional[Dict[str, Any]], str]:
     """Approve run and send customer final email immediately (today_genie HTML body only)."""
     meta = load_run_artifact(run_id)
@@ -252,11 +401,26 @@ def approve_run(run_id: str, note: str = "") -> tuple[Optional[Dict[str, Any]], 
     if not ok:
         return None, msg
 
+    attempted_at = now_kst_iso()
+    update_run_artifact(run_id, lambda m: _record_customer_delivery_attempt(m, attempted_at=attempted_at))
+
     mode = str(meta.get("mode") or "")
     if mode == "today_genie":
+        from email_sender import last_send_diagnostic
         from today_geenee_customer_delivery import send_today_geenee_customer_final_email
 
         if not send_today_geenee_customer_final_email(saved_html, meta):
+            diag = sanitize_delivery_error_summary(last_send_diagnostic() or "Customer email send failed.")
+
+            def _fail(m: Dict[str, Any]) -> None:
+                _record_customer_delivery_failure(
+                    m,
+                    attempted_at=attempted_at,
+                    error_summary=diag,
+                    error_code="send_failed",
+                )
+
+            update_run_artifact(run_id, _fail)
             return None, "send_failed"
     else:
         return None, "unsupported_mode"
@@ -270,9 +434,9 @@ def approve_run(run_id: str, note: str = "") -> tuple[Optional[Dict[str, Any]], 
         m["approved_at"] = sent_ts
         m["owner_review_note"] = cleaned_note or None
         m["approved_by"] = "owner_admin"
-        m["customer_delivery_status"] = "customer_sent_after_approval"
         m["customer_delivery_reason"] = "owner_approved"
         m["customer_sent_at"] = sent_ts
+        _record_customer_delivery_smtp_accepted(m, completed_at=sent_ts)
 
     updated = update_run_artifact(run_id, _mut)
     return updated, "ok"

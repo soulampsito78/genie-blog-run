@@ -7,7 +7,7 @@ import unittest
 from email import message_from_string
 from unittest.mock import MagicMock, patch
 
-from admin_store import approve_run, can_approve_customer_send, save_run_artifact
+from admin_store import approve_run, can_approve_customer_send, load_run_artifact, save_run_artifact
 from fastapi.testclient import TestClient
 from internal_jobs import process_approval_timeouts
 from main import app
@@ -126,11 +126,15 @@ class Batch83TimeoutRemovalTests(unittest.TestCase):
             updated, status = approve_run(run_id)
         self.assertEqual(status, "ok")
         assert updated is not None
-        self.assertEqual(updated.get("customer_delivery_status"), "customer_sent_after_approval")
+        self.assertEqual(updated.get("customer_delivery_status"), "smtp_accepted")
+        self.assertEqual(updated.get("customer_delivery_legacy_status"), "customer_sent_after_approval")
         self.assertNotIn(
             updated.get("customer_delivery_status"),
-            ("sent_after_timeout", "auto_sent_after_timeout"),
+            ("sent_after_timeout", "auto_sent_after_timeout", "delivery_confirmed"),
         )
+        events = updated.get("customer_delivery_events") or []
+        self.assertTrue(events)
+        self.assertEqual(events[-1].get("status"), "smtp_accepted")
 
 
 class Batch83ApproveRouteTests(unittest.TestCase):
@@ -256,12 +260,61 @@ class Batch83ApproveRouteTests(unittest.TestCase):
             "response_status": 200,
             "reason_summary": "ok",
             "owner_review_status": "approved",
-            "customer_delivery_status": "customer_sent_after_approval",
+            "customer_delivery_status": "smtp_accepted",
         }
         save_run_artifact(meta, email_html="<p>brief</p>")
         ok, err = can_approve_customer_send(meta, has_email_html=True)
         self.assertFalse(ok)
         self.assertEqual(err, "already_approved")
+
+    @patch("today_geenee_customer_delivery.send_today_geenee_customer_final_email")
+    def test_approve_failure_persists_failed_delivery_metadata(self, mock_send: MagicMock) -> None:
+        mock_send.return_value = False
+        run_id = "20260604_141000_today_genie_ccddeeff"
+        save_run_artifact(
+            {
+                "run_id": run_id,
+                "mode": "today_genie",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "reason_summary": "ok",
+                "email_sent": True,
+            },
+            email_html="<p>brief</p>",
+        )
+        with patch("email_sender.last_send_diagnostic", return_value="SMTPException: relay denied"):
+            updated, status = approve_run(run_id)
+        self.assertEqual(status, "send_failed")
+        self.assertIsNone(updated)
+        meta = load_run_artifact(run_id) or {}
+        self.assertNotEqual(meta.get("owner_review_status"), "approved")
+        self.assertEqual(meta.get("customer_delivery_status"), "failed")
+        self.assertEqual(meta.get("customer_delivery_error_code"), "send_failed")
+        self.assertIn("relay denied", str(meta.get("customer_delivery_error_summary") or ""))
+        self.assertIsNone(meta.get("approved_at"))
+        self.assertIsNone(meta.get("customer_sent_at"))
+        events = meta.get("customer_delivery_events") or []
+        self.assertEqual(events[-1].get("status"), "failed")
+
+    def test_owner_email_sent_does_not_imply_customer_delivery(self) -> None:
+        run_id = "20260604_142000_today_genie_ccddeeff"
+        save_run_artifact(
+            {
+                "run_id": run_id,
+                "mode": "today_genie",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "reason_summary": "ok",
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+            },
+            email_html="<p>brief</p>",
+        )
+        meta = load_run_artifact(run_id) or {}
+        self.assertTrue(meta.get("email_sent"))
+        self.assertEqual(meta.get("customer_delivery_status"), "not_sent")
 
 
 class Batch83MimeTests(unittest.TestCase):
