@@ -777,6 +777,11 @@ class KeysuriKoreaTechSmokeFeedConfigTests(unittest.TestCase):
                 item.feed_name = f"Korea Publisher {idx % 3 + 1}"
                 item.link = f"https://news.korea-publisher{idx % 3 + 1}.co.kr/articles/live-{idx}"
                 item.title = f"국내 테크 신호 {idx}: 반도체·AI·정책 움직임"
+                item.default_category = "korea_semiconductor"
+                item.summary = (
+                    f"삼성전자 SK하이닉스 국내 반도체 HBM 투자 수주 입찰 일정 {idx}. "
+                    "정책·조달 관련 후속 확인 필요."
+                )
 
             cursor = {"i": 0}
 
@@ -797,6 +802,79 @@ class KeysuriKoreaTechSmokeFeedConfigTests(unittest.TestCase):
 
             self.assertNotIn("No live smoke feed list configured", result.error or "")
             self.assertGreaterEqual(result.fetched_item_count, 5)
+            pack = json.loads(Path(result.source_pack_path).read_text(encoding="utf-8"))
+            self.assertIn("korea_top5_selection", pack)
+            debug_dir = Path(tmpdir) / "output" / "keysuri_preview" / "debug"
+            korea_reports = list(debug_dir.glob("korea_top5_selection_*.json"))
+            self.assertGreaterEqual(len(korea_reports), 1)
+            report = json.loads(korea_reports[0].read_text(encoding="utf-8"))
+            self.assertIn("final_category_distribution", report)
+            self.assertIn("final_source_distribution", report)
+
+    def test_korea_smoke_uses_korea_scoring_path(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            items = _fake_items(12)
+            for idx, item in enumerate(items):
+                item.default_category = "korea_policy_regulation"
+                item.title = f"국내 정책 신호 {idx}"
+            cursor = {"i": 0}
+
+            def _fetch(feed, **kwargs):
+                start = cursor["i"]
+                cursor["i"] += kwargs.get("max_items", 3)
+                return items[start : start + kwargs.get("max_items", 3)]
+
+            with mock.patch("keysuri_live_source_smoke.fetch_feed_items", side_effect=_fetch):
+                with mock.patch(
+                    "keysuri_live_source_smoke.score_korea_candidates_from_source_pack"
+                ) as korea_score:
+                    with mock.patch(
+                        "keysuri_live_source_smoke.score_candidates_from_source_pack"
+                    ) as global_score:
+                        from keysuri_korea_signal_scoring import score_candidates_from_source_pack
+
+                        korea_score.side_effect = score_candidates_from_source_pack
+                        run_keysuri_live_source_smoke(
+                            program_id=PROGRAM_KOREA,
+                            max_items=5,
+                            allow_network=True,
+                            use_gemini=False,
+                            out_dir=Path(tmpdir) / "output" / "keysuri_preview",
+                            repo_root=_REPO,
+                        )
+                        korea_score.assert_called_once()
+                        global_score.assert_not_called()
+
+    def test_global_smoke_still_uses_global_scoring_path(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            items = _fake_items(12)
+            cursor = {"i": 0}
+
+            def _fetch(feed, **kwargs):
+                start = cursor["i"]
+                cursor["i"] += kwargs.get("max_items", 3)
+                return items[start : start + kwargs.get("max_items", 3)]
+
+            with mock.patch("keysuri_live_source_smoke.fetch_feed_items", side_effect=_fetch):
+                with mock.patch(
+                    "keysuri_live_source_smoke.score_candidates_from_source_pack"
+                ) as global_score:
+                    with mock.patch(
+                        "keysuri_live_source_smoke.score_korea_candidates_from_source_pack"
+                    ) as korea_score:
+                        from keysuri_global_signal_scoring import score_candidates_from_source_pack
+
+                        global_score.side_effect = score_candidates_from_source_pack
+                        run_keysuri_live_source_smoke(
+                            program_id="keysuri_global_tech",
+                            max_items=5,
+                            allow_network=True,
+                            use_gemini=False,
+                            out_dir=Path(tmpdir) / "output" / "keysuri_preview",
+                            repo_root=_REPO,
+                        )
+                        global_score.assert_called_once()
+                        korea_score.assert_not_called()
 
 
 if __name__ == "__main__":

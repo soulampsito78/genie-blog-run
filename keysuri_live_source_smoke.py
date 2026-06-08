@@ -48,6 +48,12 @@ from keysuri_global_signal_scoring import (
     score_candidates_from_source_pack,
     write_global_top5_selection_report,
 )
+from keysuri_korea_signal_scoring import (
+    KOREA_TECH_CATEGORIES,
+    apply_scored_selection_to_source_pack as apply_korea_scored_selection_to_source_pack,
+    score_candidates_from_source_pack as score_korea_candidates_from_source_pack,
+    write_korea_top5_selection_report,
+)
 from keysuri_prompt_input import build_keysuri_prompt_input
 from keysuri_renderer import render_keysuri_owner_review_html
 
@@ -535,6 +541,20 @@ def _infer_category(title: str, summary: str, default_category: str) -> str:
     return primary
 
 
+def _category_for_program_item(
+    program_id: str,
+    item: FetchedFeedItem,
+    title: str,
+    summary: str,
+) -> str:
+    if program_id == PROGRAM_KOREA or str(program_id).startswith("keysuri_korea"):
+        default = (item.default_category or "").strip()
+        if default in KOREA_TECH_CATEGORIES:
+            return default
+        return default or "korea_big_company_strategy"
+    return _infer_category(title, summary, item.default_category)
+
+
 def _business_implication(category: str) -> str:
     mapping = {
         "ai_software_platform": "AI/software/platform shifts may change vendor shortlists and workflow lock-in.",
@@ -578,13 +598,14 @@ def _build_source_entries_from_items(
         seen_links.add(item.link)
         sid = _source_id_for_link(item.feed_id, item.link)
         summary = item.summary[:500] if item.summary else item.title[:500]
-        category = _infer_category(item.title, summary, item.default_category)
+        category = _category_for_program_item(program_id, item, item.title, summary)
         sources.append(
             {
                 "source_id": sid,
                 "source_name": item.feed_name,
                 "source_url": item.link,
                 "source_tier": item.source_tier,
+                "feed_id": item.feed_id,
                 "fetched_at": stamp,
                 "published_at": item.published_at,
                 "title": item.title,
@@ -1200,7 +1221,16 @@ def run_keysuri_live_source_smoke(
             debug_dir / f"global_top5_selection_{dbg_stamp}.json",
         )
     else:
-        source_pack = build_live_source_pack(program_id, fetched)
+        candidate_pack = build_live_candidate_source_pack(program_id, fetched)
+        selection = score_korea_candidates_from_source_pack(candidate_pack)
+        source_pack = apply_korea_scored_selection_to_source_pack(candidate_pack, selection)
+        debug_dir = preview_dir / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        dbg_stamp = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d_%H%M%S")
+        write_korea_top5_selection_report(
+            selection,
+            debug_dir / f"korea_top5_selection_{dbg_stamp}.json",
+        )
     pack_path.write_text(json.dumps(source_pack, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     prompt_input = build_keysuri_prompt_input(program_id, source_pack)
