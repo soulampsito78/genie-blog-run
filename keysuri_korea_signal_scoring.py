@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
@@ -158,6 +158,76 @@ _OWNER_ACTION_KEYWORDS: Tuple[str, ...] = (
 _MAX_ITEMS_PER_SOURCE = 2
 SOURCE_CONCENTRATION_SCORE_GAP = 15
 
+GLOBAL_DUPLICATE_PENALTY_NO_ANGLE = -20
+GLOBAL_DUPLICATE_PENALTY_WITH_ANGLE = -5
+
+_STORY_STOP_WORDS = frozenset(
+    {
+        "the", "and", "for", "with", "from", "that", "this", "종합", "기자",
+        "서울", "연합뉴스", "보도", "관련", "등", "및",
+    }
+)
+
+_ENTITY_PATTERNS: Tuple[Tuple[str, str], ...] = (
+    (r"nvidia|엔비디아|젠슨\s*황|jensen\s*huang", "nvidia"),
+    (r"openai", "openai"),
+    (r"\bgoogle\b|구글|gemini", "google"),
+    (r"microsoft|마이크로소프트", "microsoft"),
+    (r"anthropic|클로드", "anthropic"),
+    (r"samsung|삼성", "samsung"),
+    (r"sk\s*hynix|sk하이닉스", "sk_hynix"),
+    (r"\blg\b|lg전자|lg에너지", "lg"),
+    (r"hyundai|현대", "hyundai"),
+    (r"doosan|두산", "doosan"),
+    (r"naver|네이버", "naver"),
+    (r"kakao|카카오", "kakao"),
+    (r"hanwha|한화", "hanwha"),
+)
+
+_EVENT_KEYWORD_SLUGS: Tuple[Tuple[str, str], ...] = (
+    ("hbm", "hbm"),
+    ("semiconductor", "semiconductor"),
+    ("반도체", "semiconductor"),
+    ("chip", "semiconductor"),
+    ("robot", "robotics"),
+    ("로봇", "robotics"),
+    ("battery", "battery"),
+    ("배터리", "battery"),
+    ("ess", "battery"),
+    ("cloud", "cloud"),
+    ("클라우드", "cloud"),
+    ("data center", "data_center"),
+    ("데이터센터", "data_center"),
+    ("startup", "startup"),
+    ("스타트업", "startup"),
+    ("policy", "policy"),
+    ("정책", "policy"),
+    ("regulation", "policy"),
+    ("규제", "policy"),
+    ("ministry", "policy"),
+    ("부처", "policy"),
+    ("launch", "launch"),
+    ("출시", "launch"),
+    ("investment", "investment"),
+    ("투자", "investment"),
+    ("m&a", "investment"),
+    ("customer story", "customer_case"),
+    ("고객사례", "customer_case"),
+    ("case study", "customer_case"),
+    ("gtc", "conference"),
+    ("developer", "platform"),
+    ("api", "platform"),
+    ("model", "ai_model"),
+    ("ai", "ai"),
+)
+
+_KOREA_ANGLE_MARKERS: Tuple[str, ...] = (
+    "국내", "한국", "korea", "삼성", "sk하이닉스", "sk hynix", "lg", "현대", "네이버", "카카오",
+    "두산", "한화", "정책", "규제", "조달", "입찰", "과기", "산업부", "공공", "수주", "증설",
+    "공장", "fab", "공급망", "투자", "스타트업", "출시", "도입", "일정", "마감", "내일",
+    "방한", "국내 적용", "국내 파급",
+)
+
 Classification = Literal[
     "deep_dive_candidate",
     "strong_top5",
@@ -259,6 +329,14 @@ class ScoredKoreaSignal:
     penalty_notes: List[str] = field(default_factory=list)
     reason_not_selected: Optional[str] = None
     feed_id: str = ""
+    story_cluster_key: str = ""
+    global_duplicate_detected: bool = False
+    korea_angle_required: bool = False
+    korea_angle_satisfied: bool = False
+    duplicate_resolution: Optional[str] = None
+    same_entity_not_same_story: bool = False
+    matched_global_story_key: Optional[str] = None
+    matched_global_title: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -301,7 +379,22 @@ class ScoredKoreaSignal:
             "penalty_notes": list(self.penalty_notes),
             "reason_not_selected": self.reason_not_selected,
             "feed_id": self.feed_id,
+            "story_cluster_key": self.story_cluster_key,
+            "global_duplicate_detected": self.global_duplicate_detected,
+            "korea_angle_required": self.korea_angle_required,
+            "korea_angle_satisfied": self.korea_angle_satisfied,
+            "duplicate_resolution": self.duplicate_resolution,
+            "same_entity_not_same_story": self.same_entity_not_same_story,
+            "matched_global_story_key": self.matched_global_story_key,
+            "matched_global_title": self.matched_global_title,
         }
+
+
+@dataclass
+class GlobalStoryIndex:
+    cluster_keys: Dict[str, dict]
+    items: List[dict]
+    global_story_count: int = 0
 
 
 @dataclass
@@ -318,12 +411,18 @@ class KoreaTop5SelectionResult:
     final_category_distribution: Dict[str, int] = field(default_factory=dict)
     final_source_distribution: Dict[str, int] = field(default_factory=dict)
     source_concentration_decisions: List[str] = field(default_factory=list)
+    duplicate_guard_status: str = "not_applied_no_global_report"
+    global_story_count: int = 0
+    duplicate_detected_count: int = 0
+    duplicate_penalized_count: int = 0
+    duplicate_allowed_with_korea_angle_count: int = 0
+    duplicate_watchlist_items: List[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         ai_count = sum(1 for c in self.selected_top5 if c.is_ai_category)
         return {
             "generated_at": self.generated_at,
-            "policy": "keysuri_korea_top5_selection_v1",
+            "policy": "keysuri_korea_top5_selection_v2_duplicate_guard",
             "all_candidates": [c.to_dict() for c in self.all_candidates],
             "selected_top5": [c.to_dict() for c in self.selected_top5],
             "watchlist": [c.to_dict() for c in self.watchlist],
@@ -335,6 +434,12 @@ class KoreaTop5SelectionResult:
             "final_category_distribution": dict(self.final_category_distribution),
             "final_source_distribution": dict(self.final_source_distribution),
             "source_concentration_decisions": list(self.source_concentration_decisions),
+            "duplicate_guard_status": self.duplicate_guard_status,
+            "global_story_count": self.global_story_count,
+            "duplicate_detected_count": self.duplicate_detected_count,
+            "duplicate_penalized_count": self.duplicate_penalized_count,
+            "duplicate_allowed_with_korea_angle_count": self.duplicate_allowed_with_korea_angle_count,
+            "duplicate_watchlist_items": list(self.duplicate_watchlist_items),
             "summary": {
                 "candidate_count": len(self.all_candidates),
                 "selected_count": len(self.selected_top5),
@@ -374,6 +479,177 @@ def _text_blob(item: dict) -> str:
 def _normalize_title(title: str) -> str:
     t = re.sub(r"[^\w\s가-힣]", " ", title.lower())
     return re.sub(r"\s+", " ", t).strip()
+
+
+def normalize_story_text(text: str) -> str:
+    return _normalize_title(text or "")
+
+
+def _story_text_from_item(item: Union[dict, ScoredKoreaSignal]) -> str:
+    if isinstance(item, ScoredKoreaSignal):
+        return f"{item.title} {item.summary}".strip()
+    parts = [
+        str(item.get("title") or ""),
+        str(item.get("headline") or ""),
+        str(item.get("statement") or ""),
+        str(item.get("summary") or ""),
+        str(item.get("snippet") or ""),
+    ]
+    return " ".join(p for p in parts if p).strip()
+
+
+def extract_story_entities(item: Union[dict, ScoredKoreaSignal]) -> List[str]:
+    text = normalize_story_text(_story_text_from_item(item))
+    entities: set[str] = set()
+    for pattern, slug in _ENTITY_PATTERNS:
+        if re.search(pattern, text, re.IGNORECASE):
+            entities.add(slug)
+    return sorted(entities)
+
+
+def extract_event_keywords(item: Union[dict, ScoredKoreaSignal]) -> List[str]:
+    text = normalize_story_text(_story_text_from_item(item))
+    events: set[str] = set()
+    for keyword, slug in _EVENT_KEYWORD_SLUGS:
+        if len(keyword) <= 3:
+            if re.search(rf"\b{re.escape(keyword)}\b", text):
+                events.add(slug)
+        elif keyword in text:
+            events.add(slug)
+    return sorted(events)
+
+
+def build_story_cluster_key(item: Union[dict, ScoredKoreaSignal]) -> str:
+    entities = extract_story_entities(item)
+    events = extract_event_keywords(item)
+    if isinstance(item, ScoredKoreaSignal):
+        title_src = item.title
+        url = item.url
+    else:
+        title_src = str(item.get("title") or item.get("headline") or item.get("statement") or "")
+        url = str(item.get("link") or item.get("source_url") or "")
+    title_norm = normalize_story_text(title_src)
+    words = [w for w in title_norm.split() if w not in _STORY_STOP_WORDS and len(w) > 1][:8]
+    title_part = " ".join(words) or title_norm[:80]
+    parts: List[str] = []
+    if entities:
+        parts.append("ent:" + "+".join(entities))
+    if events:
+        parts.append("evt:" + "+".join(events[:5]))
+    if title_part:
+        parts.append("ttl:" + title_part[:80])
+    host = _host(url)
+    if host and host not in ("yna.co.kr", "etnews.com"):
+        parts.append(f"dom:{host}")
+    return "|".join(parts) if parts else title_part[:120]
+
+
+def _extract_global_selected_items(
+    global_selection_report: Optional[Mapping[str, Any]] = None,
+    global_selected_items: Optional[Sequence[Mapping[str, Any]]] = None,
+) -> List[dict]:
+    if global_selected_items:
+        return [dict(x) for x in global_selected_items if isinstance(x, Mapping)]
+    if isinstance(global_selection_report, Mapping):
+        selected = global_selection_report.get("selected_top5")
+        if isinstance(selected, list):
+            return [dict(x) for x in selected if isinstance(x, Mapping)]
+    return []
+
+
+def build_global_story_index(
+    global_selection_report: Optional[Mapping[str, Any]] = None,
+    *,
+    global_selected_items: Optional[Sequence[Mapping[str, Any]]] = None,
+) -> GlobalStoryIndex:
+    items = _extract_global_selected_items(global_selection_report, global_selected_items)
+    cluster_keys: Dict[str, dict] = {}
+    for raw in items:
+        key = build_story_cluster_key(raw)
+        cluster_keys[key] = {
+            "story_cluster_key": key,
+            "title": str(raw.get("title") or ""),
+            "url": str(raw.get("url") or raw.get("source_url") or ""),
+            "entities": extract_story_entities(raw),
+            "events": extract_event_keywords(raw),
+            "primary_category": str(raw.get("primary_category") or raw.get("category") or ""),
+        }
+    return GlobalStoryIndex(
+        cluster_keys=cluster_keys,
+        items=items,
+        global_story_count=len(items),
+    )
+
+
+def has_korea_specific_angle(item: Union[dict, ScoredKoreaSignal]) -> bool:
+    text = normalize_story_text(_story_text_from_item(item))
+    if any(marker in text for marker in _KOREA_ANGLE_MARKERS):
+        return True
+    if isinstance(item, ScoredKoreaSignal):
+        category = item.primary_category
+    else:
+        category = str(item.get("primary_category") or item.get("category") or "")
+    if category in POLICY_CAPITAL_CATEGORIES:
+        return True
+    if category in INDUSTRIAL_CATEGORIES and any(
+        kw in text for kw in ("삼성", "sk", "lg", "국내", "한국", "수주", "증설", "공장")
+    ):
+        return True
+    return False
+
+
+def detect_global_overlap(
+    korea_item: Union[dict, ScoredKoreaSignal],
+    global_story_index: GlobalStoryIndex,
+) -> Optional[dict]:
+    if not global_story_index.cluster_keys:
+        return None
+    k_key = build_story_cluster_key(korea_item)
+    k_entities = set(extract_story_entities(korea_item))
+    k_events = set(extract_event_keywords(korea_item))
+    if k_key in global_story_index.cluster_keys:
+        meta = global_story_index.cluster_keys[k_key]
+        return {
+            "matched_global_story_key": k_key,
+            "matched_global_title": meta.get("title"),
+            "same_entity_not_same_story": False,
+        }
+    same_entity_only: Optional[dict] = None
+    for g_key, meta in global_story_index.cluster_keys.items():
+        g_entities = set(meta.get("entities") or [])
+        g_events = set(meta.get("events") or [])
+        entity_overlap = k_entities & g_entities
+        event_overlap = k_events & g_events
+        if entity_overlap and event_overlap:
+            return {
+                "matched_global_story_key": g_key,
+                "matched_global_title": meta.get("title"),
+                "same_entity_not_same_story": False,
+            }
+        if entity_overlap and not event_overlap and not same_entity_only:
+            same_entity_only = {
+                "matched_global_story_key": g_key,
+                "matched_global_title": meta.get("title"),
+                "same_entity_not_same_story": True,
+            }
+    return same_entity_only
+
+
+def load_global_selection_report(path: Union[str, Path]) -> dict:
+    report_path = Path(path)
+    if not report_path.is_file():
+        raise FileNotFoundError(f"Global selection report not found: {report_path}")
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in global selection report: {report_path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"Global selection report must be a JSON object: {report_path}")
+    if not isinstance(payload.get("selected_top5"), list):
+        raise ValueError(
+            f"Global selection report missing selected_top5 list: {report_path}"
+        )
+    return payload
 
 
 def _source_key(item: ScoredKoreaSignal) -> str:
@@ -693,6 +969,55 @@ def _is_qualifying_candidate(item: ScoredKoreaSignal) -> bool:
     )
 
 
+def _is_global_duplicate_blocked(item: ScoredKoreaSignal) -> bool:
+    return (
+        item.global_duplicate_detected
+        and item.korea_angle_required
+        and not item.korea_angle_satisfied
+    )
+
+
+def _reclassify_after_duplicate_penalty(item: ScoredKoreaSignal) -> None:
+    if item.hard_reject_reason:
+        item.classification = "hard_reject"
+        return
+    item.classification = _classify_total(item.scores.base_score, hard_reject=False)
+
+
+def _apply_global_duplicate_guard(
+    item: ScoredKoreaSignal,
+    global_story_index: GlobalStoryIndex,
+) -> None:
+    item.story_cluster_key = build_story_cluster_key(item)
+    overlap = detect_global_overlap(item, global_story_index)
+    if not overlap:
+        return
+    item.matched_global_story_key = str(overlap.get("matched_global_story_key") or "")
+    item.matched_global_title = str(overlap.get("matched_global_title") or "")
+    if overlap.get("same_entity_not_same_story"):
+        item.same_entity_not_same_story = True
+        item.selection_reason_tags.append("same_entity_not_same_story")
+        return
+    item.global_duplicate_detected = True
+    item.korea_angle_required = True
+    if has_korea_specific_angle(item):
+        item.korea_angle_satisfied = True
+        item.scores.global_duplicate_penalty = GLOBAL_DUPLICATE_PENALTY_WITH_ANGLE
+        item.duplicate_resolution = "allowed_with_korea_angle"
+        item.selection_reason_tags.append("global_duplicate_with_korea_angle")
+        item.reason_for_selection = (
+            f"{item.reason_for_selection} 국내 적용: 한국 기업·정책·공급망·내일 영향 관점에서 별도 선정."
+        )
+    else:
+        item.korea_angle_satisfied = False
+        item.scores.global_duplicate_penalty = GLOBAL_DUPLICATE_PENALTY_NO_ANGLE
+        item.duplicate_resolution = "penalized_no_korea_angle"
+        item.reason_not_selected = "global_angle_duplicate_without_korea_application"
+        item.selection_reason_tags.append("global_duplicate_no_korea_angle")
+        item.penalty_notes.append("global_angle_duplicate_without_korea_application")
+    _reclassify_after_duplicate_penalty(item)
+
+
 def select_korea_top5(
     candidates: Sequence[ScoredKoreaSignal],
     *,
@@ -762,6 +1087,10 @@ def select_korea_top5(
     def _try_add(item: ScoredKoreaSignal, reason: str) -> bool:
         k = _key(item)
         if k in selected_keys or len(selected) >= max_items:
+            return False
+        if _is_global_duplicate_blocked(item):
+            item.reason_not_selected = "global_angle_duplicate_without_korea_application"
+            decisions.append(f"blocked_global_duplicate:{item.title[:60]}")
             return False
         if item.is_ai_category and _ai_count() >= 2 and not diversity_limited:
             item.reason_not_selected = "ai_cap"
@@ -838,10 +1167,24 @@ def select_korea_top5(
     return selected[:max_items], decisions, diversity_limited, dist, source_diversity_limited, source_blocked
 
 
-def score_korea_signal_candidates(items: Sequence[dict]) -> KoreaTop5SelectionResult:
+def score_korea_signal_candidates(
+    items: Sequence[dict],
+    *,
+    global_selection_report: Optional[Mapping[str, Any]] = None,
+    global_selected_items: Optional[Sequence[Mapping[str, Any]]] = None,
+) -> KoreaTop5SelectionResult:
     scored: List[ScoredKoreaSignal] = []
     dup_groups: Dict[str, List[str]] = {}
     seen_urls: set[str] = set()
+    global_index = build_global_story_index(
+        global_selection_report,
+        global_selected_items=global_selected_items,
+    )
+    duplicate_guard_status = (
+        "applied"
+        if global_index.global_story_count > 0
+        else "not_applied_no_global_report"
+    )
 
     for raw in items:
         if not isinstance(raw, dict):
@@ -856,6 +1199,7 @@ def score_korea_signal_candidates(items: Sequence[dict]) -> KoreaTop5SelectionRe
             continue
         seen_urls.add(url)
         item = score_korea_tech_item(raw)
+        item.story_cluster_key = build_story_cluster_key(item)
         dkey = _duplicate_key(item.title, item.url)
         dup_groups.setdefault(dkey, []).append(item.source_id or item.url)
         if len(dup_groups[dkey]) > 1:
@@ -869,6 +1213,31 @@ def score_korea_signal_candidates(items: Sequence[dict]) -> KoreaTop5SelectionRe
         ):
             item.hard_reject_reason = item.hard_reject_reason or "duplicate_story"
             item.classification = "hard_reject"
+
+    duplicate_detected_count = 0
+    duplicate_penalized_count = 0
+    duplicate_allowed_with_korea_angle_count = 0
+    duplicate_watchlist_items: List[dict] = []
+    if global_index.global_story_count > 0:
+        for item in scored:
+            _apply_global_duplicate_guard(item, global_index)
+            if item.global_duplicate_detected:
+                duplicate_detected_count += 1
+                if item.korea_angle_satisfied:
+                    duplicate_allowed_with_korea_angle_count += 1
+                else:
+                    duplicate_penalized_count += 1
+            if _is_global_duplicate_blocked(item):
+                duplicate_watchlist_items.append(
+                    {
+                        "title": item.title,
+                        "source": item.source_name,
+                        "score": item.scores.final_score,
+                        "category": item.primary_category,
+                        "reason_not_selected": item.reason_not_selected,
+                        "matched_global_title": item.matched_global_title,
+                    }
+                )
 
     pool = [s for s in scored if s.classification != "hard_reject" and not s.hard_reject_reason]
     selected, diversity_decisions, diversity_limited, category_dist, source_diversity_limited, source_blocked = (
@@ -905,6 +1274,12 @@ def score_korea_signal_candidates(items: Sequence[dict]) -> KoreaTop5SelectionRe
             for s in selected
         },
         source_concentration_decisions=source_concentration_decisions,
+        duplicate_guard_status=duplicate_guard_status,
+        global_story_count=global_index.global_story_count,
+        duplicate_detected_count=duplicate_detected_count,
+        duplicate_penalized_count=duplicate_penalized_count,
+        duplicate_allowed_with_korea_angle_count=duplicate_allowed_with_korea_angle_count,
+        duplicate_watchlist_items=duplicate_watchlist_items,
     )
 
 
@@ -944,8 +1319,17 @@ def _candidate_dict_from_source_pack(source_pack: dict) -> List[dict]:
     return out
 
 
-def score_candidates_from_source_pack(source_pack: dict) -> KoreaTop5SelectionResult:
-    return score_korea_signal_candidates(_candidate_dict_from_source_pack(source_pack))
+def score_candidates_from_source_pack(
+    source_pack: dict,
+    *,
+    global_selection_report: Optional[Mapping[str, Any]] = None,
+    global_selected_items: Optional[Sequence[Mapping[str, Any]]] = None,
+) -> KoreaTop5SelectionResult:
+    return score_korea_signal_candidates(
+        _candidate_dict_from_source_pack(source_pack),
+        global_selection_report=global_selection_report,
+        global_selected_items=global_selected_items,
+    )
 
 
 def apply_scored_selection_to_source_pack(
@@ -1002,6 +1386,13 @@ def apply_scored_selection_to_source_pack(
                 claim["source_count_in_top5"] = scored.source_count_in_top5
                 claim["source_diversity_limited"] = scored.source_diversity_limited
                 claim["source_concentration_limited"] = scored.source_concentration_limited
+                claim["global_duplicate_detected"] = scored.global_duplicate_detected
+                claim["korea_angle_required"] = scored.korea_angle_required
+                claim["korea_angle_satisfied"] = scored.korea_angle_satisfied
+                claim["duplicate_resolution"] = scored.duplicate_resolution
+                claim["same_entity_not_same_story"] = scored.same_entity_not_same_story
+                if scored.matched_global_title:
+                    claim["matched_global_title"] = scored.matched_global_title
                 if scored.penalty_notes:
                     claim["penalty_notes"] = list(scored.penalty_notes)
 
@@ -1009,7 +1400,12 @@ def apply_scored_selection_to_source_pack(
     pack["claims"] = new_claims
     pack["korea_top5_selection"] = {
         "generated_at": selection.generated_at,
-        "policy": "keysuri_korea_top5_selection_v1",
+        "policy": "keysuri_korea_top5_selection_v2_duplicate_guard",
+        "duplicate_guard_status": selection.duplicate_guard_status,
+        "global_story_count": selection.global_story_count,
+        "duplicate_detected_count": selection.duplicate_detected_count,
+        "duplicate_penalized_count": selection.duplicate_penalized_count,
+        "duplicate_allowed_with_korea_angle_count": selection.duplicate_allowed_with_korea_angle_count,
         "selected_source_ids": [s.source_id for s in selection.selected_top5],
         "selected_scores": [s.scores.final_score for s in selection.selected_top5],
         "selected_scores_before_diversity": [s.scores.base_score for s in selection.selected_top5],

@@ -51,6 +51,7 @@ from keysuri_global_signal_scoring import (
 from keysuri_korea_signal_scoring import (
     KOREA_TECH_CATEGORIES,
     apply_scored_selection_to_source_pack as apply_korea_scored_selection_to_source_pack,
+    load_global_selection_report,
     score_candidates_from_source_pack as score_korea_candidates_from_source_pack,
     write_korea_top5_selection_report,
 )
@@ -1106,6 +1107,7 @@ def run_keysuri_live_source_smoke(
     email_subject: Optional[str] = None,
     gemini_caller=None,
     top_shot_image_path: Optional[Path] = None,
+    global_selection_report_path: Optional[Path] = None,
 ) -> LiveSourceSmokeResult:
     repo = repo_root or Path(__file__).resolve().parent
     preview_dir = out_dir or (repo / "output" / "keysuri_preview")
@@ -1221,8 +1223,30 @@ def run_keysuri_live_source_smoke(
             debug_dir / f"global_top5_selection_{dbg_stamp}.json",
         )
     else:
+        global_report: Optional[dict] = None
+        if global_selection_report_path is not None:
+            try:
+                global_report = load_global_selection_report(global_selection_report_path)
+            except (FileNotFoundError, ValueError) as exc:
+                return LiveSourceSmokeResult(
+                    ok=False,
+                    program_id=program_id,
+                    source_pack_path=str(pack_path),
+                    html_path=str(html_path),
+                    fetched_item_count=len(fetched),
+                    feed_urls_used=feed_urls,
+                    sample_marker_pass=False,
+                    placeholder_gate_pass=False,
+                    fetched_live_news=True,
+                    use_gemini=use_gemini,
+                    side_effects=side_effects,
+                    error=str(exc),
+                )
         candidate_pack = build_live_candidate_source_pack(program_id, fetched)
-        selection = score_korea_candidates_from_source_pack(candidate_pack)
+        selection = score_korea_candidates_from_source_pack(
+            candidate_pack,
+            global_selection_report=global_report,
+        )
         source_pack = apply_korea_scored_selection_to_source_pack(candidate_pack, selection)
         debug_dir = preview_dir / "debug"
         debug_dir.mkdir(parents=True, exist_ok=True)

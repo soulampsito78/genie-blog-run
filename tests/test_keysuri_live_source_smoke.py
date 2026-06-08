@@ -810,6 +810,7 @@ class KeysuriKoreaTechSmokeFeedConfigTests(unittest.TestCase):
             report = json.loads(korea_reports[0].read_text(encoding="utf-8"))
             self.assertIn("final_category_distribution", report)
             self.assertIn("final_source_distribution", report)
+            self.assertEqual(report.get("duplicate_guard_status"), "not_applied_no_global_report")
 
     def test_korea_smoke_uses_korea_scoring_path(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -875,6 +876,88 @@ class KeysuriKoreaTechSmokeFeedConfigTests(unittest.TestCase):
                         )
                         global_score.assert_called_once()
                         korea_score.assert_not_called()
+
+    def test_korea_smoke_invalid_global_report_path_fails_clearly(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            items = _fake_items(12)
+            for idx, item in enumerate(items):
+                item.default_category = "korea_semiconductor"
+                item.title = f"국내 반도체 신호 {idx}"
+            cursor = {"i": 0}
+
+            def _fetch(feed, **kwargs):
+                start = cursor["i"]
+                cursor["i"] += kwargs.get("max_items", 3)
+                return items[start : start + kwargs.get("max_items", 3)]
+
+            with mock.patch("keysuri_live_source_smoke.fetch_feed_items", side_effect=_fetch):
+                result = run_keysuri_live_source_smoke(
+                    program_id=PROGRAM_KOREA,
+                    max_items=5,
+                    allow_network=True,
+                    use_gemini=False,
+                    out_dir=Path(tmpdir) / "output" / "keysuri_preview",
+                    repo_root=_REPO,
+                    global_selection_report_path=Path(tmpdir) / "missing-global-report.json",
+                )
+            self.assertFalse(result.ok)
+            self.assertIn("Global selection report not found", result.error or "")
+
+    def test_korea_smoke_applies_duplicate_guard_with_mock_global_report(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            items = _fake_items(12)
+            for idx, item in enumerate(items):
+                item.default_category = "korea_semiconductor"
+                if idx < 8:
+                    item.title = f"OpenAI launches developer platform API {idx}"
+                    item.summary = "OpenAI platform API workflow for enterprise developers."
+                else:
+                    item.title = f"삼성전자 SK하이닉스 HBM 국내 증설 수주 {idx}"
+                    item.summary = "국내 반도체 HBM 증설 투자 수주 입찰 일정."
+            cursor = {"i": 0}
+
+            def _fetch(feed, **kwargs):
+                start = cursor["i"]
+                cursor["i"] += kwargs.get("max_items", 3)
+                return items[start : start + kwargs.get("max_items", 3)]
+
+            global_report_path = Path(tmpdir) / "global_top5_selection_mock.json"
+            global_report_path.write_text(
+                json.dumps(
+                    {
+                        "selected_top5": [
+                            {
+                                "source_id": "g1",
+                                "title": "OpenAI launches developer platform API",
+                                "url": "https://openai.com/index/platform/",
+                                "summary": "OpenAI platform API workflow for enterprise developers.",
+                                "primary_category": "ai_product",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch("keysuri_live_source_smoke.fetch_feed_items", side_effect=_fetch):
+                result = run_keysuri_live_source_smoke(
+                    program_id=PROGRAM_KOREA,
+                    max_items=5,
+                    allow_network=True,
+                    use_gemini=False,
+                    out_dir=Path(tmpdir) / "output" / "keysuri_preview",
+                    repo_root=_REPO,
+                    global_selection_report_path=global_report_path,
+                )
+
+            debug_dir = Path(tmpdir) / "output" / "keysuri_preview" / "debug"
+            korea_reports = list(debug_dir.glob("korea_top5_selection_*.json"))
+            self.assertGreaterEqual(len(korea_reports), 1)
+            report = json.loads(korea_reports[0].read_text(encoding="utf-8"))
+            self.assertEqual(report.get("duplicate_guard_status"), "applied")
+            self.assertGreaterEqual(report.get("duplicate_detected_count", 0), 1)
+            self.assertFalse(result.side_effects.get("called_gemini"))
 
 
 if __name__ == "__main__":

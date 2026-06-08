@@ -6,10 +6,16 @@ from datetime import datetime, timedelta, timezone
 
 from keysuri_korea_signal_scoring import (
     AI_PRIMARY_CATEGORY,
+    GLOBAL_DUPLICATE_PENALTY_NO_ANGLE,
     INDUSTRIAL_CATEGORIES,
     POLICY_CAPITAL_CATEGORIES,
+    apply_scored_selection_to_source_pack,
+    build_global_story_index,
     build_korea_selection_debug_report,
+    build_story_cluster_key,
     classify_korea_tech_category,
+    load_global_selection_report,
+    normalize_story_text,
     score_korea_signal_candidates,
     score_korea_tech_item,
     select_korea_top5,
@@ -47,6 +53,21 @@ def _item(
         "source_name": "Korea Test Press",
         "feed_id": feed_id or source_id.split("-")[0],
     }
+
+
+def _global_report(*rows: tuple[str, str]) -> dict:
+    selected = []
+    for idx, (title, summary) in enumerate(rows):
+        selected.append(
+            {
+                "source_id": f"global-{idx}",
+                "title": title,
+                "url": f"https://global.example.com/articles/{idx}",
+                "summary": summary,
+                "primary_category": "ai_product",
+            }
+        )
+    return {"selected_top5": selected}
 
 
 class KeysuriKoreaSignalScoringTests(unittest.TestCase):
@@ -325,7 +346,7 @@ class KeysuriKoreaSignalScoringTests(unittest.TestCase):
         )
         report = build_korea_selection_debug_report([scored], [scored], [])
         self.assertIn("selected_top5", report)
-        self.assertEqual(report.get("policy"), "keysuri_korea_top5_selection_v1")
+        self.assertEqual(report.get("policy"), "keysuri_korea_top5_selection_v2_duplicate_guard")
 
     def test_score_output_fields(self) -> None:
         scored = score_korea_tech_item(
@@ -363,6 +384,197 @@ class KeysuriKoreaSignalScoringTests(unittest.TestCase):
         self.assertLessEqual(len(selected), 5)
         self.assertTrue(decisions)
         self.assertIsInstance(dist, dict)
+
+
+class KeysuriKoreaDuplicateGuardTests(unittest.TestCase):
+    def test_build_story_cluster_key_normalizes_similar_titles(self) -> None:
+        a = build_story_cluster_key(
+            _item("a", "OpenAI launches NEW developer platform!!!", summary="OpenAI API platform.")
+        )
+        b = build_story_cluster_key(
+            _item("b", "OpenAI launches new developer platform", summary="OpenAI API platform.")
+        )
+        self.assertEqual(a, b)
+
+    def test_normalize_story_text_strips_punctuation(self) -> None:
+        self.assertEqual(
+            normalize_story_text("NVIDIA HBM — GPU launch!!!"),
+            "nvidia hbm gpu launch",
+        )
+
+    def test_build_global_story_index_from_debug_report(self) -> None:
+        report = _global_report(
+            ("NVIDIA HBM GPU platform launch", "NVIDIA GPU chip platform enterprise."),
+        )
+        index = build_global_story_index(report)
+        self.assertEqual(index.global_story_count, 1)
+        self.assertEqual(len(index.cluster_keys), 1)
+
+    def test_exact_global_korea_duplicate_without_angle_penalized(self) -> None:
+        title = "OpenAI launches new developer platform API pricing model"
+        summary = "OpenAI model release for developer workflow and API platform."
+        report = _global_report((title, summary))
+        dup = _item("dup-1", title, summary=summary, url="https://wire.example.com/dup-1")
+        dup["source_name"] = "Overseas Tech Wire"
+        result = score_korea_signal_candidates([dup], global_selection_report=report)
+        candidate = result.all_candidates[0]
+        self.assertTrue(candidate.global_duplicate_detected)
+        self.assertFalse(candidate.korea_angle_satisfied)
+        self.assertEqual(candidate.scores.global_duplicate_penalty, GLOBAL_DUPLICATE_PENALTY_NO_ANGLE)
+        self.assertNotIn(candidate, result.selected_top5)
+
+    def test_nvidia_samsung_hbm_allowed_with_korea_angle(self) -> None:
+        report = _global_report(
+            (
+                "NVIDIA HBM GPU platform launch enterprise API",
+                "NVIDIA GPU chip platform launch for enterprise AI infrastructure.",
+            )
+        )
+        korea = _item(
+            "k-hbm",
+            "삼성전자 SK하이닉스 HBM4 NVIDIA 협력 국내 증설 수주",
+            category="korea_semiconductor",
+            summary="삼성전자 SK하이닉스 국내 HBM 증설 수주 입찰 일정.",
+            url="https://korea.example.com/hbm-1",
+        )
+        result = score_korea_signal_candidates([korea], global_selection_report=report)
+        candidate = result.all_candidates[0]
+        self.assertTrue(candidate.global_duplicate_detected)
+        self.assertTrue(candidate.korea_angle_satisfied)
+        self.assertEqual(candidate.duplicate_resolution, "allowed_with_korea_angle")
+
+    def test_openai_customer_case_without_korean_entity_penalized(self) -> None:
+        report = _global_report(
+            (
+                "OpenAI enterprise agents customer story Endava",
+                "OpenAI customer story on Endava enterprise agents in software delivery.",
+            )
+        )
+        korea = _item(
+            "k-case",
+            "OpenAI enterprise agents customer story Endava",
+            summary="OpenAI customer story partner content case study.",
+            url="https://wire.example.com/case-1",
+        )
+        korea["source_name"] = "Overseas Tech Wire"
+        result = score_korea_signal_candidates([korea], global_selection_report=report)
+        candidate = result.all_candidates[0]
+        self.assertTrue(candidate.global_duplicate_detected)
+        self.assertFalse(candidate.korea_angle_satisfied)
+        self.assertLessEqual(candidate.scores.global_duplicate_penalty, GLOBAL_DUPLICATE_PENALTY_NO_ANGLE)
+
+    def test_same_company_different_event_not_blocked(self) -> None:
+        report = _global_report(
+            (
+                "Samsung Foundry wafer fab capacity expansion investment",
+                "Samsung semiconductor fab wafer packaging capacity expansion.",
+            )
+        )
+        korea = _item(
+            "k-phone",
+            "Samsung Electronics Galaxy flagship smartphone launch event",
+            summary="Samsung mobile division flagship launch schedule for consumers.",
+            url="https://korea.example.com/phone-1",
+            category="korea_consumer_mobility",
+        )
+        result = score_korea_signal_candidates([korea], global_selection_report=report)
+        candidate = result.all_candidates[0]
+        self.assertFalse(candidate.global_duplicate_detected)
+        self.assertTrue(candidate.same_entity_not_same_story)
+
+    def test_duplicate_penalized_loses_to_non_duplicate_domestic(self) -> None:
+        title = "OpenAI launches new developer platform API pricing model"
+        summary = "OpenAI model release for developer workflow and API platform."
+        report = _global_report((title, summary))
+        dup = _item("dup-1", title, summary=summary, url="https://wire.example.com/dup-1")
+        dup["source_name"] = "Overseas Tech Wire"
+        domestic = _item(
+            "dom-1",
+            "과기정통부 정책 규제 조달 입찰 공고 마감",
+            category="korea_policy_regulation",
+            summary="국내 정책 규제 조달 입찰, 마감 일정 확인.",
+            url="https://korea.example.com/policy-1",
+        )
+        result = score_korea_signal_candidates(
+            [dup, domestic],
+            global_selection_report=report,
+        )
+        selected_ids = {s.source_id for s in result.selected_top5}
+        self.assertIn("dom-1", selected_ids)
+        self.assertNotIn("dup-1", selected_ids)
+
+    def test_no_global_report_duplicate_guard_not_applied(self) -> None:
+        result = score_korea_signal_candidates(
+            [_item("a1", "삼성 반도체 HBM 투자", category="korea_semiconductor")]
+        )
+        self.assertEqual(result.duplicate_guard_status, "not_applied_no_global_report")
+        self.assertEqual(result.global_story_count, 0)
+
+    def test_debug_report_contains_duplicate_guard_metrics(self) -> None:
+        report = _global_report(
+            ("OpenAI launches developer platform API", "OpenAI platform API workflow."),
+        )
+        result = score_korea_signal_candidates(
+            [
+                _item(
+                    "k1",
+                    "OpenAI launches developer platform API",
+                    summary="OpenAI platform API workflow.",
+                )
+            ],
+            global_selection_report=report,
+        )
+        payload = result.to_dict()
+        self.assertEqual(payload["duplicate_guard_status"], "applied")
+        self.assertGreaterEqual(payload["global_story_count"], 1)
+        self.assertIn("duplicate_detected_count", payload)
+        self.assertIn("duplicate_penalized_count", payload)
+        self.assertIn("duplicate_allowed_with_korea_angle_count", payload)
+        self.assertIn("duplicate_watchlist_items", payload)
+
+    def test_overlap_selected_item_has_domestic_angle_fields(self) -> None:
+        report = _global_report(
+            (
+                "NVIDIA HBM GPU platform launch enterprise API",
+                "NVIDIA GPU chip platform launch for enterprise AI infrastructure.",
+            )
+        )
+        korea = _item(
+            "k-hbm",
+            "삼성전자 HBM4 NVIDIA 협력 국내 증설 수주",
+            category="korea_semiconductor",
+            summary="삼성전자 SK하이닉스 국내 HBM 증설 수주 입찰 일정.",
+            url="https://korea.example.com/hbm-2",
+        )
+        selection = score_korea_signal_candidates([korea], global_selection_report=report)
+        source_pack = apply_scored_selection_to_source_pack(
+            {
+                "sources": [
+                    {
+                        "source_id": "k-hbm",
+                        "source_url": korea["link"],
+                        "title": korea["title"],
+                        "snippet": korea["summary"],
+                    }
+                ],
+                "claims": [
+                    {
+                        "claim_id": "claim-k-hbm",
+                        "statement": korea["title"],
+                        "source_ids": ["k-hbm"],
+                        "category": "korea_semiconductor",
+                    }
+                ],
+            },
+            selection,
+        )
+        claim = source_pack["claims"][0]
+        self.assertEqual(claim.get("angle_chip"), "국내 적용")
+        self.assertTrue(claim.get("next_day_impact_line"))
+
+    def test_load_global_selection_report_invalid_path(self) -> None:
+        with self.assertRaises(FileNotFoundError):
+            load_global_selection_report("/tmp/does-not-exist-global-report.json")
 
 
 if __name__ == "__main__":

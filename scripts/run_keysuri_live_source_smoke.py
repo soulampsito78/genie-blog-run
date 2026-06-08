@@ -71,6 +71,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--global-selection-report",
+        default=None,
+        help=(
+            "Optional path to a Global TOP5 debug report JSON for Korea duplicate guard "
+            "(keysuri_korea_tech only)."
+        ),
+    )
+    parser.add_argument(
         "--subject",
         default=None,
         help="Email subject when --send is used",
@@ -103,6 +111,9 @@ def main(argv: list[str] | None = None) -> int:
         repo_root=_REPO,
         email_subject=args.subject,
         top_shot_image_path=Path(args.image_path) if args.image_path else None,
+        global_selection_report_path=(
+            Path(args.global_selection_report) if args.global_selection_report else None
+        ),
     )
 
     payload = result.to_dict()
