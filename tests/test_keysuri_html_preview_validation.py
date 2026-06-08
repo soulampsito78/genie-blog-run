@@ -163,6 +163,46 @@ def _write_preview(tmp: Path, name: str, html: str) -> Path:
     return path
 
 
+def _write_owner_review(tmp: Path, name: str, html: str) -> Path:
+    target_dir = tmp / "output" / "keysuri_preview"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = target_dir / name
+    path.write_text(html, encoding="utf-8")
+    return path
+
+
+def build_owner_review_html(*, extra_body: str = "", program: str = "global") -> str:
+    top5_heading = "국내 테크 TOP 5" if program == "korea" else "글로벌 테크 TOP 5"
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head><meta charset="UTF-8"><title>Owner Review</title></head>
+<body>
+  <section class="notice" role="note">
+    <p><strong>Owner-review 사전 검토 화면</strong></p>
+    <ul>
+      <li>이 화면은 테크 비서 키수리의 owner-review용 사전 검토 화면입니다.</li>
+      <li>아직 고객에게 발송되지 않았습니다.</li>
+      <li>최종 고객 발송 문안이 아니며 owner-review 검수용입니다.</li>
+    </ul>
+  </section>
+  <header><h1>테크 비서 키수리</h1></header>
+  <section><h2 class="top5-section-heading">{top5_heading}</h2></section>
+  <section class="card audit-section" id="audit">
+    <h2>Source Gate / TOP 5 Selection Audit</h2>
+  </section>
+  <section class="card status-section" id="status">
+    <h3>Forbidden outputs / guardrails</h3>
+    <ul class='forbidden-list'><li>Today_Geenee HTML email body</li></ul>
+    <h3>Active scheduler (GENIE)</h3>
+    <ul class='scheduler-list'><li><strong>Today_Geenee</strong> — 06:30 KST</li></ul>
+  </section>
+  {extra_body}
+  <footer class="footer"><p>Owner Review Preview</p></footer>
+</body>
+</html>
+"""
+
+
 class KeysuriHtmlPreviewValidationTests(unittest.TestCase):
     def test_minimal_pass_korea_1830_preview(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -341,6 +381,84 @@ class KeysuriHtmlPreviewValidationTests(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0)
             payload = json.loads(proc.stdout)
             self.assertEqual(payload["validation_status"], "FAIL")
+
+    def test_contract_preview_profile_requires_html_test_path(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            path = _write_owner_review(
+                Path(tmpdir),
+                "keysuri_global_owner_review_preview.html",
+                build_owner_review_html(),
+            )
+            result = validate_keysuri_html_preview(str(path), profile="contract_preview")
+            self.assertFalse(result.is_pass())
+            self.assertEqual(result.validation_profile, "contract_preview")
+            codes = {issue.code for issue in result.issues}
+            self.assertIn("file_path_not_html_test_dir", codes)
+
+    def test_owner_review_profile_passes_with_disclosure_today_geenee(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            path = _write_owner_review(
+                Path(tmpdir),
+                "keysuri_global_generated_owner_review_preview.html",
+                build_owner_review_html(),
+            )
+            result = validate_keysuri_html_preview(str(path), profile="owner_review")
+            self.assertTrue(result.is_pass(), result.issues)
+            self.assertEqual(result.validation_profile, "owner_review")
+            self.assertEqual(result.no_production_implication, "PASS")
+
+    def test_owner_review_profile_fails_body_today_geenee_contamination(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            path = _write_owner_review(
+                Path(tmpdir),
+                "keysuri_global_generated_owner_review_preview.html",
+                build_owner_review_html(extra_body="<p>Today_Geenee leaked into body</p>"),
+            )
+            result = validate_keysuri_html_preview(str(path), profile="owner_review")
+            self.assertFalse(result.is_pass())
+            self.assertEqual(result.no_production_implication, "FAIL")
+            codes = {issue.code for issue in result.issues}
+            self.assertTrue(
+                codes & {"forbidden_today_geenee", "forbidden_today_geenee_body"},
+                msg=f"expected Today_Geenee body contamination issue, got {codes}",
+            )
+
+    def test_owner_review_profile_fails_review_passed_state(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            path = _write_owner_review(
+                Path(tmpdir),
+                "keysuri_global_generated_owner_review_preview.html",
+                build_owner_review_html(extra_body='<span class="badge">review_passed</span>'),
+            )
+            result = validate_keysuri_html_preview(str(path), profile="owner_review")
+            self.assertFalse(result.is_pass())
+            self.assertEqual(result.claimed_pass_consistency, "FAIL")
+            codes = {issue.code for issue in result.issues}
+            self.assertIn("forbidden_review_passed", codes)
+
+    def test_owner_review_profile_fails_sent_archived_state(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            path = _write_owner_review(
+                Path(tmpdir),
+                "keysuri_global_generated_owner_review_preview.html",
+                build_owner_review_html(extra_body="<p>sent_archived: true</p>"),
+            )
+            result = validate_keysuri_html_preview(str(path), profile="owner_review")
+            self.assertFalse(result.is_pass())
+            self.assertEqual(result.claimed_pass_consistency, "FAIL")
+            codes = {issue.code for issue in result.issues}
+            self.assertIn("forbidden_sent_archived", codes)
+
+    def test_owner_review_auto_detect_from_path(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            path = _write_owner_review(
+                Path(tmpdir),
+                "keysuri_global_offline_dry_run_preview.html",
+                build_owner_review_html(),
+            )
+            result = validate_keysuri_html_preview(str(path))
+            self.assertEqual(result.validation_profile, "owner_review")
+            self.assertTrue(result.is_pass(), result.issues)
 
 
 if __name__ == "__main__":

@@ -47,6 +47,14 @@ def _write_html_test_preview(tmp: Path, program: str, html: str) -> Path:
     return path
 
 
+def _write_owner_review_preview(tmp: Path, program: str, html: str) -> Path:
+    target_dir = tmp / "output" / "keysuri_preview"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = target_dir / f"keysuri_{program}_generated_owner_review_preview.html"
+    path.write_text(html, encoding="utf-8")
+    return path
+
+
 class KeysuriRendererValidatorCompatTests(unittest.TestCase):
     """Owner-review renderer output is not html_test contract-validation compatible today."""
 
@@ -119,12 +127,32 @@ class KeysuriRendererValidatorCompatTests(unittest.TestCase):
     def test_owner_review_scheduler_table_may_fail_no_production_implication(self) -> None:
         html = render_keysuri_owner_review_html(self.global_prompt, self.global_generated)
         with TemporaryDirectory() as tmpdir:
-            path = _write_html_test_preview(Path(tmpdir), "global", html)
-            result = validate_keysuri_html_preview(str(path))
+            contract_path = _write_html_test_preview(Path(tmpdir), "global", html)
+            contract_result = validate_keysuri_html_preview(str(contract_path))
 
-        self.assertEqual(result.no_production_implication, "FAIL")
-        issue_codes = {issue.code for issue in result.issues}
+        self.assertEqual(contract_result.validation_profile, "contract_preview")
+        self.assertEqual(contract_result.no_production_implication, "FAIL")
+        issue_codes = {issue.code for issue in contract_result.issues}
         self.assertIn("forbidden_today_geenee", issue_codes)
+
+        with TemporaryDirectory() as tmpdir:
+            owner_path = _write_owner_review_preview(Path(tmpdir), "global", html)
+            owner_result = validate_keysuri_html_preview(str(owner_path), profile="owner_review")
+
+        self.assertEqual(owner_result.validation_profile, "owner_review")
+        self.assertTrue(owner_result.is_pass(), owner_result.issues)
+        self.assertEqual(owner_result.no_production_implication, "PASS")
+
+    def test_owner_review_global_html_passes_owner_review_profile(self) -> None:
+        html = render_keysuri_owner_review_html(self.global_prompt, self.global_generated)
+        with TemporaryDirectory() as tmpdir:
+            path = _write_owner_review_preview(Path(tmpdir), "global", html)
+            result = validate_keysuri_html_preview(str(path), profile="owner_review")
+
+        self.assertTrue(result.is_pass(), result.issues)
+        self.assertEqual(result.validation_profile, "owner_review")
+        self.assertEqual(result.deep_dive_readability, "SKIP")
+        self.assertEqual(result.rights_policy, "SKIP")
 
     def test_surfaces_are_documented_as_separate(self) -> None:
         """Owner-review renderer is not the html_test contract-validation preview."""

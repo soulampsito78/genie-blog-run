@@ -42,8 +42,16 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Optional program id override",
     )
+    parser.add_argument(
+        "--profile",
+        choices=("auto", "contract_preview", "owner_review"),
+        default="auto",
+        help="Validation profile (default: auto-detect from path/content)",
+    )
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
     args = parser.parse_args(argv)
+
+    profile = None if args.profile == "auto" else args.profile
 
     paths = _expand_paths(args.paths)
     if not paths:
@@ -53,7 +61,11 @@ def main(argv: list[str] | None = None) -> int:
     results = []
     all_pass = True
     for path in paths:
-        result = validate_keysuri_html_preview(str(path), program_id=args.program_id)
+        result = validate_keysuri_html_preview(
+            str(path),
+            program_id=args.program_id,
+            profile=profile,
+        )
         payload = result.to_dict()
         results.append(payload)
         if not result.is_pass():

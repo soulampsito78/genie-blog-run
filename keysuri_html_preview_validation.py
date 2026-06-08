@@ -1,11 +1,11 @@
-"""Kee-Suri HTML preview contract-validation (read-only).
+"""Kee-Suri HTML preview validation (read-only).
 
-This module validates Kee-Suri HTML preview files written for owner review under:
+Two validation profiles:
 
-    output/keysuri_preview/html_test/
-
-It checks contract-validation structure (sections, TOP 5 sources, deep-dive layers,
-rights policy, negative guards, and Korea 18:30 placement when explicitly in scope).
+- ``contract_preview`` — html_test contract-validation previews under
+  ``output/keysuri_preview/html_test/`` with ``_YYYYMMDD_HHMMSS.html`` suffix.
+- ``owner_review`` — offline owner-review renderer output under
+  ``output/keysuri_preview/`` (notice, guardrails, no customer-final states).
 
 Scope boundaries:
 - Not a production renderer validator.
@@ -31,8 +31,10 @@ from keysuri_private_briefing import (
 CheckStatus = Literal["PASS", "FAIL"]
 OptionalCheckStatus = Literal["PASS", "FAIL", "SKIP"]
 Severity = Literal["error", "warning"]
+ValidationProfile = Literal["contract_preview", "owner_review"]
 
 HTML_TEST_DIR_PARTS: Tuple[str, ...] = ("output", "keysuri_preview", "html_test")
+KEYSURI_PREVIEW_DIR_PARTS: Tuple[str, ...] = ("output", "keysuri_preview")
 TIMESTAMP_FILENAME_RE = re.compile(r"_\d{8}_\d{6}\.html$", re.IGNORECASE)
 TIMESTAMP_SUFFIX_STEM_RE = re.compile(r"_\d{8}_\d{6}$", re.IGNORECASE)
 KOREA_1830_FILENAME_TOKENS: Tuple[str, ...] = (
@@ -86,6 +88,39 @@ PRODUCTION_NEGATIVE_PATTERNS: Tuple[Tuple[str, str], ...] = (
     (r"image_canary/[^\"'\s>]+\.(?:jpg|jpeg|png|webp)[^\"'\s>]*(?:approved|production)", "image_api_production_asset"),
 )
 
+GENIE_BODY_CONTAMINATION_PATTERNS: Tuple[Tuple[str, str], ...] = (
+    (r"Today_Geenee", "forbidden_today_geenee_body"),
+    (r"Tomorrow_Geenee", "forbidden_tomorrow_geenee_body"),
+    (r"\btoday_genie\b", "forbidden_today_genie_body"),
+    (r"\btomorrow_genie\b", "forbidden_tomorrow_genie_body"),
+)
+
+CUSTOMER_FINAL_NEGATIVE_PATTERNS: Tuple[Tuple[str, str], ...] = (
+    (r"\breview_passed\b", "forbidden_review_passed"),
+    (r"\bsent_archived\b", "forbidden_sent_archived"),
+    (r"genie-customer-review", "forbidden_customer_review_box"),
+    (r"review-confirmation-box", "forbidden_customer_review_box"),
+    (r"고객\s*검수\s*완료", "forbidden_customer_review_complete_ko"),
+    (r"발송\s*완료\s*되었습니다", "forbidden_customer_send_complete_ko"),
+)
+
+OWNER_REVIEW_NOTICE_MARKERS: Tuple[str, ...] = (
+    "Owner-review 사전 검토 화면",
+    "owner-review용 사전 검토",
+)
+
+NOT_CUSTOMER_FINAL_MARKERS: Tuple[str, ...] = (
+    "최종 고객 발송 문안이 아니",
+    "아직 고객에게 발송되지 않았",
+    "최종 문안이 아님",
+    "Gemini 호출 전",
+)
+
+DISCLOSURE_ALLOWLIST_REGION_RES: Tuple[re.Pattern[str], ...] = (
+    re.compile(r"<ul\s+class=['\"]forbidden-list['\"][^>]*>.*?</ul>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<ul\s+class=['\"]scheduler-list['\"][^>]*>.*?</ul>", re.DOTALL | re.IGNORECASE),
+)
+
 DEEP_DIVE_DENSITY_CHAR_THRESHOLD = 280
 
 
@@ -110,6 +145,7 @@ class ValidationResult:
     claimed_pass_consistency: OptionalCheckStatus
     file_path: str = ""
     program_id: str = ""
+    validation_profile: ValidationProfile = "contract_preview"
     issues: List[ValidationIssue] = field(default_factory=list)
 
     def is_pass(self) -> bool:
@@ -133,6 +169,14 @@ def _path_under_html_test_dir(path: Path) -> bool:
     parts = [p.lower() for p in path.parts]
     for idx in range(len(parts) - len(HTML_TEST_DIR_PARTS) + 1):
         if tuple(parts[idx : idx + len(HTML_TEST_DIR_PARTS)]) == HTML_TEST_DIR_PARTS:
+            return True
+    return False
+
+
+def _path_under_keysuri_preview_dir(path: Path) -> bool:
+    parts = [p.lower() for p in path.parts]
+    for idx in range(len(parts) - len(KEYSURI_PREVIEW_DIR_PARTS) + 1):
+        if tuple(parts[idx : idx + len(KEYSURI_PREVIEW_DIR_PARTS)]) == KEYSURI_PREVIEW_DIR_PARTS:
             return True
     return False
 
@@ -285,7 +329,7 @@ def _claimed_validation_status(html: str) -> Optional[str]:
     return None
 
 
-def _validate_file_path(path: Path, issues: List[ValidationIssue]) -> bool:
+def _validate_contract_preview_file_path(path: Path, issues: List[ValidationIssue]) -> bool:
     ok = True
     if not path.exists() or not path.is_file():
         issues.append(ValidationIssue("file_missing", f"File not found: {path}"))
@@ -503,17 +547,151 @@ def _aggregate_status(checks: Sequence[CheckStatus]) -> CheckStatus:
     return "FAIL" if any(status == "FAIL" for status in checks) else "PASS"
 
 
-def validate_keysuri_html_preview(
-    path: str,
+def _validate_owner_review_file_path(path: Path, issues: List[ValidationIssue]) -> bool:
+    ok = True
+    if not path.exists() or not path.is_file():
+        issues.append(ValidationIssue("file_missing", f"File not found: {path}"))
+        return False
+
+    if path.stat().st_size == 0:
+        issues.append(ValidationIssue("file_empty", "HTML file is empty"))
+        ok = False
+
+    if not _path_under_keysuri_preview_dir(path.resolve()):
+        issues.append(
+            ValidationIssue(
+                "file_path_not_keysuri_preview_dir",
+                "Path must be under output/keysuri_preview/",
+            )
+        )
+        ok = False
+
+    return ok
+
+
+def _looks_like_owner_review_html(html: str) -> bool:
+    lower = html.lower()
+    if any(marker in html for marker in OWNER_REVIEW_NOTICE_MARKERS):
+        return True
+    return 'class="notice"' in lower and "owner-review" in lower
+
+
+def _resolve_validation_profile(
+    path: Path,
+    html: str,
+    profile: Optional[str],
+) -> ValidationProfile:
+    if profile in ("contract_preview", "owner_review"):
+        return profile  # type: ignore[return-value]
+
+    stem = path.name.lower()
+    if _path_under_html_test_dir(path.resolve()) or "contract_preview" in stem:
+        return "contract_preview"
+    if any(token in stem for token in ("owner_review", "offline_dry_run", "generated_owner")):
+        return "owner_review"
+    if html and _looks_like_owner_review_html(html):
+        return "owner_review"
+    if _path_under_keysuri_preview_dir(path.resolve()) and "contract_preview" not in stem:
+        return "owner_review"
+    return "contract_preview"
+
+
+def _strip_disclosure_allowlist_regions(html: str) -> str:
+    scan_html = _strip_html_comments(html)
+    for pattern in DISCLOSURE_ALLOWLIST_REGION_RES:
+        scan_html = pattern.sub("", scan_html)
+    return scan_html
+
+
+def _validate_owner_review_notice(html: str, issues: List[ValidationIssue]) -> bool:
+    if any(marker in html for marker in OWNER_REVIEW_NOTICE_MARKERS):
+        return True
+    if re.search(r'<section[^>]*\bclass=["\'][^"\']*\bnotice\b', html, flags=re.IGNORECASE):
+        if "owner-review" in html.lower() or "Owner-review" in html:
+            return True
+    issues.append(
+        ValidationIssue(
+            "owner_review_notice_missing",
+            "Missing owner-review notice section",
+        )
+    )
+    return False
+
+
+def _validate_not_customer_final(html: str, issues: List[ValidationIssue]) -> bool:
+    if any(marker in html for marker in NOT_CUSTOMER_FINAL_MARKERS):
+        return True
+    issues.append(
+        ValidationIssue(
+            "customer_final_wording_missing_guard",
+            "Missing explicit not-customer-final owner-review guard copy",
+        )
+    )
+    return False
+
+
+def _validate_owner_review_structure(
+    html: str,
     *,
-    program_id: str | None = None,
+    program_id: str,
+    issues: List[ValidationIssue],
+) -> bool:
+    ok = True
+    if IDENTITY_TITLE not in html:
+        issues.append(ValidationIssue("identity_title_missing", f"Missing identity title {IDENTITY_TITLE!r}"))
+        ok = False
+
+    expected_top5 = SECTION_TOP5_KOREA if program_id == PROGRAM_KOREA else SECTION_TOP5_GLOBAL
+    has_top5 = expected_top5 in html if program_id in (PROGRAM_KOREA, PROGRAM_GLOBAL) else (
+        SECTION_TOP5_KOREA in html or SECTION_TOP5_GLOBAL in html
+    )
+    if not has_top5:
+        issues.append(ValidationIssue("owner_review_top5_missing", "Missing Kee-Suri TOP 5 section heading"))
+        ok = False
+
+    if "Owner Review Preview" not in html and "owner review preview" not in html.lower():
+        issues.append(
+            ValidationIssue(
+                "owner_review_footer_missing",
+                "Missing owner-review footer marker",
+            )
+        )
+        ok = False
+
+    if 'id="audit"' not in html and "Source Gate / TOP 5 Selection Audit" not in html:
+        issues.append(
+            ValidationIssue(
+                "owner_review_audit_section_missing",
+                "Missing source gate / audit section",
+            )
+        )
+        ok = False
+
+    return ok
+
+
+def _validate_no_customer_final_states(html: str, issues: List[ValidationIssue]) -> bool:
+    scan_html = _strip_html_comments(html)
+    return _scan_negative_patterns(scan_html, CUSTOMER_FINAL_NEGATIVE_PATTERNS, issues)
+
+
+def _validate_owner_review_genie_contamination(html: str, issues: List[ValidationIssue]) -> bool:
+    scan_html = _strip_disclosure_allowlist_regions(html)
+    production_ok = _scan_negative_patterns(scan_html, PRODUCTION_NEGATIVE_PATTERNS, issues)
+    body_ok = _scan_negative_patterns(scan_html, GENIE_BODY_CONTAMINATION_PATTERNS, issues)
+    return production_ok and body_ok
+
+
+def _validate_contract_preview(
+    resolved: Path,
+    *,
+    program_id: str | None,
 ) -> ValidationResult:
-    """Validate a Kee-Suri HTML preview file. Read-only — does not mutate HTML."""
-    resolved = Path(path).expanduser()
+    """Validate a Kee-Suri contract-preview HTML file under html_test/. Read-only."""
     timestamp = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     issues: List[ValidationIssue] = []
 
-    file_ok = _validate_file_path(resolved, issues)
+    file_ok = _validate_contract_preview_file_path(resolved, issues)
     html = ""
     if file_ok:
         html = resolved.read_text(encoding="utf-8")
@@ -605,5 +783,100 @@ def validate_keysuri_html_preview(
         claimed_pass_consistency=claimed_pass_consistency,
         file_path=str(resolved.resolve()),
         program_id=inferred_program,
+        validation_profile="contract_preview",
         issues=issues,
     )
+
+
+def _validate_owner_review(
+    resolved: Path,
+    *,
+    program_id: str | None,
+) -> ValidationResult:
+    timestamp = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    issues: List[ValidationIssue] = []
+
+    file_ok = _validate_owner_review_file_path(resolved, issues)
+    html = ""
+    if resolved.exists() and resolved.is_file():
+        html = resolved.read_text(encoding="utf-8")
+        if file_ok:
+            _validate_basic_html(html, issues)
+
+    inferred_program = _infer_program_id(resolved, html, program_id)
+
+    required_sections: CheckStatus = "FAIL"
+    top5_sources: CheckStatus = "FAIL"
+    deep_dive_readability: OptionalCheckStatus = "SKIP"
+    rights_policy: OptionalCheckStatus = "SKIP"
+    no_hashtags: CheckStatus = "FAIL"
+    no_production_implication: CheckStatus = "FAIL"
+    warm_close_order: OptionalCheckStatus = "SKIP"
+    claimed_pass_consistency: OptionalCheckStatus = "SKIP"
+
+    if html and file_ok:
+        notice_ok = _validate_owner_review_notice(html, issues)
+        not_final_ok = _validate_not_customer_final(html, issues)
+        required_sections = "PASS" if notice_ok and not_final_ok else "FAIL"
+
+        top5_sources = "PASS" if _validate_owner_review_structure(
+            html,
+            program_id=inferred_program,
+            issues=issues,
+        ) else "FAIL"
+
+        hashtag_ok = _scan_negative_patterns(html, HASHTAG_NEGATIVE_PATTERNS, issues)
+        no_hashtags = "PASS" if hashtag_ok else "FAIL"
+
+        contamination_ok = _validate_owner_review_genie_contamination(html, issues)
+        no_production_implication = "PASS" if contamination_ok else "FAIL"
+
+        state_ok = _validate_no_customer_final_states(html, issues)
+        claimed_pass_consistency = "PASS" if state_ok else "FAIL"
+
+    sub_checks: List[CheckStatus] = [
+        required_sections,
+        top5_sources,
+        no_hashtags,
+        no_production_implication,
+    ]
+    if claimed_pass_consistency != "SKIP":
+        sub_checks.append(claimed_pass_consistency)  # type: ignore[arg-type]
+
+    actual_pass = file_ok and html and _aggregate_status(sub_checks) == "PASS"
+    validation_status: CheckStatus = "PASS" if actual_pass else "FAIL"
+
+    return ValidationResult(
+        validation_status=validation_status,
+        validation_timestamp=timestamp,
+        required_sections=required_sections,
+        top5_sources=top5_sources,
+        deep_dive_readability=deep_dive_readability,  # type: ignore[arg-type]
+        rights_policy=rights_policy,  # type: ignore[arg-type]
+        no_hashtags=no_hashtags,
+        no_production_implication=no_production_implication,
+        warm_close_order=warm_close_order,
+        claimed_pass_consistency=claimed_pass_consistency,
+        file_path=str(resolved.resolve()),
+        program_id=inferred_program,
+        validation_profile="owner_review",
+        issues=issues,
+    )
+
+
+def validate_keysuri_html_preview(
+    path: str,
+    *,
+    program_id: str | None = None,
+    profile: str | None = None,
+) -> ValidationResult:
+    """Validate a Kee-Suri HTML preview file. Read-only — does not mutate HTML."""
+    resolved = Path(path).expanduser()
+    html = ""
+    if resolved.exists() and resolved.is_file():
+        html = resolved.read_text(encoding="utf-8")
+
+    chosen = _resolve_validation_profile(resolved, html, profile)
+    if chosen == "owner_review":
+        return _validate_owner_review(resolved, program_id=program_id)
+    return _validate_contract_preview(resolved, program_id=program_id)
