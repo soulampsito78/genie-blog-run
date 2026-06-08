@@ -4,7 +4,7 @@ from __future__ import annotations
 import html
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from keysuri_news_contract import SECTION_TOP5_GLOBAL, SECTION_TOP5_KOREA
 from keysuri_generated_briefing import (
@@ -38,6 +38,7 @@ EXTRA_IDENTITY_GUARDRAILS: List[str] = [
 ]
 
 GENERATION_PENDING_LABEL = "generation_pending"
+PreviewMode = Literal["offline", "live_smoke"]
 
 
 def _esc(value: Any) -> str:
@@ -191,7 +192,11 @@ def render_keysuri_source_audit_section(prompt_input: dict) -> str:
     )
 
 
-def render_keysuri_placeholder_sections(prompt_input: dict) -> str:
+def render_keysuri_placeholder_sections(
+    prompt_input: dict,
+    *,
+    preview_mode: PreviewMode = "offline",
+) -> str:
     """Render generation_pending placeholders for sections not yet generated."""
     labels = prompt_input.get("fixed_section_labels")
     if not isinstance(labels, dict):
@@ -203,15 +208,28 @@ def render_keysuri_placeholder_sections(prompt_input: dict) -> str:
         (labels.get("closing_sources") or SECTION_CLOSING, "closing"),
     ]
     parts: List[str] = []
+    if preview_mode == "live_smoke":
+        pending_note = (
+            "<p class='muted'>Live source smoke — source-led cards only · 최종 문안이 아님</p>"
+        )
+        pending_body = (
+            "<p>키수리 프라이빗 비서 문안은 generation 단계 이후 채워집니다. "
+            "이 preview는 live source smoke owner-review 화면입니다.</p>"
+        )
+    else:
+        pending_note = "<p class='muted'>Gemini 호출 전 · 최종 문안이 아님</p>"
+        pending_body = (
+            "<p>키수리 프라이빗 비서 문안은 generation 단계 이후 채워집니다. "
+            "이 preview는 prompt_input 기반 owner-review 화면입니다.</p>"
+        )
     for title, slug in placeholder_sections:
         parts.extend(
             [
                 f'<section class="card placeholder-section" id="{slug}">',
                 f"<h2>{_esc(title)}</h2>",
                 f'<p class="badge-pending">{GENERATION_PENDING_LABEL}</p>',
-                "<p class='muted'>Gemini 호출 전 · 최종 문안 아님</p>",
-                "<p>키수리 프라이빗 비서 문안은 generation 단계 이후 채워집니다. "
-                "이 preview는 prompt_input 기반 owner-review 화면입니다.</p>",
+                pending_note,
+                pending_body,
                 "</section>",
             ]
         )
@@ -456,6 +474,8 @@ def _base_styles() -> str:
 def render_keysuri_owner_review_html(
     prompt_input: dict,
     generated_briefing: dict | None = None,
+    *,
+    preview_mode: PreviewMode = "offline",
 ) -> str:
     """Render a complete standalone owner-review HTML page from prompt_input."""
     if not isinstance(prompt_input, dict):
@@ -474,15 +494,39 @@ def render_keysuri_owner_review_html(
             )
             raise ValueError(f"Invalid generated briefing for {program_id}: {messages}")
 
-    if generated_briefing is not None:
+    if preview_mode == "live_smoke":
+        notice = """
+    <section class="notice" role="note">
+      <p><strong>Owner-review 사전 검토 화면</strong></p>
+      <ul>
+        <li>이 화면은 테크 비서 키수리의 owner-review용 사전 검토 화면입니다.</li>
+        <li>아직 고객에게 발송되지 않았습니다.</li>
+        <li>Live source smoke preview — public RSS metadata fetch only.</li>
+        <li>최종 고객 발송 문안이 아니며 owner-review 검수용입니다.</li>
+        <li>프라이빗 테크 비서 톤 — 공개 방송형 브리핑 톤이 아닙니다.</li>
+      </ul>
+    </section>
+    """
+    elif generated_briefing is not None:
         notice_extra = (
             "<li>staged sample generated briefing이 로드되었습니다. "
             "최종 고객 발송 문안이 아니며 owner-review 검수용입니다.</li>"
         )
+        notice = f"""
+    <section class="notice" role="note">
+      <p><strong>Owner-review 사전 검토 화면</strong></p>
+      <ul>
+        <li>이 화면은 테크 비서 키수리의 owner-review용 사전 검토 화면입니다.</li>
+        <li>아직 고객에게 발송되지 않았습니다.</li>
+        <li>실시간 뉴스 수집 결과가 아니라 staged sample source pack 기반 preview입니다.</li>
+        {notice_extra}
+        <li>프라이빗 테크 비서 톤 — 공개 방송형 브리핑 톤이 아닙니다.</li>
+      </ul>
+    </section>
+    """
     else:
         notice_extra = "<li>Gemini 호출 전 단계이며 최종 문안이 아닙니다.</li>"
-
-    notice = f"""
+        notice = f"""
     <section class="notice" role="note">
       <p><strong>Owner-review 사전 검토 화면</strong></p>
       <ul>
@@ -517,7 +561,16 @@ def render_keysuri_owner_review_html(
     </header>
     """
 
-    footer = """
+    if preview_mode == "live_smoke":
+        footer = """
+    <footer class="footer">
+      <p>Owner Review Preview</p>
+      <p>Live source smoke · review_required · No email sent</p>
+      <p>Private Tech Secretary Preview</p>
+    </footer>
+    """
+    else:
+        footer = """
     <footer class="footer">
       <p>Owner Review Preview</p>
       <p>No email sent · No live fetch · No Gemini call</p>
@@ -533,7 +586,9 @@ def render_keysuri_owner_review_html(
     if generated_briefing is not None:
         body_parts.append(render_keysuri_generated_sections(generated_briefing))
     else:
-        body_parts.append(render_keysuri_placeholder_sections(prompt_input))
+        body_parts.append(
+            render_keysuri_placeholder_sections(prompt_input, preview_mode=preview_mode)
+        )
 
     body = "\n".join(body_parts)
 
