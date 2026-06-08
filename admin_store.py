@@ -238,7 +238,7 @@ def apply_reissue_child_metadata(
     return update_run_artifact(child_run_id, _mut)
 
 
-def load_run_artifact(run_id: str) -> Optional[Dict[str, Any]]:
+def load_run_artifact(run_id: str, *, normalize: bool = True) -> Optional[Dict[str, Any]]:
     if not validate_run_id(run_id):
         return None
     path = artifact_json_path(run_id)
@@ -248,7 +248,11 @@ def load_run_artifact(run_id: str) -> Optional[Dict[str, Any]]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    if normalize:
+        return normalize_artifact_view(data, run_id)
+    return data
 
 
 def load_run_email_html(run_id: str) -> Optional[str]:
@@ -440,3 +444,217 @@ def approve_run(run_id: str, note: str = "") -> tuple[Optional[Dict[str, Any]], 
 
     updated = update_run_artifact(run_id, _mut)
     return updated, "ok"
+
+
+APPROVABLE_ARTIFACT_STATUSES = frozenset({"emailed", "validated", "reissued", "review_required"})
+_SCHEDULER_OWNER_REVIEW_STATUSES = frozenset({"pending_review", "approved", "reopened"})
+
+
+def check_artifact_store_ready() -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Return (error_message, store_desc). Exactly one side is populated on failure paths."""
+    try:
+        root = admin_runs_dir()
+        probe = root / ".store_ready_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return None, {"backend": "local", "path": str(root)}
+    except OSError as exc:
+        return str(exc), None
+
+
+def normalize_artifact_view(meta: Dict[str, Any], run_id: str) -> Dict[str, Any]:
+    """Return artifact with safe defaults for admin display (does not persist)."""
+    view = dict(meta)
+    view.setdefault("run_id", run_id)
+    view.setdefault("artifact_status", derive_artifact_status(view))
+    view.setdefault("owner_review_status", "pending_review")
+    view.setdefault("customer_delivery_status", "not_sent")
+    return view
+
+
+def find_scheduled_owner_review_for_kst_date(
+    mode: str,
+    *,
+    kst_date: Optional[datetime] = None,
+    limit: int = 100,
+) -> Optional[str]:
+    """
+    Find an existing same-KST-calendar-day owner-review run for scheduler dedupe.
+    Reissue children (parent_run_id set) are ignored. validation_result=block with
+    email_sent=false does not count (scheduler may retry).
+    """
+    if mode != "today_genie":
+        return None
+    if kst_date is None:
+        kst_date = datetime.now(ZoneInfo("Asia/Seoul"))
+    elif kst_date.tzinfo is None:
+        kst_date = kst_date.replace(tzinfo=ZoneInfo("Asia/Seoul"))
+    date_prefix = kst_date.strftime("%Y%m%d_")
+
+    for raw in list_run_artifacts(limit=limit):
+        run_id = str(raw.get("run_id") or "").strip()
+        if not run_id or not validate_run_id(run_id):
+            continue
+        if str(raw.get("mode") or "") != mode:
+            continue
+        if not run_id.startswith(date_prefix):
+            continue
+        if raw.get("parent_run_id"):
+            continue
+        validation_result = str(raw.get("validation_result") or "")
+        email_sent = bool(raw.get("email_sent"))
+        if validation_result == "block" and not email_sent:
+            continue
+        owner_status = str(raw.get("owner_review_status") or "")
+        if email_sent or owner_status in _SCHEDULER_OWNER_REVIEW_STATUSES:
+            return run_id
+    return None
+
+
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def classify_timeout_skip(
+    meta: Dict[str, Any],
+    *,
+    now: Optional[datetime] = None,
+    has_email_html: bool = False,
+) -> Optional[str]:
+    """Return skip reason code if run is not eligible for timeout send, else None."""
+    view = normalize_artifact_view(meta, str(meta.get("run_id") or ""))
+    owner_status = str(view.get("owner_review_status") or "")
+    if owner_status == "approved":
+        return "already_approved"
+    if owner_status == "auto_sent_after_timeout":
+        return "already_timeout_sent"
+    if owner_status != "pending_review":
+        return "not_pending_review"
+    delivery = str(view.get("customer_delivery_status") or "not_sent")
+    if delivery != "not_sent":
+        return "customer_already_sent"
+    vr = str(view.get("validation_result") or "")
+    wf = str(view.get("workflow_status") or "")
+    artifact_status = str(view.get("artifact_status") or derive_artifact_status(view))
+    if vr == "block":
+        return "validation_block"
+    if artifact_status == "failed":
+        return "artifact_failed"
+    if not (
+        vr == "pass"
+        or wf == "validated"
+        or artifact_status in APPROVABLE_ARTIFACT_STATUSES
+    ):
+        return "not_approvable"
+    if not has_email_html:
+        return "missing_email_html"
+    deadline_raw = view.get("approval_deadline_at")
+    deadline = _parse_iso_datetime(deadline_raw)
+    if deadline is None:
+        return "missing_deadline"
+    if now is None:
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=ZoneInfo("Asia/Seoul"))
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=ZoneInfo("Asia/Seoul"))
+    if deadline > now:
+        return "before_deadline"
+    return None
+
+
+def _timeout_customer_send_retired() -> bool:
+    """Batch 8.3 policy: timeout auto-send is retired on main."""
+    return True
+
+
+def process_approval_timeouts(
+    *,
+    now: Optional[datetime] = None,
+    limit: int = 500,
+) -> Dict[str, Any]:
+    """
+    Scan artifacts for approval-timeout eligibility.
+    On main, timeout customer auto-send is retired; scan results are returned without send.
+    """
+    from collections import Counter
+
+    from today_geenee_customer_delivery import (
+        customer_delivery_config_ready,
+        send_customer_timeout_draft_email,
+    )
+
+    if now is None:
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
+
+    ready, config_err = customer_delivery_config_ready()
+    if not ready:
+        return {
+            "ok": False,
+            "error": config_err,
+            "scanned": 0,
+            "eligible": 0,
+            "sent": 0,
+            "skipped": 0,
+            "errors": 0,
+            "run_ids_sent": [],
+            "skip_reasons": {},
+            "error_run_ids": [],
+        }
+
+    retired = _timeout_customer_send_retired()
+    summary: Dict[str, Any] = {
+        "ok": True,
+        "error": None,
+        "scanned": 0,
+        "eligible": 0,
+        "sent": 0,
+        "skipped": 0,
+        "errors": 0,
+        "run_ids_sent": [],
+        "skip_reasons": {},
+        "error_run_ids": [],
+    }
+    skip_counter: Counter[str] = Counter()
+
+    for raw in list_run_artifacts(limit=limit):
+        run_id = str(raw.get("run_id") or "").strip()
+        if not run_id or not validate_run_id(run_id):
+            continue
+        summary["scanned"] = int(summary["scanned"]) + 1
+        view = normalize_artifact_view(raw, run_id)
+        saved_html = load_run_email_html(run_id) or ""
+        has_html = bool(saved_html.strip())
+        skip = classify_timeout_skip(view, now=now, has_email_html=has_html)
+        if skip:
+            skip_counter[skip] += 1
+            summary["skipped"] = int(summary["skipped"]) + 1
+            continue
+
+        summary["eligible"] = int(summary["eligible"]) + 1
+        if retired:
+            skip_counter["timeout_send_retired"] += 1
+            summary["skipped"] = int(summary["skipped"]) + 1
+            continue
+
+        if not send_customer_timeout_draft_email(saved_html, view):
+            summary["errors"] = int(summary["errors"]) + 1
+            summary["error_run_ids"].append(run_id)
+            continue
+
+        summary["sent"] = int(summary["sent"]) + 1
+        summary["run_ids_sent"].append(run_id)
+
+    summary["skip_reasons"] = dict(skip_counter)
+    if retired:
+        summary["retired"] = True
+        summary["note"] = "timeout customer send retired"
+    return summary

@@ -267,9 +267,13 @@ def build_run_artifact_metadata(
     email_sent: bool,
     parent_run_id: str | None = None,
     reissue_reason: str | None = None,
+    trigger_source: str | None = None,
 ) -> Dict[str, Any]:
     payload = result.response_data if isinstance(result.response_data, dict) else {}
     runtime_check = _runtime_check_from_api_payload(payload, reason_summary=result.reason_summary)
+    resolved_trigger = trigger_source
+    if not resolved_trigger and parent_run_id:
+        resolved_trigger = "reissue"
     meta: Dict[str, Any] = {
         "run_id": run_id,
         "mode": result.mode,
@@ -295,6 +299,8 @@ def build_run_artifact_metadata(
         "customer_delivery_status": "not_sent",
         "admin_reissue": bool(parent_run_id),
     }
+    if resolved_trigger:
+        meta["trigger_source"] = resolved_trigger
     return meta
 
 
@@ -304,6 +310,7 @@ def persist_orchestrator_run_artifact(
     *,
     parent_run_id: str | None = None,
     reissue_reason: str | None = None,
+    trigger_source: str | None = None,
 ) -> str:
     from admin_store import generate_run_id, save_run_artifact
     from datetime import datetime
@@ -317,6 +324,7 @@ def persist_orchestrator_run_artifact(
         email_sent=email_sent,
         parent_run_id=parent_run_id,
         reissue_reason=reissue_reason,
+        trigger_source=trigger_source,
     )
     meta["created_at"] = datetime.now(ZoneInfo("Asia/Seoul")).isoformat()
     email_html = extract_email_html_for_artifact(result)
@@ -492,6 +500,7 @@ def execute_orchestrator_run(
     parent_run_id: str | None = None,
     reissue_reason: str | None = None,
     admin_reissue: bool = False,
+    trigger_source: str | None = None,
 ) -> tuple[str, OrchestrationResult, bool]:
     """
     Run Genie job, attempt owner-review email, persist admin artifact.
@@ -503,11 +512,18 @@ def execute_orchestrator_run(
     try:
         result = run_genie_job(mode)
         email_sent = send_email_if_allowed(result)
+        resolved_trigger = trigger_source
+        if not resolved_trigger:
+            if parent_run_id:
+                resolved_trigger = "reissue"
+            elif admin_reissue:
+                resolved_trigger = "reissue"
         run_id = persist_orchestrator_run_artifact(
             result,
             email_sent,
             parent_run_id=parent_run_id,
             reissue_reason=reissue_reason,
+            trigger_source=resolved_trigger,
         )
         logger.info(
             "execute_orchestrator_run: mode=%s run_id=%s email_sent=%s parent_run_id=%s",

@@ -9,9 +9,9 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
+from admin_store import process_approval_timeouts
 from internal_jobs import (
     create_keysuri_owner_review_job,
-    process_approval_timeouts,
     validate_keysuri_owner_review_program_id,
 )
 from keysuri_live_source_smoke import LiveSourceSmokeResult, PROGRAM_GLOBAL, PROGRAM_KOREA
@@ -341,7 +341,11 @@ class KeysuriInternalJobsRegressionTests(unittest.TestCase):
         build_prompt.assert_called_once()
         call_gemini.assert_called_once_with("prompt", "tomorrow_genie")
 
-    def test_process_approval_timeouts_noop_unchanged(self) -> None:
+    def test_process_approval_timeouts_retired_policy_unchanged(self) -> None:
+        os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
+        os.environ["SMTP_HOST"] = "smtp.example.com"
+        os.environ["SMTP_USER"] = "user@example.com"
+        os.environ["SMTP_PASSWORD"] = "secret"
         result = process_approval_timeouts()
         self.assertTrue(result["ok"])
         self.assertTrue(result["retired"])

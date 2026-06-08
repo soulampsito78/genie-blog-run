@@ -10,12 +10,21 @@ from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from admin_store import (
+    check_artifact_store_ready,
+    derive_artifact_status,
+    find_scheduled_owner_review_for_kst_date,
+    load_run_artifact,
+    normalize_artifact_view,
+    process_approval_timeouts,
+)
 from keysuri_live_source_smoke import (
     PROGRAM_GLOBAL,
     PROGRAM_KOREA,
     LiveSourceSmokeResult,
     run_keysuri_live_source_smoke,
 )
+from orchestrator import execute_orchestrator_run
 
 router = APIRouter(tags=["internal"])
 logger = logging.getLogger(__name__)
@@ -30,6 +39,19 @@ FORBIDDEN_GENIE_PROGRAM_IDS = frozenset(
     }
 )
 DEFAULT_TRIGGER_SOURCE = "scheduled_owner_review"
+
+_FORBIDDEN_RESPONSE_KEYS = frozenset(
+    {
+        "email_images",
+        "image_prompt_contract",
+        "action_log",
+        "runtime_input",
+        "data",
+        "policy",
+        "issue_details",
+        "content_quality_warnings",
+    }
+)
 
 
 class KeysuriOwnerReviewJobRequest(BaseModel):
@@ -59,6 +81,53 @@ def _verify_internal_job_token(
             content={"ok": False, "error": "forbidden"},
         )
     return None
+
+
+def _artifact_store_not_ready_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={"ok": False, "error": "artifact_store_not_ready"},
+    )
+
+
+def _safe_owner_review_summary(
+    run_id: str,
+    *,
+    skipped_duplicate: bool,
+    message: Optional[str] = None,
+) -> Dict[str, Any]:
+    meta = load_run_artifact(run_id, normalize=False)
+    if not meta:
+        payload: Dict[str, Any] = {
+            "ok": True,
+            "skipped_duplicate": skipped_duplicate,
+            "run_id": run_id,
+            "mode": "today_genie",
+        }
+        if message:
+            payload["message"] = message
+        return payload
+
+    view = normalize_artifact_view(meta, run_id)
+    artifact_status = str(view.get("artifact_status") or derive_artifact_status(view))
+    payload = {
+        "ok": True,
+        "skipped_duplicate": skipped_duplicate,
+        "run_id": run_id,
+        "mode": "today_genie",
+        "response_status": view.get("response_status"),
+        "validation_result": view.get("validation_result"),
+        "workflow_status": view.get("workflow_status"),
+        "artifact_status": artifact_status,
+        "owner_review_status": view.get("owner_review_status"),
+        "email_sent": bool(view.get("email_sent")),
+        "customer_delivery_status": view.get("customer_delivery_status") or "not_sent",
+    }
+    if message:
+        payload["message"] = message
+    for key in _FORBIDDEN_RESPONSE_KEYS:
+        payload.pop(key, None)
+    return payload
 
 
 def validate_keysuri_owner_review_program_id(
@@ -143,6 +212,110 @@ def create_keysuri_owner_review_job(
     )
 
 
+@router.post("/internal/jobs/create-owner-review")
+def create_owner_review_endpoint(
+    request: Request,
+    x_genie_internal_job_token: Optional[str] = Header(None, alias="X-Genie-Internal-Job-Token"),
+):
+    """Scheduler entry: today_genie owner-review via execute_orchestrator_run (no admin session)."""
+    auth_fail = _verify_internal_job_token(request, x_genie_internal_job_token)
+    if auth_fail is not None:
+        return auth_fail
+
+    store_err, _desc = check_artifact_store_ready()
+    if store_err:
+        return _artifact_store_not_ready_response()
+
+    existing = find_scheduled_owner_review_for_kst_date("today_genie")
+    if existing:
+        return JSONResponse(
+            status_code=200,
+            content=_safe_owner_review_summary(
+                existing,
+                skipped_duplicate=True,
+                message="owner_review_already_exists_for_kst_date",
+            ),
+        )
+
+    try:
+        run_id, result, email_sent = execute_orchestrator_run(
+            "today_genie",
+            trigger_source="scheduled_owner_review",
+        )
+    except Exception as exc:
+        logger.exception(
+            "create_owner_review: orchestration_failed error_type=%s",
+            type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": "orchestration_failed",
+                "error_type": type(exc).__name__,
+            },
+        )
+
+    if not run_id:
+        logger.error(
+            "create_owner_review: orchestration_failed error_type=MissingRunId response_status=%s",
+            getattr(result, "response_status", None),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": "orchestration_failed",
+                "error_type": "MissingRunId",
+            },
+        )
+
+    summary = _safe_owner_review_summary(run_id, skipped_duplicate=False)
+    if not summary.get("email_sent") and email_sent:
+        summary["email_sent"] = True
+    logger.info(
+        "create_owner_review: run_id=%s email_sent=%s response_status=%s",
+        run_id,
+        summary.get("email_sent"),
+        summary.get("response_status"),
+    )
+    return JSONResponse(status_code=200, content=summary)
+
+
+@router.post("/internal/jobs/process-approval-timeouts")
+def process_approval_timeouts_endpoint(
+    request: Request,
+    x_genie_internal_job_token: Optional[str] = Header(None, alias="X-Genie-Internal-Job-Token"),
+):
+    """Scheduler entry: scan pending owner-review runs for approval timeout processing."""
+    auth_fail = _verify_internal_job_token(request, x_genie_internal_job_token)
+    if auth_fail is not None:
+        return auth_fail
+
+    store_err, _desc = check_artifact_store_ready()
+    if store_err:
+        return _artifact_store_not_ready_response()
+
+    try:
+        summary = process_approval_timeouts()
+    except Exception as exc:
+        logger.exception(
+            "process_approval_timeouts failed error_type=%s",
+            type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": "timeout_processor_failed",
+                "error_type": type(exc).__name__,
+            },
+        )
+
+    status_code = 200 if summary.get("ok") else 503
+    return JSONResponse(status_code=status_code, content=summary)
+
+
 @router.post("/internal/jobs/create-keysuri-owner-review")
 def create_keysuri_owner_review_endpoint(
     request: Request,
@@ -181,24 +354,3 @@ def create_keysuri_owner_review_endpoint(
         )
 
     return JSONResponse(status_code=200, content=payload)
-
-
-def process_approval_timeouts(*, now: Any = None, limit: int = 500) -> Dict[str, Any]:
-    """
-    Compatibility no-op: timeout-based customer auto-send was removed from active policy.
-    Historical artifacts with sent_after_timeout remain display-only.
-    """
-    _ = now
-    _ = limit
-    return {
-        "ok": True,
-        "retired": True,
-        "sent": 0,
-        "eligible": 0,
-        "skipped": 0,
-        "errors": 0,
-        "run_ids_sent": [],
-        "skip_reasons": {},
-        "error_run_ids": [],
-        "note": "timeout customer send retired",
-    }
