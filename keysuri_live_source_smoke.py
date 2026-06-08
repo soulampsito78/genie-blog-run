@@ -16,6 +16,24 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+from keysuri_contract_preview_fixture import (
+    build_contract_preview_fixture_from_generated,
+    resolve_top_shot_image_path,
+    top_shot_src_for_html,
+)
+from keysuri_contract_preview_quality import validate_contract_preview_visible_body
+from keysuri_preview_validation_report import validate_keysuri_contract_preview
+from keysuri_contract_preview_renderer import (
+    IMAGE_MODE_PREVIEW,
+    prepare_contract_preview_fixture,
+    render_keysuri_contract_preview_html,
+)
+from keysuri_generation_prompt import (
+    build_keysuri_generation_prompt,
+    extract_json_object_from_model_text,
+    parse_keysuri_generated_response,
+)
+from keysuri_gemini_client import KeysuriGeminiError, call_keysuri_gemini_text
 from keysuri_html_preview_validation import validate_keysuri_html_preview
 from keysuri_prompt_input import build_keysuri_prompt_input
 from keysuri_renderer import render_keysuri_owner_review_html
@@ -84,8 +102,17 @@ SAMPLE_MARKER_PATTERNS: Tuple[Tuple[str, str], ...] = (
     ("keysuri_korea_sources.sample", "fixture_source_pack_path_korea"),
 )
 
+GENERATION_PLACEHOLDER_PATTERNS: Tuple[Tuple[str, str], ...] = (
+    ("generation_pending", "generation_pending"),
+    ("source-led cards only", "source_led_cards_only"),
+    ("generation 단계 이후 채워집니다", "generation_stage_placeholder"),
+    ("Live source smoke — source-led cards only · 최종 문안이 아님", "live_source_led_notice"),
+    ("Gemini 호출 전 · 최종 문안이 아님", "gemini_pending_notice"),
+)
+
 _SEND_CONFIRM_PHRASE = "SEND"
 _DEFAULT_EMAIL_SUBJECT = "[KEYSURI test] Kee-Suri Global Tech live owner-review smoke"
+_DEFAULT_GENERATED_EMAIL_SUBJECT = "[KEYSURI test] Kee-Suri Global Tech generated owner-review"
 
 
 @dataclass
@@ -118,6 +145,8 @@ class LiveSourceSmokeResult:
     feed_urls_used: List[str]
     sample_marker_pass: bool
     sample_marker_hits: List[SampleMarkerHit] = field(default_factory=list)
+    placeholder_gate_pass: bool = True
+    placeholder_gate_hits: List[SampleMarkerHit] = field(default_factory=list)
     validation_status: str = "SKIP"
     validation_issues: List[str] = field(default_factory=list)
     send_attempted: bool = False
@@ -128,6 +157,22 @@ class LiveSourceSmokeResult:
     email_report_path: Optional[str] = None
     called_gemini: bool = False
     fetched_live_news: bool = False
+    use_gemini: bool = False
+    parse_status: Optional[str] = None
+    raw_response_path: Optional[str] = None
+    generated_body: Dict[str, str] = field(default_factory=dict)
+    contract_preview: bool = False
+    image_path: Optional[str] = None
+    image_in_html: bool = False
+    visible_body_quality_pass: bool = False
+    visible_body_quality_issues: List[str] = field(default_factory=list)
+    preview_validation: Dict[str, Any] = field(default_factory=dict)
+    structural_gate_status: Optional[str] = None
+    content_briefing_gate_status: Optional[str] = None
+    visual_identity_gate_status: Optional[str] = None
+    preview_overall_status: Optional[str] = None
+    ready_for_owner_visual_review: bool = False
+    ready_for_owner_manual_visual_inspection: bool = False
     side_effects: Dict[str, bool] = field(default_factory=dict)
     error: Optional[str] = None
 
@@ -144,6 +189,11 @@ class LiveSourceSmokeResult:
                 {"code": h.code, "marker": h.marker, "context": h.context}
                 for h in self.sample_marker_hits
             ],
+            "placeholder_gate_pass": self.placeholder_gate_pass,
+            "placeholder_gate_hits": [
+                {"code": h.code, "marker": h.marker, "context": h.context}
+                for h in self.placeholder_gate_hits
+            ],
             "validation_status": self.validation_status,
             "validation_issues": self.validation_issues,
             "send_attempted": self.send_attempted,
@@ -154,6 +204,22 @@ class LiveSourceSmokeResult:
             "email_report_path": self.email_report_path,
             "called_gemini": self.called_gemini,
             "fetched_live_news": self.fetched_live_news,
+            "use_gemini": self.use_gemini,
+            "parse_status": self.parse_status,
+            "raw_response_path": self.raw_response_path,
+            "generated_body": self.generated_body,
+            "contract_preview": self.contract_preview,
+            "image_path": self.image_path,
+            "image_in_html": self.image_in_html,
+            "visible_body_quality_pass": self.visible_body_quality_pass,
+            "visible_body_quality_issues": self.visible_body_quality_issues,
+            "preview_validation": self.preview_validation,
+            "structural_gate_status": self.structural_gate_status,
+            "content_briefing_gate_status": self.content_briefing_gate_status,
+            "visual_identity_gate_status": self.visual_identity_gate_status,
+            "preview_overall_status": self.preview_overall_status,
+            "ready_for_owner_visual_review": self.ready_for_owner_visual_review,
+            "ready_for_owner_manual_visual_inspection": self.ready_for_owner_manual_visual_inspection,
             "side_effects": self.side_effects,
             "error": self.error,
         }
@@ -383,6 +449,251 @@ def build_live_source_pack(
     }
 
 
+def _prompt_top5_item_maps(prompt_input: dict) -> Tuple[Dict[int, dict], Dict[str, dict]]:
+    prompt_top = prompt_input.get("top_5_news") if isinstance(prompt_input.get("top_5_news"), dict) else {}
+    items = prompt_top.get("items") if isinstance(prompt_top.get("items"), list) else []
+    by_rank: Dict[int, dict] = {}
+    by_news_id: Dict[str, dict] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        rank_raw = item.get("rank")
+        if isinstance(rank_raw, int):
+            by_rank[rank_raw] = item
+        news_id = str(item.get("news_id") or "").strip()
+        if news_id:
+            by_news_id[news_id] = item
+    return by_rank, by_news_id
+
+
+def _source_ids_from_news_id(news_id: str) -> List[str]:
+    nid = str(news_id or "").strip()
+    if not nid:
+        return []
+    if nid.startswith("claim-live-"):
+        return [nid.replace("claim-live-", "live-", 1)]
+    if nid.startswith("claim-"):
+        return [nid.replace("claim-", "live-", 1)]
+    return [nid]
+
+
+def _normalize_generated_top5_item(
+    item: dict,
+    *,
+    prompt_by_rank: Dict[int, dict],
+    prompt_by_news_id: Dict[str, dict],
+) -> dict:
+    out = dict(item)
+    briefing = item.get("briefing_item") if isinstance(item.get("briefing_item"), dict) else {}
+
+    rank_raw = out.get("rank")
+    rank = int(rank_raw) if isinstance(rank_raw, int) else 0
+    news_id = str(out.get("news_id") or briefing.get("news_id") or "").strip()
+    prompt_item = prompt_by_news_id.get(news_id) or prompt_by_rank.get(rank) or {}
+
+    korean_title = str(
+        out.get("korean_title") or briefing.get("korean_title") or out.get("headline") or ""
+    ).strip()
+    what_happened = str(
+        out.get("what_happened") or briefing.get("what_happened") or out.get("summary") or ""
+    ).strip()
+    why_now = str(
+        out.get("why_now")
+        or briefing.get("why_now")
+        or out.get("why_it_matters")
+        or prompt_item.get("why_it_matters")
+        or ""
+    ).strip()
+    owner_angle = str(
+        out.get("owner_angle")
+        or briefing.get("owner_angle")
+        or out.get("business_implication")
+        or prompt_item.get("business_implication")
+        or ""
+    ).strip()
+
+    if not str(out.get("headline") or "").strip():
+        out["headline"] = korean_title or str(prompt_item.get("headline") or "")
+    if not str(out.get("summary") or "").strip():
+        out["summary"] = what_happened or str(prompt_item.get("summary") or "")
+    if not str(out.get("why_it_matters") or "").strip():
+        out["why_it_matters"] = why_now
+    if not str(out.get("business_implication") or "").strip():
+        out["business_implication"] = owner_angle
+    if not str(out.get("category") or "").strip():
+        out["category"] = str(prompt_item.get("category") or "ai_product")
+    if not str(out.get("news_id") or "").strip():
+        out["news_id"] = str(prompt_item.get("news_id") or news_id or f"generated-rank-{rank}")
+    if not isinstance(out.get("source_ids"), list) or not out.get("source_ids"):
+        prompt_ids = prompt_item.get("source_ids")
+        if isinstance(prompt_ids, list) and prompt_ids:
+            out["source_ids"] = [str(x).strip() for x in prompt_ids if str(x).strip()]
+        else:
+            derived = _source_ids_from_news_id(str(out.get("news_id") or ""))
+            out["source_ids"] = derived or [str(prompt_item.get("news_id") or "")]
+    if not str(out.get("confidence_label") or "").strip():
+        out["confidence_label"] = str(prompt_item.get("confidence_label") or "reported")
+    return out
+
+
+def normalize_generated_briefing_schema_aliases(
+    generated: dict,
+    prompt_input: dict,
+) -> dict:
+    """Normalize model schema drift (closing aliases, deep_dive key_implications, etc.)."""
+    out = normalize_generated_briefing_closing_aliases(generated, prompt_input)
+
+    top = out.get("top_5_news")
+    prompt_top = prompt_input.get("top_5_news") if isinstance(prompt_input.get("top_5_news"), dict) else {}
+    prompt_items = prompt_top.get("items") if isinstance(prompt_top.get("items"), list) else []
+    if isinstance(top, dict) and isinstance(top.get("items"), list):
+        by_rank, by_news_id = _prompt_top5_item_maps(prompt_input)
+        generated_by_news: Dict[str, dict] = {}
+        generated_by_rank: Dict[int, dict] = {}
+        for item in top["items"]:
+            if not isinstance(item, dict):
+                continue
+            normalized = _normalize_generated_top5_item(
+                item,
+                prompt_by_rank=by_rank,
+                prompt_by_news_id=by_news_id,
+            )
+            news_id = str(normalized.get("news_id") or "").strip()
+            if news_id:
+                generated_by_news[news_id] = normalized
+            rank_raw = normalized.get("rank")
+            if isinstance(rank_raw, int):
+                generated_by_rank[rank_raw] = normalized
+
+        if prompt_items:
+            reordered: List[dict] = []
+            for prompt_item in prompt_items:
+                if not isinstance(prompt_item, dict):
+                    continue
+                expected_rank = int(prompt_item.get("rank") or 0)
+                expected_news_id = str(prompt_item.get("news_id") or "").strip()
+                picked = (
+                    generated_by_news.get(expected_news_id)
+                    or generated_by_rank.get(expected_rank)
+                    or dict(prompt_item)
+                )
+                merged = _normalize_generated_top5_item(
+                    picked,
+                    prompt_by_rank=by_rank,
+                    prompt_by_news_id=by_news_id,
+                )
+                merged["rank"] = expected_rank
+                merged["news_id"] = expected_news_id
+                reordered.append(merged)
+            normalized_items = reordered
+        else:
+            normalized_items = [
+                _normalize_generated_top5_item(
+                    item,
+                    prompt_by_rank=by_rank,
+                    prompt_by_news_id=by_news_id,
+                )
+                if isinstance(item, dict)
+                else item
+                for item in top["items"]
+            ]
+        out = dict(out)
+        out["top_5_news"] = {**top, "items": normalized_items}
+
+    deep = out.get("deep_dive")
+    if not isinstance(deep, dict):
+        return out
+
+    deep_out = dict(deep)
+    implications = deep.get("key_implications")
+    if not isinstance(implications, list) or not implications:
+        candidates: List[str] = []
+        confirmed = deep.get("confirmed_facts")
+        if isinstance(confirmed, list):
+            candidates.extend(str(x).strip() for x in confirmed if str(x).strip())
+        interpretation = str(deep.get("interpretation") or deep.get("keysuri_interpretation") or "").strip()
+        if interpretation:
+            candidates.append(interpretation)
+        owner_impact = str(deep.get("owner_impact") or deep.get("korean_operator_impact") or "").strip()
+        if owner_impact:
+            candidates.append(owner_impact)
+        if candidates:
+            deep_out["key_implications"] = candidates[:5]
+
+    if not str(deep_out.get("uncertainty") or "").strip():
+        open_q = deep.get("open_questions") or deep.get("uncertainty")
+        if isinstance(open_q, list) and open_q:
+            deep_out["uncertainty"] = " ".join(str(x).strip() for x in open_q[:3] if str(x).strip())
+        elif isinstance(open_q, str) and open_q.strip():
+            deep_out["uncertainty"] = open_q.strip()
+
+    if not isinstance(deep_out.get("source_ids"), list) or not deep_out.get("source_ids"):
+        source_ids: List[str] = []
+        top_after = out.get("top_5_news") if isinstance(out.get("top_5_news"), dict) else {}
+        for item in top_after.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            for sid in item.get("source_ids") or []:
+                s = str(sid).strip()
+                if s and s not in source_ids:
+                    source_ids.append(s)
+        if source_ids:
+            deep_out["source_ids"] = source_ids[:5]
+
+    if not str(deep_out.get("confidence_label") or "").strip():
+        deep_out["confidence_label"] = "reported"
+
+    out = dict(out)
+    out["deep_dive"] = deep_out
+    return out
+
+
+def normalize_generated_briefing_closing_aliases(
+    generated: dict,
+    prompt_input: dict,
+) -> dict:
+    """Map common model aliases (source_name/source_url) to contract label/url."""
+    if not isinstance(generated, dict):
+        return generated
+
+    closing = generated.get("closing_sources")
+    if not isinstance(closing, dict):
+        return generated
+
+    source_map: Dict[str, dict] = {}
+    pack = prompt_input.get("source_pack") if isinstance(prompt_input.get("source_pack"), dict) else {}
+    for src in pack.get("sources") if isinstance(pack.get("sources"), list) else []:
+        if isinstance(src, dict):
+            sid = str(src.get("source_id") or "").strip()
+            if sid:
+                source_map[sid] = src
+
+    source_list = closing.get("source_list")
+    if not isinstance(source_list, list):
+        return generated
+
+    normalized_list: List[dict] = []
+    for entry in source_list:
+        if not isinstance(entry, dict):
+            continue
+        item = dict(entry)
+        if not str(item.get("label") or "").strip() and str(item.get("source_name") or "").strip():
+            item["label"] = item["source_name"]
+        if not str(item.get("url") or "").strip() and str(item.get("source_url") or "").strip():
+            item["url"] = item["source_url"]
+        sid = str(item.get("source_id") or "").strip()
+        if sid in source_map:
+            src = source_map[sid]
+            item.setdefault("label", src.get("source_name"))
+            item.setdefault("url", src.get("source_url"))
+            item.setdefault("tier", src.get("source_tier"))
+        normalized_list.append(item)
+
+    out = dict(generated)
+    out["closing_sources"] = {**closing, "source_list": normalized_list}
+    return out
+
+
 def scan_sample_markers(*texts: str) -> List[SampleMarkerHit]:
     hits: List[SampleMarkerHit] = []
     for text in texts:
@@ -405,11 +716,77 @@ def scan_sample_markers(*texts: str) -> List[SampleMarkerHit]:
     return hits
 
 
-def _default_output_paths(program_id: str, out_dir: Path) -> Tuple[Path, Path]:
+def scan_placeholder_markers(*texts: str) -> List[SampleMarkerHit]:
+    hits: List[SampleMarkerHit] = []
+    for text in texts:
+        if not text:
+            continue
+        lower = text.lower()
+        for marker, code in GENERATION_PLACEHOLDER_PATTERNS:
+            idx = lower.find(marker.lower())
+            if idx < 0:
+                continue
+            start = max(0, idx - 40)
+            end = min(len(text), idx + len(marker) + 40)
+            hits.append(
+                SampleMarkerHit(
+                    code=code,
+                    marker=marker,
+                    context=text[start:end].replace("\n", " "),
+                )
+            )
+    return hits
+
+
+def extract_generated_body_text(generated_briefing: dict) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    top = generated_briefing.get("top_5_news") if isinstance(generated_briefing.get("top_5_news"), dict) else {}
+    items = top.get("items") if isinstance(top.get("items"), list) else []
+    headlines = []
+    for item in items[:5]:
+        if isinstance(item, dict):
+            headlines.append(str(item.get("headline") or "").strip())
+    out["top_5"] = " | ".join(h for h in headlines if h)
+
+    deep = generated_briefing.get("deep_dive") if isinstance(generated_briefing.get("deep_dive"), dict) else {}
+    out["deep_dive"] = str(deep.get("body") or "").strip()
+
+    one = (
+        generated_briefing.get("one_line_checkpoint")
+        if isinstance(generated_briefing.get("one_line_checkpoint"), dict)
+        else {}
+    )
+    out["one_line_checkpoint"] = str(one.get("body") or "").strip()
+
+    closing = (
+        generated_briefing.get("closing_sources")
+        if isinstance(generated_briefing.get("closing_sources"), dict)
+        else {}
+    )
+    out["closing_sources"] = str(closing.get("closing_message") or "").strip()
+    return out
+
+
+def _default_output_paths(
+    program_id: str,
+    out_dir: Path,
+    *,
+    generated: bool = False,
+    contract_preview: bool = False,
+) -> Tuple[Path, Path]:
     stamp = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d_%H%M%S")
     slug = "global" if program_id == PROGRAM_GLOBAL else "korea"
-    pack = out_dir / f"keysuri_{slug}_live_source_smoke_{stamp}.json"
-    html = out_dir / f"keysuri_{slug}_live_source_smoke_owner_review_{stamp}.html"
+    if contract_preview and generated:
+        html_test_dir = out_dir / "html_test"
+        html_test_dir.mkdir(parents=True, exist_ok=True)
+        pack = out_dir / f"keysuri_{slug}_live_source_smoke_generated_{stamp}.json"
+        html = html_test_dir / f"keysuri_{slug}_live_generated_contract_preview_{stamp}.html"
+    elif generated:
+        pack = out_dir / f"keysuri_{slug}_live_source_smoke_generated_{stamp}.json"
+        html = out_dir / f"keysuri_{slug}_live_source_smoke_generated_owner_review_{stamp}.html"
+    else:
+        pack = out_dir / f"keysuri_{slug}_live_source_smoke_{stamp}.json"
+        html = out_dir / f"keysuri_{slug}_live_source_smoke_owner_review_{stamp}.html"
     return pack, html
 
 
@@ -419,12 +796,66 @@ def _feeds_for_program(program_id: str) -> Tuple[Dict[str, str], ...]:
     raise ValueError(f"No live smoke feed list configured for {program_id!r}")
 
 
+def extract_contract_visible_body_text(fixture: dict, generated_briefing: dict) -> Dict[str, str]:
+    """Extract Korean visible body fields for owner review report."""
+    out = extract_generated_body_text(generated_briefing)
+    items = fixture.get("top_5_items") if isinstance(fixture.get("top_5_items"), list) else []
+
+    card_lines: List[str] = []
+    for idx, item in enumerate(items[:5], start=1):
+        if not isinstance(item, dict):
+            continue
+        card_lines.append(
+            "\n".join(
+                [
+                    f"[TOP {idx}]",
+                    f"한국어 제목: {item.get('korean_title') or item.get('headline') or ''}",
+                    f"무슨 일이 있었나: {item.get('what_happened') or ''}",
+                    f"왜 지금 중요한가: {item.get('why_now') or item.get('why_it_matters') or ''}",
+                    f"주인님 관점: {item.get('owner_angle') or item.get('business_implication') or ''}",
+                    (
+                        f"키수리 판단: "
+                        f"{item.get('keysuri_judgment_label') or ''} — "
+                        f"{item.get('keysuri_judgment') if isinstance(item.get('keysuri_judgment'), str) else ''}"
+                    ).strip(" —"),
+                    f"다음 확인 포인트: {item.get('next_watch') or ''}",
+                    f"출처: {item.get('source_name') or ''} | {item.get('source_url') or ''}",
+                ]
+            )
+        )
+    out["top_5_cards"] = "\n\n".join(card_lines)
+    out["top_5_korean_titles"] = " | ".join(
+        str(i.get("korean_title") or i.get("headline") or "").strip()
+        for i in items[:5]
+        if isinstance(i, dict)
+    )
+    out["opening_lead"] = str(fixture.get("opening_lead") or "").strip()
+    out["deep_dive_body"] = str(fixture.get("deep_dive_body") or "").strip()
+    out["one_line_checkpoint"] = str(fixture.get("one_line_checkpoint") or "").strip()
+    out["closing_message"] = str(fixture.get("closing_message") or "").strip()
+    out["selected_title"] = str(fixture.get("selected_title") or "").strip()
+    layers = fixture.get("deep_dive_layers") if isinstance(fixture.get("deep_dive_layers"), list) else []
+    out["deep_dive_layers"] = " / ".join(
+        str(layer.get("layer_title") or "") for layer in layers if isinstance(layer, dict)
+    )
+    src_list = fixture.get("source_list") if isinstance(fixture.get("source_list"), list) else []
+    out["closing_source_list"] = "\n".join(
+        f"- {s.get('source_name') or ''} | {s.get('source_url') or ''} | {s.get('fetched_at') or s.get('checked_at') or ''}"
+        for s in src_list
+        if isinstance(s, dict)
+    )
+    return out
+
+
 def run_keysuri_live_source_smoke(
     *,
     program_id: str = PROGRAM_GLOBAL,
     max_items: int = 5,
     allow_network: bool = True,
     use_gemini: bool = False,
+    contract_preview: bool = False,
+    project_id: Optional[str] = None,
+    model: Optional[str] = None,
     send: bool = False,
     send_confirm: Optional[str] = None,
     recipients: Optional[Sequence[str]] = None,
@@ -432,17 +863,51 @@ def run_keysuri_live_source_smoke(
     source_pack_out: Optional[Path] = None,
     out_dir: Optional[Path] = None,
     repo_root: Optional[Path] = None,
-    email_subject: str = _DEFAULT_EMAIL_SUBJECT,
+    email_subject: Optional[str] = None,
+    gemini_caller=None,
+    top_shot_image_path: Optional[Path] = None,
 ) -> LiveSourceSmokeResult:
     repo = repo_root or Path(__file__).resolve().parent
     preview_dir = out_dir or (repo / "output" / "keysuri_preview")
     preview_dir.mkdir(parents=True, exist_ok=True)
 
-    pack_path, html_path = _default_output_paths(program_id, preview_dir)
+    if contract_preview and not use_gemini:
+        return LiveSourceSmokeResult(
+            ok=False,
+            program_id=program_id,
+            source_pack_path="",
+            html_path="",
+            fetched_item_count=0,
+            feed_urls_used=[],
+            sample_marker_pass=False,
+            placeholder_gate_pass=False,
+            contract_preview=True,
+            side_effects={
+                "called_gemini": False,
+                "fetched_live_news": False,
+                "sent_email": False,
+                "published_naver": False,
+                "changed_scheduler": False,
+                "called_image_api": False,
+                "mutated_admin_runs": False,
+            },
+            error="--contract-preview requires --use-gemini",
+        )
+
+    pack_path, html_path = _default_output_paths(
+        program_id,
+        preview_dir,
+        generated=use_gemini,
+        contract_preview=contract_preview,
+    )
     if source_pack_out is not None:
         pack_path = source_pack_out
     if html_out is not None:
         html_path = html_out
+
+    subject = email_subject or (
+        _DEFAULT_GENERATED_EMAIL_SUBJECT if use_gemini else _DEFAULT_EMAIL_SUBJECT
+    )
 
     side_effects = {
         "called_gemini": False,
@@ -454,21 +919,6 @@ def run_keysuri_live_source_smoke(
         "mutated_admin_runs": False,
     }
 
-    if use_gemini:
-        return LiveSourceSmokeResult(
-            ok=False,
-            program_id=program_id,
-            source_pack_path=str(pack_path),
-            html_path=str(html_path),
-            fetched_item_count=0,
-            feed_urls_used=[],
-            sample_marker_pass=False,
-            called_gemini=False,
-            fetched_live_news=False,
-            side_effects=side_effects,
-            error="use_gemini is not wired for Kee-Suri live source smoke yet",
-        )
-
     if not allow_network:
         return LiveSourceSmokeResult(
             ok=False,
@@ -478,7 +928,9 @@ def run_keysuri_live_source_smoke(
             fetched_item_count=0,
             feed_urls_used=[],
             sample_marker_pass=False,
+            placeholder_gate_pass=False,
             fetched_live_news=False,
+            use_gemini=use_gemini,
             side_effects=side_effects,
             error="Network disabled (--no-network) but live source smoke requires fetch",
         )
@@ -506,7 +958,9 @@ def run_keysuri_live_source_smoke(
             fetched_item_count=len(fetched),
             feed_urls_used=feed_urls,
             sample_marker_pass=False,
+            placeholder_gate_pass=False,
             fetched_live_news=len(fetched) > 0,
+            use_gemini=use_gemini,
             side_effects=side_effects,
             error=(
                 f"Insufficient live feed items ({len(fetched)}); fetch errors: "
@@ -528,23 +982,219 @@ def run_keysuri_live_source_smoke(
             fetched_item_count=len(fetched),
             feed_urls_used=feed_urls,
             sample_marker_pass=False,
+            placeholder_gate_pass=False,
             fetched_live_news=True,
+            use_gemini=use_gemini,
             side_effects=side_effects,
             error=f"prompt_status={prompt_input.get('prompt_status')!r} after live source pack",
         )
 
-    html = render_keysuri_owner_review_html(prompt_input, preview_mode="live_smoke")
+    generated_briefing = None
+    parse_status: Optional[str] = None
+    raw_response_path: Optional[str] = None
+    generated_body: Dict[str, str] = {}
+
+    if use_gemini:
+        prompt_text = build_keysuri_generation_prompt(prompt_input)
+        caller = gemini_caller or call_keysuri_gemini_text
+        try:
+            raw_text = caller(prompt_text, project_id=project_id, model=model)
+            side_effects["called_gemini"] = True
+        except KeysuriGeminiError as exc:
+            return LiveSourceSmokeResult(
+                ok=False,
+                program_id=program_id,
+                source_pack_path=str(pack_path.resolve()),
+                html_path=str(html_path.resolve()),
+                fetched_item_count=len(fetched),
+                feed_urls_used=feed_urls,
+                sample_marker_pass=False,
+                placeholder_gate_pass=False,
+                fetched_live_news=True,
+                use_gemini=True,
+                side_effects=side_effects,
+                error=str(exc),
+            )
+
+        stamp = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d_%H%M%S")
+        raw_path = preview_dir / f"keysuri_live_gemini_raw_response_{stamp}.txt"
+        raw_path.write_text(raw_text, encoding="utf-8")
+        raw_response_path = str(raw_path.resolve())
+
+        parse_result = parse_keysuri_generated_response(raw_text, program_id, prompt_input)
+        if parse_result.get("parse_status") != "parsed_valid":
+            try:
+                parsed_obj = extract_json_object_from_model_text(raw_text)
+                parsed_obj = normalize_generated_briefing_schema_aliases(parsed_obj, prompt_input)
+                parse_result = parse_keysuri_generated_response(
+                    json.dumps(parsed_obj, ensure_ascii=False),
+                    program_id,
+                    prompt_input,
+                )
+            except ValueError:
+                pass
+        parse_status = str(parse_result.get("parse_status") or "")
+        if parse_status != "parsed_valid":
+            issues = parse_result.get("issues") or []
+            issue_text = "; ".join(
+                f"{i.get('code')}: {i.get('message')}" for i in issues[:5] if isinstance(i, dict)
+            )
+            return LiveSourceSmokeResult(
+                ok=False,
+                program_id=program_id,
+                source_pack_path=str(pack_path.resolve()),
+                html_path=str(html_path.resolve()),
+                fetched_item_count=len(fetched),
+                feed_urls_used=feed_urls,
+                sample_marker_pass=False,
+                placeholder_gate_pass=False,
+                fetched_live_news=True,
+                use_gemini=True,
+                called_gemini=True,
+                parse_status=parse_status,
+                raw_response_path=raw_response_path,
+                side_effects=side_effects,
+                error=f"Gemini parse failed ({parse_status}): {issue_text}",
+            )
+
+        generated_briefing = parse_result.get("generated_briefing")
+        generated_body = extract_generated_body_text(generated_briefing or {})
+        preview_mode = "live_smoke_generated"
+    else:
+        preview_mode = "live_smoke"
+
+    image_path: Optional[Path] = None
+    image_in_html = False
+    contract_fixture: Optional[dict] = None
+
+    if contract_preview:
+        assert generated_briefing is not None
+        try:
+            if top_shot_image_path is not None:
+                candidate = Path(top_shot_image_path).expanduser().resolve()
+                if not candidate.is_file():
+                    raise FileNotFoundError(f"Top-shot image not found: {candidate}")
+                image_path = candidate
+            else:
+                image_path = resolve_top_shot_image_path(repo, program_id)
+        except (FileNotFoundError, ValueError) as exc:
+            return LiveSourceSmokeResult(
+                ok=False,
+                program_id=program_id,
+                source_pack_path=str(pack_path.resolve()),
+                html_path=str(html_path.resolve()),
+                fetched_item_count=len(fetched),
+                feed_urls_used=feed_urls,
+                sample_marker_pass=False,
+                placeholder_gate_pass=False,
+                fetched_live_news=True,
+                use_gemini=True,
+                called_gemini=side_effects["called_gemini"],
+                parse_status=parse_status,
+                raw_response_path=raw_response_path,
+                contract_preview=True,
+                side_effects=side_effects,
+                error=str(exc),
+            )
+
+        html_path.parent.mkdir(parents=True, exist_ok=True)
+        contract_fixture = build_contract_preview_fixture_from_generated(
+            program_id=program_id,
+            prompt_input=prompt_input,
+            generated_briefing=generated_briefing,
+            source_pack=source_pack,
+            top_shot_image_path=image_path,
+        )
+        contract_fixture["fixture_mode"] = "live_generated"
+        prepare_contract_preview_fixture(
+            contract_fixture,
+            repo_root=repo,
+            image_mode=IMAGE_MODE_PREVIEW,
+        )
+        html = render_keysuri_contract_preview_html(
+            contract_fixture,
+            repo_root=repo,
+            image_mode=IMAGE_MODE_PREVIEW,
+            auto_prepare=False,
+        )
+        image_in_html = 'id="top-shot-image"' in html
+        generated_body = extract_contract_visible_body_text(contract_fixture, generated_briefing)
+    else:
+        html = render_keysuri_owner_review_html(
+            prompt_input,
+            generated_briefing,
+            preview_mode=preview_mode,  # type: ignore[arg-type]
+        )
+
     html_path.write_text(html, encoding="utf-8")
 
     pack_text = pack_path.read_text(encoding="utf-8")
     marker_hits = scan_sample_markers(pack_text, html)
     marker_pass = len(marker_hits) == 0
 
-    validation = validate_keysuri_html_preview(str(html_path), profile="owner_review")
+    placeholder_hits: List[SampleMarkerHit] = []
+    placeholder_pass = True
+    if use_gemini and not contract_preview:
+        placeholder_hits = scan_placeholder_markers(html)
+        placeholder_pass = len(placeholder_hits) == 0
+
+    validation_profile = "contract_preview" if contract_preview else "owner_review"
+    validation = validate_keysuri_html_preview(str(html_path), profile=validation_profile)
     validation_pass = validation.is_pass()
     validation_issues = [f"{i.code}: {i.message}" for i in validation.issues]
 
-    ok = marker_pass and validation_pass
+    visible_quality_pass = True
+    visible_quality_issues: List[str] = []
+    preview_validation: Dict[str, Any] = {}
+    structural_gate_status: Optional[str] = None
+    content_briefing_gate_status: Optional[str] = None
+    visual_identity_gate_status: Optional[str] = None
+    preview_overall_status: Optional[str] = None
+    ready_for_owner_visual_review = False
+    ready_for_owner_manual_visual_inspection = False
+    if contract_preview:
+        manifest_path: Optional[str] = None
+        if image_path is not None:
+            sidecar = Path(image_path).with_suffix(".manifest.json")
+            if not sidecar.is_file():
+                alt = Path(str(image_path).replace("_mirai_on_watermarked.jpg", "_mirai_on_watermarked.manifest.json"))
+                if alt.is_file():
+                    manifest_path = str(alt)
+            else:
+                manifest_path = str(sidecar)
+        preview_report = validate_keysuri_contract_preview(
+            html,
+            html_path=str(html_path),
+            program_id=program_id,
+            image_path=str(image_path) if image_path else None,
+            image_manifest_path=manifest_path,
+        )
+        preview_validation = preview_report.to_dict()
+        structural_gate_status = preview_report.structural_gate.status
+        content_briefing_gate_status = preview_report.content_briefing_gate.status
+        visual_identity_gate_status = preview_report.visual_identity_gate.status
+        preview_overall_status = preview_report.overall_status
+        ready_for_owner_visual_review = preview_report.ready_for_owner_visual_review
+        ready_for_owner_manual_visual_inspection = preview_report.ready_for_owner_manual_visual_inspection
+        visible_quality_pass = preview_report.overall_status != "blocked"
+        visible_quality_issues = [
+            f"{gate.gate}/{i.code}: {i.message}"
+            for gate in (
+                preview_report.structural_gate,
+                preview_report.content_briefing_gate,
+                preview_report.visual_identity_gate,
+            )
+            for i in gate.issues
+        ]
+        vbody = validate_contract_preview_visible_body(html)
+        if not vbody.ok:
+            visible_quality_pass = False
+            visible_quality_issues.extend(f"{i.code}: {i.message}" for i in vbody.issues)
+
+    ok = marker_pass and validation_pass and visible_quality_pass
+    if use_gemini and not contract_preview:
+        ok = ok and placeholder_pass
+
     result = LiveSourceSmokeResult(
         ok=ok,
         program_id=program_id,
@@ -554,9 +1204,28 @@ def run_keysuri_live_source_smoke(
         feed_urls_used=feed_urls,
         sample_marker_pass=marker_pass,
         sample_marker_hits=marker_hits,
+        placeholder_gate_pass=placeholder_pass if use_gemini else True,
+        placeholder_gate_hits=placeholder_hits,
         validation_status=validation.validation_status,
         validation_issues=validation_issues,
         fetched_live_news=True,
+        use_gemini=use_gemini,
+        called_gemini=side_effects["called_gemini"],
+        parse_status=parse_status,
+        raw_response_path=raw_response_path,
+        generated_body=generated_body,
+        contract_preview=contract_preview,
+        image_path=str(image_path.resolve()) if image_path else None,
+        image_in_html=image_in_html,
+        visible_body_quality_pass=visible_quality_pass,
+        visible_body_quality_issues=visible_quality_issues,
+        preview_validation=preview_validation,
+        structural_gate_status=structural_gate_status,
+        content_briefing_gate_status=content_briefing_gate_status,
+        visual_identity_gate_status=visual_identity_gate_status,
+        preview_overall_status=preview_overall_status,
+        ready_for_owner_visual_review=ready_for_owner_visual_review,
+        ready_for_owner_manual_visual_inspection=ready_for_owner_manual_visual_inspection,
         side_effects=side_effects,
     )
 
@@ -564,12 +1233,24 @@ def run_keysuri_live_source_smoke(
         result.send_block_reason = "send_not_requested"
         return result
 
+    if contract_preview:
+        result.send_block_reason = "contract_preview_no_email_in_smoke"
+        return result
+
     if send_confirm != _SEND_CONFIRM_PHRASE:
         result.send_block_reason = "confirm_send_missing"
         return result
 
+    if not use_gemini:
+        result.send_block_reason = "generated_briefing_required_for_send"
+        return result
+
     if not marker_pass:
         result.send_block_reason = "sample_marker_gate_failed"
+        return result
+
+    if not placeholder_pass:
+        result.send_block_reason = "placeholder_gate_failed"
         return result
 
     if not validation_pass:
@@ -588,7 +1269,7 @@ def run_keysuri_live_source_smoke(
         "--html",
         str(html_path),
         "--subject",
-        email_subject,
+        subject,
         "--send",
         "--confirm",
         _SEND_CONFIRM_PHRASE,
@@ -612,7 +1293,7 @@ def run_keysuri_live_source_smoke(
     else:
         result.send_success = proc.returncode == 0
 
-    result.email_subject = email_subject
+    result.email_subject = subject
     result.email_recipients = list(to_list)
     if result.send_success:
         side_effects["sent_email"] = True
