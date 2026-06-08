@@ -18,6 +18,21 @@ from keysuri_private_briefing import SECTION_CLOSING, SECTION_DEEP_DIVE, SECTION
 PROGRAM_KOREA = "keysuri_korea_tech"
 PROGRAM_GLOBAL = "keysuri_global_tech"
 
+GLOBAL_SLOT_BADGE = "글로벌 신호 · 12:30"
+KOREA_SLOT_BADGE = "국내 해석 · 18:30"
+GLOBAL_ANGLE_CHIP = "글로벌 원인"
+KOREA_ANGLE_CHIP = "국내 적용"
+GLOBAL_CARD_EMPHASIS = "한국 도착 전 압력"
+KOREA_CARD_EMPHASIS = "내일 영향"
+GLOBAL_DEEP_SUBFRAME = "산업 레이어가 어디로 이동하나"
+KOREA_DEEP_SUBFRAME = "한국 기업·정책으로 읽으면"
+GLOBAL_CHECKPOINT_SUBFRAME = "다음 48시간 관찰 포인트"
+KOREA_CHECKPOINT_SUBFRAME = "내일 영향을 줄 한 가지"
+GLOBAL_OPEN_ENDING = (
+    "다음 48시간은 위 관찰 포인트를 열어 둔 채 이어가시면 됩니다."
+)
+KOREA_EVENING_MEMO = "오늘의 정리와 퇴근 전 메모"
+
 IMAGE_MODE_PREVIEW = "preview"
 IMAGE_MODE_EMAIL = "email"
 
@@ -222,8 +237,44 @@ def _resolve_review_state(fixture: Mapping[str, Any]) -> str:
     return state
 
 
+def _is_korea_program(program_id: str) -> bool:
+    pid = str(program_id or "").strip()
+    return pid == PROGRAM_KOREA or pid.startswith("keysuri_korea")
+
+
+def _theme_body_class(program_id: str) -> str:
+    return "theme-korea" if _is_korea_program(program_id) else "theme-global"
+
+
+def _slot_badge(program_id: str, slot: str) -> str:
+    if _is_korea_program(program_id):
+        return KOREA_SLOT_BADGE
+    token = str(slot or "12:30").strip() or "12:30"
+    return f"글로벌 신호 · {token}" if token != "12:30" else GLOBAL_SLOT_BADGE
+
+
+def _angle_chip_text(program_id: str, item: Mapping[str, Any]) -> str:
+    for key in ("briefing_angle", "angle_chip", "duplicate_news_angle"):
+        val = item.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return KOREA_ANGLE_CHIP if _is_korea_program(program_id) else GLOBAL_ANGLE_CHIP
+
+
+def _card_emphasis_label(program_id: str) -> str:
+    return KOREA_CARD_EMPHASIS if _is_korea_program(program_id) else GLOBAL_CARD_EMPHASIS
+
+
+def _deep_dive_subframe(program_id: str) -> str:
+    return KOREA_DEEP_SUBFRAME if _is_korea_program(program_id) else GLOBAL_DEEP_SUBFRAME
+
+
+def _checkpoint_subframe(program_id: str) -> str:
+    return KOREA_CHECKPOINT_SUBFRAME if _is_korea_program(program_id) else GLOBAL_CHECKPOINT_SUBFRAME
+
+
 def _hero_copy(program_id: str) -> tuple[str, str]:
-    if program_id == PROGRAM_KOREA:
+    if _is_korea_program(program_id):
         return KOREA_HERO_TITLE, KOREA_HERO_SUBTITLE
     return GLOBAL_HERO_TITLE, GLOBAL_HERO_SUBTITLE
 
@@ -260,23 +311,32 @@ def _signal_chip_text(item: Mapping[str, Any]) -> str:
     return chip or "신호"
 
 
-def _render_signal_summary(fixture: Mapping[str, Any]) -> str:
+def _render_theme_top_insert(fixture: Mapping[str, Any], *, program_id: str) -> str:
     items = fixture.get("top_5_items") or []
     chips: list[str] = []
     for item in items[:5]:
         if isinstance(item, dict):
             chips.append(_signal_chip_text(item))
-    if not chips:
-        return ""
     chip_html = "".join(f'<span class="signal-chip">{_esc(c)}</span>' for c in chips)
+    chip_row = f'<div class="signal-chip-row">{chip_html}</div>' if chip_html else ""
+
+    if _is_korea_program(program_id):
+        return f"""
+    <section id="signal-summary" class="theme-top-insert korea-domestic-strip signal-summary section-card">
+      <p class="theme-insert-label">오늘 국내에서 움직인 것</p>
+      <p class="theme-insert-copy">국내 적용 관점에서 오늘 다섯 신호를 정리했습니다.</p>
+      {chip_row}
+    </section>"""
+
     return f"""
-    <section id="signal-summary" class="signal-summary section-card">
-      <p class="signal-summary-lead">오늘의 신호 요약</p>
-      <div class="signal-chip-row">{chip_html}</div>
+    <section id="signal-summary" class="theme-top-insert global-signal-board signal-summary section-card">
+      <p class="theme-insert-label">글로벌 신호 분포</p>
+      <p class="theme-insert-copy">밝은 낮에 먼저 보는 세계 기술 지형도 — 오늘 신호가 어느 축에 몰렸는지입니다.</p>
+      {chip_row}
     </section>"""
 
 
-def _render_top_item(item: Mapping[str, Any], rank: int) -> str:
+def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> str:
     source_url = _item_field(item, "source_url")
     source_name = _item_field(item, "source_name") or "출처"
     checked = _item_field(item, "checked_at")
@@ -307,12 +367,17 @@ def _render_top_item(item: Mapping[str, Any], rank: int) -> str:
         <p class="block-body">{_esc(selection_reason)}</p>
       </div>"""
 
+    angle_chip = _angle_chip_text(program_id, item)
+    emphasis_label = _card_emphasis_label(program_id)
+
     return f"""
     <article class="briefing-card top-item" data-top-item="{rank}">
       <div class="card-rank">{rank}</div>
+      <span class="angle-chip">{_esc(angle_chip)}</span>
       <h3 class="card-headline">{rank}. {_esc(headline)}</h3>
       {insuff_badge}
       {hype_badge}{selection_block}
+      <p class="card-emphasis-line"><span class="card-emphasis-label">{_esc(emphasis_label)}</span></p>
       <div class="brief-block">
         <h4 class="block-label">무슨 일이 있었나</h4>
         <p class="block-body">{_esc(what_happened)}</p>
@@ -349,13 +414,17 @@ def _render_top_item(item: Mapping[str, Any], rank: int) -> str:
     """
 
 
-def _render_top5_section(fixture: Mapping[str, Any]) -> str:
+def _render_top5_section(fixture: Mapping[str, Any], *, program_id: str) -> str:
     heading = _esc(fixture.get("top_5_heading"))
     items = fixture.get("top_5_items") or []
     rendered = ""
     for idx, item in enumerate(items[:5], start=1):
         if isinstance(item, dict):
-            rendered += _render_top_item(item, int(item.get("rank") or idx))
+            rendered += _render_top_item(
+                item,
+                int(item.get("rank") or idx),
+                program_id=program_id,
+            )
     return f"""
     <section id="top5-section" class="section-card">
       <h2 class="section-heading">{heading}</h2>
@@ -364,8 +433,9 @@ def _render_top5_section(fixture: Mapping[str, Any]) -> str:
     """
 
 
-def _render_deep_dive(fixture: Mapping[str, Any]) -> str:
+def _render_deep_dive(fixture: Mapping[str, Any], *, program_id: str) -> str:
     heading = _esc(fixture.get("deep_dive_heading") or SECTION_DEEP_DIVE)
+    subframe = _esc(_deep_dive_subframe(program_id))
     body = _esc(fixture.get("deep_dive_body") or "")
     confirmed = fixture.get("deep_dive_confirmed_facts") or []
     interpretation = _esc(fixture.get("deep_dive_interpretation") or "")
@@ -414,6 +484,7 @@ def _render_deep_dive(fixture: Mapping[str, Any]) -> str:
     return f"""
     <section id="deep-dive-section" class="section-card deep-dive-memo">
       <h2 class="section-heading">{heading}</h2>
+      <p class="section-subframe">{subframe}</p>
       {facts_html}
       {prose}
       {interp}
@@ -452,15 +523,16 @@ def _render_source_list(source_list: Sequence[Mapping[str, Any]]) -> str:
     return cards
 
 
-def _render_top_shot(fixture: Mapping[str, Any]) -> str:
+def _render_top_shot(fixture: Mapping[str, Any], *, program_id: str) -> str:
     src = str(fixture.get("top_shot_image_src") or "").strip()
+    fallback_class = "hero-fallback hero-fallback-korea" if _is_korea_program(program_id) else "hero-fallback hero-fallback-global"
     if src:
         return f"""
       <figure id="top-shot-image" class="top-shot-figure hero-image-card">
         <img src="{_esc(src)}" alt="{_esc(TOP_SHOT_ALT)}" class="top-shot-hero" loading="eager"/>
       </figure>"""
     return f"""
-      <div id="top-shot-image" class="hero-image-card hero-fallback" role="img" aria-label="{_esc(TOP_SHOT_ALT)}">
+      <div id="top-shot-image" class="hero-image-card {fallback_class}" role="img" aria-label="{_esc(TOP_SHOT_ALT)}">
         <div class="hero-fallback-inner">
           <p class="hero-fallback-identity">{IDENTITY_TITLE}</p>
           <p class="hero-fallback-copy">프라이빗 테크 브리핑</p>
@@ -468,18 +540,54 @@ def _render_top_shot(fixture: Mapping[str, Any]) -> str:
       </div>"""
 
 
+def _render_bottom_shot(fixture: Mapping[str, Any], *, program_id: str) -> str:
+    if not _is_korea_program(program_id):
+        return ""
+    src = str(fixture.get("bottom_shot_image_src") or "").strip()
+    if src:
+        return f"""
+    <figure id="bottom-shot-image" class="korea-bottom-figure">
+      <img src="{_esc(src)}" alt="테크 비서 키수리 — 국내 18:30 마무리" class="korea-bottom-hero" loading="lazy"/>
+    </figure>"""
+    return """
+    <div class="placeholder small" id="bottom-shot-placeholder">18:30 bottom-shot preview placeholder</div>"""
+
+
 def _premium_styles() -> str:
     return """
     :root{
-      --ks-bg:#0a0f1a; --ks-surface:#111a2b; --ks-surface-2:#16223a;
-      --ks-hero-1:#1b3050; --ks-hero-2:#0c1322;
-      --ks-line:rgba(148,163,184,0.14); --ks-line-strong:rgba(148,163,184,0.26);
-      --ks-text:#eaf0fa; --ks-text-dim:#aab6cc; --ks-text-mute:#6f7d96;
-      --ks-gold:#c8a96a; --ks-gold-soft:rgba(200,169,106,0.12);
-      --ks-blue:#5f8fd6; --ks-blue-soft:rgba(95,143,214,0.12);
-      --ks-warn:#d9a441;
       --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px; --sp-7:48px;
       --r-sm:8px; --r-md:12px; --r-lg:16px; --r-pill:999px;
+    }
+    body.premium-briefing.theme-global{
+      --g-bg:#f3f6fa; --g-surface:#ffffff; --g-surface-2:#eef3f8;
+      --g-hero-1:#dfe7ef; --g-hero-2:#f8fafc;
+      --g-line:rgba(80,100,130,0.14); --g-line-strong:rgba(80,100,130,0.24);
+      --g-text:#172033; --g-dim:#536274; --g-mute:#7b8795;
+      --g-accent:#3f7ecb; --g-silver:#8fa0b4; --g-signal:#2ca6a4;
+      --ks-bg:var(--g-bg); --ks-surface:var(--g-surface); --ks-surface-2:var(--g-surface-2);
+      --ks-hero-1:var(--g-hero-1); --ks-hero-2:var(--g-hero-2);
+      --ks-line:var(--g-line); --ks-line-strong:var(--g-line-strong);
+      --ks-text:var(--g-text); --ks-text-dim:var(--g-dim); --ks-text-mute:var(--g-mute);
+      --ks-gold:var(--g-accent); --ks-gold-soft:rgba(63,126,203,0.10);
+      --ks-blue:var(--g-accent); --ks-blue-soft:rgba(63,126,203,0.10);
+      --ks-signal:var(--g-signal); --ks-warn:#c98a2e;
+      --shadow-card:0 6px 18px rgba(30,50,80,0.06);
+      --shadow-soft:0 4px 12px rgba(30,50,80,0.05);
+    }
+    body.premium-briefing.theme-korea{
+      --k-bg:#14110d; --k-surface:#1e1a14; --k-surface-2:#27211a;
+      --k-hero-1:#2a2418; --k-hero-2:#100d0a;
+      --k-line:rgba(210,190,150,0.16);
+      --k-text:#f3ece0; --k-dim:#c8bca8; --k-mute:#8a7d68;
+      --k-gold:#cda85f; --k-gold-soft:rgba(205,168,95,0.14); --k-ember:#b9763f;
+      --ks-bg:var(--k-bg); --ks-surface:var(--k-surface); --ks-surface-2:var(--k-surface-2);
+      --ks-hero-1:var(--k-hero-1); --ks-hero-2:var(--k-hero-2);
+      --ks-line:var(--k-line); --ks-line-strong:rgba(210,190,150,0.28);
+      --ks-text:var(--k-text); --ks-text-dim:var(--k-dim); --ks-text-mute:var(--k-mute);
+      --ks-gold:var(--k-gold); --ks-gold-soft:var(--k-gold-soft);
+      --ks-blue:#8fa8c8; --ks-blue-soft:rgba(143,168,200,0.12);
+      --ks-signal:var(--k-ember); --ks-warn:var(--k-ember);
       --shadow-card:0 10px 30px rgba(0,0,0,0.35);
       --shadow-soft:0 4px 14px rgba(0,0,0,0.25);
     }
@@ -489,7 +597,7 @@ def _premium_styles() -> str:
       font-family:"Apple SD Gothic Neo","Pretendard","Malgun Gothic","Noto Sans KR",sans-serif;
       font-size:0.95rem; line-height:1.7; color:var(--ks-text-dim);
       background:var(--ks-bg);
-      background:linear-gradient(165deg,var(--ks-bg) 0%,#0c1322 55%,#0a0f1a 100%);
+      background:linear-gradient(165deg,var(--ks-bg) 0%,var(--ks-hero-2) 55%,var(--ks-bg) 100%);
     }
     .briefing-shell{max-width:680px;margin:0 auto;padding:var(--sp-5) var(--sp-4) var(--sp-7);}
     .premium-hero{
@@ -501,11 +609,23 @@ def _premium_styles() -> str:
     }
     .hero-layout{display:flex;flex-direction:column;gap:var(--sp-4);align-items:stretch;}
     .hero-copy{flex:1 1 auto;min-width:0;order:2;}
+    .slot-badge{
+      display:inline-block; font-size:0.72rem; letter-spacing:0.06em; font-weight:700;
+      padding:4px 10px; border-radius:var(--r-pill); margin-bottom:var(--sp-2);
+    }
+    .theme-global .slot-badge{
+      background:rgba(63,126,203,0.12); color:var(--g-accent);
+      border:1px solid rgba(63,126,203,0.28);
+    }
+    .theme-korea .slot-badge{
+      background:var(--k-gold-soft); color:var(--k-gold);
+      border:1px solid rgba(205,168,95,0.35);
+    }
     .owner-badge{
       display:inline-block; font-size:0.72rem; letter-spacing:0.04em;
       padding:4px 10px; border-radius:var(--r-pill);
-      background:var(--ks-gold-soft); color:var(--ks-gold);
-      border:1px solid rgba(200,169,106,0.35); margin-bottom:var(--sp-3);
+      background:var(--ks-surface-2); color:var(--ks-text-mute);
+      border:1px solid var(--ks-line); margin-bottom:var(--sp-3);
     }
     .hero-title{margin:0 0 var(--sp-2);font-size:clamp(1.6rem,4.5vw,2.1rem);font-weight:700;letter-spacing:-0.01em;color:var(--ks-text);}
     .hero-subtitle{margin:0 0 0;color:var(--ks-text-dim);font-size:1rem;}
@@ -522,7 +642,9 @@ def _premium_styles() -> str:
       object-fit:contain;object-position:center center;max-height:none;
       border-radius:var(--r-md);
     }
-    .hero-fallback{background:linear-gradient(135deg,var(--ks-hero-1),var(--ks-hero-2));min-height:180px;display:flex;align-items:center;justify-content:center;}
+    .hero-fallback{min-height:180px;display:flex;align-items:center;justify-content:center;}
+    .hero-fallback-global{background:linear-gradient(135deg,var(--g-hero-1),var(--g-hero-2));}
+    .hero-fallback-korea{background:linear-gradient(135deg,var(--k-hero-1),var(--k-hero-2));}
     .hero-fallback-inner{text-align:center;padding:var(--sp-5);}
     .hero-fallback-identity{margin:0;color:var(--ks-gold);font-weight:700;}
     .hero-fallback-copy{margin:var(--sp-2) 0 0;color:var(--ks-text-mute);font-size:0.85rem;}
@@ -532,14 +654,17 @@ def _premium_styles() -> str:
       background:var(--ks-surface);border:1px solid var(--ks-line);border-radius:var(--r-md);
       color:var(--ks-text);font-size:1rem;line-height:1.75;
     }
-    .signal-summary{padding:var(--sp-4) var(--sp-5);}
-    .signal-summary-lead{margin:0 0 var(--sp-3);font-size:0.74rem;font-weight:700;letter-spacing:0.06em;color:var(--ks-text-mute);}
+    .theme-top-insert,.signal-summary{padding:var(--sp-4) var(--sp-5);}
+    .theme-insert-label,.signal-summary-lead{margin:0 0 var(--sp-2);font-size:0.74rem;font-weight:700;letter-spacing:0.08em;color:var(--ks-text-mute);text-transform:none;}
+    .theme-insert-copy{margin:0 0 var(--sp-3);font-size:0.88rem;color:var(--ks-text-dim);line-height:1.6;}
     .signal-chip-row{display:flex;flex-wrap:wrap;gap:var(--sp-2);}
     .signal-chip{
       display:inline-block;padding:4px 10px;border-radius:var(--r-pill);font-size:0.78rem;font-weight:600;
       background:var(--ks-gold-soft);color:var(--ks-gold);border:1px solid rgba(200,169,106,0.25);
     }
-    .signal-chip:nth-child(even){background:var(--ks-blue-soft);color:var(--ks-blue);border-color:rgba(95,143,214,0.25);}
+    .theme-global .signal-chip{background:rgba(143,160,180,0.12);color:var(--g-silver);border-color:rgba(143,160,180,0.28);}
+    .theme-global .signal-chip:nth-child(even){background:rgba(63,126,203,0.10);color:var(--g-accent);border-color:rgba(63,126,203,0.22);}
+    .theme-korea .signal-chip:nth-child(even){background:var(--ks-blue-soft);color:var(--ks-blue);border-color:rgba(95,143,214,0.25);}
     .section-card{
       background:var(--ks-surface);color:var(--ks-text-dim);
       border:1px solid var(--ks-line);border-radius:var(--r-lg);
@@ -551,12 +676,30 @@ def _premium_styles() -> str:
       color:var(--ks-text);border:0;padding:0;
     }
     .section-heading::before{content:"";width:3px;height:1.05em;border-radius:2px;background:var(--ks-gold);}
+    .theme-global .section-heading::before{background:var(--g-accent);}
+    .section-subframe,.checkpoint-subframe{
+      margin:0 0 var(--sp-4);font-size:0.82rem;font-weight:600;letter-spacing:0.03em;color:var(--ks-text-mute);
+    }
+    .theme-global .section-subframe,.theme-global .checkpoint-subframe{color:var(--g-silver);}
+    .theme-korea .section-subframe,.theme-korea .checkpoint-subframe{color:var(--k-gold);}
     .briefing-card{
       position:relative;
-      background:linear-gradient(180deg,var(--ks-surface) 0%,#0f1828 100%);
+      background:var(--ks-surface);
       border:1px solid var(--ks-line);border-radius:var(--r-md);
       padding:var(--sp-5) var(--sp-4) var(--sp-4);margin-bottom:var(--sp-4);box-shadow:var(--shadow-soft);
     }
+    .theme-global .briefing-card{border-left:3px solid var(--g-accent);}
+    .theme-korea .briefing-card{background:linear-gradient(180deg,var(--ks-surface) 0%,var(--ks-surface-2) 100%);}
+    .angle-chip{
+      display:inline-block;font-size:0.72rem;font-weight:700;letter-spacing:0.05em;
+      padding:3px 8px;border-radius:var(--r-pill);margin-bottom:var(--sp-2);
+    }
+    .theme-global .angle-chip{background:rgba(63,126,203,0.10);color:var(--g-accent);border:1px solid rgba(63,126,203,0.22);}
+    .theme-korea .angle-chip{background:var(--k-gold-soft);color:var(--k-gold);border:1px solid rgba(205,168,95,0.30);}
+    .card-emphasis-line{margin:0 0 var(--sp-3);padding-top:var(--sp-2);border-top:1px solid var(--ks-line);}
+    .card-emphasis-label{font-size:0.78rem;font-weight:700;letter-spacing:0.04em;}
+    .theme-global .card-emphasis-label{color:var(--g-signal);}
+    .theme-korea .card-emphasis-label{color:var(--k-gold);}
     .card-rank{font-size:1.5rem;font-weight:800;color:var(--ks-gold);line-height:1;margin-bottom:var(--sp-2);}
     .card-headline{margin:0 0 var(--sp-3);font-size:1.12rem;font-weight:700;line-height:1.4;color:var(--ks-text);}
     .source-chip{
@@ -574,6 +717,8 @@ def _premium_styles() -> str:
       background:var(--ks-gold-soft);border-left:3px solid var(--ks-gold);
       padding:var(--sp-3) var(--sp-4);border-radius:0 var(--r-sm) var(--r-sm) 0;margin-bottom:var(--sp-3);
     }
+    .theme-global .owner-angle-block{background:rgba(63,126,203,0.08);border-left-color:var(--g-accent);}
+    .theme-global .owner-angle-block .block-label{color:var(--g-accent);}
     .owner-angle-block .block-label{color:var(--ks-gold);}
     .owner-angle-block .block-body{color:var(--ks-text);font-size:0.98rem;}
     .judgment-row{display:flex;flex-wrap:wrap;gap:var(--sp-2);align-items:flex-start;margin-bottom:var(--sp-3);}
@@ -607,6 +752,11 @@ def _premium_styles() -> str:
       padding:var(--sp-4) var(--sp-5);background:var(--ks-gold-soft);
       border-left:4px solid var(--ks-gold);border-radius:0 var(--r-md) var(--r-md) 0;line-height:1.6;
     }
+    .theme-global .checkpoint{background:rgba(44,166,164,0.08);border-left-color:var(--g-signal);}
+    .global-open-ending{margin:0 0 var(--sp-4);color:var(--ks-text-dim);font-size:0.92rem;line-height:1.65;}
+    .evening-memo-label{margin:0 0 var(--sp-2);font-size:0.82rem;font-weight:700;color:var(--k-gold);letter-spacing:0.04em;}
+    .korea-bottom-figure{margin:var(--sp-4) 0;border-radius:var(--r-md);overflow:hidden;border:1px solid var(--ks-line);}
+    .korea-bottom-hero{width:100%;height:auto;display:block;object-fit:contain;}
     .closing-message{margin:0 0 var(--sp-4);color:var(--ks-text-dim);}
     .source-card{
       border:1px solid var(--ks-line);border-radius:var(--r-sm);
@@ -686,16 +836,24 @@ def render_keysuri_contract_preview_html(
         prepare_contract_preview_fixture(working, repo_root=root, image_mode=image_mode)
 
     program_id = str(working.get("program_id") or "").strip()
-    if program_id not in (PROGRAM_KOREA, PROGRAM_GLOBAL):
+    allowed = (
+        program_id in (PROGRAM_KOREA, PROGRAM_GLOBAL)
+        or program_id.startswith("keysuri_korea")
+        or program_id.startswith("keysuri_global")
+    )
+    if not allowed:
         raise ValueError(f"Unsupported program_id: {program_id!r}")
 
-    slot = _esc(working.get("slot"))
+    slot_raw = str(working.get("slot") or ("18:30" if _is_korea_program(program_id) else "12:30"))
+    slot = _esc(slot_raw)
     review_state = _resolve_review_state(working)
-    is_korea = program_id == PROGRAM_KOREA
+    is_korea = _is_korea_program(program_id)
+    theme_class = _theme_body_class(program_id)
     timestamp = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     hero_title, hero_subtitle = _hero_copy(program_id)
     subject, preheader = _selected_subject_preheader(working, program_id)
     closing_message = _normalize_closing(str(working.get("closing_message") or ""))
+    color_scheme = "dark light" if is_korea else "light dark"
 
     preview_metadata = f"""
     <div class="meta-box" id="preview-metadata">
@@ -711,12 +869,13 @@ def render_keysuri_contract_preview_html(
     <header class="premium-hero" id="premium-hero">
       <div class="hero-layout">
         <div class="hero-copy">
+          <span class="slot-badge">{_esc(_slot_badge(program_id, slot_raw))}</span>
           <span class="owner-badge">{OWNER_REVIEW_BADGE}</span>
           <p class="identity-line">{IDENTITY_TITLE}</p>
           <h1 class="hero-title">{hero_title}</h1>
           <p class="hero-subtitle">{hero_subtitle}</p>
         </div>
-        {_render_top_shot(working)}
+        {_render_top_shot(working, program_id=program_id)}
       </div>
     </header>"""
 
@@ -725,26 +884,31 @@ def render_keysuri_contract_preview_html(
       <p class="opening-lead">{_esc(working.get("opening_lead"))}</p>
     </section>"""
 
-    signal_summary = _render_signal_summary(working)
-    top5 = _render_top5_section(working)
-    deep_dive = _render_deep_dive(working)
+    theme_top_insert = _render_theme_top_insert(working, program_id=program_id)
+    top5 = _render_top5_section(working, program_id=program_id)
+    deep_dive = _render_deep_dive(working, program_id=program_id)
+    checkpoint_subframe = _esc(_checkpoint_subframe(program_id))
     checkpoint = f"""
     <section id="one-line-section" class="section-card">
       <h2 class="section-heading">{SECTION_ONE_LINE}</h2>
+      <p class="checkpoint-subframe">{checkpoint_subframe}</p>
       <div class="checkpoint">{_esc(working.get("one_line_checkpoint"))}</div>
     </section>"""
 
-    bottom_shot = ""
+    bottom_shot = _render_bottom_shot(working, program_id=program_id)
     warm_close = ""
+    global_open_ending = ""
     if is_korea:
-        bottom_shot = """
-    <div class="placeholder small" id="bottom-shot-placeholder">18:30 bottom-shot preview placeholder</div>"""
         warm_close_text = _esc(working.get("warm_close_text") or "오늘도 수고하셨습니다. 내일 다시 뵙겠습니다.")
         warm_close = f"""
     <section id="warm-close-section" class="section-card">
       <h2>국내 18:30 따뜻한 마무리</h2>
+      <p class="evening-memo-label">{KOREA_EVENING_MEMO}</p>
       <p>{warm_close_text}</p>
     </section>"""
+    else:
+        global_open_ending = f"""
+    <p class="global-open-ending">{GLOBAL_OPEN_ENDING}</p>"""
 
     review_confirmation = _render_review_confirmation(review_state)
     closing = f"""
@@ -781,7 +945,7 @@ def render_keysuri_contract_preview_html(
     if is_korea:
         main_tail = checkpoint + bottom_shot + review_confirmation + warm_close + closing
     else:
-        main_tail = checkpoint + review_confirmation + closing
+        main_tail = checkpoint + global_open_ending + review_confirmation + closing
 
     audit_fold = f"""
     <details class="audit-fold">
@@ -814,18 +978,18 @@ def render_keysuri_contract_preview_html(
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<meta name="color-scheme" content="dark light"/>
-<meta name="supported-color-schemes" content="dark light"/>
+<meta name="color-scheme" content="{color_scheme}"/>
+<meta name="supported-color-schemes" content="{color_scheme}"/>
 <title>{_esc(subject)}</title>
 <style>{_premium_styles()}</style>
 </head>
-<body class="premium-briefing">
+<body class="premium-briefing {theme_class}">
 {preheader_span}
 <div class="briefing-shell">
 {design_banner}
 {hero}
 {opening}
-{signal_summary}
+{theme_top_insert}
 {top5}
 {deep_dive}
 {main_tail}

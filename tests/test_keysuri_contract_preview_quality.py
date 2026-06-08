@@ -13,7 +13,10 @@ from keysuri_contract_preview_quality import (
 )
 from keysuri_contract_preview_renderer import render_keysuri_contract_preview_html
 from keysuri_html_preview_validation import validate_keysuri_html_preview
-from tests.test_keysuri_contract_preview_renderer import build_global_contract_fixture
+from tests.test_keysuri_contract_preview_renderer import (
+    build_global_contract_fixture,
+    build_korea_contract_fixture,
+)
 
 _REPO = Path(__file__).resolve().parent.parent
 
@@ -158,6 +161,25 @@ class KeysuriContractPreviewQualityTests(unittest.TestCase):
         top5 = html.find('id="top5-section"')
         op = html.find('id="operation-metadata"')
         self.assertGreater(op, top5)
+
+    def test_global_theme_class_and_framing(self) -> None:
+        html = render_keysuri_contract_preview_html(_premium_fixture(), repo_root=_REPO)
+        visible = html.split('id="operation-metadata"')[0]
+        self.assertIn("theme-global", html)
+        self.assertIn("글로벌 원인", visible)
+        self.assertIn("한국 도착 전 압력", visible)
+        self.assertNotIn("bottom-shot-placeholder", visible)
+
+    def test_korea_theme_class_and_framing(self) -> None:
+        html = render_keysuri_contract_preview_html(
+            build_korea_contract_fixture(),
+            repo_root=_REPO,
+        )
+        visible = html.split('id="operation-metadata"')[0]
+        self.assertIn("theme-korea", html)
+        self.assertIn("국내 적용", visible)
+        self.assertIn("내일 영향", visible)
+        self.assertIn("bottom-shot-placeholder", visible)
 
 
 class KeysuriStagedPlaceholderGateTests(unittest.TestCase):

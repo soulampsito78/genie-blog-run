@@ -745,6 +745,78 @@ class KeysuriContractPreviewRendererTests(unittest.TestCase):
             self.assertIn(title, html)
 
 
+class KeysuriThemeSeparationRendererTests(unittest.TestCase):
+    @_require_contract_renderer
+    def test_global_body_has_theme_global(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        html = _render_contract_html(mod, build_global_contract_fixture())
+        self.assertRegex(html, r'<body class="premium-briefing theme-global">')
+        self.assertNotRegex(
+            html,
+            r'<body class="premium-briefing theme-korea">',
+        )
+
+    @_require_contract_renderer
+    def test_korea_body_has_theme_korea(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        html = _render_contract_html(mod, build_korea_contract_fixture())
+        self.assertIn('class="premium-briefing theme-korea"', html)
+
+    @_require_contract_renderer
+    def test_global_no_bottom_shot_block(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        fixture = build_global_contract_fixture()
+        fixture["bottom_shot_image_src"] = "data:image/jpeg;base64,abc"
+        html = _render_contract_html(mod, fixture)
+        self.assertNotIn("bottom-shot-placeholder", html)
+        self.assertNotIn('id="bottom-shot-image"', html)
+
+    @_require_contract_renderer
+    def test_global_framing_markers_present(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        html = _render_contract_html(mod, build_global_contract_fixture())
+        self.assertIn("글로벌 신호 · 12:30", html)
+        self.assertIn("글로벌 원인", html)
+        self.assertIn("한국 도착 전 압력", html)
+        self.assertIn("다음 48시간 관찰 포인트", html)
+        self.assertIn("산업 레이어가 어디로 이동하나", html)
+
+    @_require_contract_renderer
+    def test_korea_framing_markers_present(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        html = _render_contract_html(mod, build_korea_contract_fixture())
+        self.assertIn("국내 해석 · 18:30", html)
+        self.assertIn("국내 적용", html)
+        self.assertIn("내일 영향", html)
+        self.assertIn("한국 기업·정책으로 읽으면", html)
+        self.assertIn("오늘의 정리와 퇴근 전 메모", html)
+        self.assertIn("bottom-shot-placeholder", html)
+
+    @_require_contract_renderer
+    def test_global_light_tokens_not_dark_navy(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        html = _render_contract_html(mod, build_global_contract_fixture())
+        style = html[html.find("<style>") : html.find("</style>")]
+        self.assertIn("--g-bg:#f3f6fa", style.replace(" ", ""))
+        self.assertNotIn("#0a0f1a", style)
+        self.assertNotIn("#070d18", style)
+
+    @_require_contract_renderer
+    def test_korea_warm_dark_tokens(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        html = _render_contract_html(mod, build_korea_contract_fixture())
+        style = html[html.find("<style>") : html.find("</style>")]
+        self.assertIn("--k-bg:#14110d", style.replace(" ", ""))
+        self.assertIn("--k-gold:#cda85f", style.replace(" ", ""))
+
+
 class KeysuriPremiumHandoffRendererTests(unittest.TestCase):
     @_require_contract_renderer
     def test_hero_uses_data_uri_not_relative_path(self) -> None:
