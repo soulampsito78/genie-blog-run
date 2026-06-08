@@ -137,11 +137,20 @@ def _check_html_hero_css(html: str, warnings: List[VisualIdentityIssue]) -> None
                 severity="warning",
             )
         )
-    if re.search(r"\.top-shot-hero\{[^}]*max-height:\s*\d+px", style):
+    if re.search(r"hero-image-card[^}]*max-width:\s*(2\d\d|3\d\d|4\d\d)px", style):
         warnings.append(
             VisualIdentityIssue(
-                "hero_max_height_crop",
-                "Hero max-height may shrink subject — verify face dominance manually",
+                "hero_image_too_small",
+                "Hero image max-width under 520px — verify image is not thumbnail-sized",
+                section="html_hero_css",
+                severity="warning",
+            )
+        )
+    if "max-width:300px" in style.replace(" ", "") or "flex:01 38%" in style.replace(" ", ""):
+        warnings.append(
+            VisualIdentityIssue(
+                "hero_thumbnail_layout",
+                "Thumbnail-style side column hero layout detected in CSS",
                 section="html_hero_css",
                 severity="warning",
             )
@@ -513,7 +522,12 @@ def validate_visual_identity_gate(
             manifest_path=resolved_manifest_path,
         )
 
-    if image_role and "hero" not in image_role and image_role not in ("top_shot", "email_hero_wide_candidate"):
+    if image_role and "hero" not in image_role and image_role not in (
+        "top_shot",
+        "email_hero_wide_candidate",
+        GLOBAL_TOP_ROLE,
+        KOREA_TOP_ROLE,
+    ):
         warnings.append(
             VisualIdentityIssue(
                 "image_role_mismatch",

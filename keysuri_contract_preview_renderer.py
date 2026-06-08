@@ -284,21 +284,35 @@ def _render_top_item(item: Mapping[str, Any], rank: int) -> str:
     insufficient = bool(item.get("detail_insufficient"))
 
     headline = _item_field(item, "korean_title", "headline")
+    selection_reason = _item_field(item, "selection_reason", "selection_rationale")
     what_happened = _item_field(item, "what_happened", "summary")
     why_now = _item_field(item, "why_now", "why_it_matters")
     owner_angle = _item_field(item, "owner_angle", "business_implication", "keysuri_comment")
     next_watch = _item_field(item, "next_watch", "next_check_point")
+    hype_caution = _item_field(item, "hype_caution")
     j_label, j_text = _judgment_block(item)
 
     insuff_badge = ""
     if insufficient:
         insuff_badge = '<span class="insufficient-badge">추가 확인 필요 · 원문 상세 확인 필요</span>'
+    hype_badge = ""
+    if hype_caution:
+        hype_badge = f'<p class="hype-caution">{_esc(hype_caution)}</p>'
+
+    selection_block = ""
+    if selection_reason:
+        selection_block = f"""
+      <div class="brief-block">
+        <h4 class="block-label">선정 이유</h4>
+        <p class="block-body">{_esc(selection_reason)}</p>
+      </div>"""
 
     return f"""
     <article class="briefing-card top-item" data-top-item="{rank}">
       <div class="card-rank">{rank}</div>
       <h3 class="card-headline">{rank}. {_esc(headline)}</h3>
       {insuff_badge}
+      {hype_badge}{selection_block}
       <div class="brief-block">
         <h4 class="block-label">무슨 일이 있었나</h4>
         <p class="block-body">{_esc(what_happened)}</p>
@@ -375,7 +389,12 @@ def _render_deep_dive(fixture: Mapping[str, Any]) -> str:
         <div class="deep-layer-body"><p>{_esc(layer.get("layer_body"))}</p></div>
       </div>"""
 
-    prose = f'<div class="deep-dive-prose"><p>{body}</p></div>' if body else ""
+    prose = ""
+    if body:
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", str(fixture.get("deep_dive_body") or "")) if p.strip()]
+        if not paragraphs:
+            paragraphs = [str(fixture.get("deep_dive_body") or "").strip()]
+        prose = '<div class="deep-dive-prose">' + "".join(f"<p>{_esc(p)}</p>" for p in paragraphs) + "</div>"
     interp = (
         f'<div class="deep-interpretation"><h4>키수리 해석</h4><p>{interpretation}</p></div>'
         if interpretation
@@ -481,7 +500,7 @@ def _premium_styles() -> str:
       min-height:120px;
     }
     .hero-layout{display:flex;flex-direction:column;gap:var(--sp-4);align-items:stretch;}
-    .hero-copy{flex:1 1 auto;min-width:0;}
+    .hero-copy{flex:1 1 auto;min-width:0;order:2;}
     .owner-badge{
       display:inline-block; font-size:0.72rem; letter-spacing:0.04em;
       padding:4px 10px; border-radius:var(--r-pill);
@@ -492,13 +511,16 @@ def _premium_styles() -> str:
     .hero-subtitle{margin:0 0 0;color:var(--ks-text-dim);font-size:1rem;}
     .identity-line{margin:0 0 var(--sp-3);color:var(--ks-text-mute);font-size:0.82rem;}
     .hero-image-card,#top-shot-image.hero-image-card,.top-shot-figure{
-      margin:0;border-radius:16px;overflow:hidden;border:1px solid var(--ks-line);
-      background:linear-gradient(180deg,rgba(17,26,43,0.96),rgba(10,15,26,0.96));
-      padding:0;display:flex;align-items:center;justify-content:center;
+      order:1;
+      margin:0;border-radius:var(--r-md);overflow:hidden;
+      border:0;background:transparent;
+      padding:0;display:block;width:100%;max-width:100%;
+      box-shadow:none;
     }
     .top-shot-hero{
       width:100%;height:auto;display:block;
       object-fit:contain;object-position:center center;max-height:none;
+      border-radius:var(--r-md);
     }
     .hero-fallback{background:linear-gradient(135deg,var(--ks-hero-1),var(--ks-hero-2));min-height:180px;display:flex;align-items:center;justify-content:center;}
     .hero-fallback-inner{text-align:center;padding:var(--sp-5);}
@@ -615,12 +637,12 @@ def _premium_styles() -> str:
       font-size:0.82rem;font-weight:700;letter-spacing:0.04em;text-align:center;
     }
     @media (min-width:641px){
-      .hero-layout{flex-direction:row;align-items:flex-start;gap:var(--sp-5);}
-      .hero-copy{flex:1 1 58%;min-width:0;}
+      .hero-layout{flex-direction:column;align-items:stretch;gap:var(--sp-4);}
+      .hero-copy{flex:1 1 auto;min-width:0;max-width:none;}
       .hero-image-card,#top-shot-image.hero-image-card,.top-shot-figure{
-        flex:0 1 38%;max-width:300px;align-self:flex-start;
+        width:100%;max-width:100%;flex:none;align-self:stretch;
       }
-      .top-shot-hero{max-height:520px;}
+      .top-shot-hero{width:100%;max-width:100%;max-height:none;}
     }
     @media (max-width:600px){
       .briefing-shell{padding:var(--sp-4) var(--sp-3) var(--sp-6);}

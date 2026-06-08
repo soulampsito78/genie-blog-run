@@ -310,13 +310,14 @@ def resolve_approved_hero_asset(
 ) -> ApprovedImageAsset:
     """Return hero/top asset for a program (global_top or korea_top)."""
     requested = role or default_top_role_for_program(program_id)
+    prefer_watermarked = use_case in ("contract_preview", "owner_review_preview")
     return resolve_approved_asset(
         repo_root,
         program_id,
         role=requested,
         slot=slot,
         use_case=use_case,
-        prefer_watermarked=False,
+        prefer_watermarked=prefer_watermarked,
     )
 
 
@@ -351,7 +352,8 @@ def resolve_approved_hero_image_path(
         use_case=use_case,
         role=role,
     )
-    path = asset.preview_file_path(repo_root, prefer_watermarked=False)
+    prefer_watermarked = use_case in ("contract_preview", "owner_review_preview")
+    path = asset.preview_file_path(repo_root, prefer_watermarked=prefer_watermarked)
     if not path.is_file():
         raise FileNotFoundError(f"Approved asset file missing: {path}")
     actual_sha = _sha256_file(path)

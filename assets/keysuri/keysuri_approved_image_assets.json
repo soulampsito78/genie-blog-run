@@ -20,11 +20,13 @@
       "image_role": "top_shot",
       "status": "approved_locked",
       "file_path": "output/keysuri_preview/image_canary/keysuri_global_canary_20260604_221233.jpg",
-      "manifest_path": null,
+      "watermarked_path": "output/keysuri_preview/image_canary/keysuri_global_canary_20260604_221233_mirai_on_watermarked.jpg",
+      "manifest_path": "output/keysuri_preview/image_canary/keysuri_global_canary_20260604_221233_mirai_on_watermarked.manifest.json",
       "sha256": "c27ec0bf215fd11de9bdcd0e745385048df90caa27f2cefe0244b41c68292f33",
+      "watermarked_sha256": "d9a04d9fe3d785c958eb9123541955b9e23c80c57739e84c90e0bbe44693ff49",
       "width": 896,
       "height": 1152,
-      "watermark_status": "no_watermark_or_pending_watermark",
+      "watermark_status": "mirai_on_applied",
       "approved_for": [
         "contract_preview",
         "owner_review_preview"

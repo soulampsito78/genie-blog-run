@@ -121,6 +121,54 @@ DISCLOSURE_ALLOWLIST_REGION_RES: Tuple[re.Pattern[str], ...] = (
     re.compile(r"<ul\s+class=['\"]scheduler-list['\"][^>]*>.*?</ul>", re.DOTALL | re.IGNORECASE),
 )
 
+GENERATION_PLACEHOLDER_PATTERNS: Tuple[Tuple[str, str], ...] = (
+    ("generation_pending", "forbidden_generation_pending"),
+    ("source-led cards only", "forbidden_source_led_placeholder"),
+    ("generation 단계 이후 채워집니다", "forbidden_generation_stage_placeholder"),
+    ("Live source smoke — source-led cards only · 최종 문안이 아님", "forbidden_live_source_led_notice"),
+    ("Gemini 호출 전 · 최종 문안이 아님", "forbidden_gemini_pending_notice"),
+)
+
+def _requires_generated_owner_review_body(html: str, path: Path) -> bool:
+    if 'data-keysuri-generated="true"' in html:
+        return True
+    stem = path.name.lower()
+    return "live_source_smoke_generated" in stem
+
+
+def _validate_no_generation_placeholders(html: str, issues: List[ValidationIssue]) -> bool:
+    scan_html = _strip_html_comments(html)
+    return _scan_negative_patterns(scan_html, GENERATION_PLACEHOLDER_PATTERNS, issues)
+
+
+def _validate_generated_owner_review_body(html: str, issues: List[ValidationIssue]) -> bool:
+    ok = True
+    if not _validate_no_generation_placeholders(html, issues):
+        ok = False
+    for section_id, label in (
+        ("deep-dive", SECTION_DEEP_DIVE),
+        ("one-line", SECTION_ONE_LINE),
+        ("closing", SECTION_CLOSING),
+    ):
+        if f'id="{section_id}"' not in html:
+            issues.append(
+                ValidationIssue(
+                    "generated_section_missing",
+                    f"Missing generated owner-review section: {label!r}",
+                )
+            )
+            ok = False
+    if 'class="badge-generated"' not in html:
+        issues.append(
+            ValidationIssue(
+                "generated_badge_missing",
+                "Missing generated briefing badge in owner-review HTML",
+            )
+        )
+        ok = False
+    return ok
+
+
 DEEP_DIVE_DENSITY_CHAR_THRESHOLD = 280
 
 
@@ -682,6 +730,39 @@ def _validate_owner_review_genie_contamination(html: str, issues: List[Validatio
     return production_ok and body_ok
 
 
+def _validate_hero_top_shot(html: str, issues: List[ValidationIssue]) -> bool:
+    if 'id="top-shot-image"' in html and 'class="top-shot-hero"' in html:
+        return True
+    issues.append(
+        ValidationIssue(
+            "hero_top_shot_missing",
+            "Live generated contract preview requires top-shot hero image (top-shot-image + top-shot-hero)",
+        )
+    )
+    return False
+
+
+def _validate_opening_lead_present(html: str, issues: List[ValidationIssue]) -> bool:
+    if 'id="opening-lead"' not in html:
+        issues.append(
+            ValidationIssue("opening_lead_missing", "Contract preview missing opening-lead section")
+        )
+        return False
+    match = re.search(
+        r'id="opening-lead"[^>]*>.*?<p[^>]*>(.*?)</p>',
+        html,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if match and re.sub(r"<[^>]+>", "", match.group(1)).strip():
+        return True
+    issues.append(ValidationIssue("opening_lead_empty", "Opening lead section is empty"))
+    return False
+
+
+def _is_live_generated_contract_preview(path: Path) -> bool:
+    return "live_generated" in path.name.lower()
+
+
 def _validate_contract_preview(
     resolved: Path,
     *,
@@ -729,6 +810,12 @@ def _validate_contract_preview(
 
         if korea_1830:
             warm_close_order = "PASS" if _validate_warm_close_order(html, issues) else "FAIL"
+
+        if _is_live_generated_contract_preview(resolved):
+            hero_ok = _validate_hero_top_shot(html, issues)
+            lead_ok = _validate_opening_lead_present(html, issues)
+            if not hero_ok or not lead_ok:
+                required_sections = "FAIL"
 
     sub_checks: List[CheckStatus] = [
         required_sections,
@@ -834,12 +921,19 @@ def _validate_owner_review(
         state_ok = _validate_no_customer_final_states(html, issues)
         claimed_pass_consistency = "PASS" if state_ok else "FAIL"
 
+        if _requires_generated_owner_review_body(html, resolved):
+            deep_dive_readability = (
+                "PASS" if _validate_generated_owner_review_body(html, issues) else "FAIL"
+            )
+
     sub_checks: List[CheckStatus] = [
         required_sections,
         top5_sources,
         no_hashtags,
         no_production_implication,
     ]
+    if deep_dive_readability != "SKIP":
+        sub_checks.append(deep_dive_readability)  # type: ignore[arg-type]
     if claimed_pass_consistency != "SKIP":
         sub_checks.append(claimed_pass_consistency)  # type: ignore[arg-type]
 

@@ -29,6 +29,14 @@ _REPO = Path(__file__).resolve().parent.parent
 _GLOBAL_TOP = _REPO / (
     "output/keysuri_preview/image_canary/keysuri_global_canary_20260604_221233.jpg"
 )
+_GLOBAL_TOP_WM = _REPO / (
+    "output/keysuri_preview/image_canary/"
+    "keysuri_global_canary_20260604_221233_mirai_on_watermarked.jpg"
+)
+_GLOBAL_TOP_MANIFEST = _REPO / (
+    "output/keysuri_preview/image_canary/"
+    "keysuri_global_canary_20260604_221233_mirai_on_watermarked.manifest.json"
+)
 _KOREA_TOP = _REPO / (
     "output/keysuri_preview/image_canary/keysuri_korea_canary_20260604_225207.jpg"
 )
@@ -110,11 +118,21 @@ class KeysuriApprovedImageAssetRegistryTests(unittest.TestCase):
 
     @unittest.skipUnless(_REGISTRY.is_file(), "registry not present")
     @unittest.skipUnless(_GLOBAL_TOP.is_file(), "global top asset missing")
-    def test_global_top_resolves_to_221233(self) -> None:
+    @unittest.skipUnless(_GLOBAL_TOP_WM.is_file(), "global top watermarked asset missing")
+    def test_global_top_resolves_to_221233_watermarked(self) -> None:
         asset = resolve_approved_hero_asset(_REPO, PROGRAM_GLOBAL, role=GLOBAL_TOP_ROLE)
         path = resolve_approved_hero_image_path(_REPO, PROGRAM_GLOBAL, role=GLOBAL_TOP_ROLE)
         self.assertEqual(asset.asset_id, "keysuri_global_top_20260604_221233")
-        self.assertEqual(path.resolve(), _GLOBAL_TOP.resolve())
+        self.assertEqual(path.resolve(), _GLOBAL_TOP_WM.resolve())
+        self.assertNotEqual(path.resolve(), _GLOBAL_TOP.resolve())
+
+    @unittest.skipUnless(_GLOBAL_TOP_MANIFEST.is_file(), "global top manifest missing")
+    def test_global_top_manifest_has_global_top_role(self) -> None:
+        manifest = json.loads(_GLOBAL_TOP_MANIFEST.read_text(encoding="utf-8"))
+        self.assertEqual(manifest.get("asset_id"), "keysuri_global_top_20260604_221233")
+        self.assertEqual(manifest.get("image_role"), "global_top")
+        self.assertTrue(manifest.get("overlay_applied"))
+        self.assertFalse(manifest.get("image_api_called"))
 
     @unittest.skipUnless(_REGISTRY.is_file(), "registry not present")
     @unittest.skipUnless(_KOREA_TOP.is_file(), "korea top asset missing")
@@ -132,10 +150,11 @@ class KeysuriApprovedImageAssetRegistryTests(unittest.TestCase):
 
     @unittest.skipUnless(_REGISTRY.is_file(), "registry not present")
     @unittest.skipUnless(_GLOBAL_TOP.is_file(), "global top missing")
+    @unittest.skipUnless(_GLOBAL_TOP_WM.is_file(), "global top watermarked missing")
     @unittest.skipUnless(_KOREA_BOTTOM_WM.is_file(), "korea bottom watermarked missing")
     def test_global_top_must_not_resolve_to_105936(self) -> None:
         path = resolve_approved_hero_image_path(_REPO, PROGRAM_GLOBAL, role=GLOBAL_TOP_ROLE)
-        self.assertEqual(path.resolve(), _GLOBAL_TOP.resolve())
+        self.assertEqual(path.resolve(), _GLOBAL_TOP_WM.resolve())
         self.assertIsNone(
             match_registry_asset(
                 _REPO,
@@ -171,14 +190,16 @@ class KeysuriApprovedImageAssetRegistryTests(unittest.TestCase):
             f"expected role mismatch codes, got {codes}",
         )
 
-    @unittest.skipUnless(_GLOBAL_TOP.is_file(), "global top missing")
-    def test_global_top_registry_match_passes_visual_gate(self) -> None:
+    @unittest.skipUnless(_GLOBAL_TOP_WM.is_file(), "global top watermarked missing")
+    @unittest.skipUnless(_GLOBAL_TOP_MANIFEST.is_file(), "global top manifest missing")
+    def test_global_top_registry_match_passes_visual_gate_without_watermark_pending(self) -> None:
         fixture = build_global_contract_fixture()
-        fixture["top_shot_image_path"] = str(_GLOBAL_TOP)
+        fixture["top_shot_image_path"] = str(_GLOBAL_TOP_WM)
         html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
         result = validate_visual_identity_gate(
             html,
-            image_path=str(_GLOBAL_TOP),
+            image_path=str(_GLOBAL_TOP_WM),
+            manifest_path=str(_GLOBAL_TOP_MANIFEST),
             program_id=PROGRAM_GLOBAL,
             repo_root=_REPO,
             image_source_mode="approved_registry",
@@ -186,6 +207,8 @@ class KeysuriApprovedImageAssetRegistryTests(unittest.TestCase):
         )
         self.assertEqual(result.status, "pass")
         self.assertEqual(result.approved_asset_id, "keysuri_global_top_20260604_221233")
+        warning_codes = {w.code for w in result.warnings}
+        self.assertNotIn("watermark_pending", warning_codes)
 
     @unittest.skipUnless(_REGISTRY.is_file(), "registry not present")
     def test_rejected_refresh_not_resolvable(self) -> None:

@@ -153,11 +153,75 @@ def _operation_before_briefing(html: str) -> bool:
     return op < top5
 
 
+def validate_contract_preview_hero_layout_gate(html: str) -> VisibleBodyQualityResult:
+    """Hero image frame/layout gate — catches thumbnail card and over-framed hero."""
+    issues: List[VisibleBodyIssue] = []
+    warnings: List[VisibleBodyIssue] = []
+
+    if "105936" in html or "keysuri_global_canary_20260605_105936" in html:
+        issues.append(
+            VisibleBodyIssue(
+                "hero_role_asset_mismatch",
+                "korea_bottom 105936 asset must not appear in global preview HTML",
+            )
+        )
+
+    style_match = re.search(r"<style>(.*?)</style>", html, flags=re.DOTALL | re.IGNORECASE)
+    if not style_match:
+        return VisibleBodyQualityResult(ok=len(issues) == 0, issues=issues, warnings=warnings)
+
+    style = style_match.group(1)
+    style_compact = re.sub(r"\s+", "", style)
+
+    if re.search(r"hero-image-card[^}]*max-width:\s*(2\d\d|3\d\d|4\d\d)px", style):
+        issues.append(
+            VisibleBodyIssue(
+                "hero_image_too_small",
+                "Hero image max-width under 520px on desktop — thumbnail-like layout",
+            )
+        )
+    if "flex:01 38%" in style_compact or "max-width:300px" in style_compact:
+        issues.append(
+            VisibleBodyIssue(
+                "hero_thumbnail_layout",
+                "Two-column right-side thumbnail hero layout detected",
+            )
+        )
+    if re.search(r"hero-image-card[^}]*border:\s*1px", style) and "border:0" not in style_compact:
+        if "box-shadow:var(--shadow-card)" in style_compact:
+            issues.append(
+                VisibleBodyIssue(
+                    "hero_frame_too_heavy",
+                    "Heavy card border/shadow on hero image frame",
+                )
+            )
+    if re.search(r"hero-image-card[^}]*padding:\s*(1[6-9]|[2-9]\d)px", style):
+        issues.append(
+            VisibleBodyIssue(
+                "hero_excessive_padding",
+                "Excessive padding around hero image card shrinks visible image",
+            )
+        )
+    if re.search(r"\.top-shot-hero\{[^}]*object-fit:\s*cover", style) and "object-fit:contain" not in style:
+        issues.append(
+            VisibleBodyIssue(
+                "hero_crop_without_approval",
+                "Hero uses object-fit:cover — may crop face/body without approval",
+            )
+        )
+
+    return VisibleBodyQualityResult(ok=len(issues) == 0, issues=issues, warnings=warnings)
+
+
 def validate_contract_preview_structural_gate(html: str) -> VisibleBodyQualityResult:
     """Structural / HTML quality only — not briefing substance or visual identity."""
     issues: List[VisibleBodyIssue] = []
     warnings: List[VisibleBodyIssue] = []
     region = _visible_body_region(html)
+
+    hero_layout = validate_contract_preview_hero_layout_gate(html)
+    issues.extend(hero_layout.issues)
+    warnings.extend(hero_layout.warnings)
 
     if 'id="top-shot-image"' not in html:
         issues.append(VisibleBodyIssue("hero_image_missing", "Top-shot hero section required"))

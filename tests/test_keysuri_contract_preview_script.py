@@ -1,4 +1,4 @@
-"""Tests for scripts/render_keysuri_contract_preview.py."""
+"""Tests for scripts/render_keysuri_contract_preview.py (design fixture only)."""
 from __future__ import annotations
 
 import json
@@ -12,8 +12,8 @@ from tempfile import TemporaryDirectory
 _REPO = Path(__file__).resolve().parent.parent
 _SCRIPT = _REPO / "scripts" / "render_keysuri_contract_preview.py"
 
-_FILENAME_RE = re.compile(
-    r"^keysuri_(korea|global)_\d{4}_contract_preview_\d{8}_\d{6}(?:_\d+)?\.html$",
+_DESIGN_FILENAME_RE = re.compile(
+    r"^keysuri_(korea|global)_\d{4}_design_fixture_\d{8}_\d{6}(?:_\d+)?\.html$",
     re.IGNORECASE,
 )
 
@@ -26,6 +26,8 @@ _FORBIDDEN_BLEED = (
     "#키수리",
     "static/email/",
 )
+
+DESIGN_BANNER = "DESIGN FIXTURE — NOT OWNER REVIEW"
 
 
 def _html_test_dir(tmp: Path) -> Path:
@@ -45,7 +47,7 @@ def _run_script(tmp: Path, *extra_args: str) -> subprocess.CompletedProcess[str]
 
 
 class KeysuriContractPreviewScriptTests(unittest.TestCase):
-    def test_korea_writes_timestamped_file_and_validator_pass(self) -> None:
+    def test_korea_writes_design_fixture_file(self) -> None:
         with TemporaryDirectory() as tmpdir:
             proc = _run_script(
                 Path(tmpdir),
@@ -56,13 +58,17 @@ class KeysuriContractPreviewScriptTests(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0, msg=proc.stderr or proc.stdout)
             payload = json.loads(proc.stdout)
-            self.assertEqual(payload["validation_status"], "PASS")
+            self.assertTrue(payload["design_fixture"])
+            self.assertFalse(payload["owner_visual_review"])
+            self.assertFalse(payload["visible_body_quality_pass"])
             path = Path(payload["output_path"])
             self.assertTrue(path.exists())
-            self.assertRegex(path.name, _FILENAME_RE)
+            self.assertRegex(path.name, _DESIGN_FILENAME_RE)
             self.assertIn("korea_1830", path.name)
+            html = path.read_text(encoding="utf-8")
+            self.assertIn(DESIGN_BANNER, html)
 
-    def test_global_writes_timestamped_file_and_validator_pass(self) -> None:
+    def test_global_writes_design_fixture_file(self) -> None:
         with TemporaryDirectory() as tmpdir:
             proc = _run_script(
                 Path(tmpdir),
@@ -73,13 +79,14 @@ class KeysuriContractPreviewScriptTests(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0, msg=proc.stderr or proc.stdout)
             payload = json.loads(proc.stdout)
-            self.assertEqual(payload["validation_status"], "PASS")
+            self.assertTrue(payload["design_fixture"])
+            self.assertFalse(payload["owner_visual_review"])
             path = Path(payload["output_path"])
             self.assertTrue(path.exists())
-            self.assertRegex(path.name, _FILENAME_RE)
+            self.assertRegex(path.name, _DESIGN_FILENAME_RE)
             self.assertIn("global_1230", path.name)
 
-    def test_default_args_produce_korea_1830_preview(self) -> None:
+    def test_default_args_produce_korea_1830_design_fixture(self) -> None:
         with TemporaryDirectory() as tmpdir:
             proc = _run_script(Path(tmpdir))
             self.assertEqual(proc.returncode, 0, msg=proc.stderr or proc.stdout)
@@ -87,8 +94,9 @@ class KeysuriContractPreviewScriptTests(unittest.TestCase):
             self.assertEqual(payload["program"], "keysuri_korea_tech")
             self.assertEqual(payload["slot"], "18:30")
             self.assertEqual(payload["review_state"], "preview_pending")
+            self.assertEqual(payload["owner_visual_review_status"], "NOT_READY — design fixture only")
             path = Path(payload["output_path"])
-            self.assertIn("korea_1830", path.name)
+            self.assertIn("design_fixture", path.name)
             self.assertIn("국내 테크 TOP 5", path.read_text(encoding="utf-8"))
 
     def test_review_state_review_passed_text(self) -> None:
@@ -114,7 +122,7 @@ class KeysuriContractPreviewScriptTests(unittest.TestCase):
             html = Path(json.loads(proc.stdout)["output_path"]).read_text(encoding="utf-8")
             self.assertIn("발송되었습니다", html)
 
-    def test_output_filename_matches_required_pattern(self) -> None:
+    def test_output_filename_uses_design_fixture_pattern(self) -> None:
         with TemporaryDirectory() as tmpdir:
             proc = _run_script(
                 Path(tmpdir),
@@ -125,15 +133,16 @@ class KeysuriContractPreviewScriptTests(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0)
             filename = Path(json.loads(proc.stdout)["output_path"]).name
-            self.assertRegex(filename, _FILENAME_RE)
+            self.assertRegex(filename, _DESIGN_FILENAME_RE)
 
-    def test_script_exits_zero_on_pass(self) -> None:
+    def test_script_exits_zero_and_reports_not_owner_ready(self) -> None:
         with TemporaryDirectory() as tmpdir:
             proc = _run_script(Path(tmpdir), "--pretty")
             self.assertEqual(proc.returncode, 0)
             payload = json.loads(proc.stdout)
             self.assertIn("output_path", payload)
-            self.assertIn("validation_status", payload)
+            self.assertFalse(payload["owner_visual_review"])
+            self.assertTrue(payload["design_fixture_banner_present"])
 
     def test_generated_file_is_utf8_with_rights_policy(self) -> None:
         with TemporaryDirectory() as tmpdir:

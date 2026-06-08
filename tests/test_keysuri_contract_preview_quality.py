@@ -8,6 +8,7 @@ from pathlib import Path
 from keysuri_contract_preview_quality import (
     GENERIC_CLOSING_PHRASES,
     STAGED_PLACEHOLDER_MARKERS,
+    validate_contract_preview_hero_layout_gate,
     validate_contract_preview_visible_body,
 )
 from keysuri_contract_preview_renderer import render_keysuri_contract_preview_html
@@ -127,6 +128,25 @@ class KeysuriContractPreviewQualityTests(unittest.TestCase):
             self.assertIn(label, html)
         for marker in ("premium-briefing", "premium-hero", "briefing-card", "owner-angle-block", "judgment-badge"):
             self.assertIn(marker, html)
+
+    def test_hero_layout_gate_passes_stacked_image_dominant_renderer(self) -> None:
+        html = render_keysuri_contract_preview_html(_premium_fixture(), repo_root=_REPO)
+        result = validate_contract_preview_hero_layout_gate(html)
+        self.assertTrue(result.ok, msg=[i.message for i in result.issues])
+        self.assertNotIn("max-width:300px", html)
+        self.assertNotIn("flex:0 1 38%", html)
+
+    def test_hero_layout_gate_catches_thumbnail_css(self) -> None:
+        html = """
+        <html><head><style>
+        .hero-image-card{flex:0 1 38%;max-width:300px;}
+        .top-shot-hero{object-fit:cover;}
+        </style></head><body></body></html>
+        """
+        result = validate_contract_preview_hero_layout_gate(html)
+        codes = {i.code for i in result.issues}
+        self.assertIn("hero_thumbnail_layout", codes)
+        self.assertIn("hero_image_too_small", codes)
 
     def test_juinim_in_opening_or_deep_dive(self) -> None:
         html = render_keysuri_contract_preview_html(_premium_fixture(), repo_root=_REPO)
