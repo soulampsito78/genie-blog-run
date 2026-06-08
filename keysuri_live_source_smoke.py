@@ -16,6 +16,12 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+from keysuri_approved_image_assets import (
+    classify_image_selection,
+    default_top_role_for_program,
+    match_registry_asset,
+    resolve_approved_hero_image_path,
+)
 from keysuri_contract_preview_fixture import (
     build_contract_preview_fixture_from_generated,
     resolve_top_shot_image_path,
@@ -163,6 +169,8 @@ class LiveSourceSmokeResult:
     generated_body: Dict[str, str] = field(default_factory=dict)
     contract_preview: bool = False
     image_path: Optional[str] = None
+    image_source_mode: Optional[str] = None
+    approved_asset_id: Optional[str] = None
     image_in_html: bool = False
     visible_body_quality_pass: bool = False
     visible_body_quality_issues: List[str] = field(default_factory=list)
@@ -210,6 +218,8 @@ class LiveSourceSmokeResult:
             "generated_body": self.generated_body,
             "contract_preview": self.contract_preview,
             "image_path": self.image_path,
+            "image_source_mode": self.image_source_mode,
+            "approved_asset_id": self.approved_asset_id,
             "image_in_html": self.image_in_html,
             "visible_body_quality_pass": self.visible_body_quality_pass,
             "visible_body_quality_issues": self.visible_body_quality_issues,
@@ -1064,19 +1074,47 @@ def run_keysuri_live_source_smoke(
         preview_mode = "live_smoke"
 
     image_path: Optional[Path] = None
+    image_source_mode: Optional[str] = None
+    approved_asset_id: Optional[str] = None
     image_in_html = False
     contract_fixture: Optional[dict] = None
 
     if contract_preview:
         assert generated_briefing is not None
         try:
-            if top_shot_image_path is not None:
+            explicit_override = top_shot_image_path is not None
+            if explicit_override:
                 candidate = Path(top_shot_image_path).expanduser().resolve()
                 if not candidate.is_file():
                     raise FileNotFoundError(f"Top-shot image not found: {candidate}")
                 image_path = candidate
             else:
-                image_path = resolve_top_shot_image_path(repo, program_id)
+                top_role = default_top_role_for_program(program_id)
+                image_path = resolve_approved_hero_image_path(
+                    repo,
+                    program_id,
+                    use_case="contract_preview",
+                    role=top_role,
+                )
+            top_role = default_top_role_for_program(program_id)
+            image_source_mode = classify_image_selection(
+                repo,
+                image_path,
+                program_id,
+                explicit_override=explicit_override,
+                use_case="contract_preview",
+                role=top_role,
+            )
+            registry_match = match_registry_asset(
+                repo,
+                image_path,
+                program_id,
+                use_case="contract_preview",
+                role=top_role,
+            )
+            if registry_match is not None:
+                approved_asset_id = registry_match.asset_id
+                image_source_mode = "approved_registry"
         except (FileNotFoundError, ValueError) as exc:
             return LiveSourceSmokeResult(
                 ok=False,
@@ -1155,19 +1193,26 @@ def run_keysuri_live_source_smoke(
     if contract_preview:
         manifest_path: Optional[str] = None
         if image_path is not None:
-            sidecar = Path(image_path).with_suffix(".manifest.json")
-            if not sidecar.is_file():
-                alt = Path(str(image_path).replace("_mirai_on_watermarked.jpg", "_mirai_on_watermarked.manifest.json"))
+            ip = Path(image_path)
+            sidecar = ip.with_suffix(".manifest.json")
+            if sidecar.is_file() and sidecar.suffix == ".json":
+                manifest_path = str(sidecar)
+            elif ip.name.endswith("_mirai_on_watermarked.jpg"):
+                alt = ip.parent / ip.name.replace(
+                    "_mirai_on_watermarked.jpg",
+                    "_mirai_on_watermarked.manifest.json",
+                )
                 if alt.is_file():
                     manifest_path = str(alt)
-            else:
-                manifest_path = str(sidecar)
         preview_report = validate_keysuri_contract_preview(
             html,
             html_path=str(html_path),
             program_id=program_id,
             image_path=str(image_path) if image_path else None,
             image_manifest_path=manifest_path,
+            repo_root=repo,
+            image_source_mode=image_source_mode,  # type: ignore[arg-type]
+            briefing_source_metadata=source_pack,
         )
         preview_validation = preview_report.to_dict()
         structural_gate_status = preview_report.structural_gate.status
@@ -1216,6 +1261,8 @@ def run_keysuri_live_source_smoke(
         generated_body=generated_body,
         contract_preview=contract_preview,
         image_path=str(image_path.resolve()) if image_path else None,
+        image_source_mode=image_source_mode,
+        approved_asset_id=approved_asset_id,
         image_in_html=image_in_html,
         visible_body_quality_pass=visible_quality_pass,
         visible_body_quality_issues=visible_quality_issues,
