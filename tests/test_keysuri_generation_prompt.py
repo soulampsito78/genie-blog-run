@@ -100,6 +100,15 @@ class KeysuriGenerationPromptContractTests(unittest.TestCase):
         for term in FORBIDDEN_RETIRED:
             self.assertIn(term, prompt)
 
+    def test_global_prompt_includes_breadth_and_depth_framing(self) -> None:
+        prompt = build_keysuri_generation_prompt(_global_prompt())
+        self.assertIn("GLOBAL TECH BREADTH", prompt)
+        self.assertIn("NOT an AI-only newsletter", prompt)
+        self.assertIn("GLOBAL TECH TOP5 DEPTH", prompt)
+        self.assertIn("selection_reason", prompt)
+        self.assertIn("sponsored_warning", prompt)
+        self.assertIn("리스크 신호", prompt)
+
 
 class KeysuriJsonExtractionTests(unittest.TestCase):
     def setUp(self) -> None:

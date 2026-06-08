@@ -1,6 +1,7 @@
 """Kee-Suri offline generation prompt contract and JSON parse guard (no LLM runtime)."""
 from __future__ import annotations
 
+import copy
 import json
 import re
 from typing import Any, Dict, List, Set
@@ -97,6 +98,59 @@ def _source_pack_summary(source_pack: dict) -> Dict[str, Any]:
     }
 
 
+def _enrich_top5_with_selection_metadata(prompt_input: dict) -> dict:
+    """Attach scored TOP5 selection metadata for Gemini depth enforcement."""
+    top_5 = prompt_input.get("top_5_news")
+    if not isinstance(top_5, dict):
+        return {}
+    enriched = copy.deepcopy(top_5)
+    pack = prompt_input.get("source_pack")
+    if not isinstance(pack, dict):
+        return enriched
+
+    claim_by_sid: Dict[str, dict] = {}
+    for claim in pack.get("claims") or []:
+        if not isinstance(claim, dict):
+            continue
+        for sid in claim.get("source_ids") or []:
+            claim_by_sid[str(sid)] = claim
+
+    metadata_keys = (
+        "selection_score",
+        "selection_score_before_diversity",
+        "selection_rationale",
+        "primary_category",
+        "category_label_ko",
+        "reason_for_category",
+        "hype_warning",
+        "sponsored_warning",
+        "is_sponsored",
+        "selection_note",
+        "penalty_notes",
+        "source_name",
+        "source_domain",
+        "source_count_in_top5",
+        "source_concentration_reason",
+    )
+    items_out: List[dict] = []
+    for item in enriched.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        claim = None
+        for sid in item.get("source_ids") or []:
+            claim = claim_by_sid.get(str(sid))
+            if claim:
+                break
+        if claim:
+            for key in metadata_keys:
+                if claim.get(key) is not None:
+                    row[key] = claim[key]
+        items_out.append(row)
+    enriched["items"] = items_out
+    return enriched
+
+
 def _required_output_schema(program_id: str) -> Dict[str, Any]:
     base = keysuri_output_schema_example(program_id)
     base["generated_status"] = GENERATED_STATUS_REQUIRED
@@ -163,6 +217,11 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
     """Build final offline generation prompt text from prompt_input."""
     contract = build_keysuri_generation_prompt_contract(prompt_input)
     program_id = contract["program_id"]
+    top_5_for_prompt = (
+        _enrich_top5_with_selection_metadata(prompt_input)
+        if program_id == "keysuri_global_tech"
+        else contract.get("top_5_news")
+    )
     labels = contract.get("fixed_section_labels") or {}
     deep_heading = labels.get("deep_dive") or SECTION_DEEP_DIVE
     one_line_heading = labels.get("one_line_checkpoint") or SECTION_ONE_LINE
@@ -191,8 +250,55 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
         "- Do not invent sources, dates, numbers, or legal/policy certainty.",
         "- Do not output unsupported numbers.",
         f"- Keep top_5_news rank/news_id sequence exactly as provided in TOP_5_SELECTED.",
+        "- You MAY translate/adapt English RSS headlines into Korean headlines while preserving rank and news_id.",
+        "- All reader-facing prose MUST be Korean (한국어). Never expose raw English field labels in prose.",
         f"- Use section headings exactly: {deep_heading!r}, {one_line_heading!r}, {closing_heading!r}",
         "- Do not use cross-scope TOP 5 headings listed in FORBIDDEN OUTPUTS.",
+        "",
+        "OWNER ADDRESS (mandatory)",
+        '- Address the owner as "주인님" in opening_lead, deep_dive (at least once), one_line_checkpoint, and closing_message.',
+        '- FORBIDDEN address: "귀사". Never use corporate third-person address.',
+        "",
+        "BRIEFING_DISPLAY (required object at top level)",
+        "- briefing_display.opening_lead: 3-5 Korean sentences to 주인님. Explain today's overall signal pattern. Not generic greeting.",
+        "- briefing_display.selected_title: Korean inbox title; prefer [키수리 브리핑] prefix.",
+        "- briefing_display.title_candidates: array of 2+ Korean title strings including selected_title.",
+        "- briefing_display.closing_message: optional override; short private-secretary tone to 주인님.",
+        "",
+        "TOP5 ITEM BRIEFING (required per item — briefing_item object OR top-level fields on each item)",
+        "Each TOP5 item MUST include Korean display fields:",
+        "- korean_title: Kee-Suri rewritten Korean headline (not raw English RSS title).",
+        "- what_happened: 2-4 Korean sentences — what actually happened, grounded in source text.",
+        "- why_now: 2-3 Korean sentences — why hot now, business/AI/platform/market context.",
+        "- owner_angle: 2-3 Korean sentences — what 주인님 should watch, use, avoid, or prepare.",
+        "- keysuri_judgment: object { label, explanation } — label one of: 기회 / 관찰 / 경계 / 활용 후보 / 사업 신호 / 리스크 신호 / 추가 확인 필요 / 과장 주의.",
+        "- next_watch: concrete follow-up watch items in Korean (see program-specific depth rules).",
+        "- detail_insufficient: true if RSS/summary too thin; when true, state uncertainty and do NOT invent facts.",
+        "",
+        "DEEP_DIVE (required — premium private briefing, not recap)",
+        "- deep_dive.body: 5-8+ Korean sentences connecting selected news into a pattern.",
+        "- deep_dive.confirmed_facts: array of confirmed fact strings from sources.",
+        "- deep_dive.interpretation OR keysuri_interpretation: Kee-Suri interpretation in Korean.",
+        "- deep_dive.owner_impact OR korean_operator_impact: impact for Korean founders/operators.",
+        "- deep_dive.uncertainty OR open_questions: what is still uncertain.",
+        "- Must address 주인님 naturally at least once in body or owner_impact.",
+        "",
+        "ONE_LINE_CHECKPOINT",
+        "- Sharp, decision-oriented Korean. Address or imply 주인님 context.",
+        "",
+        "CLOSING",
+        "- Short private secretary tone to 주인님. No customer-service language.",
+        "",
+        "SOURCE THINNESS RULE",
+        "- If RSS content is too thin for detailed reporting: set detail_insufficient=true.",
+        "- Do not pretend article details are known. Do not invent numbers, dates, or quotes.",
+        "",
+        "FORBIDDEN READER-FACING PHRASES",
+        '- Do not use "귀사".',
+        '- Do not use "오늘 브리핑이 도움이 되셨기를 바랍니다" or "도움이 되기를 바랍니다" or similar customer-service closings.',
+        '- Do not use "추가 문의사항은 언제든" or public support-desk tone.',
+        '- Do not use "다음 브리핑에서 찾아뵙" or public anchor/newsletter tone.',
+        "- Do not use generic newsletter closings or public anchor tone.",
         "",
         "FORBIDDEN IDENTITY / RETIRED",
         "- Do not use public broadcast-anchor / news-desk / announcer identity labels.",
@@ -203,6 +309,32 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
     ]
     for row in ACTIVE_SCHEDULER_RULES:
         sections.append(f"- {row['program']}: {row['time_kst']}")
+    if program_id == "keysuri_global_tech":
+        sections.extend(
+            [
+                "",
+                "GLOBAL TECH BREADTH (mandatory for keysuri_global_tech)",
+                "- Global Tech is NOT an AI-only newsletter. Frame AI as one major layer.",
+                "- Also cover: chips/infrastructure (physical layer), robots/manufacturing (application layer),",
+                "  energy/battery/grid (constraint layer), policy/capital/supply chain (movement layer).",
+                "- Explain why each item matters to 주인님; avoid generic AI adoption language.",
+                "- Official customer case studies are vendor examples, not breaking product launches.",
+                "- Sponsored/partner content must be framed as sponsored/partner content, not neutral news.",
+                "- Use judgment label 과장 주의 when hype_warning, sponsored_warning, or customer-case penalties apply.",
+                "",
+                "GLOBAL TECH TOP5 DEPTH (mandatory per item — use TOP_5_SELECTED metadata)",
+                "- selection_reason: 2+ Korean sentences — why this item was selected (category, score, signal type).",
+                "- what_happened: 3+ Korean sentences grounded in source text only.",
+                "- why_now: 3+ Korean sentences — timing, market/infra/policy context.",
+                "- owner_angle: 3+ Korean sentences — what 주인님 should watch, use, avoid, or prepare.",
+                "- keysuri_judgment.label: one of 기회 / 관찰 / 경계 / 활용 후보 / 사업 신호 / 리스크 신호 / 추가 확인 필요 / 과장 주의.",
+                "- next_watch: 2+ distinct follow-up checkpoints in Korean (numbered or separated).",
+                "- hype_caution: required string when hype_warning or sponsored_warning — state 과장 주의 / 스폰서·파트너 콘텐츠.",
+                "- If source is thin: say '원문 정보가 제한적이므로 추가 확인이 필요합니다.' and set detail_insufficient=true.",
+                "- FORBIDDEN generic filler: 'AI 도입이 가속화', '기업들이 AI를 활용', '업무 효율이 높아질 수 있습니다'.",
+                "- Do NOT invent facts beyond provided source_pack and TOP_5_SELECTED metadata.",
+            ]
+        )
     sections.extend(
         [
             "",
@@ -218,8 +350,8 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
             "SOURCE PACK SUMMARY",
             json.dumps(contract.get("source_pack_summary"), ensure_ascii=False, indent=2),
             "",
-            "TOP_5_SELECTED (preserve rank and news_id sequence)",
-            json.dumps(contract.get("top_5_news"), ensure_ascii=False, indent=2),
+            "TOP_5_SELECTED (preserve rank and news_id sequence; includes selection metadata)",
+            json.dumps(top_5_for_prompt, ensure_ascii=False, indent=2),
             "",
             "REQUIRED OUTPUT JSON SCHEMA",
             json.dumps(contract.get("required_output_schema"), ensure_ascii=False, indent=2),

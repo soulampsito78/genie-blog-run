@@ -42,6 +42,16 @@ NEWS_CATEGORIES = frozenset(
         "enterprise_adoption",
         "public_support",
         "procurement",
+        # Global Tech v2 taxonomy (internal labels — render as natural Korean in prose)
+        "ai_software_platform",
+        "semiconductor_chip_infra",
+        "semiconductor_equipment_materials",
+        "robotics_automation_manufacturing",
+        "battery_ev_energy_grid",
+        "aerospace_satellite_defense_tech",
+        "hardware_device_display",
+        "cybersecurity_cloud_datacenter",
+        "policy_regulation_capital_supplychain",
     }
 )
 
@@ -408,7 +418,8 @@ def _claim_is_qualified(
 
 
 def _claim_to_news_item(claim: Dict[str, Any], rank: int) -> Dict[str, Any]:
-    category = claim_to_news_category(claim) or "market_signal"
+    primary = str(claim.get("primary_category") or "").strip()
+    category = primary or claim_to_news_category(claim) or "market_signal"
     claim_id = str(claim.get("claim_id") or f"news-{rank}").strip()
     statement = str(claim.get("statement") or "").strip()
     summary = str(claim.get("summary") or statement).strip()
@@ -472,7 +483,25 @@ def select_top_5_news(source_pack: dict, gate_result: GateResult) -> dict:
             missing_biz_impl = True
         qualified.append((tier_rank, claim))
 
-    qualified.sort(key=lambda pair: (pair[0], str(pair[1].get("claim_id") or "")))
+    global_sel = source_pack.get("global_top5_selection")
+    if program_id == "keysuri_global_tech" and isinstance(global_sel, dict):
+        order = global_sel.get("selected_source_ids")
+        if isinstance(order, list) and order:
+            rank_map = {str(sid): idx for idx, sid in enumerate(order)}
+            qualified.sort(
+                key=lambda pair: (
+                    min(
+                        rank_map.get(str(sid), 999)
+                        for sid in (pair[1].get("source_ids") or [])
+                    ),
+                    pair[0],
+                    str(pair[1].get("claim_id") or ""),
+                )
+            )
+        else:
+            qualified.sort(key=lambda pair: (-int(pair[1].get("selection_score") or 0), pair[0]))
+    else:
+        qualified.sort(key=lambda pair: (pair[0], str(pair[1].get("claim_id") or "")))
 
     if missing_biz_impl:
         return {
