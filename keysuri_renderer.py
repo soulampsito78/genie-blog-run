@@ -38,7 +38,7 @@ EXTRA_IDENTITY_GUARDRAILS: List[str] = [
 ]
 
 GENERATION_PENDING_LABEL = "generation_pending"
-PreviewMode = Literal["offline", "live_smoke"]
+PreviewMode = Literal["offline", "live_smoke", "live_smoke_generated"]
 
 
 def _esc(value: Any) -> str:
@@ -471,6 +471,18 @@ def _base_styles() -> str:
     """
 
 
+def _display_prompt_input(prompt_input: dict, generated_briefing: dict | None) -> dict:
+    """Prefer Gemini-generated TOP 5 wording when a generated briefing is present."""
+    if generated_briefing is None:
+        return prompt_input
+    top = generated_briefing.get("top_5_news")
+    if not isinstance(top, dict):
+        return prompt_input
+    merged = dict(prompt_input)
+    merged["top_5_news"] = top
+    return merged
+
+
 def render_keysuri_owner_review_html(
     prompt_input: dict,
     generated_briefing: dict | None = None,
@@ -494,14 +506,27 @@ def render_keysuri_owner_review_html(
             )
             raise ValueError(f"Invalid generated briefing for {program_id}: {messages}")
 
-    if preview_mode == "live_smoke":
+    if preview_mode == "live_smoke_generated":
         notice = """
     <section class="notice" role="note">
       <p><strong>Owner-review 사전 검토 화면</strong></p>
       <ul>
         <li>이 화면은 테크 비서 키수리의 owner-review용 사전 검토 화면입니다.</li>
         <li>아직 고객에게 발송되지 않았습니다.</li>
-        <li>Live source smoke preview — public RSS metadata fetch only.</li>
+        <li>Live source + Gemini generated briefing — operator review only.</li>
+        <li>고객 최종 발송 문안이 아니라 운영자 검수용입니다.</li>
+        <li>프라이빗 테크 비서 톤 — 공개 방송형 브리핑 톤이 아닙니다.</li>
+      </ul>
+    </section>
+    """
+    elif preview_mode == "live_smoke":
+        notice = """
+    <section class="notice" role="note">
+      <p><strong>Owner-review 사전 검토 화면</strong></p>
+      <ul>
+        <li>이 화면은 테크 비서 키수리의 owner-review용 사전 검토 화면입니다.</li>
+        <li>아직 고객에게 발송되지 않았습니다.</li>
+        <li>Live source smoke preview — source-led cards only, not generated briefing.</li>
         <li>최종 고객 발송 문안이 아니며 owner-review 검수용입니다.</li>
         <li>프라이빗 테크 비서 톤 — 공개 방송형 브리핑 톤이 아닙니다.</li>
       </ul>
@@ -561,12 +586,20 @@ def render_keysuri_owner_review_html(
     </header>
     """
 
-    if preview_mode == "live_smoke":
+    if preview_mode == "live_smoke_generated":
         footer = """
     <footer class="footer">
       <p>Owner Review Preview</p>
-      <p>Live source smoke · review_required · No email sent</p>
+      <p>Live generated owner-review · review_required · No email sent</p>
       <p>Private Tech Secretary Preview</p>
+    </footer>
+    """
+    elif preview_mode == "live_smoke":
+        footer = """
+    <footer class="footer">
+      <p>Owner Review Preview</p>
+      <p>Live source smoke · source-led only · not generated briefing</p>
+      <p>review_required · Private Tech Secretary Preview</p>
     </footer>
     """
     else:
@@ -578,8 +611,9 @@ def render_keysuri_owner_review_html(
     </footer>
     """
 
+    display_input = _display_prompt_input(prompt_input, generated_briefing)
     body_parts = [
-        render_keysuri_top5_section(prompt_input),
+        render_keysuri_top5_section(display_input),
         render_keysuri_source_audit_section(prompt_input),
         render_keysuri_review_status_section(prompt_input, generated_briefing),
     ]
@@ -592,8 +626,14 @@ def render_keysuri_owner_review_html(
 
     body = "\n".join(body_parts)
 
+    html_attrs = ' lang="ko"'
+    if preview_mode == "live_smoke_generated":
+        html_attrs = ' lang="ko" data-keysuri-generated="true"'
+
     return (
-        "<!DOCTYPE html>\n<html lang=\"ko\">\n<head>\n"
+        "<!DOCTYPE html>\n<html"
+        + html_attrs
+        + ">\n<head>\n"
         "<meta charset=\"utf-8\"/>\n"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>\n"
         "<title>"

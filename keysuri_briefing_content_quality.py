@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from keysuri_contract_preview_quality import (
     FORBIDDEN_PHRASES,
@@ -24,6 +24,7 @@ ALLOWED_JUDGMENT_LABELS: Tuple[str, ...] = (
     "사업 신호",
     "리스크 신호",
     "추가 확인 필요",
+    "과장 주의",
 )
 
 GENERIC_OWNER_ANGLE_MARKERS: Tuple[str, ...] = (
@@ -51,6 +52,64 @@ CERTAINTY_WITHOUT_SOURCE: Tuple[str, ...] = (
     "틀림없",
     "100%",
 )
+
+GENERIC_AI_FILLER: Tuple[str, ...] = (
+    "기업들이 AI를 도입",
+    "AI 도입이 가속",
+    "AI adoption is accelerating",
+    "companies are adopting ai",
+    "인공지능 도입이 확산",
+    "업무 효율이 높아질 수 있습니다",
+    "기업들이 ai를 활용",
+)
+
+SPONSORED_FRAMING_MARKERS: Tuple[str, ...] = (
+    "스폰서",
+    "파트너 콘텐츠",
+    "광고",
+    "유료",
+    "sponsored",
+    "partner content",
+)
+
+NON_AI_CATEGORY_MARKERS: Tuple[str, ...] = (
+    "반도체",
+    "칩",
+    "로봇",
+    "배터리",
+    "에너지",
+    "전력",
+    "그리드",
+    "인프라",
+    "공급망",
+    "정책",
+    "규제",
+)
+
+RAW_FIELD_LABEL_LEAKS: Tuple[str, ...] = (
+    "category:",
+    "confidence_label:",
+    "source_ids:",
+    "news_id:",
+)
+
+CASE_STUDY_MARKERS: Tuple[str, ...] = (
+    "customer story",
+    "case study",
+    "고객 사례",
+    "endava",
+    "frontiers",
+)
+
+INTERNAL_VALIDATION_VISIBLE_MARKERS: Tuple[str, ...] = (
+    "TOP 신호",
+    "signal marker",
+    "category layer",
+    "글로벌 테크 TOP5 선정 기준",
+    "점검하는 데 유용합니다",
+)
+
+MIN_DETAIL_SENTENCES = 3
 
 URL_PATTERN = re.compile(r"https?://[^\s<\"']+")
 
@@ -90,6 +149,24 @@ def _normalize_for_dup(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip())[:120]
 
 
+def _watch_checkpoint_count(text: str) -> int:
+    if not text.strip():
+        return 0
+    bullets = len(re.findall(r"(?:^|\n)\s*[-•]\s+", text))
+    if bullets >= 2:
+        return bullets
+    numbered = len(re.findall(r"\d+\.", text))
+    if numbered >= 2:
+        return numbered
+    arrows = text.count("→")
+    if arrows >= 1:
+        return arrows + 1
+    parts = [p.strip() for p in re.split(r"[;；]\s*", text) if p.strip()]
+    if len(parts) >= 2:
+        return len(parts)
+    return _sentence_count(text)
+
+
 def _english_rss_leak(text: str) -> bool:
     if not text.strip():
         return False
@@ -101,11 +178,102 @@ def _english_rss_leak(text: str) -> bool:
     return False
 
 
-def validate_briefing_content_gate(html: str) -> BriefingContentQualityResult:
+def _claim_for_top_item(
+    idx: int,
+    block: str,
+    scored_claims: List[dict],
+    source_metadata: Optional[dict],
+) -> Optional[dict]:
+    """Match TOP item claim by source URL when possible (rank order may differ)."""
+    src_match = re.search(r'class="chip-url"[^>]*href="([^"]+)"', block)
+    if src_match and isinstance(source_metadata, dict):
+        url = src_match.group(1).strip()
+        sid_for_url: Dict[str, str] = {}
+        for src in source_metadata.get("sources") or []:
+            if not isinstance(src, dict):
+                continue
+            src_url = str(src.get("source_url") or "").strip()
+            sid = str(src.get("source_id") or "").strip()
+            if src_url and sid:
+                sid_for_url[src_url] = sid
+        sid = sid_for_url.get(url)
+        if sid:
+            for claim in scored_claims:
+                sids = claim.get("source_ids") if isinstance(claim.get("source_ids"), list) else []
+                if sid in [str(s) for s in sids]:
+                    return claim
+    if 1 <= idx <= len(scored_claims):
+        return scored_claims[idx - 1]
+    return None
+
+
+def _deep_dive_references_multiple_signals(
+    deep_text: str,
+    *,
+    top_headlines: Sequence[str],
+    source_metadata: Optional[dict],
+) -> bool:
+    if any(k in deep_text for k in ("단일", "하나의 신호", "이번", "해당 사례")):
+        return True
+
+    if isinstance(source_metadata, dict):
+        linked = source_metadata.get("deep_dive_linked_signals") or []
+        if isinstance(linked, list) and len([x for x in linked if str(x).strip()]) >= 2:
+            return True
+
+    from keysuri_briefing_body_ux_normalizer import count_signal_references
+
+    pseudo_items = [{"korean_title": h} for h in top_headlines if str(h).strip()]
+    if count_signal_references(deep_text, pseudo_items) >= 2:
+        return True
+
+    if isinstance(source_metadata, dict):
+        matched_sources = 0
+        for src in source_metadata.get("sources") or []:
+            if not isinstance(src, dict):
+                continue
+            name = str(src.get("source_name") or "").strip()
+            if not name:
+                continue
+            token = name.split()[0]
+            if len(token) >= 2 and (token in deep_text or token.lower() in deep_text.lower()):
+                matched_sources += 1
+        if matched_sources >= 2:
+            return True
+
+    legacy_markers = sum(1 for n in ("1.", "2.", "3.", "4.", "5.", "신호", "TOP") if n in deep_text)
+    return legacy_markers >= 2
+
+
+def _claims_with_scores(source_metadata: Optional[dict]) -> List[dict]:
+    if not isinstance(source_metadata, dict):
+        return []
+    claims = source_metadata.get("claims")
+    if not isinstance(claims, list):
+        return []
+    return [c for c in claims if isinstance(c, dict)]
+
+
+def validate_briefing_content_gate(
+    html: str,
+    *,
+    source_metadata: Optional[dict] = None,
+) -> BriefingContentQualityResult:
     """Validate visible Korean briefing substance — not HTML structure."""
     issues: List[BriefingContentIssue] = []
     warnings: List[BriefingContentIssue] = []
     region = _visible_body_region(html)
+
+    for phrase in RAW_FIELD_LABEL_LEAKS:
+        if phrase.lower() in region.lower():
+            issues.append(
+                BriefingContentIssue(
+                    "raw_field_label_leak",
+                    f"Visible body leaks raw field label: {phrase!r}",
+                    section="visible_body",
+                    excerpt=phrase,
+                )
+            )
 
     for phrase in FORBIDDEN_PHRASES:
         if phrase in region:
@@ -139,14 +307,34 @@ def validate_briefing_content_gate(html: str) -> BriefingContentQualityResult:
             )
         )
 
+    use_global_scoring_rules = isinstance(source_metadata, dict) and isinstance(
+        source_metadata.get("global_top5_selection"), dict
+    )
+    min_detail_sentences = MIN_DETAIL_SENTENCES if use_global_scoring_rules else 2
+
+    scored_claims = _claims_with_scores(source_metadata)
+    if use_global_scoring_rules and scored_claims and not any(
+        c.get("selection_score") is not None or c.get("selection_rationale") for c in scored_claims
+    ):
+        issues.append(
+            BriefingContentIssue(
+                "missing_selection_score",
+                "Source metadata lacks TOP5 selection scores or rationale",
+                section="top5",
+            )
+        )
+
     owner_angles: List[str] = []
     why_now_texts: List[str] = []
+    top_headlines: List[str] = []
     thin_detail_count = 0
     insufficient_marked = 0
 
     for idx, block in enumerate(item_blocks, start=1):
         headline_m = re.search(r'<h3[^>]*>\d+\.\s*(.*?)</h3>', block, flags=re.DOTALL)
         headline = re.sub(r"<[^>]+>", "", headline_m.group(1)).strip() if headline_m else ""
+        if headline:
+            top_headlines.append(headline)
         if headline and _english_rss_leak(headline):
             issues.append(
                 BriefingContentIssue(
@@ -162,6 +350,7 @@ def validate_briefing_content_gate(html: str) -> BriefingContentQualityResult:
         why = _block_text(block, "왜 지금 중요한가")
         owner = _block_text(block, "주인님 관점")
         watch = _block_text(block, "다음 확인 포인트")
+        selection_reason = _block_text(block, "선정 이유")
         j_label = _judgment_label(block)
 
         for label, text, code in (
@@ -180,17 +369,117 @@ def validate_briefing_content_gate(html: str) -> BriefingContentQualityResult:
                     )
                 )
 
-        if what and _sentence_count(what) < 2:
-            thin_detail_count += 1
+        depth_fields: List[Tuple[str, str, int, str]] = [
+            ("무슨 일이 있었나", what, min_detail_sentences, "item_detail_too_thin"),
+        ]
+        if use_global_scoring_rules:
+            depth_fields.extend(
+                [
+                    ("선정 이유", selection_reason, 2, "missing_selection_reason_depth"),
+                    ("왜 지금 중요한가", why, min_detail_sentences, "missing_why_now_depth"),
+                    ("주인님 관점", owner, min_detail_sentences, "missing_owner_angle_depth"),
+                ]
+            )
+            if not selection_reason.strip():
+                issues.append(
+                    BriefingContentIssue(
+                        "missing_selection_reason",
+                        f"TOP item {idx} missing 선정 이유",
+                        section="top5",
+                        item_index=idx,
+                    )
+                )
+            if watch and _watch_checkpoint_count(watch) < 2:
+                issues.append(
+                    BriefingContentIssue(
+                        "missing_next_watch_depth",
+                        f"TOP item {idx} needs at least 2 next-watch checkpoints",
+                        section="top5",
+                        item_index=idx,
+                        excerpt=watch[:100],
+                    )
+                )
+        for label, text, min_sent, code in depth_fields:
+            if text and _sentence_count(text) < min_sent:
+                thin_detail_count += 1
+                issues.append(
+                    BriefingContentIssue(
+                        code,
+                        f"TOP item {idx} '{label}' needs at least {min_sent} sentences",
+                        section="top5",
+                        item_index=idx,
+                        excerpt=text[:100],
+                    )
+                )
+
+        combined_item_text = f"{what} {why} {owner}".lower()
+        for filler in GENERIC_AI_FILLER:
+            if filler.lower() in combined_item_text:
+                issues.append(
+                    BriefingContentIssue(
+                        "generic_ai_filler",
+                        f"TOP item {idx} repeats generic AI adoption filler",
+                        section="top5",
+                        item_index=idx,
+                        excerpt=filler,
+                    )
+                )
+
+        is_case_study_item = any(m in combined_item_text for m in CASE_STUDY_MARKERS)
+        if is_case_study_item and not any(
+            m in block for m in ("과장 주의", "공식 고객 사례", "고객 사례")
+        ):
             issues.append(
                 BriefingContentIssue(
-                    "item_detail_too_thin",
-                    f"TOP item {idx} '무슨 일이 있었나' needs at least 2 sentences",
+                    "marketing_case_study_unframed",
+                    f"TOP item {idx} looks like marketing/customer case without framing",
                     section="top5",
                     item_index=idx,
-                    excerpt=what[:100],
                 )
             )
+
+        if use_global_scoring_rules and scored_claims:
+            claim = _claim_for_top_item(idx, block, scored_claims, source_metadata)
+            if claim:
+                if claim.get("selection_score") is None and not claim.get("selection_rationale"):
+                    issues.append(
+                        BriefingContentIssue(
+                            "missing_selection_score",
+                            f"TOP item {idx} missing selection score/rationale in source data",
+                            section="top5",
+                            item_index=idx,
+                        )
+                    )
+                if claim.get("hype_warning") and "과장 주의" not in block:
+                    issues.append(
+                        BriefingContentIssue(
+                            "hype_warning_missing",
+                            f"TOP item {idx} scored with hype penalty but lacks '과장 주의'",
+                            section="top5",
+                            item_index=idx,
+                        )
+                    )
+                if claim.get("sponsored_warning") and not any(
+                    m in block.lower() for m in SPONSORED_FRAMING_MARKERS
+                ):
+                    issues.append(
+                        BriefingContentIssue(
+                            "sponsored_warning_missing",
+                            f"TOP item {idx} is sponsored/partner content but lacks sponsored framing",
+                            section="top5",
+                            item_index=idx,
+                        )
+                    )
+                tier = str(claim.get("source_tier") or "")
+                if tier in ("T4_AGGREGATOR_BLOG", "T5_SOCIAL_UNVERIFIED") and j_label != "추가 확인 필요":
+                    issues.append(
+                        BriefingContentIssue(
+                            "weak_source_unmarked",
+                            f"TOP item {idx} weak source tier must be marked '추가 확인 필요'",
+                            section="top5",
+                            item_index=idx,
+                        )
+                    )
 
         if what and _english_rss_leak(what):
             issues.append(
@@ -265,11 +554,11 @@ def validate_briefing_content_gate(html: str) -> BriefingContentQualityResult:
 
         if "원문 상세 확인 필요" in block or "추가 확인 필요" in block:
             insufficient_marked += 1
-        elif what and _sentence_count(what) < 2:
+        elif what and _sentence_count(what) < min_detail_sentences:
             issues.append(
                 BriefingContentIssue(
                     "source_detail_insufficient",
-                    f"TOP item {idx} thin detail without '원문 상세 확인 필요' marker",
+                    f"TOP item {idx} thin detail without limitation marker",
                     section="top5",
                     item_index=idx,
                 )
@@ -330,12 +619,62 @@ def validate_briefing_content_gate(html: str) -> BriefingContentQualityResult:
             )
         )
 
+    if use_global_scoring_rules and scored_claims:
+        non_ai_claims = [
+            c
+            for c in scored_claims
+            if str(c.get("primary_category") or "") != "ai_software_platform"
+        ]
+        if non_ai_claims:
+            combined_top = " ".join(owner_angles + why_now_texts)
+            if not any(m in combined_top for m in NON_AI_CATEGORY_MARKERS):
+                issues.append(
+                    BriefingContentIssue(
+                        "ai_only_framing",
+                        "TOP5 includes non-AI categories but briefing frames AI-only",
+                        section="top5",
+                    )
+                )
+
     if deep_text:
         if "주인님" not in deep_text:
             issues.append(
                 BriefingContentIssue(
                     "weak_deep_dive",
                     "Deep-dive must include Korean operator/founder relevance (주인님)",
+                    section="deep_dive",
+                )
+            )
+        if use_global_scoring_rules:
+            if not _deep_dive_references_multiple_signals(
+                deep_text,
+                top_headlines=top_headlines,
+                source_metadata=source_metadata,
+            ):
+                issues.append(
+                    BriefingContentIssue(
+                        "weak_deep_dive",
+                        "Deep-dive must reference at least 2 selected signals or justify single-signal focus",
+                        section="deep_dive",
+                        excerpt=deep_text[:120],
+                    )
+                )
+        for marker in INTERNAL_VALIDATION_VISIBLE_MARKERS:
+            if marker.lower() in deep_text.lower():
+                issues.append(
+                    BriefingContentIssue(
+                        "internal_validation_marker_visible",
+                        f"Deep-dive exposes internal validation marker: {marker!r}",
+                        section="deep_dive",
+                        excerpt=deep_text[:120],
+                    )
+                )
+                break
+        if use_global_scoring_rules and any(g in deep_text for g in GENERIC_AI_FILLER):
+            issues.append(
+                BriefingContentIssue(
+                    "weak_deep_dive",
+                    "Deep-dive contains generic AI adoption filler",
                     section="deep_dive",
                 )
             )

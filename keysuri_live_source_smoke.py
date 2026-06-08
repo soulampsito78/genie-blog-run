@@ -22,6 +22,7 @@ from keysuri_approved_image_assets import (
     match_registry_asset,
     resolve_approved_hero_image_path,
 )
+from keysuri_briefing_content_enricher import enrich_generated_briefing_content
 from keysuri_contract_preview_fixture import (
     build_contract_preview_fixture_from_generated,
     resolve_top_shot_image_path,
@@ -41,6 +42,12 @@ from keysuri_generation_prompt import (
 )
 from keysuri_gemini_client import KeysuriGeminiError, call_keysuri_gemini_text
 from keysuri_html_preview_validation import validate_keysuri_html_preview
+from keysuri_global_signal_scoring import (
+    apply_scored_selection_to_source_pack,
+    classify_global_tech_category,
+    score_candidates_from_source_pack,
+    write_global_top5_selection_report,
+)
 from keysuri_prompt_input import build_keysuri_prompt_input
 from keysuri_renderer import render_keysuri_owner_review_html
 
@@ -88,6 +95,41 @@ GLOBAL_TECH_SMOKE_FEEDS: Tuple[Dict[str, str], ...] = (
         "feed_url": "https://techcrunch.com/category/artificial-intelligence/feed/",
         "source_tier": "T3_QUALITY_PRESS",
         "default_category": "startup",
+    },
+    {
+        "feed_id": "nvidia-blog",
+        "feed_name": "NVIDIA Blog",
+        "feed_url": "https://blogs.nvidia.com/feed/",
+        "source_tier": "T1_OFFICIAL_SECONDARY",
+        "default_category": "semiconductor_chip_infra",
+    },
+    {
+        "feed_id": "ieee-spectrum",
+        "feed_name": "IEEE Spectrum",
+        "feed_url": "https://spectrum.ieee.org/rss/fulltext",
+        "source_tier": "T3_QUALITY_PRESS",
+        "default_category": "robotics_automation_manufacturing",
+    },
+    {
+        "feed_id": "arstechnica-gadgets",
+        "feed_name": "Ars Technica Gadgets",
+        "feed_url": "https://feeds.arstechnica.com/arstechnica/gadgets",
+        "source_tier": "T3_QUALITY_PRESS",
+        "default_category": "hardware_device_display",
+    },
+    {
+        "feed_id": "techcrunch-startups",
+        "feed_name": "TechCrunch",
+        "feed_url": "https://techcrunch.com/feed/",
+        "source_tier": "T3_QUALITY_PRESS",
+        "default_category": "policy_regulation_capital_supplychain",
+    },
+    {
+        "feed_id": "datacenter-dynamics",
+        "feed_name": "Datacenter Dynamics",
+        "feed_url": "https://www.datacenterdynamics.com/en/rss/",
+        "source_tier": "T3_QUALITY_PRESS",
+        "default_category": "cybersecurity_cloud_datacenter",
     },
 )
 
@@ -358,45 +400,38 @@ def fetch_feed_items(
     return out
 
 
-def _infer_category(title: str, default_category: str) -> str:
-    lower = title.lower()
-    if any(token in lower for token in ("chip", "semiconductor", "hbm", "nvidia", "gpu")):
-        return "semiconductor"
-    if any(token in lower for token in ("policy", "regulation", "law", "government")):
-        return "policy"
-    if any(token in lower for token in ("startup", "seed", "series", "funding")):
-        return "startup"
-    if any(token in lower for token in ("security", "breach", "vulnerability")):
-        return "security"
-    if any(token in lower for token in ("platform", "app store", "developer")):
-        return "platform"
-    return default_category
+def _infer_category(title: str, summary: str, default_category: str) -> str:
+    primary, _, _, _ = classify_global_tech_category(
+        f"{title} {summary}",
+        feed_default=default_category,
+    )
+    return primary
 
 
 def _business_implication(category: str) -> str:
     mapping = {
-        "ai_product": "Enterprise AI product shifts may change vendor shortlists and procurement timing.",
-        "bigtech": "Big-tech platform moves can reshape partner ecosystems and capex expectations.",
-        "semiconductor": "Semiconductor supply signals may affect hardware roadmaps and vendor concentration.",
-        "platform": "Platform policy changes can alter developer economics and distribution leverage.",
-        "policy": "Policy movement may introduce compliance cost or market-access uncertainty.",
-        "startup": "Startup funding and product launches can signal emerging competitive pressure.",
-        "security": "Security incidents can trigger enterprise risk reviews and budget reallocation.",
-        "market_signal": "Market-facing tech signals may influence near-term strategic watchpoints.",
+        "ai_software_platform": "AI/software/platform shifts may change vendor shortlists and workflow lock-in.",
+        "semiconductor_chip_infra": "Chip and AI infrastructure signals may affect hardware roadmaps and capex.",
+        "semiconductor_equipment_materials": "Equipment/materials moves may shift fab capacity and supply risk.",
+        "robotics_automation_manufacturing": "Robotics/automation adoption may reshape operations and labor leverage.",
+        "battery_ev_energy_grid": "Battery/EV/energy signals may affect power cost and infrastructure planning.",
+        "aerospace_satellite_defense_tech": "Aerospace/defense tech may affect strategic procurement and risk posture.",
+        "hardware_device_display": "Device/display shifts may change edge deployment and consumer-tech spillover.",
+        "cybersecurity_cloud_datacenter": "Security/cloud/datacenter moves may affect reliability and compliance cost.",
+        "policy_regulation_capital_supplychain": "Policy/capital/supply-chain moves may alter market access and timing.",
     }
     return mapping.get(category, "Live public source metadata may affect near-term tech watch priorities.")
 
 
-def build_live_source_pack(
+def _build_source_entries_from_items(
     program_id: str,
     items: Sequence[FetchedFeedItem],
     *,
     generated_at: Optional[str] = None,
-) -> dict:
+    max_items: Optional[int] = None,
+) -> Tuple[List[dict], List[dict], str]:
     if program_id not in SUPPORTED_PROGRAMS:
         raise ValueError(f"Unsupported program_id: {program_id!r}")
-    if len(items) < 5:
-        raise ValueError(f"Need at least 5 fetched items for TOP 5 smoke, got {len(items)}")
 
     stamp = generated_at or _now_kst_iso()
     sources: List[dict] = []
@@ -404,6 +439,8 @@ def build_live_source_pack(
     seen_links: set[str] = set()
 
     for item in items:
+        if max_items is not None and len(sources) >= max_items:
+            break
         if item.link in seen_links:
             continue
         item_hits = scan_sample_markers(item.link, item.title, item.summary, item.feed_name)
@@ -413,8 +450,8 @@ def build_live_source_pack(
             )
         seen_links.add(item.link)
         sid = _source_id_for_link(item.feed_id, item.link)
-        category = _infer_category(item.title, item.default_category)
         summary = item.summary[:500] if item.summary else item.title[:500]
+        category = _infer_category(item.title, summary, item.default_category)
         sources.append(
             {
                 "source_id": sid,
@@ -422,6 +459,7 @@ def build_live_source_pack(
                 "source_url": item.link,
                 "source_tier": item.source_tier,
                 "fetched_at": stamp,
+                "published_at": item.published_at,
                 "title": item.title,
                 "publisher": item.feed_name,
                 "snippet": summary,
@@ -441,9 +479,50 @@ def build_live_source_pack(
                 "business_implication": _business_implication(category),
             }
         )
-        if len(sources) >= 5:
-            break
 
+    return sources, claims, stamp
+
+
+def build_live_candidate_source_pack(
+    program_id: str,
+    items: Sequence[FetchedFeedItem],
+    *,
+    generated_at: Optional[str] = None,
+) -> dict:
+    """Build full candidate pool from fetched RSS items (no TOP5 trim)."""
+    if len(items) < 5:
+        raise ValueError(f"Need at least 5 fetched items for candidate pool, got {len(items)}")
+    sources, claims, stamp = _build_source_entries_from_items(
+        program_id, items, generated_at=generated_at
+    )
+    if len(sources) < 5:
+        raise ValueError(f"Could not assemble 5 unique live sources, got {len(sources)}")
+    return {
+        "program_id": program_id,
+        "generated_at": stamp,
+        "notes": (
+            f"Live source candidate pool — public RSS metadata fetch at {stamp}. "
+            "Owner-review only; not customer-final."
+        ),
+        "sources": sources,
+        "claims": claims,
+    }
+
+
+def build_live_source_pack(
+    program_id: str,
+    items: Sequence[FetchedFeedItem],
+    *,
+    generated_at: Optional[str] = None,
+) -> dict:
+    if program_id not in SUPPORTED_PROGRAMS:
+        raise ValueError(f"Unsupported program_id: {program_id!r}")
+    if len(items) < 5:
+        raise ValueError(f"Need at least 5 fetched items for TOP 5 smoke, got {len(items)}")
+
+    sources, claims, stamp = _build_source_entries_from_items(
+        program_id, items, generated_at=generated_at, max_items=5
+    )
     if len(sources) < 5:
         raise ValueError(f"Could not assemble 5 unique live sources, got {len(sources)}")
 
@@ -979,7 +1058,19 @@ def run_keysuri_live_source_smoke(
         )
 
     side_effects["fetched_live_news"] = True
-    source_pack = build_live_source_pack(program_id, fetched)
+    if program_id == PROGRAM_GLOBAL:
+        candidate_pack = build_live_candidate_source_pack(program_id, fetched)
+        selection = score_candidates_from_source_pack(candidate_pack)
+        source_pack = apply_scored_selection_to_source_pack(candidate_pack, selection)
+        debug_dir = preview_dir / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        dbg_stamp = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d_%H%M%S")
+        write_global_top5_selection_report(
+            selection,
+            debug_dir / f"global_top5_selection_{dbg_stamp}.json",
+        )
+    else:
+        source_pack = build_live_source_pack(program_id, fetched)
     pack_path.write_text(json.dumps(source_pack, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     prompt_input = build_keysuri_prompt_input(program_id, source_pack)
@@ -1068,6 +1159,24 @@ def run_keysuri_live_source_smoke(
             )
 
         generated_briefing = parse_result.get("generated_briefing")
+        if isinstance(generated_briefing, dict):
+            generated_briefing = enrich_generated_briefing_content(
+                generated_briefing,
+                program_id,
+                prompt_input,
+            )
+            deep_block = (
+                generated_briefing.get("deep_dive")
+                if isinstance(generated_briefing, dict)
+                else None
+            )
+            if isinstance(deep_block, dict):
+                linked = deep_block.get("linked_signal_titles") or []
+                if isinstance(linked, list) and linked:
+                    source_pack = {
+                        **source_pack,
+                        "deep_dive_linked_signals": [str(x) for x in linked if str(x).strip()],
+                    }
         generated_body = extract_generated_body_text(generated_briefing or {})
         preview_mode = "live_smoke_generated"
     else:

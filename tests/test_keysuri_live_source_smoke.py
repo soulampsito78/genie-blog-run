@@ -71,16 +71,26 @@ def _mock_generated_briefing(prompt_input: dict) -> dict:
             f"단기 과장과 장기 구조 변화를 구분해 보시는 것이 좋습니다. "
             f"자동화·콘텐츠 운영 로드맵에 API 비용과 배포 제약을 함께 넣어 보시길 권합니다."
         )
+        selection_reason = (
+            f"항목 {idx}는 글로벌 테크 신호 점수와 카테고리 다양성 기준으로 선정했습니다. "
+            f"반도체·인프라·공급망 측면에서 주인님 의사결정과 연결되는 신호입니다."
+        )
+        next_watch = (
+            f"→ 항목 {idx} 공식 발표·가격·일정 공개 여부 확인; "
+            f"→ 공급망·인프라 후속 보도와 정책 변화 추적"
+        )
         top_items.append(
             {
                 **item,
                 "korean_title": f"글로벌 AI 신호 {idx} — 공급망·플랫폼 압력",
                 "headline": f"글로벌 AI 신호 {idx} — 공급망·플랫폼 압력",
+                "selection_reason": selection_reason,
                 "what_happened": what_happened,
                 "why_now": why_now,
                 "owner_angle": owner_angle,
                 "briefing_item": {
                     "korean_title": f"글로벌 AI 신호 {idx} — 공급망·플랫폼 압력",
+                    "selection_reason": selection_reason,
                     "what_happened": what_happened,
                     "why_now": why_now,
                     "owner_angle": owner_angle,
@@ -88,8 +98,9 @@ def _mock_generated_briefing(prompt_input: dict) -> dict:
                         "label": "관찰",
                         "explanation": f"항목 {idx} — 후속 공식 발표 확인 후 활용 여부를 결정하세요.",
                     },
-                    "next_watch": f"항목 {idx} 관련 공식 발표·가격·일정 공개 여부를 확인하세요.",
+                    "next_watch": next_watch,
                 },
+                "next_watch": next_watch,
             }
         )
     return {
@@ -577,10 +588,10 @@ class KeysuriLiveSourceSmokeTests(unittest.TestCase):
     def test_contract_preview_default_uses_approved_registry_asset_when_present(self) -> None:
         canary = _REPO / (
             "output/keysuri_preview/image_canary/"
-            "keysuri_global_canary_20260604_221233.jpg"
+            "keysuri_global_canary_20260604_221233_mirai_on_watermarked.jpg"
         )
         if not canary.is_file():
-            self.skipTest("approved global top asset not present locally")
+            self.skipTest("approved global top watermarked asset not present locally")
 
         with TemporaryDirectory() as tmpdir:
             items = _fake_items(10)
@@ -626,7 +637,16 @@ class KeysuriLiveSourceSmokeTests(unittest.TestCase):
             self.assertEqual(result.image_source_mode, "approved_registry")
             self.assertEqual(result.approved_asset_id, "keysuri_global_top_20260604_221233")
             self.assertEqual(Path(result.image_path).resolve(), canary.resolve())
+            self.assertIn("221233_mirai_on_watermarked", result.image_path or "")
+            self.assertNotIn("105936", result.image_path or "")
             self.assertEqual(result.visual_identity_gate_status, "pass")
+            visual_warnings = [
+                w.get("code")
+                for w in (result.preview_validation or {})
+                .get("visual_identity_gate", {})
+                .get("warnings", [])
+            ]
+            self.assertNotIn("watermark_pending", visual_warnings)
             self.assertIn(
                 result.preview_overall_status,
                 ("owner_visual_review_ready", "manual_visual_review_required", "blocked"),

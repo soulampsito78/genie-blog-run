@@ -188,6 +188,62 @@ class KeysuriBriefingContentQualityTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertTrue(any(i.code == "forbidden_phrase" for i in result.issues))
 
+    def test_catches_missing_sponsored_warning_with_global_metadata(self) -> None:
+        fixture = build_global_contract_fixture()
+        for item in fixture["top_5_items"]:
+            item["selection_reason"] = (
+                "반도체·인프라 신호로 선정했습니다. 공급망 압력이 커지는 구간입니다."
+            )
+            item["why_now"] = (
+                "항목은 엔터프라이즈 배포·API 정책 변경이 겹치는 시점입니다. "
+                "주인님의 파트너·비용 구조에 단기 영향이 나올 수 있습니다. "
+                "반도체·인프라 병목도 함께 점검할 필요가 있습니다."
+            )
+            item["owner_angle"] = (
+                "주인님께서는 항목을 제품 로드맵·파트너 선정 기준에 반영할지 점검하시면 됩니다. "
+                "단기 과장과 장기 구조 변화를 구분해 보시는 것이 좋습니다. "
+                "공급망·비용 구조 변화는 분기 단위로 재점검하시면 됩니다."
+            )
+            item["next_watch"] = "→ 공식 발표 확인; → 가격·일정 공개 여부 점검"
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        metadata = {
+            "global_top5_selection": {"policy": "keysuri_global_top5_selection_v2_diversity"},
+            "claims": [
+                {
+                    "selection_score": 80,
+                    "selection_rationale": "test",
+                    "primary_category": "ai_software_platform",
+                    "sponsored_warning": True,
+                }
+            ]
+            * 5,
+        }
+        result = validate_briefing_content_gate(html, source_metadata=metadata)
+        self.assertFalse(result.ok)
+        self.assertTrue(any(i.code == "sponsored_warning_missing" for i in result.issues))
+
+    def test_catches_thin_sections_with_global_metadata(self) -> None:
+        fixture = build_global_contract_fixture()
+        for item in fixture["top_5_items"]:
+            item["what_happened"] = "한 줄 요약."
+            item["why_now"] = "짧음."
+            item["owner_angle"] = "짧음."
+            item["selection_reason"] = "짧음."
+            item["next_watch"] = "한 가지만."
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        metadata = {
+            "global_top5_selection": {"policy": "keysuri_global_top5_selection_v2_diversity"},
+            "claims": [{"selection_score": 70, "selection_rationale": "test"}] * 5,
+        }
+        result = validate_briefing_content_gate(html, source_metadata=metadata)
+        self.assertFalse(result.ok)
+        codes = {i.code for i in result.issues}
+        self.assertTrue(
+            "item_detail_too_thin" in codes
+            or "missing_why_now_depth" in codes
+            or "missing_selection_reason_depth" in codes
+        )
+
     def test_catches_english_rss_leakage(self) -> None:
         fixture = build_global_contract_fixture()
         fixture["top_5_items"][0]["korean_title"] = "Google announces major Gemini update for enterprise customers"

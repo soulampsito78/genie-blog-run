@@ -98,6 +98,8 @@ def _item_display(item: dict) -> dict:
         "keysuri_judgment_label",
         "keysuri_judgment_text",
         "next_watch",
+        "selection_reason",
+        "hype_caution",
         "detail_insufficient",
     ):
         if key in item and item.get(key) not in (None, ""):
@@ -165,6 +167,14 @@ def _map_top_item(
     next_watch = str(
         extra.get("next_watch") or item.get("next_watch") or item.get("next_check_point") or ""
     ).strip()
+    selection_reason = str(
+        extra.get("selection_reason")
+        or item.get("selection_reason")
+        or extra.get("selection_rationale")
+        or item.get("selection_rationale")
+        or ""
+    ).strip()
+    hype_caution = str(extra.get("hype_caution") or item.get("hype_caution") or "").strip()
 
     judgment = extra.get("keysuri_judgment")
     j_label = ""
@@ -195,6 +205,8 @@ def _map_top_item(
         "keysuri_judgment_label": j_label,
         "keysuri_judgment": _sanitize_owner_visible_text(j_text),
         "next_watch": _sanitize_owner_visible_text(next_watch),
+        "selection_reason": _sanitize_owner_visible_text(selection_reason),
+        "hype_caution": _sanitize_owner_visible_text(hype_caution),
         "detail_insufficient": detail_insufficient,
         "source_name": str(src.get("source_name") or item.get("source_name") or "출처").strip(),
         "source_url": str(src.get("source_url") or item.get("source_url") or "").strip(),
