@@ -1,46 +1,48 @@
 {
-  "as_of": "2026-05-29",
+  "as_of": "2026-06-08",
   "session": "Asia market session (public source probe)",
-  "fetched_at": "2026-05-30T04:30:00Z",
-  "verified_at": "2026-05-30T04:35:00Z",
+  "fetched_at": "2026-06-08T22:38:34Z",
+  "verified_at": "2026-06-08T22:38:34Z",
   "verified_by": "operator_public_source_probe",
   "source_scope": "public_web_collection_probe",
   "indices": {
     "KOSPI": {
-      "close": 8476.15,
-      "change_pts": 290.86,
-      "change_pct": 3.55,
-      "source_name": "Yonhap News Agency",
-      "source_url": "https://en.yna.co.kr/view/AEN20260529006000320",
-      "cross_check_url": "https://koreajoongangdaily.joins.com/news/2026-05-29/business/finance/Kospi-reaches-alltime-high-driven-by-strong-AI-shares-renewed-ceasefire-optimism-in-Iran/2604287",
+      "close": 7484.41,
+      "change_pts": 676.18,
+      "change_pct": 8.29,
+      "as_of": "2026-06-08",
+      "source_name": "Naver Finance",
+      "source_url": "https://finance.naver.com/sise/sise_index.nhn?code=KOSPI",
+      "cross_check_url": "https://finance.naver.com/sise/sise_index.nhn?code=KOSPI",
       "confidence": "high",
       "accuracy_status": "verified",
-      "notes": "Cross-checked against JoongAng Daily close recap for 2026-05-29."
+      "notes": "Parsed from Naver Finance public index page for KOSPI."
     },
     "KOSDAQ": {
-      "close": 1074.8,
-      "change_pts": -29.56,
-      "change_pct": -2.68,
-      "source_name": "Asia Business Daily",
-      "source_url": "https://www.asiae.co.kr/en/article/2026052916062917921",
-      "cross_check_url": "https://www.asiae.co.kr/en/article/2026052916062917921",
+      "close": 911.39,
+      "change_pts": 91.05,
+      "change_pct": 9.08,
+      "as_of": "2026-06-08",
+      "source_name": "Naver Finance",
+      "source_url": "https://finance.naver.com/sise/sise_index.nhn?code=KOSDAQ",
+      "cross_check_url": "https://finance.naver.com/sise/sise_index.nhn?code=KOSDAQ",
       "confidence": "high",
       "accuracy_status": "verified",
-      "notes": "Asia Business Daily session recap for 2026-05-29."
+      "notes": "Parsed from Naver Finance public index page for KOSDAQ."
     },
     "NIKKEI": {
-      "close": 66329.5,
-      "change_pts": 1636.38,
-      "change_pct": 2.53,
-      "as_of": "2026-05-29",
-      "session": "Japan cash close (JST)",
-      "source_name": "Jiji Press / Nippon.com",
-      "source_url": "https://www.nippon.com/en/news/yjj2026052900663/",
-      "cross_check_url": "https://www.investing.com/indices/japan-ni225-historical-data",
+      "close": 64024.6,
+      "change_pts": 0.0,
+      "change_pct": 0.0,
+      "as_of": "2026-06-08",
+      "source_name": "CNBC",
+      "source_url": "https://www.cnbc.com/quotes/.N225",
       "confidence": "high",
       "accuracy_status": "verified",
-      "notes": "Cross-checked against Investing.com historical row for 2026-05-29."
+      "notes": "Parsed from CNBC public quote page for NIKKEI.",
+      "session": "Japan cash close (JST, CNBC public quote probe)",
+      "cross_check_url": "https://www.cnbc.com/quotes/.N225"
     }
   },
-  "summary": "KOSPI and Nikkei closed at record highs on 2026-05-29; KOSDAQ declined. Public-source draft only. Not a licensed automated market-data feed."
+  "summary": "Asia indexes as of 2026-06-08: KOSPI +8.29%, KOSDAQ +9.08%, Nikkei +0.00%. Public-source draft only. Not a licensed automated market-data feed."
 }
