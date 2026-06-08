@@ -144,6 +144,35 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertNotRegex(resp.text, r'value="image_only"[^>]*\bdisabled\b')
         self.assertRegex(resp.text, r'value="text_and_image"[^>]*\bchecked\b')
         self.assertIn('name="reissue_scope"', resp.text)
+        self.assertIn('class="radio-scope"', resp.text)
+        self.assertIn('class="radio-helper"', resp.text)
+
+    def test_admin_pages_include_viewport_meta(self) -> None:
+        login_resp = self.client.get("/admin")
+        self.assertEqual(login_resp.status_code, 200)
+        self.assertIn('name="viewport"', login_resp.text)
+        self.assertIn("width=device-width", login_resp.text)
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        runs_resp = self.client.get("/admin/runs")
+        self.assertEqual(runs_resp.status_code, 200)
+        self.assertIn('name="viewport"', runs_resp.text)
+        self.assertIn('class="table-wrap"', runs_resp.text)
+        run_id = "20260530_121200_today_genie_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": run_id,
+                "mode": "today_genie",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": False,
+                "response_status": 200,
+                "reason_summary": "ok",
+            }
+        )
+        detail_resp = self.client.get(f"/admin/runs/{run_id}")
+        self.assertEqual(detail_resp.status_code, 200)
+        self.assertIn('name="viewport"', detail_resp.text)
+        self.assertIn('class="page-head"', detail_resp.text)
 
     def test_admin_detail_labels_smtp_accepted_not_delivery_confirmed(self) -> None:
         self.client.post("/admin/login", data={"password": "test-admin-secret"})

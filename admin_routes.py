@@ -108,7 +108,7 @@ def _render_delivery_report_sections(meta: dict) -> str:
     delivery_summary_row = ""
     if delivery_summary:
         delivery_summary_row = (
-            f"<p style=\"margin:8px 0 0 0;font-size:13px;color:#b91c1c;\">"
+            f"<p class=\"break-long\" style=\"margin:8px 0 0 0;font-size:13px;color:#b91c1c;\">"
             f"오류 요약: {_esc(delivery_summary)}</p>"
         )
     helper = (
@@ -148,20 +148,23 @@ def _render_reissue_scope_field() -> str:
             scope_helper = f"{helper} (현재는 선택만 가능하며 실행은 차단됩니다.)"
         checked = " checked" if scope == EXECUTABLE_REISSUE_SCOPE else ""
         rows.append(
-            f"<label style=\"display:block;margin:0 0 10px 0;\">"
+            f"<label class=\"radio-scope\">"
+            f"<span class=\"radio-scope__control\">"
             f"<input type=\"radio\" name=\"reissue_scope\" value=\"{_esc(scope)}\" required"
-            f"{checked}> "
+            f"{checked}>"
+            f"</span>"
+            f"<span class=\"radio-scope__body\">"
             f"<strong>{_esc(label)}</strong>"
-            f"<span style=\"display:block;margin:4px 0 0 24px;font-size:12px;color:#64748b;\">"
-            f"{_esc(scope_helper)}</span></label>"
+            f"<span class=\"radio-helper\">{_esc(scope_helper)}</span>"
+            f"</span></label>"
         )
     return "\n".join(rows)
 
 
 def _admin_disabled_response() -> HTMLResponse:
     body = """
-<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>Genie Admin</title></head>
-<body style="font-family:system-ui,sans-serif;padding:24px;max-width:640px;">
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Genie Admin</title></head>
+<body style="font-family:system-ui,sans-serif;margin:0;padding:16px 12px;max-width:640px;overflow-wrap:anywhere;">
 <h1>Genie Owner Admin</h1>
 <p>관리자 기능이 비활성화되어 있습니다. <code>GENIE_ADMIN_PASSWORD</code> 환경 변수를 설정하세요.</p>
 </body></html>
@@ -189,18 +192,41 @@ def _layout(title: str, inner: str) -> str:
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{_esc(title)}</title>
 <style>
-body{{font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;margin:0;padding:24px;background:#f8fafc;color:#0f172a;}}
-.wrap{{max-width:960px;margin:0 auto;}}
-.card{{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px;margin:16px 0;}}
+body{{font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;margin:0;padding:24px;background:#f8fafc;color:#0f172a;overflow-wrap:break-word;}}
+.wrap{{max-width:960px;width:100%;margin:0 auto;box-sizing:border-box;}}
+.card{{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px;margin:16px 0;box-sizing:border-box;}}
+.page-head{{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;}}
+.table-wrap{{overflow-x:auto;-webkit-overflow-scrolling:touch;}}
+.table-wrap table{{min-width:640px;}}
 table{{width:100%;border-collapse:collapse;font-size:14px;}}
 th,td{{border-top:1px solid #e2e8f0;padding:10px;text-align:left;vertical-align:top;}}
 th{{background:#f1f5f9;font-weight:700;}}
 a{{color:#0f172a;}}
-.btn{{display:inline-block;padding:10px 16px;background:#0f172a;color:#fff;text-decoration:none;border-radius:8px;border:0;font-size:14px;cursor:pointer;}}
-.warn{{background:#fff7ed;border:1px solid #fdba74;padding:12px;border-radius:8px;font-size:14px;}}
+.btn{{display:inline-block;padding:12px 16px;min-height:44px;line-height:1.2;background:#0f172a;color:#fff;text-decoration:none;border-radius:8px;border:0;font-size:14px;cursor:pointer;box-sizing:border-box;}}
+.btn:hover{{background:#1e293b;}}
+.btn:focus-visible{{outline:2px solid #0f172a;outline-offset:2px;}}
+.warn{{background:#fff7ed;border:1px solid #fdba74;padding:12px;border-radius:8px;font-size:14px;line-height:1.6;overflow-wrap:anywhere;}}
+.break-long{{overflow-wrap:anywhere;word-break:break-word;}}
 .meta dt{{font-weight:700;margin-top:8px;}}
-.meta dd{{margin:4px 0 0 0;}}
-input[type=password],input[type=text],select,textarea{{width:100%;max-width:420px;padding:8px;font-size:14px;}}
+.meta dd{{margin:4px 0 0 0;overflow-wrap:anywhere;word-break:break-word;}}
+pre,code{{overflow-wrap:anywhere;word-break:break-word;}}
+pre{{overflow-x:auto;max-width:100%;}}
+.radio-scope{{display:flex;align-items:flex-start;gap:10px;margin:0 0 10px;padding:14px 16px;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc;cursor:pointer;-webkit-tap-highlight-color:transparent;box-sizing:border-box;}}
+.radio-scope:has(input:checked){{border-color:#0f172a;background:#fff;box-shadow:inset 0 0 0 1px #0f172a;}}
+.radio-scope__control{{flex:0 0 auto;padding-top:2px;}}
+.radio-scope__control input[type=radio]{{width:20px;height:20px;margin:0;cursor:pointer;}}
+.radio-scope__body{{flex:1;min-width:0;}}
+.radio-helper{{display:block;margin-top:6px;font-size:12px;color:#64748b;line-height:1.5;overflow-wrap:anywhere;}}
+input[type=password],input[type=text],select,textarea{{width:100%;max-width:420px;padding:10px 8px;font-size:16px;box-sizing:border-box;}}
+@media (max-width:640px){{
+body{{padding:16px 12px;}}
+.card{{padding:16px;margin:12px 0;}}
+.page-head{{flex-direction:column;align-items:stretch;}}
+.page-head h1{{margin:0 0 4px 0;font-size:1.35rem;}}
+.page-head .btn,.form-actions .btn{{width:100%;text-align:center;}}
+th,td{{padding:8px 6px;font-size:13px;}}
+input[type=password],input[type=text],select,textarea{{max-width:100%;}}
+}}
 </style></head><body><div class="wrap">{inner}</div></body></html>"""
 
 
@@ -217,7 +243,7 @@ def admin_home(request: Request):
 <div class="card">
 <form method="post" action="/admin/login">
 <label>비밀번호<br><input type="password" name="password" required autocomplete="current-password"></label><br><br>
-<button class="btn" type="submit">로그인</button>
+<div class="form-actions"><button class="btn" type="submit">로그인</button></div>
 </form>
 </div>
 """
@@ -237,7 +263,7 @@ def admin_login(request: Request, password: str = Form(...)) -> Response:
 <div class="card">
 <form method="post" action="/admin/login">
 <label>비밀번호<br><input type="password" name="password" required autocomplete="current-password"></label><br><br>
-<button class="btn" type="submit">로그인</button>
+<div class="form-actions"><button class="btn" type="submit">로그인</button></div>
 </form>
 </div>
 """
@@ -291,12 +317,12 @@ def admin_runs_list(request: Request):
         + "</tbody></table>"
     )
     inner = f"""
-<div style="display:flex;justify-content:space-between;align-items:center;">
+<div class="page-head">
 <h1>최근 실행 기록</h1>
 <form method="post" action="/admin/logout" style="margin:0;"><button class="btn" type="submit">로그아웃</button></form>
 </div>
-<p>저장 경로: <code>{_esc(admin_runs_dir())}</code></p>
-<div class="card">{table}</div>
+<p class="break-long">저장 경로: <code>{_esc(admin_runs_dir())}</code></p>
+<div class="card"><div class="table-wrap">{table}</div></div>
 """
     return HTMLResponse(_layout("Runs", inner))
 
@@ -324,8 +350,8 @@ def admin_run_detail(request: Request, run_id: str):
     if meta.get("mode") == "today_genie":
         if can_approve:
             approve_block = (
-                f'<p><a class="btn" href="/admin/runs/{_esc(run_id)}/approve-confirm">'
-                "승인 검토 페이지 열기</a></p>"
+                f'<div class="form-actions"><p style="margin:0;"><a class="btn" href="/admin/runs/{_esc(run_id)}/approve-confirm">'
+                "승인 검토 페이지 열기</a></p></div>"
             )
         else:
             approve_block = (
@@ -352,7 +378,7 @@ def admin_run_detail(request: Request, run_id: str):
     )
     scope_field = _render_reissue_scope_field()
     inner = f"""
-<div style="display:flex;justify-content:space-between;align-items:center;">
+<div class="page-head">
 <h1>실행 상세</h1>
 <a href="/admin/runs">← 목록</a>
 </div>
@@ -381,7 +407,7 @@ def admin_run_detail(request: Request, run_id: str):
 <label>추가 메모 (선택)<br>
 <input type="text" name="reason_note" maxlength="500" placeholder="선택 사유 보완">
 </label><br><br>
-<button class="btn" type="submit">재발행 실행</button>
+<div class="form-actions"><button class="btn" type="submit">재발행 실행</button></div>
 </form>
 </div>
 """
@@ -432,7 +458,7 @@ def admin_run_approve_confirm(request: Request, run_id: str):
 <label>승인 메모 (선택)<br>
 <input type="text" name="approve_note" maxlength="500" placeholder="승인 메모">
 </label><br><br>
-<button class="btn" type="submit">승인 및 고객 발송</button>
+<div class="form-actions"><button class="btn" type="submit">승인 및 고객 발송</button></div>
 </form>
 <p><a href="/admin/runs/{_esc(run_id)}">← 실행 상세</a></p>
 """
