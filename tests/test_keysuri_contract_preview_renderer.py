@@ -786,6 +786,17 @@ class KeysuriThemeSeparationRendererTests(unittest.TestCase):
         self.assertIn("산업 레이어가 어디로 이동하나", html)
 
     @_require_contract_renderer
+    def test_korea_card_shows_angle_chip_and_next_day_impact(self) -> None:
+        mod = _CONTRACT_RENDERER
+        fixture = build_korea_contract_fixture()
+        fixture["top_5_items"][0]["angle_chip"] = "국내 적용"
+        fixture["top_5_items"][0]["next_day_impact_line"] = (
+            "내일 영향: 정책 신호가 의사결정에 반영될 수 있습니다."
+        )
+        html = _render_contract_html(mod, fixture)
+        self.assertIn("국내 적용", html)
+        self.assertIn("내일 영향:", html)
+
     def test_korea_framing_markers_present(self) -> None:
         mod = _CONTRACT_RENDERER
         assert mod is not None

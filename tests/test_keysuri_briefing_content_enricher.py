@@ -6,6 +6,7 @@ import unittest
 from keysuri_briefing_content_enricher import (
     enrich_deep_dive_content,
     enrich_generated_briefing_content,
+    enrich_korea_top5_item_content,
     enrich_top5_item_content,
 )
 from keysuri_briefing_content_quality import (
@@ -224,6 +225,61 @@ class KeysuriBriefingContentEnricherTests(unittest.TestCase):
         self.assertGreaterEqual(_sentence_count(item["what_happened"]), 3)
         self.assertNotIn("TOP 신호", out["deep_dive"]["body"])
         self.assertGreaterEqual(len(out["deep_dive"].get("linked_signal_titles") or []), 2)
+
+    def test_korea_enricher_uses_domestic_lens_metadata(self) -> None:
+        item = {
+            "korean_title": "삼성전자 HBM 국내 증설",
+            "what_happened": "공식 요약에 따르면 변화가 보고되었습니다.",
+            "source_ids": ["k1"],
+        }
+        meta = {
+            "primary_category": "korea_semiconductor",
+            "category_display_label": "국내 반도체 / 장비 / 소재",
+            "owner_action_line": "내일 파트너·입찰 일정을 점검하세요.",
+            "next_day_impact_line": "내일 영향: 반도체 신호가 우선순위에 반영될 수 있습니다.",
+            "angle_chip": "국내 적용",
+            "global_duplicate_detected": True,
+            "korea_angle_satisfied": True,
+        }
+        enriched = enrich_korea_top5_item_content(item, meta=meta)
+        self.assertEqual(enriched.get("angle_chip"), "국내 적용")
+        self.assertIn("내일", enriched["why_now"])
+        self.assertIn("국내 적용", enriched["selection_reason"])
+
+    def test_korea_generated_enricher_avoids_internal_gate_phrases(self) -> None:
+        prompt_input = {
+            "source_pack": {
+                "claims": [
+                    {
+                        "source_ids": ["k1"],
+                        "primary_category": "korea_policy_regulation",
+                        "category_display_label": "국내 정책 / 규제 / 공공",
+                        "owner_action_line": "내일 입찰 일정을 점검하세요.",
+                        "next_day_impact_line": "내일 영향: 정책 신호가 의사결정에 반영될 수 있습니다.",
+                    }
+                ],
+                "sources": [{"source_id": "k1", "source_name": "연합뉴스"}],
+            }
+        }
+        generated = {
+            "top_5_news": {
+                "items": [
+                    {
+                        "rank": 1,
+                        "news_id": "n1",
+                        "source_ids": ["k1"],
+                        "korean_title": "국내 정책 신호",
+                        "what_happened": "짧음.",
+                    }
+                ]
+            },
+            "deep_dive": {"body": "TOP 신호 1·2 레이어 검증 통과 문장."},
+            "briefing_display": {"closing_message": "오늘 신호를 정리했습니다."},
+        }
+        out = enrich_generated_briefing_content(generated, "keysuri_korea_tech", prompt_input)
+        self.assertNotIn("TOP 신호", out["deep_dive"]["body"])
+        self.assertNotIn("gate", out["deep_dive"]["body"].lower())
+        self.assertIn("한국 기업·정책", out["deep_dive"]["body"])
 
 
 if __name__ == "__main__":

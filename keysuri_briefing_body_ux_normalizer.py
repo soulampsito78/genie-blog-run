@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from keysuri_contract_preview_quality import _sentence_count
 
 PROGRAM_GLOBAL = "keysuri_global_tech"
+PROGRAM_KOREA = "keysuri_korea_tech"
 
 MAX_OWNER_SALUTATION = 2
 DEEP_DIVE_CHAR_MIN = 450
@@ -316,15 +317,68 @@ def normalize_visible_deep_dive_text(
     return base, linked[:5]
 
 
+def _is_korea_program(program_id: str) -> bool:
+    pid = str(program_id or "").strip()
+    return pid == PROGRAM_KOREA or pid.startswith("keysuri_korea")
+
+
+def normalize_korea_visible_deep_dive_text(
+    body: str,
+    top5_items: Sequence[dict],
+    *,
+    gemini_body: str = "",
+) -> Tuple[str, List[str]]:
+    base = _text(body) or _text(gemini_body)
+    base = rewrite_signal_marker_sentence_to_natural_prose(base, top5_items)
+    base = remove_internal_validation_markers(base)
+    base = _de_mechanize(base)
+    base = limit_owner_salutation_repetition(base, max_count=MAX_OWNER_SALUTATION)
+    base = split_long_korean_paragraphs(base, max_sentences=3)
+
+    if "한국 기업·정책" not in base and "국내 적용" not in base:
+        lead = (
+            "한국 기업·정책으로 읽으면, 오늘 선정된 국내 신호는 내일 영향과 실행 포인트가 겹칩니다."
+        )
+        base = f"{lead}\n\n{base}" if base else lead
+
+    if "주인님" not in base:
+        base = "주인님, 오늘 국내 테크 신호를 퇴근 전에 정리해 보겠습니다.\n\n" + base
+
+    if not any(k in base for k in ("다만", "추가 확인", "원문", "미확정", "불확실")):
+        base = (
+            base
+            + "\n\n다만 공개 요약만으로는 세부 일정·수치가 부족한 부분이 있어, 원문 확인이 필요합니다."
+        )
+
+    base = _dedupe_paragraphs(_trim_deep_dive_length(base.strip()))
+    linked: List[str] = []
+    for item in top5_items:
+        if not isinstance(item, dict):
+            continue
+        title = _text(item.get("korean_title") or item.get("headline"))
+        if title and _mentions_token(base, title):
+            linked.append(title)
+    if len(linked) < 2 and len(top5_items) >= 2:
+        for item in top5_items[:2]:
+            if isinstance(item, dict):
+                t = _text(item.get("korean_title") or item.get("headline"))
+                if t and t not in linked:
+                    linked.append(t)
+    return base, linked[:5]
+
+
 def normalize_generated_briefing_visible_prose(
     generated_briefing: dict,
     program_id: str,
     prompt_input: dict,
 ) -> dict:
-    if program_id != PROGRAM_GLOBAL or not isinstance(generated_briefing, dict):
+    if not isinstance(generated_briefing, dict):
+        return generated_briefing
+    if not _is_korea_program(program_id) and program_id != PROGRAM_GLOBAL:
         return generated_briefing
 
     out = copy.deepcopy(generated_briefing)
+    is_korea = _is_korea_program(program_id)
     top = out.get("top_5_news")
     items = top.get("items") if isinstance(top, dict) and isinstance(top.get("items"), list) else []
     normalized_items: List[dict] = []
@@ -342,11 +396,18 @@ def normalize_generated_briefing_visible_prose(
     if isinstance(deep, dict):
         deep_out = dict(deep)
         gemini_body = _text(deep.get("body"))
-        normalized_body, linked_titles = normalize_visible_deep_dive_text(
-            gemini_body,
-            normalized_items,
-            gemini_body=gemini_body,
-        )
+        if is_korea:
+            normalized_body, linked_titles = normalize_korea_visible_deep_dive_text(
+                gemini_body,
+                normalized_items,
+                gemini_body=gemini_body,
+            )
+        else:
+            normalized_body, linked_titles = normalize_visible_deep_dive_text(
+                gemini_body,
+                normalized_items,
+                gemini_body=gemini_body,
+            )
         deep_out["body"] = normalized_body
         deep_out["linked_signal_titles"] = linked_titles
         deep_out["linked_signal_ids"] = [
@@ -355,5 +416,16 @@ def normalize_generated_briefing_visible_prose(
             if isinstance(i, dict) and _text(i.get("news_id"))
         ]
         out["deep_dive"] = deep_out
+
+    if is_korea:
+        display = out.get("briefing_display")
+        if isinstance(display, dict):
+            closing = _text(display.get("closing_message"))
+            if closing and "퇴근 전" not in closing:
+                display["closing_message"] = limit_owner_salutation_repetition(
+                    f"{closing} 오늘의 정리와 퇴근 전 메모입니다.",
+                    max_count=1,
+                )
+                out["briefing_display"] = display
 
     return out

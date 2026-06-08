@@ -14,7 +14,10 @@ from keysuri_preview_validation_report import (
     validate_keysuri_contract_preview,
 )
 from keysuri_visual_identity_quality import validate_visual_identity_gate
-from tests.test_keysuri_contract_preview_renderer import build_global_contract_fixture
+from tests.test_keysuri_contract_preview_renderer import (
+    build_global_contract_fixture,
+    build_korea_contract_fixture,
+)
 
 _REPO = Path(__file__).resolve().parent.parent
 
@@ -251,6 +254,30 @@ class KeysuriBriefingContentQualityTests(unittest.TestCase):
         result = validate_briefing_content_gate(html)
         self.assertFalse(result.ok)
         self.assertTrue(any(i.code == "english_rss_leakage" for i in result.issues))
+
+    def test_korea_gate_flags_global_only_labels(self) -> None:
+        fixture = build_korea_contract_fixture()
+        fixture["opening_lead"] = (
+            "주인님, 글로벌 원인과 한국 도착 전 압력을 정리했습니다. "
+            "다음 48시간 관찰 포인트도 함께 봤습니다."
+        )
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        metadata = {"korea_top5_selection": {"policy": "keysuri_korea_top5_selection_v2_duplicate_guard"}}
+        result = validate_briefing_content_gate(html, source_metadata=metadata)
+        codes = {i.code for i in result.issues}
+        self.assertIn("korea_global_label_leak", codes)
+
+    def test_korea_gate_accepts_domestic_application_wording(self) -> None:
+        fixture = build_korea_contract_fixture()
+        fixture["opening_lead"] = (
+            "주인님, 오늘 국내 적용 관점에서 다섯 신호를 정리했습니다. "
+            "내일 영향과 퇴근 전 메모로 남깁니다."
+        )
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        metadata = {"korea_top5_selection": {"policy": "keysuri_korea_top5_selection_v2_duplicate_guard"}}
+        result = validate_briefing_content_gate(html, source_metadata=metadata)
+        self.assertFalse(any(i.code == "korea_global_label_leak" for i in result.issues))
+        self.assertFalse(any(i.code == "korea_lens_terms_missing" for i in result.warnings))
 
 
 class KeysuriVisualIdentityQualityTests(unittest.TestCase):

@@ -109,6 +109,37 @@ class KeysuriGenerationPromptContractTests(unittest.TestCase):
         self.assertIn("sponsored_warning", prompt)
         self.assertIn("리스크 신호", prompt)
 
+    def test_korea_prompt_includes_korea_tech_1830_lens(self) -> None:
+        prompt = build_keysuri_generation_prompt(_korea_prompt())
+        self.assertIn("KOREA TECH 18:30 LENS", prompt)
+        self.assertIn("국내 적용", prompt)
+        self.assertIn("퇴근 전 메모", prompt)
+        self.assertIn("한국 기업·정책으로 읽으면", prompt)
+
+    def test_global_prompt_excludes_korea_only_lens_block(self) -> None:
+        prompt = build_keysuri_generation_prompt(_global_prompt())
+        self.assertNotIn("KOREA TECH 18:30 LENS", prompt)
+        self.assertNotIn("한국 도착 전 압력", prompt)
+
+    def test_korea_prompt_forbids_global_only_phrasing(self) -> None:
+        prompt = build_keysuri_generation_prompt(_korea_prompt())
+        self.assertIn("글로벌 원인", prompt)
+        self.assertIn("FORBIDDEN Korea briefing labels", prompt)
+        self.assertNotIn("GLOBAL TECH BREADTH", prompt)
+
+    def test_korea_prompt_includes_scoring_metadata_in_top5_json(self) -> None:
+        prompt_input = deepcopy(_korea_prompt())
+        claims = prompt_input["source_pack"]["claims"]
+        claims[0]["owner_action_line"] = "내일 파트너·입찰 일정을 점검하세요."
+        claims[0]["next_day_impact_line"] = "내일 영향: 정책 신호가 의사결정에 반영될 수 있습니다."
+        claims[0]["angle_chip"] = "국내 적용"
+        claims[0]["global_duplicate_detected"] = True
+        claims[0]["korea_angle_satisfied"] = True
+        prompt = build_keysuri_generation_prompt(prompt_input)
+        self.assertIn("owner_action_line", prompt)
+        self.assertIn("next_day_impact_line", prompt)
+        self.assertIn("내일 파트너·입찰 일정을 점검하세요.", prompt)
+
 
 class KeysuriJsonExtractionTests(unittest.TestCase):
     def setUp(self) -> None:

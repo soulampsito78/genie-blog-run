@@ -109,6 +109,31 @@ INTERNAL_VALIDATION_VISIBLE_MARKERS: Tuple[str, ...] = (
     "점검하는 데 유용합니다",
 )
 
+KOREA_FORBIDDEN_GLOBAL_LABELS: Tuple[str, ...] = (
+    "글로벌 원인",
+    "한국 도착 전 압력",
+    "다음 48시간 관찰 포인트",
+)
+
+KOREA_LENS_TERMS: Tuple[str, ...] = (
+    "국내 적용",
+    "한국 해석",
+    "국내 해석",
+    "내일 영향",
+    "내일 볼 지점",
+    "퇴근 전 메모",
+    "오늘의 정리",
+)
+
+KOREA_STOCK_DIGEST_MARKERS: Tuple[str, ...] = (
+    "코스피",
+    "코스닥",
+    "주가",
+    "상한가",
+    "하한가",
+    "장중",
+)
+
 MIN_DETAIL_SENTENCES = 3
 
 URL_PATTERN = re.compile(r"https?://[^\s<\"']+")
@@ -310,7 +335,46 @@ def validate_briefing_content_gate(
     use_global_scoring_rules = isinstance(source_metadata, dict) and isinstance(
         source_metadata.get("global_top5_selection"), dict
     )
+    use_korea_scoring_rules = isinstance(source_metadata, dict) and isinstance(
+        source_metadata.get("korea_top5_selection"), dict
+    )
     min_detail_sentences = MIN_DETAIL_SENTENCES if use_global_scoring_rules else 2
+
+    if use_korea_scoring_rules:
+        for label in KOREA_FORBIDDEN_GLOBAL_LABELS:
+            if label in region:
+                issues.append(
+                    BriefingContentIssue(
+                        "korea_global_label_leak",
+                        f"Korea briefing must not use Global-only label: {label!r}",
+                        section="visible_body",
+                        excerpt=label,
+                    )
+                )
+        if not any(term in region for term in KOREA_LENS_TERMS):
+            warnings.append(
+                BriefingContentIssue(
+                    "korea_lens_terms_missing",
+                    "Korea briefing should include domestic-application or evening-memo lens terms",
+                    section="visible_body",
+                    severity="warning",
+                )
+            )
+        stock_hits = sum(1 for m in KOREA_STOCK_DIGEST_MARKERS if m in region)
+        tech_hits = sum(
+            1
+            for m in ("반도체", "정책", "공급망", "투자", "AI", "배터리", "로봇")
+            if m in region
+        )
+        if stock_hits >= 2 and tech_hits < 2:
+            warnings.append(
+                BriefingContentIssue(
+                    "korea_stock_digest_tone",
+                    "Korea briefing reads like stock-price digest without tech/industry signal",
+                    section="visible_body",
+                    severity="warning",
+                )
+            )
 
     scored_claims = _claims_with_scores(source_metadata)
     if use_global_scoring_rules and scored_claims and not any(
@@ -437,6 +501,34 @@ def validate_briefing_content_gate(
                     item_index=idx,
                 )
             )
+
+        if use_korea_scoring_rules and scored_claims:
+            claim = _claim_for_top_item(idx, block, scored_claims, source_metadata)
+            if claim:
+                if claim.get("global_duplicate_detected") and claim.get("korea_angle_satisfied"):
+                    if not any(
+                        t in block for t in ("국내", "한국", "내일", "공급망", "정책")
+                    ):
+                        issues.append(
+                            BriefingContentIssue(
+                                "korea_duplicate_angle_missing",
+                                f"TOP item {idx} overlaps Global but lacks Korea-specific application copy",
+                                section="top5",
+                                item_index=idx,
+                            )
+                        )
+                pr_warn = claim.get("pr_hype_warning") or claim.get("hype_warning")
+                if pr_warn and not any(
+                    m in block for m in ("과장 주의", "보도자료", "홍보")
+                ):
+                    issues.append(
+                        BriefingContentIssue(
+                            "korea_pr_hype_unframed",
+                            f"TOP item {idx} has PR/hype warning but lacks caution framing",
+                            section="top5",
+                            item_index=idx,
+                        )
+                    )
 
         if use_global_scoring_rules and scored_claims:
             claim = _claim_for_top_item(idx, block, scored_claims, source_metadata)

@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from keysuri_contract_preview_quality import _sentence_count
 
 PROGRAM_GLOBAL = "keysuri_global_tech"
+PROGRAM_KOREA = "keysuri_korea_tech"
 
 MIN_SELECTION_REASON = 2
 MIN_SECTION_SENTENCES = 3
@@ -50,6 +51,21 @@ _OWNER_CONTEXT: Dict[str, str] = {
 _BROAD_MOVEMENT = (
     "글로벌 테크는 AI만이 아니라 칩·인프라·로봇·에너지·정책이 함께 움직이는 날입니다."
 )
+
+_KOREA_CATEGORY_KO: Dict[str, str] = {
+    "korea_ai_enterprise": "국내 AI / 기업 AI 도입",
+    "korea_semiconductor": "국내 반도체 / 장비 / 소재",
+    "korea_robotics_manufacturing": "국내 로보틱스 / 스마트팩토리",
+    "korea_battery_energy": "국내 배터리 / EV / 에너지",
+    "korea_platform_cloud_saas": "국내 플랫폼 / 클라우드 / SaaS",
+    "korea_policy_regulation": "국내 정책 / 규제 / 공공",
+    "korea_startup_investment": "국내 스타트업 / 투자 / M&A",
+    "korea_big_company_strategy": "국내 대기업 테크 전략",
+    "korea_consumer_mobility": "국내 소비자 테크 / 디바이스 / 모빌리티",
+    "global_to_korea_translation": "글로벌→한국 번역 신호",
+}
+
+_KOREA_EVENING_CONTEXT = "오늘 한국 시장·정책·공급망에서 의미가 커진 시점입니다."
 
 
 def _text(value: Any) -> str:
@@ -158,7 +174,15 @@ def _category_key(meta: dict, item: dict) -> str:
     )
 
 
-def _category_label(meta: dict, item: dict) -> str:
+def _category_label(meta: dict, item: dict, *, program_id: str = PROGRAM_GLOBAL) -> str:
+    if program_id == PROGRAM_KOREA or str(program_id).startswith("keysuri_korea"):
+        return _text(
+            meta.get("category_display_label")
+            or meta.get("category_label_ko")
+            or _KOREA_CATEGORY_KO.get(_category_key(meta, item), "")
+            or item.get("category")
+            or "국내 테크"
+        )
     return _text(
         meta.get("category_label_ko")
         or _CATEGORY_KO.get(_category_key(meta, item), "")
@@ -372,13 +396,148 @@ def enrich_top5_item_content(
     return out
 
 
+def _build_korea_hype_caution(meta: dict) -> str:
+    parts: List[str] = []
+    if meta.get("press_release_only"):
+        parts.append("보도자료·홍보 성격이 있을 수 있어 과장 없이 확인이 필요합니다.")
+    if meta.get("pr_hype_warning") or meta.get("hype_warning"):
+        parts.append("마케팅·홍보 해석 가능성이 있어 과장 주의가 필요합니다.")
+    if parts:
+        return "과장 주의 — " + " ".join(parts)
+    return ""
+
+
+def _build_korea_selection_reason(item: dict, meta: dict) -> str:
+    existing = _get_field(item, "selection_reason", "selection_rationale")
+    category = _category_label(meta, item, program_id=PROGRAM_KOREA)
+    padding = [
+        existing,
+        _text(meta.get("selection_rationale") or meta.get("reason_for_selection")),
+        f"국내 {category} 관점에서 오늘 한국에서 의미 있는 신호로 선정했습니다.",
+    ]
+    if meta.get("global_duplicate_detected") and meta.get("korea_angle_satisfied"):
+        padding.append("글로벌 이슈와 겹치지만 국내 적용·한국 기업·정책·공급망 관점이 달라 포함했습니다.")
+    if meta.get("pr_hype_warning") or meta.get("press_release_only"):
+        padding.append("다만 보도자료·홍보 성격이 있을 수 있어 해석에 주의가 필요합니다.")
+    return _ensure_sentence_depth(
+        existing,
+        min_sentences=MIN_SELECTION_REASON,
+        padding=[p for p in padding if p],
+    )
+
+
+def _build_korea_why_now(item: dict, meta: dict) -> str:
+    existing = _get_field(item, "why_now", "why_it_matters")
+    padding = [
+        existing,
+        _text(meta.get("next_day_impact_line")),
+        _KOREA_EVENING_CONTEXT,
+        "퇴근 전에 내일 영향을 짚어볼 가치가 있습니다.",
+    ]
+    return _ensure_sentence_depth(
+        existing,
+        min_sentences=MIN_SECTION_SENTENCES,
+        padding=[p for p in padding if p],
+    )
+
+
+def _build_korea_owner_angle(item: dict, meta: dict) -> str:
+    existing = _get_field(item, "owner_angle", "business_implication")
+    padding = [
+        existing,
+        _text(meta.get("owner_action_line")),
+        "내일 파트너·고객·입찰·정책 일정에 반영할지 점검하시면 됩니다.",
+    ]
+    return _ensure_sentence_depth(
+        existing,
+        min_sentences=MIN_SECTION_SENTENCES,
+        padding=[p for p in padding if p],
+    )
+
+
+def _build_korea_next_watch(item: dict, meta: dict) -> str:
+    existing = _get_field(item, "next_watch", "next_check_point")
+    items = _next_watch_items(existing)
+    category = _category_label(meta, item, program_id=PROGRAM_KOREA)
+    if len(items) < MIN_NEXT_WATCH_ITEMS:
+        items.append("내일 볼 지점: 공식 후속 발표·원문 업데이트를 확인하세요.")
+    if len(items) < MIN_NEXT_WATCH_ITEMS:
+        items.append(f"{category} 관련 국내 정책·공급망·기업 일정을 추적하세요.")
+    deduped: List[str] = []
+    for it in items:
+        if it and it not in deduped:
+            deduped.append(it)
+    return "; ".join(deduped[:4])
+
+
+def enrich_korea_top5_item_content(item: dict, *, meta: dict) -> dict:
+    out = copy.deepcopy(item)
+    selection_reason = _build_korea_selection_reason(out, meta)
+    what_happened, thin = _build_what_happened(out, meta)
+    why_now = _build_korea_why_now(out, meta)
+    owner_angle = _build_korea_owner_angle(out, meta)
+    next_watch = _build_korea_next_watch(out, meta)
+    hype_caution = _build_korea_hype_caution(meta)
+
+    _set_field(out, "selection_reason", selection_reason)
+    _set_field(out, "what_happened", what_happened)
+    _set_field(out, "why_now", why_now)
+    _set_field(out, "why_it_matters", why_now)
+    _set_field(out, "owner_angle", owner_angle)
+    _set_field(out, "business_implication", owner_angle)
+    _set_field(out, "next_watch", next_watch)
+    if thin:
+        out["detail_insufficient"] = True
+    if hype_caution:
+        _set_field(out, "hype_caution", hype_caution)
+    out["briefing_angle"] = _text(meta.get("briefing_angle") or meta.get("angle_chip") or "국내 적용")
+    out["angle_chip"] = out["briefing_angle"]
+    if meta.get("next_day_impact_line"):
+        out["next_day_impact_line"] = meta.get("next_day_impact_line")
+    if meta.get("owner_action_line"):
+        out["owner_action_line"] = meta.get("owner_action_line")
+    if meta.get("primary_category"):
+        out["primary_category"] = meta.get("primary_category")
+    if meta.get("category_label_ko") or meta.get("category_display_label"):
+        out["category_label_ko"] = meta.get("category_display_label") or meta.get("category_label_ko")
+    return out
+
+
+def enrich_korea_deep_dive_content(
+    deep_dive: dict,
+    top5_items: List[dict],
+) -> dict:
+    out = dict(deep_dive)
+    body = _text(out.get("body"))
+    opener = "한국 기업·정책으로 읽으면, 오늘 선정된 신호는 국내 적용과 내일 영향이 겹치는 흐름입니다."
+    if body and opener not in body:
+        body = f"{opener}\n\n{body}"
+    elif not body:
+        body = opener
+    uncertainty_para = (
+        "다만 공개 요약만으로는 세부 수치·일정이 부족한 부분이 있어, 원문 확인이 필요합니다."
+    )
+    if not any(k in body for k in ("불확실", "추가 확인", "원문", "미확정")):
+        body = f"{body}\n\n{uncertainty_para}"
+    out["body"] = body.strip()
+    if not _text(out.get("uncertainty")):
+        out["uncertainty"] = uncertainty_para
+    if len(top5_items) >= 2:
+        out["linked_signal_titles"] = [
+            _short_title(i) for i in top5_items[:2] if isinstance(i, dict)
+        ]
+    return out
+
+
 def enrich_generated_briefing_content(
     generated_briefing: dict,
     program_id: str,
     prompt_input: dict,
 ) -> dict:
-    """Apply content-depth enrichment for Global Tech generated briefings."""
-    if program_id != PROGRAM_GLOBAL:
+    """Apply content-depth enrichment for generated briefings (Global or Korea)."""
+    if program_id not in (PROGRAM_GLOBAL, PROGRAM_KOREA) and not str(program_id).startswith(
+        "keysuri_korea"
+    ):
         return generated_briefing
     if not isinstance(generated_briefing, dict):
         return generated_briefing
@@ -387,6 +546,7 @@ def enrich_generated_briefing_content(
     pack = prompt_input.get("source_pack") if isinstance(prompt_input.get("source_pack"), dict) else {}
     claims_by_sid = _claims_by_source_id(pack)
     sources_by_sid = _sources_by_id(pack)
+    is_korea = program_id == PROGRAM_KOREA or str(program_id).startswith("keysuri_korea")
 
     top = out.get("top_5_news")
     if not isinstance(top, dict):
@@ -398,18 +558,31 @@ def enrich_generated_briefing_content(
             enriched_items.append(item)
             continue
         meta = _item_metadata(item, claims_by_sid=claims_by_sid, sources_by_sid=sources_by_sid)
-        enriched_items.append(enrich_top5_item_content(item, meta=meta))
+        if is_korea:
+            enriched_items.append(enrich_korea_top5_item_content(item, meta=meta))
+        else:
+            enriched_items.append(enrich_top5_item_content(item, meta=meta))
 
     out["top_5_news"] = {**top, "items": enriched_items}
 
     deep = out.get("deep_dive")
     if isinstance(deep, dict):
-        out["deep_dive"] = enrich_deep_dive_content(
-            deep,
-            enriched_items,
-            claims_by_sid=claims_by_sid,
-            sources_by_sid=sources_by_sid,
-        )
+        if is_korea:
+            out["deep_dive"] = enrich_korea_deep_dive_content(deep, enriched_items)
+        else:
+            out["deep_dive"] = enrich_deep_dive_content(
+                deep,
+                enriched_items,
+                claims_by_sid=claims_by_sid,
+                sources_by_sid=sources_by_sid,
+            )
+
+    display = out.get("briefing_display")
+    if is_korea and isinstance(display, dict):
+        closing = _text(display.get("closing_message"))
+        if closing and "퇴근 전" not in closing and "오늘의 정리" not in closing:
+            display["closing_message"] = f"{closing} 오늘의 정리와 퇴근 전 메모로 남겨 두었습니다."
+            out["briefing_display"] = display
 
     from keysuri_briefing_body_ux_normalizer import normalize_generated_briefing_visible_prose
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import re
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Set, Tuple
 
 from keysuri_generated_briefing import (
     GENERATED_STATUS_REQUIRED,
@@ -20,6 +20,57 @@ from keysuri_private_briefing import (
 
 IDENTITY_TITLE = "테크 비서 키수리"
 IDENTITY_SUBTITLE = "프라이빗 테크 비서"
+
+PROGRAM_GLOBAL = "keysuri_global_tech"
+PROGRAM_KOREA = "keysuri_korea_tech"
+
+_GLOBAL_TOP5_METADATA_KEYS: Tuple[str, ...] = (
+    "selection_score",
+    "selection_score_before_diversity",
+    "selection_rationale",
+    "primary_category",
+    "category_label_ko",
+    "reason_for_category",
+    "hype_warning",
+    "sponsored_warning",
+    "is_sponsored",
+    "selection_note",
+    "penalty_notes",
+    "source_name",
+    "source_domain",
+    "source_count_in_top5",
+    "source_concentration_reason",
+)
+
+_KOREA_TOP5_METADATA_KEYS: Tuple[str, ...] = (
+    "selection_score",
+    "selection_score_before_diversity",
+    "selection_rationale",
+    "primary_category",
+    "category_label_ko",
+    "category_display_label",
+    "reason_for_category",
+    "reason_for_selection",
+    "owner_action_line",
+    "next_day_impact_line",
+    "briefing_angle",
+    "angle_chip",
+    "duplicate_resolution",
+    "global_duplicate_detected",
+    "korea_angle_required",
+    "korea_angle_satisfied",
+    "pr_hype_warning",
+    "press_release_only",
+    "hype_warning",
+    "selection_reason_tags",
+    "penalty_notes",
+    "source_name",
+    "source_domain",
+    "source_count_in_top5",
+    "source_concentration_limited",
+    "same_entity_not_same_story",
+    "matched_global_title",
+)
 
 FORBIDDEN_IDENTITY_KO = ("테크 앵커", "뉴스 앵커", "아나운서")
 FORBIDDEN_IDENTITY_EN = ("tech anchor", "news anchor", "announcer")
@@ -98,6 +149,17 @@ def _source_pack_summary(source_pack: dict) -> Dict[str, Any]:
     }
 
 
+def _is_korea_program(program_id: str) -> bool:
+    pid = str(program_id or "").strip()
+    return pid == PROGRAM_KOREA or pid.startswith("keysuri_korea")
+
+
+def _metadata_keys_for_program(program_id: str) -> Tuple[str, ...]:
+    if _is_korea_program(program_id):
+        return _KOREA_TOP5_METADATA_KEYS
+    return _GLOBAL_TOP5_METADATA_KEYS
+
+
 def _enrich_top5_with_selection_metadata(prompt_input: dict) -> dict:
     """Attach scored TOP5 selection metadata for Gemini depth enforcement."""
     top_5 = prompt_input.get("top_5_news")
@@ -115,23 +177,8 @@ def _enrich_top5_with_selection_metadata(prompt_input: dict) -> dict:
         for sid in claim.get("source_ids") or []:
             claim_by_sid[str(sid)] = claim
 
-    metadata_keys = (
-        "selection_score",
-        "selection_score_before_diversity",
-        "selection_rationale",
-        "primary_category",
-        "category_label_ko",
-        "reason_for_category",
-        "hype_warning",
-        "sponsored_warning",
-        "is_sponsored",
-        "selection_note",
-        "penalty_notes",
-        "source_name",
-        "source_domain",
-        "source_count_in_top5",
-        "source_concentration_reason",
-    )
+    program_id = str(prompt_input.get("program_id") or "").strip()
+    metadata_keys = _metadata_keys_for_program(program_id)
     items_out: List[dict] = []
     for item in enriched.get("items") or []:
         if not isinstance(item, dict):
@@ -219,7 +266,7 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
     program_id = contract["program_id"]
     top_5_for_prompt = (
         _enrich_top5_with_selection_metadata(prompt_input)
-        if program_id == "keysuri_global_tech"
+        if program_id in (PROGRAM_GLOBAL, PROGRAM_KOREA) or _is_korea_program(program_id)
         else contract.get("top_5_news")
     )
     labels = contract.get("fixed_section_labels") or {}
@@ -309,7 +356,40 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
     ]
     for row in ACTIVE_SCHEDULER_RULES:
         sections.append(f"- {row['program']}: {row['time_kst']}")
-    if program_id == "keysuri_global_tech":
+    if _is_korea_program(program_id):
+        sections.extend(
+            [
+                "",
+                "KOREA TECH 18:30 LENS (mandatory for keysuri_korea_tech)",
+                "- This is NOT a Global 12:30 summary. Write as an evening domestic interpretation desk.",
+                "- Do not repeat Global morning framing or copy Global sentences verbatim.",
+                "- Every TOP5 item must answer in Korean:",
+                "  1) 무슨 일이 있었는가",
+                "  2) 왜 오늘 한국에서 중요한가",
+                "  3) 내일 주인님이 볼 지점",
+                "- Use Korea angle terms naturally when relevant: 국내 적용, 내일 영향, 한국 기업, 정책, 공급망, 투자, 도입 일정.",
+                "- Deep-dive frame: 한국 기업·정책으로 읽으면.",
+                "- Closing frame: 오늘의 정리와 퇴근 전 메모.",
+                "- FORBIDDEN Korea briefing labels/phrases: 글로벌 원인, 한국 도착 전 압력, 다음 48시간 관찰 포인트, morning/global desk wording.",
+                "- Avoid AI-only newsletter tone; balance industrial, policy, capital, and domestic application signals.",
+                "- Avoid PR repost / promotional amplification; do not sound like a stock-news digest.",
+                "- If global_duplicate_detected=true and korea_angle_satisfied=true: explain Korea-specific application; do not repeat Global angle.",
+                "- If pr_hype_warning or press_release_only: use judgment label 과장 주의 and cautious framing; do not amplify hype.",
+                "- Use TOP_5_SELECTED metadata (owner_action_line, next_day_impact_line, angle_chip) to guide depth — never expose internal field names in reader-facing copy.",
+                "- If source detail is thin: set detail_insufficient=true and state uncertainty briefly; do not invent facts.",
+                "",
+                "KOREA TECH TOP5 DEPTH (mandatory per item — use TOP_5_SELECTED metadata)",
+                "- selection_reason: 2+ Korean sentences — why selected for domestic interpretation (category, score, Korea angle).",
+                "- what_happened: 2-4 Korean sentences grounded in source text only.",
+                "- why_now: 2-3 Korean sentences — why it matters in Korea today (policy, supply chain, company action).",
+                "- owner_angle: 2-3 Korean sentences — what 주인님 should watch, prepare, or decide tomorrow.",
+                "- next_watch: concrete 내일 볼 지점 / follow-up checkpoints in Korean (2+ items when possible).",
+                "- Reflect owner_action_line and next_day_impact_line from metadata in natural Korean prose.",
+                "- angle_chip should read as 국내 적용 when item overlaps Global but has Korea application.",
+                "- hype_caution: required when pr_hype_warning — state 과장 주의 / 보도자료 주의 without amplifying PR language.",
+            ]
+        )
+    if program_id == PROGRAM_GLOBAL:
         sections.extend(
             [
                 "",

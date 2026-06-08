@@ -369,6 +369,18 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
 
     angle_chip = _angle_chip_text(program_id, item)
     emphasis_label = _card_emphasis_label(program_id)
+    emphasis_body = _item_field(item, "next_day_impact_line")
+    if emphasis_body:
+        emphasis_html = (
+            f'<p class="card-emphasis-line">'
+            f'<span class="card-emphasis-label">{_esc(emphasis_label)}</span> '
+            f"{_esc(emphasis_body)}</p>"
+        )
+    else:
+        emphasis_html = (
+            f'<p class="card-emphasis-line">'
+            f'<span class="card-emphasis-label">{_esc(emphasis_label)}</span></p>'
+        )
 
     return f"""
     <article class="briefing-card top-item" data-top-item="{rank}">
@@ -377,7 +389,7 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
       <h3 class="card-headline">{rank}. {_esc(headline)}</h3>
       {insuff_badge}
       {hype_badge}{selection_block}
-      <p class="card-emphasis-line"><span class="card-emphasis-label">{_esc(emphasis_label)}</span></p>
+      {emphasis_html}
       <div class="brief-block">
         <h4 class="block-label">무슨 일이 있었나</h4>
         <p class="block-body">{_esc(what_happened)}</p>
