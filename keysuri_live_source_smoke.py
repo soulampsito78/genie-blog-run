@@ -133,6 +133,133 @@ GLOBAL_TECH_SMOKE_FEEDS: Tuple[Dict[str, str], ...] = (
     },
 )
 
+KOREA_TECH_ALLOWED_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "korea_ai_enterprise",
+        "korea_semiconductor",
+        "korea_robotics_manufacturing",
+        "korea_battery_energy",
+        "korea_platform_cloud_saas",
+        "korea_policy_regulation",
+        "korea_startup_investment",
+        "korea_big_company_strategy",
+        "korea_consumer_mobility",
+        "global_to_korea_translation",
+    }
+)
+
+# Smoke-only public Korean RSS endpoints — verified fetch/parse in Unit 1 (2026-06-09).
+KOREA_TECH_SMOKE_FEEDS: Tuple[Dict[str, str], ...] = (
+    {
+        "feed_id": "yna-industry",
+        "feed_name": "연합뉴스 산업",
+        "feed_url": "https://www.yna.co.kr/rss/industry.xml",
+        "source_tier": "T2_TIER1_WIRE",
+        "default_category": "korea_policy_regulation",
+        "language": "ko",
+        "region": "KR",
+    },
+    {
+        "feed_id": "yna-economy",
+        "feed_name": "연합뉴스 경제",
+        "feed_url": "https://www.yna.co.kr/rss/economy.xml",
+        "source_tier": "T2_TIER1_WIRE",
+        "default_category": "korea_policy_regulation",
+        "language": "ko",
+        "region": "KR",
+    },
+    {
+        "feed_id": "etnews-semiconductor",
+        "feed_name": "전자신문 반도체",
+        "feed_url": "https://www.etnews.com/rss/Section901.xml",
+        "source_tier": "T2_TIER1_WIRE",
+        "default_category": "korea_semiconductor",
+        "language": "ko",
+        "region": "KR",
+    },
+    {
+        "feed_id": "thelec",
+        "feed_name": "더lec",
+        "feed_url": "https://www.thelec.kr/rss/allArticle.xml",
+        "source_tier": "T2_TIER1_WIRE",
+        "default_category": "korea_semiconductor",
+        "language": "ko",
+        "region": "KR",
+    },
+    {
+        "feed_id": "electimes",
+        "feed_name": "전기신문",
+        "feed_url": "https://www.electimes.com/rss/allArticle.xml",
+        "source_tier": "T2_TIER1_WIRE",
+        "default_category": "korea_battery_energy",
+        "language": "ko",
+        "region": "KR",
+    },
+    {
+        "feed_id": "irobotnews",
+        "feed_name": "로봇신문",
+        "feed_url": "https://www.irobotnews.com/rss/allArticle.xml",
+        "source_tier": "T2_TIER1_WIRE",
+        "default_category": "korea_robotics_manufacturing",
+        "language": "ko",
+        "region": "KR",
+    },
+    {
+        "feed_id": "aitimes",
+        "feed_name": "AI타임스",
+        "feed_url": "https://www.aitimes.com/rss/allArticle.xml",
+        "source_tier": "T3_QUALITY_PRESS",
+        "default_category": "korea_ai_enterprise",
+        "language": "ko",
+        "region": "KR",
+    },
+    {
+        "feed_id": "hankyung-it",
+        "feed_name": "한국경제 IT",
+        "feed_url": "https://www.hankyung.com/feed/it",
+        "source_tier": "T3_QUALITY_PRESS",
+        "default_category": "korea_platform_cloud_saas",
+        "language": "ko",
+        "region": "KR",
+    },
+    {
+        "feed_id": "platum",
+        "feed_name": "플래텀",
+        "feed_url": "https://platum.kr/feed",
+        "source_tier": "T3_QUALITY_PRESS",
+        "default_category": "korea_startup_investment",
+        "language": "ko",
+        "region": "KR",
+    },
+    {
+        "feed_id": "venturesquare",
+        "feed_name": "벤처스퀘어",
+        "feed_url": "https://www.venturesquare.net/feed",
+        "source_tier": "T3_QUALITY_PRESS",
+        "default_category": "korea_startup_investment",
+        "language": "ko",
+        "region": "KR",
+    },
+    {
+        "feed_id": "samsung-newsroom",
+        "feed_name": "삼성전자 뉴스룸",
+        "feed_url": "https://news.samsung.com/kr/feed",
+        "source_tier": "T1_OFFICIAL_SECONDARY",
+        "default_category": "korea_big_company_strategy",
+        "language": "ko",
+        "region": "KR",
+    },
+    {
+        "feed_id": "zdkorea",
+        "feed_name": "ZDNet Korea",
+        "feed_url": "https://feeds.feedburner.com/zdkorea",
+        "source_tier": "T3_QUALITY_PRESS",
+        "default_category": "global_to_korea_translation",
+        "language": "ko",
+        "region": "KR",
+    },
+)
+
 SAMPLE_MARKER_PATTERNS: Tuple[Tuple[str, str], ...] = (
     ("Example Corp", "example_corp"),
     ("example.com", "example_com"),
@@ -880,8 +1007,11 @@ def _default_output_paths(
 
 
 def _feeds_for_program(program_id: str) -> Tuple[Dict[str, str], ...]:
-    if program_id == PROGRAM_GLOBAL:
+    pid = str(program_id or "").strip()
+    if pid == PROGRAM_GLOBAL or pid.startswith("keysuri_global"):
         return GLOBAL_TECH_SMOKE_FEEDS
+    if pid == PROGRAM_KOREA or pid.startswith("keysuri_korea"):
+        return KOREA_TECH_SMOKE_FEEDS
     raise ValueError(f"No live smoke feed list configured for {program_id!r}")
 
 

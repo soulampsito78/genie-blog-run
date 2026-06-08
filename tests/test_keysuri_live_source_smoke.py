@@ -8,7 +8,12 @@ from tempfile import TemporaryDirectory
 from unittest import mock
 
 from keysuri_live_source_smoke import (
+    GLOBAL_TECH_SMOKE_FEEDS,
+    KOREA_TECH_ALLOWED_CATEGORIES,
+    KOREA_TECH_SMOKE_FEEDS,
+    PROGRAM_KOREA,
     SAMPLE_MARKER_PATTERNS,
+    _feeds_for_program,
     build_live_source_pack,
     extract_generated_body_text,
     normalize_generated_briefing_closing_aliases,
@@ -707,6 +712,91 @@ class KeysuriLiveSourceSmokeTests(unittest.TestCase):
                 html = html_path.read_text(encoding="utf-8")
                 self.assertNotIn("스테이징 한국어 헤드라인", html)
                 self.assertNotIn("Infrastructure signal", html)
+
+
+class KeysuriKoreaTechSmokeFeedConfigTests(unittest.TestCase):
+    _REQUIRED_FEED_KEYS = (
+        "feed_id",
+        "feed_name",
+        "feed_url",
+        "source_tier",
+        "default_category",
+        "language",
+        "region",
+    )
+
+    def test_feeds_for_program_global_unchanged(self) -> None:
+        feeds = _feeds_for_program("keysuri_global_tech")
+        self.assertIs(feeds, GLOBAL_TECH_SMOKE_FEEDS)
+        self.assertGreater(len(feeds), 0)
+
+    def test_feeds_for_program_korea_returns_korea_feeds(self) -> None:
+        feeds = _feeds_for_program("keysuri_korea_tech")
+        self.assertIs(feeds, KOREA_TECH_SMOKE_FEEDS)
+        self.assertGreaterEqual(len(feeds), 8)
+
+    def test_korea_feed_metadata_and_taxonomy(self) -> None:
+        feed_ids: set[str] = set()
+        categories: set[str] = set()
+        for feed in KOREA_TECH_SMOKE_FEEDS:
+            for key in self._REQUIRED_FEED_KEYS:
+                self.assertIn(key, feed, msg=f"missing {key} in {feed.get('feed_id')}")
+            self.assertEqual(feed["language"], "ko")
+            self.assertEqual(feed["region"], "KR")
+            self.assertIn(feed["default_category"], KOREA_TECH_ALLOWED_CATEGORIES)
+            feed_ids.add(feed["feed_id"])
+            categories.add(feed["default_category"])
+        self.assertEqual(len(feed_ids), len(KOREA_TECH_SMOKE_FEEDS))
+
+    def test_korea_feed_source_group_coverage(self) -> None:
+        categories = {f["default_category"] for f in KOREA_TECH_SMOKE_FEEDS}
+        self.assertIn("korea_policy_regulation", categories)
+        industrial = categories & {
+            "korea_semiconductor",
+            "korea_battery_energy",
+            "korea_robotics_manufacturing",
+        }
+        self.assertGreaterEqual(len(industrial), 1)
+        ecosystem = categories & {
+            "korea_platform_cloud_saas",
+            "korea_startup_investment",
+        }
+        self.assertGreaterEqual(len(ecosystem), 1)
+
+    def test_korea_branch_does_not_change_global_feed_object(self) -> None:
+        before = len(GLOBAL_TECH_SMOKE_FEEDS)
+        _feeds_for_program("keysuri_korea_tech")
+        self.assertEqual(len(GLOBAL_TECH_SMOKE_FEEDS), before)
+        self.assertIs(_feeds_for_program("keysuri_global_tech"), GLOBAL_TECH_SMOKE_FEEDS)
+
+    def test_korea_fetch_only_smoke_no_feed_config_error(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            items = _fake_items(15)
+            for idx, item in enumerate(items):
+                item.feed_id = f"korea-feed-{idx % 3 + 1}"
+                item.feed_name = f"Korea Publisher {idx % 3 + 1}"
+                item.link = f"https://news.korea-publisher{idx % 3 + 1}.co.kr/articles/live-{idx}"
+                item.title = f"국내 테크 신호 {idx}: 반도체·AI·정책 움직임"
+
+            cursor = {"i": 0}
+
+            def _fetch(feed, **kwargs):
+                start = cursor["i"]
+                cursor["i"] += kwargs.get("max_items", 3)
+                return items[start : start + kwargs.get("max_items", 3)]
+
+            with mock.patch("keysuri_live_source_smoke.fetch_feed_items", side_effect=_fetch):
+                result = run_keysuri_live_source_smoke(
+                    program_id=PROGRAM_KOREA,
+                    max_items=5,
+                    allow_network=True,
+                    use_gemini=False,
+                    out_dir=Path(tmpdir) / "output" / "keysuri_preview",
+                    repo_root=_REPO,
+                )
+
+            self.assertNotIn("No live smoke feed list configured", result.error or "")
+            self.assertGreaterEqual(result.fetched_item_count, 5)
 
 
 if __name__ == "__main__":
