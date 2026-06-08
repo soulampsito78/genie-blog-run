@@ -6,6 +6,23 @@ import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from keysuri_contract_preview_quality import _sentence_count
+from keysuri_korea_longform_ux import (
+    build_korea_evening_memo,
+    korea_evening_memo_too_thin,
+    remove_internal_glue,
+    structure_korea_deep_dive,
+)
+from keysuri_visible_text import (
+    build_visible_selection_reason,
+    coerce_visible_lines,
+    dedupe_adjacent_sentences,
+    dedupe_repeated_paragraph,
+    dedupe_sentences_in_paragraph,
+    normalize_visible_text,
+    polish_korea_checkpoint_text,
+    sanitize_visible_impact_line,
+    strip_watch_arrow_prefixes,
+)
 
 PROGRAM_GLOBAL = "keysuri_global_tech"
 PROGRAM_KOREA = "keysuri_korea_tech"
@@ -201,12 +218,26 @@ def normalize_visible_item_fields(item: dict, *, thin_source: bool = False) -> d
     out = copy.deepcopy(item)
 
     def _norm_field(key: str) -> None:
-        val = _text(out.get(key) or (_briefing_nested(out).get(key)))
+        raw = out.get(key)
+        if raw in (None, ""):
+            raw = _briefing_nested(out).get(key)
+        if raw in (None, ""):
+            return
+        if key == "next_watch":
+            lines = coerce_visible_lines(raw)
+            val = strip_watch_arrow_prefixes("; ".join(lines[:4])) if lines else ""
+        else:
+            val = normalize_visible_text(raw, style="inline")
         if not val:
             return
         val = remove_internal_validation_markers(val)
         val = _de_mechanize(val)
+        val = dedupe_sentences_in_paragraph(dedupe_repeated_paragraph(val))
         val = limit_owner_salutation_repetition(val, max_count=1)
+        if key == "owner_angle":
+            val = re.sub(r"^주인님께서는\s*", "", val)
+            val = re.sub(r"^주인님,\s*", "", val)
+            val = re.sub(r"\s*주인님께서는\s*", " ", val)
         if key in ("what_happened", "why_now", "owner_angle", "selection_reason"):
             val = split_long_korean_paragraphs(val, max_sentences=3)
         if key == "what_happened" and not thin_source:
@@ -327,36 +358,19 @@ def normalize_korea_visible_deep_dive_text(
     top5_items: Sequence[dict],
     *,
     gemini_body: str = "",
-) -> Tuple[str, List[str]]:
-    base = _text(body) or _text(gemini_body)
-    base = rewrite_signal_marker_sentence_to_natural_prose(base, top5_items)
+    uncertainty: str = "",
+) -> Tuple[str, List[str], List[Dict[str, str]]]:
+    base = remove_internal_glue(_text(body) or _text(gemini_body))
     base = remove_internal_validation_markers(base)
     base = _de_mechanize(base)
-    base = limit_owner_salutation_repetition(base, max_count=MAX_OWNER_SALUTATION)
-    base = split_long_korean_paragraphs(base, max_sentences=3)
-
-    if "한국 기업·정책" not in base and "국내 적용" not in base:
-        lead = (
-            "한국 기업·정책으로 읽으면, 오늘 선정된 국내 신호는 내일 영향과 실행 포인트가 겹칩니다."
-        )
-        base = f"{lead}\n\n{base}" if base else lead
-
-    if "주인님" not in base:
-        base = "주인님, 오늘 국내 테크 신호를 퇴근 전에 정리해 보겠습니다.\n\n" + base
-
-    if not any(k in base for k in ("다만", "추가 확인", "원문", "미확정", "불확실")):
-        base = (
-            base
-            + "\n\n다만 공개 요약만으로는 세부 일정·수치가 부족한 부분이 있어, 원문 확인이 필요합니다."
-        )
-
-    base = _dedupe_paragraphs(_trim_deep_dive_length(base.strip()))
+    base = limit_owner_salutation_repetition(base, max_count=0)
+    sections = structure_korea_deep_dive(base, top5_items, uncertainty=uncertainty)
     linked: List[str] = []
     for item in top5_items:
         if not isinstance(item, dict):
             continue
         title = _text(item.get("korean_title") or item.get("headline"))
-        if title and _mentions_token(base, title):
+        if title and _mentions_token(" ".join(s.get("body", "") for s in sections), title):
             linked.append(title)
     if len(linked) < 2 and len(top5_items) >= 2:
         for item in top5_items[:2]:
@@ -364,7 +378,11 @@ def normalize_korea_visible_deep_dive_text(
                 t = _text(item.get("korean_title") or item.get("headline"))
                 if t and t not in linked:
                     linked.append(t)
-    return base, linked[:5]
+    # Legacy body field kept minimal for metadata/debug paths.
+    compact_body = "\n\n".join(
+        f"{section['label']}\n{section['body']}" for section in sections if section.get("body")
+    )
+    return compact_body, linked[:5], sections
 
 
 def normalize_generated_briefing_visible_prose(
@@ -387,7 +405,29 @@ def normalize_generated_briefing_visible_prose(
             normalized_items.append(item)
             continue
         thin = bool(item.get("detail_insufficient"))
-        normalized_items.append(normalize_visible_item_fields(item, thin_source=thin))
+        normalized = normalize_visible_item_fields(item, thin_source=thin)
+        if is_korea:
+            meta_stub = {
+                "primary_category": normalized.get("primary_category"),
+                "selection_reason_tags": normalized.get("selection_reason_tags"),
+                "selection_rationale": normalized.get("selection_rationale"),
+                "reason_for_selection": normalized.get("reason_for_selection"),
+            }
+            reason = build_visible_selection_reason(
+                normalized,
+                meta_stub,
+                program_id=PROGRAM_KOREA,
+                existing=_text(normalized.get("selection_reason")),
+            )
+            if reason:
+                normalized["selection_reason"] = reason
+            impact = sanitize_visible_impact_line(
+                normalized.get("next_day_impact_line") or "",
+                category=str(normalized.get("primary_category") or ""),
+            )
+            if impact:
+                normalized["next_day_impact_line"] = impact
+        normalized_items.append(normalized)
 
     if isinstance(top, dict):
         out["top_5_news"] = {**top, "items": normalized_items}
@@ -397,11 +437,14 @@ def normalize_generated_briefing_visible_prose(
         deep_out = dict(deep)
         gemini_body = _text(deep.get("body"))
         if is_korea:
-            normalized_body, linked_titles = normalize_korea_visible_deep_dive_text(
+            unc_raw = deep_out.get("uncertainty") or deep_out.get("open_questions") or ""
+            normalized_body, linked_titles, korea_sections = normalize_korea_visible_deep_dive_text(
                 gemini_body,
                 normalized_items,
                 gemini_body=gemini_body,
+                uncertainty=_text(unc_raw),
             )
+            deep_out["korea_deep_dive_sections"] = korea_sections
         else:
             normalized_body, linked_titles = normalize_visible_deep_dive_text(
                 gemini_body,
@@ -409,6 +452,9 @@ def normalize_generated_briefing_visible_prose(
                 gemini_body=gemini_body,
             )
         deep_out["body"] = normalized_body
+        unc_raw = deep_out.get("uncertainty") or deep_out.get("open_questions")
+        if unc_raw not in (None, ""):
+            deep_out["uncertainty"] = normalize_visible_text(unc_raw, style="sentence")
         deep_out["linked_signal_titles"] = linked_titles
         deep_out["linked_signal_ids"] = [
             _text(i.get("news_id"))
@@ -417,15 +463,34 @@ def normalize_generated_briefing_visible_prose(
         ]
         out["deep_dive"] = deep_out
 
+    one_line = out.get("one_line_checkpoint")
+    if is_korea and isinstance(one_line, dict):
+        body = _text(one_line.get("body"))
+        if body:
+            one_line_out = dict(one_line)
+            one_line_out["body"] = polish_korea_checkpoint_text(body)
+            out["one_line_checkpoint"] = one_line_out
+
     if is_korea:
+        memo = build_korea_evening_memo(normalized_items)
+        out["korea_evening_memo"] = memo
+        closing_block = out.get("closing_sources")
+        if isinstance(closing_block, dict):
+            closing_block = dict(closing_block)
+            closing_block["evening_memo"] = memo
+            out["closing_sources"] = closing_block
         display = out.get("briefing_display")
         if isinstance(display, dict):
+            display = dict(display)
+            display["evening_memo"] = memo
             closing = _text(display.get("closing_message"))
-            if closing and "퇴근 전" not in closing:
-                display["closing_message"] = limit_owner_salutation_repetition(
-                    f"{closing} 오늘의 정리와 퇴근 전 메모입니다.",
-                    max_count=1,
+            if closing and (
+                korea_evening_memo_too_thin(closing)
+                or "오늘의 정리와 퇴근 전 메모" in closing
+            ):
+                display["closing_message"] = (
+                    "오늘 신호는 여기까지 정리했습니다. 출처는 아래에 그대로 남깁니다."
                 )
-                out["briefing_display"] = display
+            out["briefing_display"] = display
 
     return out

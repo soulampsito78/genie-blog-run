@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import unittest
 
+from keysuri_generation_prompt import parse_keysuri_generated_response
 from keysuri_news_contract import (
+    GLOBAL_NEWS_CATEGORIES,
+    KOREA_CATEGORY_DISPLAY_LABELS,
+    KOREA_NEWS_CATEGORIES,
     KEYSURI_TOP_NEWS_COUNT,
     NEWS_SCOPE_GLOBAL,
     NEWS_SCOPE_KOREA,
@@ -11,6 +15,7 @@ from keysuri_news_contract import (
     SECTION_TOP5_KOREA,
     expected_news_scope_for_program,
     expected_top5_heading_for_program,
+    get_news_categories_for_program,
     select_top_5_news,
     validate_news_scope_matches_program,
     validate_top_5_news_block,
@@ -120,6 +125,53 @@ class KeysuriNewsContractValidationTests(unittest.TestCase):
         issues = validate_top_5_news_block("keysuri_global_tech", block)
         self.assertTrue(any(i["code"] == "top_5_news_item_category_unknown" for i in issues))
 
+    def test_global_category_still_validates(self) -> None:
+        block = _top5_block("keysuri_global_tech")
+        block["items"][0]["category"] = "semiconductor_chip_infra"
+        issues = validate_top_5_news_block("keysuri_global_tech", block)
+        self.assertFalse(any(i["code"] == "top_5_news_item_category_unknown" for i in issues))
+
+    def test_korea_semiconductor_valid_for_korea_program(self) -> None:
+        block = _top5_block("keysuri_korea_tech")
+        block["items"][0]["category"] = "korea_semiconductor"
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        self.assertFalse(any(i["code"] == "top_5_news_item_category_unknown" for i in issues))
+
+    def test_global_to_korea_translation_valid_for_korea_program(self) -> None:
+        block = _top5_block("keysuri_korea_tech")
+        block["items"][1]["category"] = "global_to_korea_translation"
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        self.assertFalse(any(i["code"] == "top_5_news_item_category_unknown" for i in issues))
+
+    def test_korea_startup_investment_valid_for_korea_program(self) -> None:
+        block = _top5_block("keysuri_korea_tech")
+        block["items"][2]["category"] = "korea_startup_investment"
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        self.assertFalse(any(i["code"] == "top_5_news_item_category_unknown" for i in issues))
+
+    def test_korea_big_company_strategy_valid_for_korea_program(self) -> None:
+        block = _top5_block("keysuri_korea_tech")
+        block["items"][3]["category"] = "korea_big_company_strategy"
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        self.assertFalse(any(i["code"] == "top_5_news_item_category_unknown" for i in issues))
+
+    def test_korea_category_rejected_for_global_program(self) -> None:
+        block = _top5_block("keysuri_global_tech")
+        block["items"][0]["category"] = "korea_semiconductor"
+        issues = validate_top_5_news_block("keysuri_global_tech", block)
+        self.assertTrue(any(i["code"] == "top_5_news_item_category_unknown" for i in issues))
+
+    def test_all_korea_categories_have_display_labels(self) -> None:
+        for slug in KOREA_NEWS_CATEGORIES:
+            self.assertIn(slug, KOREA_CATEGORY_DISPLAY_LABELS)
+            self.assertTrue(KOREA_CATEGORY_DISPLAY_LABELS[slug].strip())
+
+    def test_get_news_categories_for_program_korea_includes_legacy_global(self) -> None:
+        allowed = get_news_categories_for_program("keysuri_korea_tech")
+        self.assertIn("korea_semiconductor", allowed)
+        self.assertIn("policy", allowed)
+        self.assertNotIn("korea_semiconductor", get_news_categories_for_program("keysuri_global_tech"))
+
     def test_plain_list_fails(self) -> None:
         issues = validate_top_5_news_block("keysuri_global_tech", [])
         self.assertTrue(any(i["code"] == "top_5_news_must_be_object" for i in issues))
@@ -131,6 +183,87 @@ class KeysuriNewsContractValidationTests(unittest.TestCase):
             top_5_news=_top5_block("keysuri_global_tech"),
         )
         self.assertTrue(any(i["code"] == "source_pack_program_mismatch" for i in issues))
+
+
+class KeysuriKoreaCategoryParseTests(unittest.TestCase):
+    def test_parsed_korea_gemini_like_response_accepts_korea_categories(self) -> None:
+        categories = [
+            "korea_semiconductor",
+            "korea_semiconductor",
+            "global_to_korea_translation",
+            "korea_startup_investment",
+            "korea_big_company_strategy",
+        ]
+        items = []
+        for rank, category in enumerate(categories, start=1):
+            items.append(
+                {
+                    "rank": rank,
+                    "news_id": f"claim-live-korea-{rank}",
+                    "headline": f"Korea headline {rank}",
+                    "category": category,
+                    "summary": f"Summary {rank}",
+                    "why_it_matters": f"Why {rank}",
+                    "business_implication": f"Biz {rank}",
+                    "source_ids": [f"live-src-{rank}"],
+                    "confidence_label": "reported",
+                }
+            )
+        raw = {
+            "program_id": "keysuri_korea_tech",
+            "generated_status": "generated_review_required",
+            "operational_status": "review_required",
+            "news_scope": "korea",
+            "section_heading": "국내 테크 TOP 5",
+            "top_5_news": {
+                "news_scope": "korea",
+                "section_heading": "국내 테크 TOP 5",
+                "items": items,
+            },
+            "deep_dive": {
+                "section_heading": "키수리의 딥-다이브",
+                "body": "한국 기업·정책으로 읽으면 오늘 국내 반도체와 AI 흐름이 핵심입니다.",
+                "confirmed_facts": ["Fact one"],
+                "key_implications": ["Domestic supply-chain read-through"],
+                "interpretation": "Domestic interpretation.",
+                "owner_impact": "Owner impact.",
+                "uncertainty": [],
+                "source_ids": ["live-src-1"],
+                "confidence_label": "reported",
+            },
+            "one_line_checkpoint": {
+                "section_heading": "원-라인 체크포인트",
+                "body": "Checkpoint line.",
+            },
+            "closing_sources": {
+                "section_heading": "마무리 및 출처 리스트",
+                "closing_message": "퇴근 전 메모로 정리했습니다.",
+                "source_list": [
+                    {
+                        "source_id": "live-src-1",
+                        "label": "더lec",
+                        "source_name": "더lec",
+                        "source_url": "https://example.com/1",
+                    }
+                ],
+            },
+        }
+        import json
+
+        prompt_input = {
+            "program_id": "keysuri_korea_tech",
+            "top_5_news": raw["top_5_news"],
+            "source_pack": {"program_id": "keysuri_korea_tech", "claims": [], "sources": []},
+        }
+        result = parse_keysuri_generated_response(
+            json.dumps(raw, ensure_ascii=False),
+            "keysuri_korea_tech",
+            prompt_input,
+        )
+        self.assertEqual(result["parse_status"], "parsed_valid", result.get("issues"))
+        self.assertFalse(
+            any(i.get("code") == "top_5_news_item_category_unknown" for i in (result.get("issues") or []))
+        )
 
 
 class KeysuriNewsSelectionTests(unittest.TestCase):

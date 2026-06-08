@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
+from keysuri_korea_signal_scoring import CATEGORY_KO_LABELS, KOREA_TECH_CATEGORIES
 from keysuri_source_gate import CONFIDENCE_LABELS, GateResult
 
 KEYSURI_TOP_NEWS_COUNT = 5
@@ -26,7 +27,7 @@ PROGRAM_TO_HEADING: Dict[str, str] = {
 
 FORBIDDEN_TOP5_HEADINGS = frozenset({"TOP 5", "Top 5", "top 5", "TOP 3", "Top 3"})
 
-NEWS_CATEGORIES = frozenset(
+GLOBAL_NEWS_CATEGORIES = frozenset(
     {
         "ai_product",
         "bigtech",
@@ -54,6 +55,29 @@ NEWS_CATEGORIES = frozenset(
         "policy_regulation_capital_supplychain",
     }
 )
+
+# Korea Tech 18:30 taxonomy (internal slugs — render via CATEGORY_KO_LABELS in prose).
+KOREA_NEWS_CATEGORIES = frozenset(KOREA_TECH_CATEGORIES)
+
+KOREA_CATEGORY_DISPLAY_LABELS: Dict[str, str] = dict(CATEGORY_KO_LABELS)
+
+# Backward-compatible alias for Global-only callers.
+NEWS_CATEGORIES = GLOBAL_NEWS_CATEGORIES
+
+PROGRAM_KOREA_TECH = "keysuri_korea_tech"
+PROGRAM_GLOBAL_TECH = "keysuri_global_tech"
+
+
+def get_news_categories_for_program(program_id: str) -> frozenset[str]:
+    """Return allowed TOP5 item category slugs for a Kee-Suri program."""
+    pid = (program_id or "").strip()
+    if pid == PROGRAM_KOREA_TECH:
+        return KOREA_NEWS_CATEGORIES | GLOBAL_NEWS_CATEGORIES
+    if pid == PROGRAM_GLOBAL_TECH:
+        return GLOBAL_NEWS_CATEGORIES
+    if pid in KEYSURI_PROGRAM_IDS:
+        return GLOBAL_NEWS_CATEGORIES
+    return GLOBAL_NEWS_CATEGORIES
 
 REQUIRED_ITEM_FIELDS = (
     "rank",
@@ -158,7 +182,7 @@ def _best_tier_rank(tiers: Sequence[str]) -> int:
 
 def claim_to_news_category(claim: Dict[str, Any]) -> Optional[str]:
     explicit = str(claim.get("news_category") or claim.get("category") or "").strip()
-    if explicit in NEWS_CATEGORIES:
+    if explicit in GLOBAL_NEWS_CATEGORIES or explicit in KOREA_NEWS_CATEGORIES:
         return explicit
     claim_type = str(claim.get("claim_type") or "").strip()
     return CLAIM_TYPE_TO_CATEGORY.get(claim_type)
@@ -311,7 +335,8 @@ def validate_top_5_news_block(program_id: str, top_5_news: dict) -> List[Dict[st
                 continue
             if field == "category":
                 cat = str(value or "").strip()
-                if cat not in NEWS_CATEGORIES:
+                allowed_categories = get_news_categories_for_program(pid)
+                if cat not in allowed_categories:
                     issues.append(
                         _issue(
                             "top_5_news_item_category_unknown",

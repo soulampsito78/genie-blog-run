@@ -1,6 +1,7 @@
 """Kee-Suri briefing content quality gate (visible Korean text only)."""
 from __future__ import annotations
 
+import html as html_module
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
@@ -14,6 +15,34 @@ from keysuri_contract_preview_quality import (
     _is_mostly_english,
     _sentence_count,
     _visible_body_region,
+)
+from keysuri_korea_longform_ux import (
+    KOREA_CLOSING_PARAGRAPH_MAX_CHARS,
+    KOREA_DEEP_MAX_PARAGRAPH_CHARS,
+    KOREA_EVENING_MEMO_HEADING,
+    KOREA_MEMO_ACTION_MAX_CHARS,
+    contains_truncated_headline_fragment,
+    count_korea_memo_action_lines_in_closing,
+    extract_korea_memo_action_lines_from_html,
+    korea_closing_internal_label_leak,
+    korea_closing_paragraph_too_long,
+    korea_closing_repeats_title_only,
+    korea_deep_block_too_long,
+    korea_deep_dive_missing_blocks,
+    korea_memo_action_line_too_long,
+    korea_section_label_not_user_facing,
+    korea_warm_farewell_missing,
+    max_paragraph_length,
+)
+from keysuri_visible_text import (
+    contains_duplicate_watch_arrows,
+    contains_internal_owner_copy_leaks,
+    contains_korea_impact_phrase_issues,
+    contains_visible_repr_artifacts,
+    contains_visible_snake_case_token,
+    count_owner_salutation,
+    extract_user_facing_prose,
+    korea_checkpoint_strategy_too_generic,
 )
 
 ALLOWED_JUDGMENT_LABELS: Tuple[str, ...] = (
@@ -133,6 +162,14 @@ KOREA_STOCK_DIGEST_MARKERS: Tuple[str, ...] = (
     "하한가",
     "장중",
 )
+
+KOREA_GLOBAL_LAYER_LABEL_LEAKS: Tuple[str, ...] = (
+    "워크플로·락인",
+    "물리·인프라 병목",
+    "규제·주권·조달 압력",
+)
+
+KOREA_OWNER_SALUTATION_MAX = 6
 
 MIN_DETAIL_SENTENCES = 3
 
@@ -268,6 +305,397 @@ def _deep_dive_references_multiple_signals(
 
     legacy_markers = sum(1 for n in ("1.", "2.", "3.", "4.", "5.", "신호", "TOP") if n in deep_text)
     return legacy_markers >= 2
+
+
+def _has_duplicate_adjacent_sentence(text: str) -> bool:
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?…])\s+", str(text or "").strip()) if s.strip()]
+    seen: set[str] = set()
+    for sent in sentences:
+        norm = re.sub(r"\s+", " ", sent).strip()
+        if norm in seen:
+            return True
+        seen.add(norm)
+    return False
+
+
+def _plain_text(html_fragment: str) -> str:
+    return re.sub(r"<[^>]+>", " ", html_module.unescape(str(html_fragment or "")))
+
+
+def _html_is_korea_briefing(html: str, *, use_korea_scoring_rules: bool) -> bool:
+    if use_korea_scoring_rules:
+        return True
+    return bool(re.search(r'<body[^>]*\btheme-korea\b', html, flags=re.IGNORECASE))
+
+
+def _briefing_prose_region(region: str) -> str:
+    prose = region
+    for marker in ('class="audit-fold"', 'id="operation-metadata"', "Operation metadata"):
+        idx = prose.find(marker)
+        if idx >= 0:
+            prose = prose[:idx]
+    return prose
+
+
+def _validate_visible_serialization_issues(
+    html: str,
+    region: str,
+    *,
+    use_korea_scoring_rules: bool,
+    item_blocks: Sequence[str],
+) -> List[BriefingContentIssue]:
+    issues: List[BriefingContentIssue] = []
+    prose_region = _briefing_prose_region(region)
+
+    if contains_visible_repr_artifacts(prose_region):
+        issues.append(
+            BriefingContentIssue(
+                "visible_python_list_repr",
+                "Visible body contains Python list/dict repr artifacts",
+                section="visible_body",
+                excerpt=prose_region[prose_region.find("["): prose_region.find("[") + 80]
+                if "[" in prose_region
+                else "",
+            )
+        )
+
+    user_prose = extract_user_facing_prose(html)
+    user_plain = _plain_text(user_prose)
+
+    if contains_internal_owner_copy_leaks(user_plain):
+        issues.append(
+            BriefingContentIssue(
+                "visible_internal_score_leak",
+                "Visible body leaks internal scoring or debug selection copy",
+                section="visible_body",
+                excerpt=user_plain[:120],
+            )
+        )
+    if contains_visible_snake_case_token(user_plain):
+        issues.append(
+            BriefingContentIssue(
+                "visible_snake_case_token",
+                "Visible body contains snake_case internal token",
+                section="visible_body",
+                excerpt=user_plain[:120],
+            )
+        )
+    if contains_korea_impact_phrase_issues(user_plain):
+        issues.append(
+            BriefingContentIssue(
+                "korea_impact_phrase_duplicate",
+                "Visible impact line has awkward duplicated phrasing",
+                section="visible_body",
+            )
+        )
+    if contains_duplicate_watch_arrows(user_plain):
+        issues.append(
+            BriefingContentIssue(
+                "korea_next_watch_arrow_duplicate",
+                "Next-watch block has duplicated arrow markers",
+                section="visible_body",
+            )
+        )
+
+    for idx, block in enumerate(item_blocks, start=1):
+        watch = _block_text(block, "다음 확인 포인트")
+        if watch and contains_visible_repr_artifacts(watch):
+            issues.append(
+                BriefingContentIssue(
+                    "korea_next_watch_list_repr",
+                    f"TOP item {idx} next-watch block leaks list repr",
+                    section="top5",
+                    item_index=idx,
+                    excerpt=watch[:100],
+                )
+            )
+        if watch and contains_duplicate_watch_arrows(watch):
+            issues.append(
+                BriefingContentIssue(
+                    "korea_next_watch_arrow_duplicate",
+                    f"TOP item {idx} next-watch block has duplicated arrows",
+                    section="top5",
+                    item_index=idx,
+                    excerpt=watch[:100],
+                )
+            )
+        selection = _block_text(block, "선정 이유")
+        if use_korea_scoring_rules and selection and contains_internal_owner_copy_leaks(selection):
+            issues.append(
+                BriefingContentIssue(
+                    "korea_visible_rationale_not_user_facing",
+                    f"TOP item {idx} selection reason is not owner-facing",
+                    section="top5",
+                    item_index=idx,
+                    excerpt=selection[:100],
+                )
+            )
+        emphasis_m = re.search(
+            r'<p class="card-emphasis-line">(.*?)</p>',
+            block,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if emphasis_m:
+            emphasis_plain = _plain_text(emphasis_m.group(1))
+            if contains_korea_impact_phrase_issues(emphasis_plain):
+                issues.append(
+                    BriefingContentIssue(
+                        "korea_impact_phrase_duplicate",
+                        f"TOP item {idx} card emphasis has awkward impact phrasing",
+                        section="top5",
+                        item_index=idx,
+                        excerpt=emphasis_plain[:100],
+                    )
+                )
+        if _html_is_korea_briefing(html, use_korea_scoring_rules=use_korea_scoring_rules):
+            for label, code in (
+                ("무슨 일이 있었나", "what_happened"),
+                ("왜 지금 중요한가", "why_now"),
+                ("주인님 관점", "owner_angle"),
+            ):
+                body = _block_text(block, label)
+                if body and _has_duplicate_adjacent_sentence(body):
+                    issues.append(
+                        BriefingContentIssue(
+                            "duplicate_sentence_in_visible_block",
+                            f"TOP item {idx} {code} block repeats the same sentence",
+                            section="top5",
+                            item_index=idx,
+                            excerpt=body[:100],
+                        )
+                    )
+
+    unc_m = re.search(
+        r'class="deep-uncertainty"[^>]*>.*?<p>(.*?)</p>',
+        html,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if unc_m:
+        uncertainty = re.sub(r"<[^>]+>", "", unc_m.group(1)).strip()
+        if uncertainty and contains_visible_repr_artifacts(uncertainty):
+            issues.append(
+                BriefingContentIssue(
+                    "korea_uncertainty_list_repr",
+                    "Deep-dive uncertainty block leaks list repr",
+                    section="deep_dive",
+                    excerpt=uncertainty[:100],
+                )
+            )
+
+    if _html_is_korea_briefing(html, use_korea_scoring_rules=use_korea_scoring_rules):
+        prose_region = _briefing_prose_region(region)
+        label_only = re.findall(
+            r'<p class="card-emphasis-line">\s*<span class="card-emphasis-label">[^<]+</span>\s*</p>',
+            html,
+            flags=re.IGNORECASE,
+        )
+        if label_only:
+            issues.append(
+                BriefingContentIssue(
+                    "korea_emphasis_line_missing_text",
+                    "Korea card emphasis line shows label without impact text",
+                    section="top5",
+                )
+            )
+        owner_count = count_owner_salutation(prose_region)
+        if owner_count > KOREA_OWNER_SALUTATION_MAX:
+            issues.append(
+                BriefingContentIssue(
+                    "korea_owner_name_overused",
+                    f"Korea visible body uses 주인님 {owner_count} times (max {KOREA_OWNER_SALUTATION_MAX})",
+                    section="visible_body",
+                )
+            )
+        for label in KOREA_GLOBAL_LAYER_LABEL_LEAKS:
+            if label in prose_region:
+                issues.append(
+                    BriefingContentIssue(
+                        "korea_global_layer_label_leak",
+                        f"Korea briefing exposes Global-style layer label: {label!r}",
+                        section="deep_dive",
+                        excerpt=label,
+                    )
+                )
+                break
+
+    return issues
+
+
+def _extract_html_section(html: str, section_id: str) -> str:
+    pattern = rf'<section[^>]*\bid=["\']{re.escape(section_id)}["\'][^>]*>(.*?)</section>'
+    match = re.search(pattern, html, flags=re.DOTALL | re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def _extract_source_list_region(html: str) -> str:
+    """Return the HTML region used for closing source URL completeness checks."""
+    appendix = _extract_html_section(html, "source-appendix-section")
+    if appendix:
+        return appendix
+    legacy = _extract_html_section(html, "closing-section")
+    if legacy and "evening-memo-body" not in legacy:
+        return legacy
+    closing_sources = _extract_html_section(html, "closing-sources")
+    if closing_sources:
+        return closing_sources
+    return ""
+
+
+def _parse_korea_deep_blocks(section_html: str) -> List[Dict[str, str]]:
+    blocks: List[Dict[str, str]] = []
+    for match in re.finditer(
+        r'class="korea-deep-block"[^>]*>.*?class="korea-deep-label"[^>]*>(.*?)</h4>.*?class="korea-deep-body"[^>]*>(.*?)</div>',
+        section_html,
+        flags=re.DOTALL | re.IGNORECASE,
+    ):
+        label = re.sub(r"<[^>]+>", "", match.group(1)).strip()
+        body = re.sub(r"<[^>]+>", "\n", match.group(2)).strip()
+        body = re.sub(r"\n\s*\n+", "\n", body)
+        if label or body:
+            blocks.append({"label": label, "body": body})
+    return blocks
+
+
+def _validate_korea_longform_visible_ux(
+    html: str,
+    *,
+    use_korea_scoring_rules: bool,
+) -> List[BriefingContentIssue]:
+    if not _html_is_korea_briefing(html, use_korea_scoring_rules=use_korea_scoring_rules):
+        return []
+
+    issues: List[BriefingContentIssue] = []
+    visible_plain = _plain_text(extract_user_facing_prose(html))
+    deep_section = _extract_html_section(html, "deep-dive-section")
+    memo_section = _extract_html_section(html, "closing-section")
+    if "evening-memo-body" not in memo_section:
+        memo_section = _extract_html_section(html, "warm-close-section")
+    deep_plain = _plain_text(deep_section)
+    memo_plain = _plain_text(memo_section)
+    action_lines = extract_korea_memo_action_lines_from_html(memo_section)
+    memo_action_count = count_korea_memo_action_lines_in_closing(memo_section, plain_fallback=memo_plain)
+
+    if korea_section_label_not_user_facing(visible_plain):
+        issues.append(
+            BriefingContentIssue(
+                "korea_section_label_not_user_facing",
+                "Korea visible body includes internal or non-user-facing section label",
+                section="visible_body",
+            )
+        )
+
+    deep_blocks = _parse_korea_deep_blocks(deep_section)
+    if deep_blocks:
+        if korea_deep_block_too_long(deep_blocks):
+            issues.append(
+                BriefingContentIssue(
+                    "korea_deep_block_too_long",
+                    f"Korea deep-dive block exceeds {KOREA_DEEP_MAX_PARAGRAPH_CHARS} Korean characters",
+                    section="deep_dive",
+                )
+            )
+        if korea_deep_dive_missing_blocks(deep_blocks):
+            issues.append(
+                BriefingContentIssue(
+                    "korea_deep_dive_missing_blocks",
+                    "Korea deep-dive must contain at least 3 visible sub-blocks",
+                    section="deep_dive",
+                )
+            )
+        for block in deep_blocks:
+            body = block.get("body", "")
+            if contains_truncated_headline_fragment(body):
+                issues.append(
+                    BriefingContentIssue(
+                        "korea_truncated_headline_fragment",
+                        "Korea deep-dive contains malformed truncated headline fragment",
+                        section="deep_dive",
+                        excerpt=body[:100],
+                    )
+                )
+                break
+    elif deep_plain and max_paragraph_length(deep_plain) > KOREA_DEEP_MAX_PARAGRAPH_CHARS:
+        issues.append(
+            BriefingContentIssue(
+                "korea_deep_dive_wall_text",
+                f"Korea deep-dive paragraph exceeds {KOREA_DEEP_MAX_PARAGRAPH_CHARS} Korean characters",
+                section="deep_dive",
+                excerpt=deep_plain[:120],
+            )
+        )
+
+    if korea_closing_internal_label_leak(memo_plain) or korea_closing_internal_label_leak(visible_plain):
+        issues.append(
+            BriefingContentIssue(
+                "korea_closing_internal_label_leak",
+                "Korea closing leaks internal evening-close label",
+                section="closing_sources",
+            )
+        )
+    if KOREA_EVENING_MEMO_HEADING not in memo_plain:
+        issues.append(
+            BriefingContentIssue(
+                "korea_closing_memo_too_thin",
+                f"Korea closing must include {KOREA_EVENING_MEMO_HEADING!r} heading",
+                section="closing_sources",
+            )
+        )
+    if korea_closing_repeats_title_only(memo_plain):
+        issues.append(
+            BriefingContentIssue(
+                "korea_closing_repeats_title_only",
+                "Korea closing repeats title-only or thin farewell copy",
+                section="closing_sources",
+                excerpt=memo_plain[:120],
+            )
+        )
+    if memo_action_count < 2:
+        issues.append(
+            BriefingContentIssue(
+                "korea_evening_memo_missing_actions",
+                "Korea evening memo must include at least 2 concrete action lines",
+                section="closing_sources",
+                excerpt=memo_plain[:120],
+            )
+        )
+    if korea_warm_farewell_missing(memo_plain):
+        issues.append(
+            BriefingContentIssue(
+                "korea_closing_warm_farewell_missing",
+                "Korea closing must include warm farewell lines after memo",
+                section="closing_sources",
+                excerpt=memo_plain[:120],
+            )
+        )
+    if korea_closing_paragraph_too_long(memo_section):
+        issues.append(
+            BriefingContentIssue(
+                "korea_closing_paragraph_too_long",
+                f"Korea closing paragraph exceeds {KOREA_CLOSING_PARAGRAPH_MAX_CHARS} Korean characters",
+                section="closing_sources",
+            )
+        )
+    if korea_memo_action_line_too_long(action_lines):
+        issues.append(
+            BriefingContentIssue(
+                "korea_memo_action_line_too_long",
+                f"Korea memo action line exceeds {KOREA_MEMO_ACTION_MAX_CHARS} Korean characters",
+                section="closing_sources",
+            )
+        )
+    has_summary = "오늘은" in memo_plain and "묶었습니다" in memo_plain
+    has_caution = "확정되지 않은" in memo_plain or "조심" in memo_plain
+    has_warm = not korea_warm_farewell_missing(memo_plain)
+    if not (has_summary and len(action_lines) >= 2 and has_caution and has_warm):
+        issues.append(
+            BriefingContentIssue(
+                "korea_closing_structure_incomplete",
+                "Korea closing must include memo summary, actions, caution, and warm farewell",
+                section="closing_sources",
+            )
+        )
+
+    return issues
 
 
 def _claims_with_scores(source_metadata: Optional[dict]) -> List[dict]:
@@ -729,7 +1157,8 @@ def validate_briefing_content_gate(
                 )
 
     if deep_text:
-        if "주인님" not in deep_text:
+        korea_deep_dive = _html_is_korea_briefing(html, use_korea_scoring_rules=use_korea_scoring_rules)
+        if not korea_deep_dive and "주인님" not in deep_text:
             issues.append(
                 BriefingContentIssue(
                     "weak_deep_dive",
@@ -808,6 +1237,17 @@ def validate_briefing_content_gate(
     if cp_m:
         checkpoint = re.sub(r"<[^>]+>", "", cp_m.group(1)).strip()
     if checkpoint:
+        if _html_is_korea_briefing(html, use_korea_scoring_rules=use_korea_scoring_rules) and korea_checkpoint_strategy_too_generic(
+            checkpoint
+        ):
+            issues.append(
+                BriefingContentIssue(
+                    "korea_checkpoint_strategy_too_generic",
+                    "Korea one-line checkpoint uses generic business-strategy CTA without investment lens",
+                    section="one_line_checkpoint",
+                    excerpt=checkpoint[:100],
+                )
+            )
         if any(m in checkpoint for m in RECAP_CHECKPOINT_MARKERS) and "?" not in checkpoint:
             issues.append(
                 BriefingContentIssue(
@@ -826,12 +1266,7 @@ def validate_briefing_content_gate(
             )
         )
 
-    src_section = ""
-    src_m = re.search(r'id="closing-section"[^>]*>(.*?)(?=<section|<div class="rights|<div id="rights|$)', html, flags=re.DOTALL)
-    if not src_m:
-        src_m = re.search(r'id="closing-sources"[^>]*>(.*?)(?=<section|<div|$)', html, flags=re.DOTALL)
-    if src_m:
-        src_section = src_m.group(1)
+    src_section = _extract_source_list_region(html)
     urls = URL_PATTERN.findall(src_section)
     if len(urls) < 1:
         issues.append(
@@ -841,6 +1276,21 @@ def validate_briefing_content_gate(
                 section="closing_sources",
             )
         )
+
+    issues.extend(
+        _validate_visible_serialization_issues(
+            html,
+            region,
+            use_korea_scoring_rules=use_korea_scoring_rules,
+            item_blocks=item_blocks,
+        )
+    )
+    issues.extend(
+        _validate_korea_longform_visible_ux(
+            html,
+            use_korea_scoring_rules=use_korea_scoring_rules,
+        )
+    )
 
     ok = len(issues) == 0
     return BriefingContentQualityResult(ok=ok, issues=issues, warnings=warnings)

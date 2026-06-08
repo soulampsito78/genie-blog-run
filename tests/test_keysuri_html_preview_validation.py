@@ -113,9 +113,19 @@ def build_preview_html(
         <div class="placeholder small" id="bottom-shot-placeholder">18:30 bottom-shot preview placeholder</div>
         """
         warm_close = """
-        <section id="warm-close-section">
-          <h2>국내 18:30 따뜻한 마무리 (renderer preview)</h2>
-          <p>오늘도 수고하셨습니다. 내일 다시 뵙겠습니다.</p>
+        <section id="closing-section">
+          <h2>퇴근 전 메모</h2>
+          <div class="evening-memo-body">
+            <p>오늘은 국내 테크 핵심 이슈가 HBM·파운드리·국내 AI 투자 흐름을 한 번에 묶었습니다.</p>
+            <p>내일은 세 가지만 확인하시면 됩니다.</p>
+            <ol class="evening-memo-actions">
+              <li>삼성전자·SK하이닉스 쪽 HBM4 협력 후속</li>
+              <li>GPU 우선 공급 약속의 실제 대상과 일정</li>
+            </ol>
+            <p>확정되지 않은 수치와 일정은 아직 조심해서 보겠습니다.</p>
+            <p class="closing-message warm-farewell">오늘도 수고 많으셨습니다.</p>
+            <p class="closing-message warm-farewell">내일 아침에 다시 볼 흐름만 남겨두겠습니다.</p>
+          </div>
         </section>
         """
     closing = """

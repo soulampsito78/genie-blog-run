@@ -226,6 +226,17 @@ class KeysuriBriefingContentEnricherTests(unittest.TestCase):
         self.assertNotIn("TOP 신호", out["deep_dive"]["body"])
         self.assertGreaterEqual(len(out["deep_dive"].get("linked_signal_titles") or []), 2)
 
+    def test_korea_enricher_normalizes_list_next_watch(self) -> None:
+        item = {
+            "korean_title": "삼성전자 HBM 국내 증설",
+            "next_watch": ["삼성 HBM4 일정", "엔비디아 후속 발표"],
+            "source_ids": ["k1"],
+        }
+        meta = {"category_display_label": "국내 반도체 / 장비 / 소재"}
+        enriched = enrich_korea_top5_item_content(item, meta=meta)
+        self.assertIn("삼성 HBM4 일정", enriched["next_watch"])
+        self.assertNotIn("['", enriched["next_watch"])
+
     def test_korea_enricher_uses_domestic_lens_metadata(self) -> None:
         item = {
             "korean_title": "삼성전자 HBM 국내 증설",
@@ -279,7 +290,8 @@ class KeysuriBriefingContentEnricherTests(unittest.TestCase):
         out = enrich_generated_briefing_content(generated, "keysuri_korea_tech", prompt_input)
         self.assertNotIn("TOP 신호", out["deep_dive"]["body"])
         self.assertNotIn("gate", out["deep_dive"]["body"].lower())
-        self.assertIn("한국 기업·정책", out["deep_dive"]["body"])
+        self.assertIn("오늘의 핵심 흐름", out["deep_dive"]["body"])
+        self.assertGreaterEqual(len(out["deep_dive"].get("korea_deep_dive_sections") or []), 3)
 
 
 if __name__ == "__main__":

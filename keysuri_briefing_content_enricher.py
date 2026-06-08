@@ -3,9 +3,19 @@ from __future__ import annotations
 
 import copy
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple  # Any used for next_watch list input
 
 from keysuri_contract_preview_quality import _sentence_count
+from keysuri_visible_text import (
+    build_visible_selection_reason,
+    coerce_visible_lines,
+    dedupe_repeated_paragraph,
+    dedupe_sentences_in_paragraph,
+    looks_like_internal_owner_copy,
+    normalize_visible_text,
+    sanitize_visible_impact_line,
+    strip_watch_arrow_prefixes,
+)
 
 PROGRAM_GLOBAL = "keysuri_global_tech"
 PROGRAM_KOREA = "keysuri_korea_tech"
@@ -77,13 +87,22 @@ def _briefing_fields(item: dict) -> dict:
     return nested
 
 
-def _get_field(item: dict, *keys: str) -> str:
+def _raw_field(item: dict, *keys: str) -> Any:
     nested = _briefing_fields(item)
     for key in keys:
-        val = _text(item.get(key) or nested.get(key))
-        if val:
-            return val
-    return ""
+        raw = item.get(key)
+        if raw in (None, ""):
+            raw = nested.get(key)
+        if raw not in (None, ""):
+            return raw
+    return None
+
+
+def _get_field(item: dict, *keys: str) -> str:
+    raw = _raw_field(item, *keys)
+    if raw is None:
+        return ""
+    return normalize_visible_text(raw, style="inline")
 
 
 def _set_field(item: dict, key: str, value: str) -> None:
@@ -286,10 +305,16 @@ def _build_owner_angle(item: dict, meta: dict) -> str:
     )
 
 
-def _next_watch_items(text: str) -> List[str]:
+def _next_watch_items(text: Any) -> List[str]:
+    if isinstance(text, (list, tuple, dict)):
+        return coerce_visible_lines(text)
     stripped = _text(text)
     if not stripped:
         return []
+    if stripped.startswith("[") and ("'" in stripped or '"' in stripped):
+        parsed = coerce_visible_lines(stripped)
+        if parsed:
+            return parsed
     bullets = re.findall(r"(?:^|\n)\s*[-•]\s+(.+)", stripped)
     if bullets:
         return [b.strip() for b in bullets if b.strip()]
@@ -309,8 +334,7 @@ def _next_watch_items(text: str) -> List[str]:
 
 
 def _build_next_watch(item: dict, meta: dict) -> str:
-    existing = _get_field(item, "next_watch", "next_check_point")
-    items = _next_watch_items(existing)
+    items = _next_watch_items(_raw_field(item, "next_watch", "next_check_point"))
     source = _text(meta.get("source_name"))
     category = _category_label(meta, item)
     if len(items) < MIN_NEXT_WATCH_ITEMS:
@@ -352,7 +376,10 @@ def enrich_deep_dive_content(
     elif not body:
         body = uncertainty_para
     out["body"] = body.strip()
-    if not _text(out.get("uncertainty")):
+    unc_raw = out.get("uncertainty") or out.get("open_questions")
+    if unc_raw not in (None, ""):
+        out["uncertainty"] = normalize_visible_text(unc_raw, style="sentence")
+    elif not _text(out.get("uncertainty")):
         out["uncertainty"] = uncertainty_para
     if len(top5_items) >= 2:
         out["linked_signal_titles"] = [
@@ -410,35 +437,43 @@ def _build_korea_hype_caution(meta: dict) -> str:
 def _build_korea_selection_reason(item: dict, meta: dict) -> str:
     existing = _get_field(item, "selection_reason", "selection_rationale")
     category = _category_label(meta, item, program_id=PROGRAM_KOREA)
-    padding = [
-        existing,
-        _text(meta.get("selection_rationale") or meta.get("reason_for_selection")),
-        f"국내 {category} 관점에서 오늘 한국에서 의미 있는 신호로 선정했습니다.",
-    ]
+    meta_reason = _text(meta.get("selection_rationale") or meta.get("reason_for_selection"))
+    padding: List[str] = []
+    if existing and not looks_like_internal_owner_copy(existing):
+        padding.append(existing)
+    if meta_reason and not looks_like_internal_owner_copy(meta_reason):
+        padding.append(meta_reason)
+    padding.append(f"국내 {category} 관점에서 오늘 한국에서 의미 있는 신호로 선정했습니다.")
     if meta.get("global_duplicate_detected") and meta.get("korea_angle_satisfied"):
         padding.append("글로벌 이슈와 겹치지만 국내 적용·한국 기업·정책·공급망 관점이 달라 포함했습니다.")
     if meta.get("pr_hype_warning") or meta.get("press_release_only"):
         padding.append("다만 보도자료·홍보 성격이 있을 수 있어 해석에 주의가 필요합니다.")
-    return _ensure_sentence_depth(
-        existing,
+    draft = _ensure_sentence_depth(
+        existing if existing and not looks_like_internal_owner_copy(existing) else "",
         min_sentences=MIN_SELECTION_REASON,
         padding=[p for p in padding if p],
     )
+    return build_visible_selection_reason(item, meta, program_id=PROGRAM_KOREA, existing=draft)
 
 
 def _build_korea_why_now(item: dict, meta: dict) -> str:
     existing = _get_field(item, "why_now", "why_it_matters")
+    impact = sanitize_visible_impact_line(
+        meta.get("next_day_impact_line") or "",
+        category=str(meta.get("primary_category") or ""),
+    )
     padding = [
         existing,
-        _text(meta.get("next_day_impact_line")),
+        impact,
         _KOREA_EVENING_CONTEXT,
         "퇴근 전에 내일 영향을 짚어볼 가치가 있습니다.",
     ]
-    return _ensure_sentence_depth(
+    why = _ensure_sentence_depth(
         existing,
         min_sentences=MIN_SECTION_SENTENCES,
         padding=[p for p in padding if p],
     )
+    return dedupe_sentences_in_paragraph(dedupe_repeated_paragraph(why))
 
 
 def _build_korea_owner_angle(item: dict, meta: dict) -> str:
@@ -448,16 +483,19 @@ def _build_korea_owner_angle(item: dict, meta: dict) -> str:
         _text(meta.get("owner_action_line")),
         "내일 파트너·고객·입찰·정책 일정에 반영할지 점검하시면 됩니다.",
     ]
-    return _ensure_sentence_depth(
-        existing,
-        min_sentences=MIN_SECTION_SENTENCES,
-        padding=[p for p in padding if p],
+    return dedupe_sentences_in_paragraph(
+        dedupe_repeated_paragraph(
+            _ensure_sentence_depth(
+                existing,
+                min_sentences=MIN_SECTION_SENTENCES,
+                padding=[p for p in padding if p],
+            )
+        )
     )
 
 
 def _build_korea_next_watch(item: dict, meta: dict) -> str:
-    existing = _get_field(item, "next_watch", "next_check_point")
-    items = _next_watch_items(existing)
+    items = _next_watch_items(_raw_field(item, "next_watch", "next_check_point"))
     category = _category_label(meta, item, program_id=PROGRAM_KOREA)
     if len(items) < MIN_NEXT_WATCH_ITEMS:
         items.append("내일 볼 지점: 공식 후속 발표·원문 업데이트를 확인하세요.")
@@ -467,7 +505,7 @@ def _build_korea_next_watch(item: dict, meta: dict) -> str:
     for it in items:
         if it and it not in deduped:
             deduped.append(it)
-    return "; ".join(deduped[:4])
+    return strip_watch_arrow_prefixes("; ".join(deduped[:4]))
 
 
 def enrich_korea_top5_item_content(item: dict, *, meta: dict) -> dict:
@@ -492,10 +530,16 @@ def enrich_korea_top5_item_content(item: dict, *, meta: dict) -> dict:
         _set_field(out, "hype_caution", hype_caution)
     out["briefing_angle"] = _text(meta.get("briefing_angle") or meta.get("angle_chip") or "국내 적용")
     out["angle_chip"] = out["briefing_angle"]
+    category_key = str(meta.get("primary_category") or out.get("primary_category") or "")
     if meta.get("next_day_impact_line"):
-        out["next_day_impact_line"] = meta.get("next_day_impact_line")
+        out["next_day_impact_line"] = sanitize_visible_impact_line(
+            meta.get("next_day_impact_line"),
+            category=category_key,
+        )
     if meta.get("owner_action_line"):
-        out["owner_action_line"] = meta.get("owner_action_line")
+        out["owner_action_line"] = dedupe_sentences_in_paragraph(
+            normalize_visible_text(meta.get("owner_action_line"), style="inline")
+        )
     if meta.get("primary_category"):
         out["primary_category"] = meta.get("primary_category")
     if meta.get("category_label_ko") or meta.get("category_display_label"):
@@ -507,21 +551,20 @@ def enrich_korea_deep_dive_content(
     deep_dive: dict,
     top5_items: List[dict],
 ) -> dict:
+    from keysuri_korea_longform_ux import structure_korea_deep_dive
+
     out = dict(deep_dive)
-    body = _text(out.get("body"))
-    opener = "한국 기업·정책으로 읽으면, 오늘 선정된 신호는 국내 적용과 내일 영향이 겹치는 흐름입니다."
-    if body and opener not in body:
-        body = f"{opener}\n\n{body}"
-    elif not body:
-        body = opener
-    uncertainty_para = (
-        "다만 공개 요약만으로는 세부 수치·일정이 부족한 부분이 있어, 원문 확인이 필요합니다."
-    )
-    if not any(k in body for k in ("불확실", "추가 확인", "원문", "미확정")):
-        body = f"{body}\n\n{uncertainty_para}"
-    out["body"] = body.strip()
-    if not _text(out.get("uncertainty")):
-        out["uncertainty"] = uncertainty_para
+    unc_raw = out.get("uncertainty") or out.get("open_questions")
+    uncertainty = normalize_visible_text(unc_raw, style="sentence") if unc_raw not in (None, "") else ""
+    sections = structure_korea_deep_dive(_text(out.get("body")), top5_items, uncertainty=uncertainty)
+    out["korea_deep_dive_sections"] = sections
+    out["body"] = "\n\n".join(
+        f"{section['label']}\n{section['body']}" for section in sections if section.get("body")
+    ).strip()
+    if uncertainty:
+        out["uncertainty"] = uncertainty
+    elif not _text(out.get("uncertainty")):
+        out["uncertainty"] = "세부 수치·양산 일정은 공개 요약만으로는 아직 부족합니다."
     if len(top5_items) >= 2:
         out["linked_signal_titles"] = [
             _short_title(i) for i in top5_items[:2] if isinstance(i, dict)
@@ -577,12 +620,21 @@ def enrich_generated_briefing_content(
                 sources_by_sid=sources_by_sid,
             )
 
-    display = out.get("briefing_display")
-    if is_korea and isinstance(display, dict):
-        closing = _text(display.get("closing_message"))
-        if closing and "퇴근 전" not in closing and "오늘의 정리" not in closing:
-            display["closing_message"] = f"{closing} 오늘의 정리와 퇴근 전 메모로 남겨 두었습니다."
+    if is_korea:
+        from keysuri_korea_longform_ux import build_korea_evening_memo
+
+        memo = build_korea_evening_memo(enriched_items)
+        out["korea_evening_memo"] = memo
+        display = out.get("briefing_display")
+        if isinstance(display, dict):
+            display = dict(display)
+            display["evening_memo"] = memo
             out["briefing_display"] = display
+        closing = out.get("closing_sources")
+        if isinstance(closing, dict):
+            closing = dict(closing)
+            closing["evening_memo"] = memo
+            out["closing_sources"] = closing
 
     from keysuri_briefing_body_ux_normalizer import normalize_generated_briefing_visible_prose
 

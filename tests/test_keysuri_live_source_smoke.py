@@ -77,7 +77,7 @@ def _mock_generated_briefing(prompt_input: dict) -> dict:
             f"자동화·콘텐츠 운영 로드맵에 API 비용과 배포 제약을 함께 넣어 보시길 권합니다."
         )
         selection_reason = (
-            f"항목 {idx}는 글로벌 테크 신호 점수와 카테고리 다양성 기준으로 선정했습니다. "
+            f"항목 {idx}는 글로벌 테크 흐름과 카테고리 다양성 기준으로 선정했습니다. "
             f"반도체·인프라·공급망 측면에서 주인님 의사결정과 연결되는 신호입니다."
         )
         next_watch = (

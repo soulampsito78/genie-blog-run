@@ -14,8 +14,28 @@ from keysuri_approved_image_assets import (
 )
 from keysuri_contract_preview_quality import GENERIC_CLOSING_PHRASES
 from keysuri_private_briefing import SECTION_CLOSING, SECTION_DEEP_DIVE, SECTION_ONE_LINE
+from keysuri_korea_longform_ux import (
+    KOREA_EVENING_MEMO_HEADING,
+    KOREA_WARM_FAREWELL_LINES,
+    build_korea_evening_memo,
+    korea_closing_internal_label_leak,
+    korea_closing_structure_incomplete,
+    korea_evening_memo_too_thin,
+    memo_plain_text,
+    structure_korea_deep_dive,
+)
+from keysuri_visible_text import (
+    PROGRAM_KOREA,
+    build_visible_selection_reason,
+    coerce_visible_lines,
+    dedupe_sentences_in_paragraph,
+    normalize_visible_text,
+    polish_korea_checkpoint_text,
+    sanitize_visible_impact_line,
+    sanitize_visible_selection_reason,
+    strip_watch_arrow_prefixes,
+)
 
-PROGRAM_KOREA = "keysuri_korea_tech"
 PROGRAM_GLOBAL = "keysuri_global_tech"
 
 GLOBAL_SLOT_BADGE = "글로벌 신호 · 12:30"
@@ -31,8 +51,6 @@ KOREA_CHECKPOINT_SUBFRAME = "내일 영향을 줄 한 가지"
 GLOBAL_OPEN_ENDING = (
     "다음 48시간은 위 관찰 포인트를 열어 둔 채 이어가시면 됩니다."
 )
-KOREA_EVENING_MEMO = "오늘의 정리와 퇴근 전 메모"
-
 IMAGE_MODE_PREVIEW = "preview"
 IMAGE_MODE_EMAIL = "email"
 
@@ -207,6 +225,40 @@ def prepare_contract_preview_fixture(
     fixture["preheader"] = preheader
     fixture["closing_message"] = _normalize_closing(str(fixture.get("closing_message") or ""))
 
+    if _is_korea_program(program_id):
+        top_items = fixture.get("top_5_items") or []
+        deep_body = str(fixture.get("deep_dive_body") or "")
+        uncertainty = normalize_visible_text(
+            fixture.get("deep_dive_uncertainty") or "",
+            style="sentence",
+        )
+        if not fixture.get("korea_deep_dive_sections") or uncertainty:
+            sections = structure_korea_deep_dive(deep_body, top_items, uncertainty=uncertainty)
+            fixture["korea_deep_dive_sections"] = sections
+            fixture["deep_dive_body"] = "\n\n".join(
+                f"{section['label']}\n{section['body']}"
+                for section in sections
+                if section.get("body")
+            )
+        memo = fixture.get("korea_evening_memo")
+        if not isinstance(memo, dict):
+            memo = build_korea_evening_memo(
+                top_items,
+                closing_message=str(fixture.get("closing_message") or ""),
+            )
+        if (
+            korea_evening_memo_too_thin(memo)
+            or korea_closing_structure_incomplete(memo)
+            or korea_closing_internal_label_leak(memo_plain_text(memo))
+        ):
+            memo = build_korea_evening_memo(
+                top_items,
+                closing_message=str(fixture.get("closing_message") or ""),
+            )
+        fixture["korea_evening_memo"] = memo
+        fixture["evening_memo_body"] = memo_plain_text(memo)
+        fixture["evening_memo_heading"] = KOREA_EVENING_MEMO_HEADING
+
     existing_src = str(fixture.get("top_shot_image_src") or "").strip()
     if existing_src.startswith("data:image/") or existing_src.startswith("cid:"):
         return fixture
@@ -282,8 +334,13 @@ def _hero_copy(program_id: str) -> tuple[str, str]:
 def _item_field(item: Mapping[str, Any], *keys: str) -> str:
     for key in keys:
         val = item.get(key)
+        if val in (None, ""):
+            continue
         if isinstance(val, str) and val.strip():
             return val.strip()
+        normalized = normalize_visible_text(val, style="inline")
+        if normalized:
+            return normalized
     return ""
 
 
@@ -345,10 +402,37 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
 
     headline = _item_field(item, "korean_title", "headline")
     selection_reason = _item_field(item, "selection_reason", "selection_rationale")
+    if _is_korea_program(program_id):
+        meta_stub = {
+            "primary_category": item.get("primary_category"),
+            "selection_reason_tags": item.get("selection_reason_tags"),
+            "selection_rationale": item.get("selection_rationale"),
+            "reason_for_selection": item.get("reason_for_selection"),
+            "statement": item.get("korean_title") or item.get("headline"),
+        }
+        selection_reason = build_visible_selection_reason(
+            item,
+            meta_stub,
+            program_id=PROGRAM_KOREA,
+            existing=sanitize_visible_selection_reason(
+                selection_reason, item, meta_stub, program_id=PROGRAM_KOREA
+            ),
+        )
     what_happened = _item_field(item, "what_happened", "summary")
     why_now = _item_field(item, "why_now", "why_it_matters")
     owner_angle = _item_field(item, "owner_angle", "business_implication", "keysuri_comment")
-    next_watch = _item_field(item, "next_watch", "next_check_point")
+    if _is_korea_program(program_id):
+        what_happened = dedupe_sentences_in_paragraph(what_happened)
+        why_now = dedupe_sentences_in_paragraph(why_now)
+        owner_angle = dedupe_sentences_in_paragraph(owner_angle)
+    next_watch_raw = None
+    for key in ("next_watch", "next_check_point"):
+        if item.get(key) not in (None, ""):
+            next_watch_raw = item.get(key)
+            break
+    next_watch = strip_watch_arrow_prefixes(
+        "; ".join(coerce_visible_lines(next_watch_raw or "")[:4])
+    )
     hype_caution = _item_field(item, "hype_caution")
     j_label, j_text = _judgment_block(item)
 
@@ -369,13 +453,20 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
 
     angle_chip = _angle_chip_text(program_id, item)
     emphasis_label = _card_emphasis_label(program_id)
-    emphasis_body = _item_field(item, "next_day_impact_line")
+    emphasis_body = _item_field(item, "next_day_impact_line", "owner_action_line")
+    if _is_korea_program(program_id) and emphasis_body:
+        emphasis_body = sanitize_visible_impact_line(
+            emphasis_body,
+            category=str(item.get("primary_category") or ""),
+        )
     if emphasis_body:
         emphasis_html = (
             f'<p class="card-emphasis-line">'
             f'<span class="card-emphasis-label">{_esc(emphasis_label)}</span> '
-            f"{_esc(emphasis_body)}</p>"
+            f'<span class="card-emphasis-text">{_esc(emphasis_body)}</span></p>'
         )
+    elif _is_korea_program(program_id):
+        emphasis_html = ""
     else:
         emphasis_html = (
             f'<p class="card-emphasis-line">'
@@ -445,14 +536,84 @@ def _render_top5_section(fixture: Mapping[str, Any], *, program_id: str) -> str:
     """
 
 
+def _render_block_body_lines(body: str) -> str:
+    text = str(body or "").strip()
+    if not text:
+        return ""
+    bullet_lines = [line.lstrip("• ").strip() for line in text.splitlines() if line.strip().startswith("•")]
+    if bullet_lines:
+        items = "".join(f"<li>{_esc(line)}</li>" for line in bullet_lines)
+        return f"<ul class=\"korea-deep-list\">{items}</ul>"
+    numbered = [line.strip() for line in text.splitlines() if re.match(r"^\d+\.\s+", line.strip())]
+    if numbered:
+        cleaned = [re.sub(r"^\d+\.\s+", "", line) for line in numbered]
+        items = "".join(f"<li>{_esc(line)}</li>" for line in cleaned)
+        return f"<ol class=\"korea-deep-list\">{items}</ol>"
+    return f"<p>{_esc(text)}</p>"
+
+
+def _render_korea_deep_dive_blocks(fixture: Mapping[str, Any]) -> str:
+    sections = fixture.get("korea_deep_dive_sections") or []
+    if not sections:
+        sections = structure_korea_deep_dive(
+            str(fixture.get("deep_dive_body") or ""),
+            fixture.get("top_5_items") or [],
+            uncertainty=normalize_visible_text(
+                fixture.get("deep_dive_uncertainty") or "",
+                style="sentence",
+            ),
+        )
+    blocks = ""
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        label = _esc(section.get("label") or "")
+        body_html = _render_block_body_lines(str(section.get("body") or ""))
+        if not label or not body_html:
+            continue
+        blocks += f"""
+      <div class="korea-deep-block">
+        <h4 class="korea-deep-label">{label}</h4>
+        <div class="korea-deep-body">{body_html}</div>
+      </div>"""
+    return blocks
+
+
+def _resolve_korea_evening_memo(working: Mapping[str, Any]) -> dict[str, Any]:
+    memo = working.get("korea_evening_memo")
+    if isinstance(memo, dict) and not korea_evening_memo_too_thin(memo):
+        return dict(memo)
+    top_items = working.get("top_5_items") or []
+    return build_korea_evening_memo(
+        top_items,
+        closing_message=str(working.get("closing_message") or ""),
+    )
+
+
+def _render_korea_evening_memo_body(memo: Mapping[str, Any]) -> str:
+    action_lines = [str(line).strip() for line in memo.get("action_lines") or [] if str(line).strip()]
+    warm_lines = [str(line).strip() for line in memo.get("warm_lines") or [] if str(line).strip()]
+    if not warm_lines:
+        warm_lines = list(KOREA_WARM_FAREWELL_LINES)
+    items = "".join(f"<li>{_esc(line)}</li>" for line in action_lines[:3])
+    warm_html = "".join(f'<p class="closing-message warm-farewell">{_esc(line)}</p>' for line in warm_lines[:2])
+    return (
+        '<div class="evening-memo-body">'
+        f'<p>{_esc(memo.get("summary") or "")}</p>'
+        f'<p>{_esc(memo.get("action_intro") or "내일은 세 가지만 확인하시면 됩니다.")}</p>'
+        f'<ol class="evening-memo-actions">{items}</ol>'
+        f'<p>{_esc(memo.get("caution") or "확정되지 않은 수치와 일정은 아직 조심해서 보겠습니다.")}</p>'
+        f"{warm_html}"
+        "</div>"
+    )
+
+
 def _render_deep_dive(fixture: Mapping[str, Any], *, program_id: str) -> str:
     heading = _esc(fixture.get("deep_dive_heading") or SECTION_DEEP_DIVE)
     subframe = _esc(_deep_dive_subframe(program_id))
-    body = _esc(fixture.get("deep_dive_body") or "")
     confirmed = fixture.get("deep_dive_confirmed_facts") or []
     interpretation = _esc(fixture.get("deep_dive_interpretation") or "")
     impact = _esc(fixture.get("deep_dive_owner_impact") or "")
-    uncertainty = _esc(fixture.get("deep_dive_uncertainty") or "")
 
     facts_html = ""
     if isinstance(confirmed, list) and confirmed:
@@ -472,24 +633,34 @@ def _render_deep_dive(fixture: Mapping[str, Any], *, program_id: str) -> str:
       </div>"""
 
     prose = ""
-    if body:
-        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", str(fixture.get("deep_dive_body") or "")) if p.strip()]
-        if not paragraphs:
-            paragraphs = [str(fixture.get("deep_dive_body") or "").strip()]
-        prose = '<div class="deep-dive-prose">' + "".join(f"<p>{_esc(p)}</p>" for p in paragraphs) + "</div>"
+    unc = ""
+    if _is_korea_program(program_id):
+        prose = f'<div class="korea-deep-blocks">{_render_korea_deep_dive_blocks(fixture)}</div>'
+    else:
+        body = str(fixture.get("deep_dive_body") or "")
+        if body:
+            paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
+            if not paragraphs:
+                paragraphs = [body.strip()]
+            prose = '<div class="deep-dive-prose">' + "".join(f"<p>{_esc(p)}</p>" for p in paragraphs) + "</div>"
+        uncertainty = _esc(
+            normalize_visible_text(fixture.get("deep_dive_uncertainty") or "", style="sentence")
+        )
+        unc = (
+            f'<div class="deep-uncertainty"><h4>아직 불확실한 점</h4><p>{uncertainty}</p></div>'
+            if uncertainty
+            else ""
+        )
+        layer_html = layer_html if layer_html else ""
+
     interp = (
         f'<div class="deep-interpretation"><h4>키수리 해석</h4><p>{interpretation}</p></div>'
-        if interpretation
+        if interpretation and not _is_korea_program(program_id)
         else ""
     )
     imp = (
         f'<div class="deep-impact"><h4>주인님·운영자 영향</h4><p>{impact}</p></div>'
-        if impact
-        else ""
-    )
-    unc = (
-        f'<div class="deep-uncertainty"><h4>아직 불확실한 점</h4><p>{uncertainty}</p></div>'
-        if uncertainty
+        if impact and not _is_korea_program(program_id)
         else ""
     )
 
@@ -502,7 +673,7 @@ def _render_deep_dive(fixture: Mapping[str, Any], *, program_id: str) -> str:
       {interp}
       {imp}
       {unc}
-      {layer_html}
+      {layer_html if not _is_korea_program(program_id) else ""}
     </section>
     """
 
@@ -710,6 +881,7 @@ def _premium_styles() -> str:
     .theme-korea .angle-chip{background:var(--k-gold-soft);color:var(--k-gold);border:1px solid rgba(205,168,95,0.30);}
     .card-emphasis-line{margin:0 0 var(--sp-3);padding-top:var(--sp-2);border-top:1px solid var(--ks-line);}
     .card-emphasis-label{font-size:0.78rem;font-weight:700;letter-spacing:0.04em;}
+    .card-emphasis-text{font-size:0.92rem;line-height:1.55;margin-left:0.35rem;}
     .theme-global .card-emphasis-label{color:var(--g-signal);}
     .theme-korea .card-emphasis-label{color:var(--k-gold);}
     .card-rank{font-size:1.5rem;font-weight:800;color:var(--ks-gold);line-height:1;margin-bottom:var(--sp-2);}
@@ -749,6 +921,11 @@ def _premium_styles() -> str:
     }
     .source-box{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden;}
     .deep-dive-prose p,.deep-interpretation p,.deep-impact p,.deep-uncertainty p{margin:0 0 var(--sp-3);line-height:1.75;}
+    .korea-deep-block{margin:0 0 var(--sp-4);padding:var(--sp-3) 0;border-top:1px solid rgba(255,255,255,.08);}
+    .korea-deep-block:first-of-type{border-top:none;padding-top:0;}
+    .korea-deep-label{margin:0 0 var(--sp-2);font-size:.95rem;letter-spacing:-.01em;}
+    .korea-deep-body p,.evening-memo-body p{margin:0 0 var(--sp-3);line-height:1.75;}
+    .korea-deep-list,.evening-memo-actions{margin:0 0 var(--sp-3);padding-left:1.2rem;line-height:1.7;}
     .deep-facts h4,.deep-interpretation h4,.deep-impact h4,.deep-uncertainty h4{
       margin:var(--sp-3) 0 var(--sp-2);font-size:0.82rem;color:var(--ks-gold);
     }
@@ -900,30 +1077,41 @@ def render_keysuri_contract_preview_html(
     top5 = _render_top5_section(working, program_id=program_id)
     deep_dive = _render_deep_dive(working, program_id=program_id)
     checkpoint_subframe = _esc(_checkpoint_subframe(program_id))
+    checkpoint_body = str(working.get("one_line_checkpoint") or "")
+    if is_korea:
+        checkpoint_body = polish_korea_checkpoint_text(checkpoint_body)
     checkpoint = f"""
     <section id="one-line-section" class="section-card">
       <h2 class="section-heading">{SECTION_ONE_LINE}</h2>
       <p class="checkpoint-subframe">{checkpoint_subframe}</p>
-      <div class="checkpoint">{_esc(working.get("one_line_checkpoint"))}</div>
+      <div class="checkpoint">{_esc(checkpoint_body)}</div>
     </section>"""
 
     bottom_shot = _render_bottom_shot(working, program_id=program_id)
-    warm_close = ""
+    korea_memo_section = ""
     global_open_ending = ""
     if is_korea:
-        warm_close_text = _esc(working.get("warm_close_text") or "오늘도 수고하셨습니다. 내일 다시 뵙겠습니다.")
-        warm_close = f"""
-    <section id="warm-close-section" class="section-card">
-      <h2>국내 18:30 따뜻한 마무리</h2>
-      <p class="evening-memo-label">{KOREA_EVENING_MEMO}</p>
-      <p>{warm_close_text}</p>
+        memo_heading = _esc(working.get("evening_memo_heading") or KOREA_EVENING_MEMO_HEADING)
+        memo = _resolve_korea_evening_memo(working)
+        memo_html = _render_korea_evening_memo_body(memo)
+        korea_memo_section = f"""
+    <section id="closing-section" class="section-card evening-memo-section">
+      <h2 class="section-heading">{memo_heading}</h2>
+      {memo_html}
     </section>"""
     else:
         global_open_ending = f"""
     <p class="global-open-ending">{GLOBAL_OPEN_ENDING}</p>"""
 
     review_confirmation = _render_review_confirmation(review_state)
-    closing = f"""
+    if is_korea:
+        closing = f"""
+    <section id="source-appendix-section" class="section-card source-appendix">
+      <h2 class="section-heading">{SECTION_CLOSING}</h2>
+      {_render_source_list(working.get("source_list") or [])}
+    </section>"""
+    else:
+        closing = f"""
     <section id="closing-section" class="section-card source-appendix">
       <h2 class="section-heading">{SECTION_CLOSING}</h2>
       <p class="closing-message">{_esc(closing_message)}</p>
@@ -955,7 +1143,7 @@ def render_keysuri_contract_preview_html(
     validation_box = _render_validation_box(timestamp)
 
     if is_korea:
-        main_tail = checkpoint + bottom_shot + review_confirmation + warm_close + closing
+        main_tail = checkpoint + bottom_shot + review_confirmation + korea_memo_section + closing
     else:
         main_tail = checkpoint + global_open_ending + review_confirmation + closing
 

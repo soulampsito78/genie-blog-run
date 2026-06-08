@@ -56,6 +56,11 @@ KOREA_LAYER_LABELS = (
     "규제·주권·조달 압력",
     "워크플로·락인",
 )
+KOREA_LONGFORM_BLOCK_LABELS = (
+    "오늘의 핵심 흐름",
+    "국내 적용",
+    "내일 볼 지점",
+)
 
 VERIFICATION_MARKERS = (
     "sample_only",
@@ -341,6 +346,13 @@ def _deep_dive_has_layer_structure(region: str) -> bool:
     if layer_cards >= 3:
         return True
 
+    korea_blocks = len(re.findall(r'class="[^"]*\bkorea-deep-block\b', region, flags=re.IGNORECASE))
+    if korea_blocks >= 3:
+        return True
+
+    if all(label in region for label in KOREA_LONGFORM_BLOCK_LABELS):
+        return True
+
     numbered_headings = 0
     for marker in ("deep-layer-number", "deep-layer-title"):
         numbered_headings = max(
@@ -360,7 +372,9 @@ def _deep_dive_has_layer_structure(region: str) -> bool:
 def _deep_dive_is_single_dense_block(region: str) -> bool:
     if not region:
         return False
-    layer_markers = len(re.findall(r"deep-layer|deep_layer|layer-card", region, flags=re.IGNORECASE))
+    layer_markers = len(
+        re.findall(r"deep-layer|deep_layer|layer-card|korea-deep-block", region, flags=re.IGNORECASE)
+    )
     if layer_markers > 0:
         return False
     paragraphs = re.findall(r"<p\b[^>]*>(.*?)</p>", region, flags=re.DOTALL | re.IGNORECASE)
@@ -461,7 +475,7 @@ def _validate_required_sections(
                 ("bottom_shot_placeholder", ("bottom-shot", 'id="bottom-shot-placeholder"', "18:30 bottom-shot")),
                 (
                     "warm_close_section",
-                    ("국내 18:30 따뜻한 마무리", "오늘도 수고하셨습니다"),
+                    ("퇴근 전 메모", "내일은"),
                 ),
             ]
         )
@@ -563,7 +577,7 @@ def _validate_warm_close_order(html: str, issues: List[ValidationIssue]) -> bool
     anchors: List[Tuple[str, Sequence[str]]] = [
         ("one_line_checkpoint", (SECTION_ONE_LINE,)),
         ("bottom_shot", ("bottom-shot", 'id="bottom-shot-placeholder"', "18:30 bottom-shot")),
-        ("warm_close", ("국내 18:30 따뜻한 마무리", "오늘도 수고하셨습니다")),
+        ("warm_close", ("퇴근 전 메모", "내일은")),
         ("closing_section", (SECTION_CLOSING,)),
         ("rights_policy", (RIGHTS_LINE_1,)),
         ("operation_metadata", ("Operation metadata", 'id="operation-metadata"')),

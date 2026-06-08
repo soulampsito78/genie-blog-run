@@ -6,7 +6,17 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from keysuri_briefing_content_quality import validate_briefing_content_gate
+from keysuri_briefing_content_quality import (
+    _extract_source_list_region,
+    validate_briefing_content_gate,
+)
+from keysuri_korea_longform_ux import (
+    KOREA_CLOSING_PARAGRAPH_MAX_CHARS,
+    count_korea_memo_action_lines,
+    count_korea_memo_action_lines_in_closing,
+    extract_korea_memo_action_lines_from_html,
+    korea_closing_paragraph_too_long,
+)
 from keysuri_contract_preview_quality import validate_contract_preview_structural_gate
 from keysuri_contract_preview_renderer import render_keysuri_contract_preview_html
 from keysuri_preview_validation_report import (
@@ -267,6 +277,83 @@ class KeysuriBriefingContentQualityTests(unittest.TestCase):
         codes = {i.code for i in result.issues}
         self.assertIn("korea_global_label_leak", codes)
 
+    def test_korea_gate_fails_on_python_list_repr(self) -> None:
+        fixture = build_korea_contract_fixture()
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        html = html.replace(
+            "다음 확인 포인트",
+            "다음 확인 포인트</h4><p class='block-body'>['A', 'B', 'C']",
+            1,
+        )
+        metadata = {"korea_top5_selection": {"policy": "keysuri_korea_top5_selection_v2_duplicate_guard"}}
+        result = validate_briefing_content_gate(html, source_metadata=metadata)
+        codes = {i.code for i in result.issues}
+        self.assertTrue(
+            "visible_python_list_repr" in codes or "korea_next_watch_list_repr" in codes,
+            codes,
+        )
+
+    def test_korea_gate_fails_on_owner_name_overuse(self) -> None:
+        fixture = build_korea_contract_fixture()
+        fixture["opening_lead"] = "주인님, " * 8 + "국내 적용 신호입니다."
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        metadata = {"korea_top5_selection": {"policy": "keysuri_korea_top5_selection_v2_duplicate_guard"}}
+        result = validate_briefing_content_gate(html, source_metadata=metadata)
+        self.assertTrue(any(i.code == "korea_owner_name_overused" for i in result.issues))
+
+    def test_korea_gate_fails_on_label_only_emphasis(self) -> None:
+        import re
+
+        fixture = build_korea_contract_fixture()
+        fixture["top_5_items"][0]["next_day_impact_line"] = "내일 영향: 정책 신호가 반영될 수 있습니다."
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        broken = re.sub(
+            r'(<span class="card-emphasis-label">[^<]+</span>)\s*<span class="card-emphasis-text">[^<]*</span>',
+            r"\1",
+            html,
+            count=1,
+        )
+        metadata = {"korea_top5_selection": {"policy": "keysuri_korea_top5_selection_v2_duplicate_guard"}}
+        result = validate_briefing_content_gate(broken, source_metadata=metadata)
+        self.assertTrue(any(i.code == "korea_emphasis_line_missing_text" for i in result.issues))
+
+    def test_korea_gate_fails_on_generic_checkpoint_strategy(self) -> None:
+        fixture = build_korea_contract_fixture()
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        html = html.replace(
+            '<div class="checkpoint">',
+            '<div class="checkpoint">주인님, 내일의 사업 전략을 구체화하십시오. ',
+            1,
+        )
+        metadata = {"korea_top5_selection": {"policy": "keysuri_korea_top5_selection_v2_duplicate_guard"}}
+        result = validate_briefing_content_gate(html, source_metadata=metadata)
+        self.assertTrue(
+            any(i.code == "korea_checkpoint_strategy_too_generic" for i in result.issues)
+        )
+
+    def test_korea_gate_fails_on_internal_score_leak(self) -> None:
+        fixture = build_korea_contract_fixture()
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        html = html.replace(
+            "무슨 일이 있었나",
+            "국내 총점 60점(구조 7, 실행 13). 태그: korean_entity_mention. 무슨 일이 있었나",
+            1,
+        )
+        metadata = {"korea_top5_selection": {"policy": "keysuri_korea_top5_selection_v2_duplicate_guard"}}
+        result = validate_briefing_content_gate(html, source_metadata=metadata)
+        codes = {i.code for i in result.issues}
+        self.assertIn("visible_internal_score_leak", codes)
+
+    def test_korea_gate_fails_on_snake_case_visible_token(self) -> None:
+        fixture = build_korea_contract_fixture()
+        fixture["top_5_items"][0]["what_happened"] = (
+            "policy_capital_signal 관련 보도가 나왔습니다. 후속 확인이 필요합니다."
+        )
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        metadata = {"korea_top5_selection": {"policy": "keysuri_korea_top5_selection_v2_duplicate_guard"}}
+        result = validate_briefing_content_gate(html, source_metadata=metadata)
+        self.assertTrue(any(i.code == "visible_snake_case_token" for i in result.issues))
+
     def test_korea_gate_accepts_domestic_application_wording(self) -> None:
         fixture = build_korea_contract_fixture()
         fixture["opening_lead"] = (
@@ -278,6 +365,97 @@ class KeysuriBriefingContentQualityTests(unittest.TestCase):
         result = validate_briefing_content_gate(html, source_metadata=metadata)
         self.assertFalse(any(i.code == "korea_global_label_leak" for i in result.issues))
         self.assertFalse(any(i.code == "korea_lens_terms_missing" for i in result.warnings))
+
+
+class KeysuriKoreaGateExtractionTests(unittest.TestCase):
+    _FIXTURE_001502 = (
+        _REPO / "output/keysuri_preview/html_test/keysuri_korea_live_generated_contract_preview_20260609_001502.html"
+    )
+
+    def _memo_and_source_html(self, *, with_sources: bool = True) -> str:
+        sources = """
+        <section id="source-appendix-section">
+          <a href="https://example.com/a">source</a>
+        </section>
+        """ if with_sources else """
+        <section id="source-appendix-section">
+          <p>출처명: 더lec</p>
+        </section>
+        """
+        return f"""
+        <html><body class="premium-briefing theme-korea">
+        <section id="closing-section">
+          <h2>퇴근 전 메모</h2>
+          <div class="evening-memo-body">
+            <p>오늘은 엔비디아 방한 이슈가 HBM·파운드리·국내 AI 투자 흐름을 한 번에 묶었습니다.</p>
+            <p>내일은 세 가지만 확인하시면 됩니다.</p>
+            <ol class="evening-memo-actions">
+              <li>삼성전자 HBM4 후속</li>
+              <li>GPU 공급 약속 대상 확인</li>
+              <li>국내 AI 투자 구체화</li>
+            </ol>
+            <p>확정되지 않은 수치와 일정은 아직 조심해서 보겠습니다.</p>
+            <p class="closing-message warm-farewell">오늘도 수고 많으셨습니다.</p>
+            <p class="closing-message warm-farewell">내일 아침에 다시 볼 흐름만 남겨두겠습니다.</p>
+          </div>
+        </section>
+        {sources}
+        </body></html>
+        """
+
+    def test_source_gate_uses_source_appendix_not_memo_closing(self) -> None:
+        html = self._memo_and_source_html(with_sources=True)
+        region = _extract_source_list_region(html)
+        self.assertIn("source-appendix-section", html)
+        self.assertIn("https://example.com/a", region)
+        result = validate_briefing_content_gate(html)
+        self.assertFalse(any(i.code == "source_list_incomplete" for i in result.issues))
+
+    def test_source_gate_still_fails_without_urls(self) -> None:
+        html = self._memo_and_source_html(with_sources=False)
+        result = validate_briefing_content_gate(html)
+        self.assertTrue(any(i.code == "source_list_incomplete" for i in result.issues))
+
+    def test_memo_action_gate_counts_html_list_items(self) -> None:
+        html = self._memo_and_source_html()
+        lines = extract_korea_memo_action_lines_from_html(html)
+        self.assertEqual(len(lines), 3)
+        self.assertGreaterEqual(count_korea_memo_action_lines_in_closing(html), 2)
+
+    def test_memo_action_gate_counts_legacy_numbered_plain_text(self) -> None:
+        plain = "내일은 세 가지만 확인하시면 됩니다.\n1. 첫 번째\n2. 두 번째"
+        self.assertGreaterEqual(count_korea_memo_action_lines(plain), 2)
+
+    def test_memo_action_gate_fails_with_fewer_than_two_actions(self) -> None:
+        html = """
+        <section id="closing-section">
+          <div class="evening-memo-body">
+            <ol class="evening-memo-actions"><li>하나만</li></ol>
+          </div>
+        </section>
+        """
+        result = validate_briefing_content_gate(
+            f'<html><body class="theme-korea">{html}</body></html>'
+        )
+        self.assertTrue(any(i.code == "korea_evening_memo_missing_actions" for i in result.issues))
+
+    def test_closing_paragraph_gate_measures_individual_blocks_not_raw_html(self) -> None:
+        html = self._memo_and_source_html()
+        self.assertFalse(korea_closing_paragraph_too_long(html))
+
+    def test_closing_paragraph_gate_still_fails_on_long_visible_paragraph(self) -> None:
+        long_para = "가" * (KOREA_CLOSING_PARAGRAPH_MAX_CHARS + 1)
+        self.assertTrue(korea_closing_paragraph_too_long(f"<p>{long_para}</p>"))
+
+    def test_existing_001502_html_gate_false_positives_cleared(self) -> None:
+        if not self._FIXTURE_001502.is_file():
+            raise unittest.SkipTest("001502 smoke HTML fixture not present")
+        html = self._FIXTURE_001502.read_text(encoding="utf-8")
+        result = validate_briefing_content_gate(html)
+        codes = {issue.code for issue in result.issues}
+        self.assertNotIn("source_list_incomplete", codes)
+        self.assertNotIn("korea_evening_memo_missing_actions", codes)
+        self.assertNotIn("korea_closing_paragraph_too_long", codes)
 
 
 class KeysuriVisualIdentityQualityTests(unittest.TestCase):

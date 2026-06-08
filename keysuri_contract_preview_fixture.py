@@ -11,9 +11,29 @@ from keysuri_approved_image_assets import (
     resolve_approved_hero_image_path,
 )
 from keysuri_news_contract import expected_top5_heading_for_program
+from keysuri_korea_longform_ux import (
+    KOREA_EVENING_MEMO_HEADING,
+    build_korea_evening_memo,
+    korea_closing_internal_label_leak,
+    korea_closing_structure_incomplete,
+    korea_evening_memo_too_thin,
+    memo_plain_text,
+    structure_korea_deep_dive,
+)
+from keysuri_visible_text import (
+    PROGRAM_KOREA,
+    build_visible_selection_reason,
+    coerce_visible_lines,
+    dedupe_repeated_paragraph,
+    dedupe_sentences_in_paragraph,
+    normalize_visible_text,
+    polish_korea_checkpoint_text,
+    sanitize_visible_impact_line,
+    sanitize_visible_selection_reason,
+    strip_watch_arrow_prefixes,
+)
 
 PROGRAM_GLOBAL = "keysuri_global_tech"
-PROGRAM_KOREA = "keysuri_korea_tech"
 
 GLOBAL_DEEP_LAYER_TITLES = (
     "인프라·플랫폼 신호",
@@ -22,9 +42,9 @@ GLOBAL_DEEP_LAYER_TITLES = (
 )
 
 KOREA_DEEP_LAYER_TITLES = (
-    "물리·인프라 병목",
-    "규제·주권·조달 압력",
-    "워크플로·락인",
+    "국내 인프라·공급망",
+    "정책·조달·투자",
+    "내일 실행 포인트",
 )
 
 LIVE_VERIFICATION_STATUS = "live_fetch / not_verified"
@@ -39,7 +59,9 @@ _OWNER_ADDRESS_REPLACEMENTS: tuple[tuple[str, str], ...] = (
 
 
 def _sanitize_owner_visible_text(text: str) -> str:
-    out = str(text or "").strip()
+    out = dedupe_sentences_in_paragraph(
+        dedupe_repeated_paragraph(normalize_visible_text(text, style="inline"))
+    )
     if not out:
         return out
     for old, new in _OWNER_ADDRESS_REPLACEMENTS:
@@ -151,6 +173,7 @@ def _map_top_item(
     src: dict,
     source_pack: dict,
     rank: int,
+    program_id: str,
 ) -> Dict[str, Any]:
     extra = _item_display(item)
     sid = _first_source_id(item)
@@ -164,16 +187,43 @@ def _map_top_item(
     owner_angle = str(
         extra.get("owner_angle") or item.get("owner_angle") or item.get("business_implication") or ""
     ).strip()
-    next_watch = str(
+    next_watch_raw = (
         extra.get("next_watch") or item.get("next_watch") or item.get("next_check_point") or ""
+    )
+    next_watch = strip_watch_arrow_prefixes(
+        "; ".join(coerce_visible_lines(next_watch_raw)[:4])
+    )
+    category_key = str(
+        item.get("primary_category") or extra.get("primary_category") or ""
     ).strip()
-    selection_reason = str(
+    meta_stub = {
+        "primary_category": category_key,
+        "selection_reason_tags": item.get("selection_reason_tags") or extra.get("selection_reason_tags") or [],
+        "selection_rationale": item.get("selection_rationale") or extra.get("selection_rationale"),
+        "reason_for_selection": item.get("reason_for_selection") or extra.get("reason_for_selection"),
+    }
+    next_day_impact_line = sanitize_visible_impact_line(
+        extra.get("next_day_impact_line")
+        or item.get("next_day_impact_line")
+        or extra.get("owner_action_line")
+        or item.get("owner_action_line")
+        or "",
+        category=category_key,
+    )
+    selection_reason = sanitize_visible_selection_reason(
         extra.get("selection_reason")
         or item.get("selection_reason")
         or extra.get("selection_rationale")
         or item.get("selection_rationale")
-        or ""
-    ).strip()
+        or "",
+        item=item,
+        meta=meta_stub,
+        program_id=program_id,
+    )
+    if program_id == PROGRAM_KOREA:
+        selection_reason = build_visible_selection_reason(
+            item, meta_stub, program_id=program_id, existing=selection_reason
+        )
     hype_caution = str(extra.get("hype_caution") or item.get("hype_caution") or "").strip()
 
     judgment = extra.get("keysuri_judgment")
@@ -205,6 +255,10 @@ def _map_top_item(
         "keysuri_judgment_label": j_label,
         "keysuri_judgment": _sanitize_owner_visible_text(j_text),
         "next_watch": _sanitize_owner_visible_text(next_watch),
+        "next_day_impact_line": _sanitize_owner_visible_text(next_day_impact_line),
+        "owner_action_line": _sanitize_owner_visible_text(
+            normalize_visible_text(extra.get("owner_action_line") or item.get("owner_action_line") or "", style="inline")
+        ),
         "selection_reason": _sanitize_owner_visible_text(selection_reason),
         "hype_caution": _sanitize_owner_visible_text(hype_caution),
         "detail_insufficient": detail_insufficient,
@@ -243,7 +297,9 @@ def build_contract_preview_fixture_from_generated(
         rank = int(item.get("rank") or idx)
         sid = _first_source_id(item)
         src = src_map.get(sid, {})
-        top_items.append(_map_top_item(item, src=src, source_pack=source_pack, rank=rank))
+        top_items.append(
+            _map_top_item(item, src=src, source_pack=source_pack, rank=rank, program_id=program_id)
+        )
 
     deep = generated_briefing.get("deep_dive") if isinstance(generated_briefing.get("deep_dive"), dict) else {}
     one = (
@@ -258,6 +314,8 @@ def build_contract_preview_fixture_from_generated(
     )
 
     one_line_body = _sanitize_owner_visible_text(str(one.get("body") or ""))
+    if program_id == PROGRAM_KOREA:
+        one_line_body = polish_korea_checkpoint_text(one_line_body)
     opening_lead = _sanitize_owner_visible_text(str(display.get("opening_lead") or ""))
     if not opening_lead:
         opening_lead = _fallback_opening_lead(
@@ -268,6 +326,15 @@ def build_contract_preview_fixture_from_generated(
     closing_message = _sanitize_owner_visible_text(
         str(closing.get("closing_message") or display.get("closing_message") or "")
     )
+    if program_id == PROGRAM_KOREA and (
+        korea_closing_internal_label_leak(closing_message)
+        or "오늘의 정리와 퇴근 전 메모" in closing_message
+        or (
+            "퇴근 전" in closing_message
+            and korea_evening_memo_too_thin(closing_message)
+        )
+    ):
+        closing_message = "오늘 신호는 여기까지 정리했습니다. 출처는 아래에 그대로 남깁니다."
     if not closing_message:
         closing_message = "주인님, 오늘 신호는 여기까지 정리했습니다. 다음 확인 포인트는 원-라인 체크포인트를 기준으로 보시면 됩니다."
 
@@ -297,6 +364,41 @@ def build_contract_preview_fixture_from_generated(
                     }
                 )
 
+    korea_deep_sections: List[Dict[str, str]] = []
+    evening_memo_body = ""
+    korea_evening_memo: Dict[str, Any] = {}
+    deep_body = _sanitize_owner_visible_text(str(deep.get("body") or ""))
+    if program_id == PROGRAM_KOREA:
+        korea_deep_sections = list(deep.get("korea_deep_dive_sections") or [])
+        if not korea_deep_sections:
+            korea_deep_sections = structure_korea_deep_dive(
+                deep_body,
+                top_items,
+                uncertainty=normalize_visible_text(
+                    deep.get("uncertainty") or deep.get("open_questions") or "",
+                    style="sentence",
+                ),
+            )
+        deep_body = "\n\n".join(
+            f"{section['label']}\n{section['body']}"
+            for section in korea_deep_sections
+            if section.get("body")
+        )
+        raw_memo = generated_briefing.get("korea_evening_memo") or closing.get("evening_memo") or display.get("evening_memo")
+        if isinstance(raw_memo, dict):
+            korea_evening_memo = dict(raw_memo)
+        if (
+            not korea_evening_memo
+            or korea_evening_memo_too_thin(korea_evening_memo)
+            or korea_closing_structure_incomplete(korea_evening_memo)
+            or korea_closing_internal_label_leak(memo_plain_text(korea_evening_memo))
+        ):
+            korea_evening_memo = build_korea_evening_memo(
+                top_items,
+                closing_message=closing_message,
+            )
+        evening_memo_body = memo_plain_text(korea_evening_memo)
+
     fixture: Dict[str, Any] = {
         "program_id": program_id,
         "slot": slot,
@@ -305,7 +407,11 @@ def build_contract_preview_fixture_from_generated(
         "top_5_heading": expected_top5_heading_for_program(program_id),
         "top_5_items": top_items,
         "deep_dive_heading": str(deep.get("section_heading") or "키수리의 딥-다이브"),
-        "deep_dive_body": _sanitize_owner_visible_text(str(deep.get("body") or "")),
+        "deep_dive_body": deep_body,
+        "korea_deep_dive_sections": korea_deep_sections,
+        "evening_memo_heading": KOREA_EVENING_MEMO_HEADING if program_id == PROGRAM_KOREA else "",
+        "korea_evening_memo": korea_evening_memo if program_id == PROGRAM_KOREA else {},
+        "evening_memo_body": evening_memo_body,
         "deep_dive_confirmed_facts": deep.get("confirmed_facts") if isinstance(deep.get("confirmed_facts"), list) else [],
         "deep_dive_interpretation": _sanitize_owner_visible_text(
             str(deep.get("interpretation") or deep.get("keysuri_interpretation") or "")
@@ -313,7 +419,10 @@ def build_contract_preview_fixture_from_generated(
         "deep_dive_owner_impact": _sanitize_owner_visible_text(
             str(deep.get("owner_impact") or deep.get("korean_operator_impact") or "")
         ),
-        "deep_dive_uncertainty": str(deep.get("uncertainty") or deep.get("open_questions") or "").strip(),
+        "deep_dive_uncertainty": normalize_visible_text(
+            deep.get("uncertainty") or deep.get("open_questions") or "",
+            style="sentence",
+        ),
         "deep_dive_layers": _deep_dive_layers(program_id, generated_briefing),
         "one_line_checkpoint": one_line_body,
         "closing_message": closing_message,
