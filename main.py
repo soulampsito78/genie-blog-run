@@ -55,8 +55,10 @@ import urllib.request
 app = FastAPI(title="Genie Project API")
 
 from admin_routes import router as admin_router  # noqa: E402
+from internal_jobs import router as internal_jobs_router  # noqa: E402
 
 app.include_router(admin_router)
+app.include_router(internal_jobs_router)
 
 _static_dir = Path(__file__).resolve().parent / "static"
 if _static_dir.is_dir():
