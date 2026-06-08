@@ -55,8 +55,8 @@ _REISSUE_ERROR_MESSAGES = {
     "invalid_reissue_scope": "재발행 범위가 올바르지 않습니다.",
     "missing_reissue_scope": "재발행 범위를 선택하세요.",
     "unsupported_reissue_scope": (
-        "선택한 재발행 범위는 아직 지원되지 않습니다. "
-        "본문·이미지 모두 재발행만 실행할 수 있습니다."
+        "선택한 재발행 범위는 아직 실행할 수 없습니다. "
+        "현재는 본문·이미지 모두 재발행만 실행 가능합니다."
     ),
 }
 
@@ -136,17 +136,24 @@ def _render_delivery_report_sections(meta: dict) -> str:
 
 
 def _render_reissue_scope_field() -> str:
-    rows = []
+    rows = [
+        '<p style="margin:0 0 12px 0;font-size:12px;line-height:1.6;color:#9a3412;">'
+        "현재 본문만/이미지만 재발행은 선택할 수 있지만, 실행은 아직 차단됩니다. "
+        "범위 보존 및 병합 로직이 준비된 뒤 활성화됩니다."
+        "</p>"
+    ]
     for scope, label, helper in REISSUE_SCOPE_OPTIONS:
-        disabled = " disabled" if scope in UNSUPPORTED_REISSUE_SCOPES else ""
+        scope_helper = helper
+        if scope in UNSUPPORTED_REISSUE_SCOPES:
+            scope_helper = f"{helper} (현재는 선택만 가능하며 실행은 차단됩니다.)"
         checked = " checked" if scope == EXECUTABLE_REISSUE_SCOPE else ""
         rows.append(
             f"<label style=\"display:block;margin:0 0 10px 0;\">"
             f"<input type=\"radio\" name=\"reissue_scope\" value=\"{_esc(scope)}\" required"
-            f"{disabled}{checked}> "
+            f"{checked}> "
             f"<strong>{_esc(label)}</strong>"
             f"<span style=\"display:block;margin:4px 0 0 24px;font-size:12px;color:#64748b;\">"
-            f"{_esc(helper)}</span></label>"
+            f"{_esc(scope_helper)}</span></label>"
         )
     return "\n".join(rows)
 
@@ -360,7 +367,7 @@ def admin_run_detail(request: Request, run_id: str):
 <strong>재발행 안내</strong><br>
 재발행은 새 브리핑을 생성하고 <strong>운영자 검토용 이메일</strong>을 다시 보냅니다. 고객 최종 배포가 아닙니다.<br>
 현재 실행 경로는 새 본문 생성과 운영자 검토용 이메일 재발송을 수행합니다. 이미지는 현재 최신 이미지 자산을 재사용할 수 있습니다.<br>
-현재 즉시 실행 가능한 경로는 본문·이미지 모두 재발행입니다. 본문만/이미지만 재발행은 범위 보존 및 병합 로직이 준비된 뒤 활성화됩니다.
+본문만/이미지만 재발행은 선택할 수 있지만 실행은 서버에서 차단됩니다. 현재 즉시 실행 가능한 경로는 본문·이미지 모두 재발행입니다.
 </div>
 <div class="card">
 <h2>재발행 요청</h2>

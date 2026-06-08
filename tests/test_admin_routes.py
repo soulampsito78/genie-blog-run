@@ -122,6 +122,28 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("본문·이미지 모두 재발행", resp.text)
         self.assertIn("운영자 검토 메일", resp.text)
         self.assertIn("고객 이메일 전달", resp.text)
+        self.assertIn("선택할 수 있지만, 실행은 아직 차단됩니다", resp.text)
+
+    def test_reissue_scope_radios_are_selectable_not_disabled(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        run_id = "20260530_121100_today_genie_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": run_id,
+                "mode": "today_genie",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": False,
+                "response_status": 200,
+                "reason_summary": "ok",
+            }
+        )
+        resp = self.client.get(f"/admin/runs/{run_id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotRegex(resp.text, r'value="text_only"[^>]*\bdisabled\b')
+        self.assertNotRegex(resp.text, r'value="image_only"[^>]*\bdisabled\b')
+        self.assertRegex(resp.text, r'value="text_and_image"[^>]*\bchecked\b')
+        self.assertIn('name="reissue_scope"', resp.text)
 
     def test_admin_detail_labels_smtp_accepted_not_delivery_confirmed(self) -> None:
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
@@ -209,6 +231,7 @@ class AdminRoutesTests(unittest.TestCase):
                 "email_sent": True,
                 "response_status": 200,
                 "reason_summary": "ok",
+                "reissue_count": 0,
             }
         )
         resp = self.client.post(
@@ -218,11 +241,15 @@ class AdminRoutesTests(unittest.TestCase):
                 "reason_note": "",
                 "reissue_scope": "text_only",
             },
-            follow_redirects=False,
+            follow_redirects=True,
         )
-        self.assertEqual(resp.status_code, 303)
-        self.assertIn("unsupported_reissue_scope", resp.headers.get("location", ""))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("unsupported_reissue_scope", str(resp.url))
+        self.assertIn("아직 실행할 수 없습니다", resp.text)
+        self.assertNotIn("sent_archived", resp.text)
         mock_exec.assert_not_called()
+        parent = load_run_artifact(parent_id) or {}
+        self.assertEqual(parent.get("reissue_count", 0), 0)
 
     @patch("admin_routes.execute_orchestrator_run")
     def test_reissue_image_only_blocked(self, mock_exec) -> None:
@@ -237,6 +264,7 @@ class AdminRoutesTests(unittest.TestCase):
                 "email_sent": True,
                 "response_status": 200,
                 "reason_summary": "ok",
+                "reissue_count": 0,
             }
         )
         resp = self.client.post(
@@ -246,11 +274,14 @@ class AdminRoutesTests(unittest.TestCase):
                 "reason_note": "",
                 "reissue_scope": "image_only",
             },
-            follow_redirects=False,
+            follow_redirects=True,
         )
-        self.assertEqual(resp.status_code, 303)
-        self.assertIn("unsupported_reissue_scope", resp.headers.get("location", ""))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("unsupported_reissue_scope", str(resp.url))
+        self.assertIn("본문·이미지 모두 재발행만 실행 가능합니다", resp.text)
         mock_exec.assert_not_called()
+        parent = load_run_artifact(parent_id) or {}
+        self.assertEqual(parent.get("reissue_count", 0), 0)
 
     @patch("admin_routes.execute_orchestrator_run")
     def test_reissue_invalid_scope_rejected(self, mock_exec) -> None:
