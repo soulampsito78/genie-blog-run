@@ -11,3 +11,17 @@ today.local.env
 
 # Generated proof runs, previews, diagnostics, archives (runtime under output/)
 output/
+
+# --- Local Genie proof artifacts (generated; do not commit with pipeline work) ---
+
+# Repo-root PDF/HTML proof exports
+/genie_*.pdf
+/genie_*_preview.html
+/genie_*_proof.html
+
+# Ops validation/send preview dumps (tracked ops/feeds and design docs unaffected)
+/ops/preview/
+
+# Static email TPO/experiment JPEGs (canonical *_latest, tracked *_v1, GENIE_REF_* unaffected)
+/static/email/GENIE_EMAIL_today_genie_*_v[2-9].jpg
+/static/email/GENIE_EMAIL_today_genie_*_tpo_run.jpg
