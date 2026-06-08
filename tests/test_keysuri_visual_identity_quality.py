@@ -94,6 +94,28 @@ class KeysuriVisualIdentityGateTests(unittest.TestCase):
         self.assertIn("glasses", joined)
         self.assertIn("watermark", joined.lower())
 
+    def test_bottom_shot_manifest_blocks_global_top_role(self) -> None:
+        html = self._html()
+        with TemporaryDirectory() as tmpdir:
+            manifest = {
+                "image_role": "bottom_shot",
+                "width": 896,
+                "height": 1152,
+                "overlay_applied": True,
+                "watermark_text": "MirAI:ON",
+                "review_status": "pass_direction",
+            }
+            path = Path(tmpdir) / "m.json"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            result = validate_visual_identity_gate(
+                html,
+                manifest_path=str(path),
+                program_id="keysuri_global_tech",
+                requested_role="global_top",
+            )
+            self.assertEqual(result.status, "fail")
+            self.assertTrue(any(i.code == "manifest_role_conflict" for i in result.issues))
+
 
 if __name__ == "__main__":
     unittest.main()

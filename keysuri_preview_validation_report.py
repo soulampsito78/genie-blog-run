@@ -6,9 +6,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
+from keysuri_approved_image_assets import ImageSourceMode
 from keysuri_briefing_content_quality import validate_briefing_content_gate
 from keysuri_contract_preview_quality import validate_contract_preview_structural_gate
 from keysuri_html_preview_validation import validate_keysuri_html_preview
+from keysuri_approved_image_assets import default_top_role_for_program
 from keysuri_visual_identity_quality import validate_visual_identity_gate
 
 GateStatus = Literal["pass", "fail", "warn", "manual_review_required", "skip"]
@@ -228,6 +230,9 @@ def validate_keysuri_contract_preview(
     program_id: Optional[str] = None,
     image_path: Optional[str] = None,
     image_manifest_path: Optional[str] = None,
+    repo_root: Optional[str | Path] = None,
+    image_source_mode: Optional[ImageSourceMode] = None,
+    briefing_source_metadata: Optional[dict] = None,
 ) -> KeeSuriPreviewValidationReport:
     """Run all three gates and produce unified readiness report."""
     html_validator_status = "SKIP"
@@ -257,11 +262,20 @@ def validate_keysuri_contract_preview(
                 html,
                 image_path=image_path,
                 manifest_path=image_manifest_path,
+                repo_root=repo_root,
+                program_id=program_id,
+                image_source_mode=image_source_mode,
+                requested_role=default_top_role_for_program(program_id or ""),
             )
             visual_gate = _gate_from_visual(visual)
             overall, ready, manual, reasons = compute_overall_status(
                 structural_extra, content, visual_gate
             )
+            if visual.match_reason == "approved_asset_registry_match":
+                reasons.insert(
+                    0,
+                    f"visual_identity_gate pass via approved_asset_registry_match ({visual.approved_asset_id})",
+                )
             return KeeSuriPreviewValidationReport(
                 structural_gate=structural_extra,
                 content_briefing_gate=content,
@@ -275,18 +289,28 @@ def validate_keysuri_contract_preview(
             )
 
     structural_gate = _gate_from_structural(validate_contract_preview_structural_gate(html))
-    content_gate = _gate_from_briefing(validate_briefing_content_gate(html))
-    visual_gate = _gate_from_visual(
-        validate_visual_identity_gate(
-            html,
-            image_path=image_path,
-            manifest_path=image_manifest_path,
-        )
+    content_gate = _gate_from_briefing(
+        validate_briefing_content_gate(html, source_metadata=briefing_source_metadata)
     )
+    visual_result = validate_visual_identity_gate(
+        html,
+        image_path=image_path,
+        manifest_path=image_manifest_path,
+        repo_root=repo_root,
+        program_id=program_id,
+        image_source_mode=image_source_mode,
+        requested_role=default_top_role_for_program(program_id or ""),
+    )
+    visual_gate = _gate_from_visual(visual_result)
 
     overall, ready, manual, reasons = compute_overall_status(
         structural_gate, content_gate, visual_gate
     )
+    if visual_result.match_reason == "approved_asset_registry_match":
+        reasons.insert(
+            0,
+            f"visual_identity_gate pass via approved_asset_registry_match ({visual_result.approved_asset_id})",
+        )
 
     return KeeSuriPreviewValidationReport(
         structural_gate=structural_gate,

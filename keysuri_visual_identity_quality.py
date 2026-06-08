@@ -7,6 +7,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Literal, Optional
 
+from keysuri_approved_image_assets import (
+    APPROVED_DIRECTION_LOCKED_STATUS,
+    APPROVED_LOCKED_STATUS,
+    APPROVED_STATUS,
+    GLOBAL_TOP_ROLE,
+    ImageSourceMode,
+    KOREA_BOTTOM_ROLE,
+    KOREA_TOP_ROLE,
+    PENDING_OWNER_STATUS,
+    PROGRAM_GLOBAL,
+    PROGRAM_KOREA,
+    default_top_role_for_program,
+    is_korea_bottom_sha256,
+    match_registry_asset,
+    normalize_asset_role,
+)
+
 VisualGateStatus = Literal["pass", "fail", "manual_review_required"]
 
 MANUAL_VISUAL_CHECKS: tuple[str, ...] = (
@@ -41,6 +58,9 @@ class VisualIdentityQualityResult:
     warnings: List[VisualIdentityIssue] = field(default_factory=list)
     manual_checks: List[str] = field(default_factory=list)
     manifest_path: Optional[str] = None
+    match_reason: Optional[str] = None
+    approved_asset_id: Optional[str] = None
+    image_source_mode: Optional[ImageSourceMode] = None
 
     @property
     def ok(self) -> bool:
@@ -53,6 +73,9 @@ class VisualIdentityQualityResult:
             "warnings": [w.__dict__ for w in self.warnings],
             "manual_checks": list(self.manual_checks),
             "manifest_path": self.manifest_path,
+            "match_reason": self.match_reason,
+            "approved_asset_id": self.approved_asset_id,
+            "image_source_mode": self.image_source_mode,
         }
 
 
@@ -74,12 +97,13 @@ def _manifest_sidecar_for_image(image_path: Optional[str]) -> Optional[Path]:
         return None
     p = Path(image_path).expanduser()
     candidate = p.with_suffix(".manifest.json")
-    if candidate.is_file():
+    if candidate.is_file() and candidate.suffix == ".json":
         return candidate
-    wm = p.name.replace("_mirai_on_watermarked.jpg", "_mirai_on_watermarked.manifest.json")
-    alt = p.parent / wm
-    if alt.is_file():
-        return alt
+    if p.name.endswith("_mirai_on_watermarked.jpg"):
+        wm = p.name.replace("_mirai_on_watermarked.jpg", "_mirai_on_watermarked.manifest.json")
+        alt = p.parent / wm
+        if alt.is_file():
+            return alt
     return None
 
 
@@ -124,18 +148,41 @@ def _check_html_hero_css(html: str, warnings: List[VisualIdentityIssue]) -> None
         )
 
 
+def _manifest_conflicts_with_role(manifest: dict, requested_role: str, registry_role: str) -> Optional[str]:
+    manifest_role = str(manifest.get("image_role") or "").strip().lower()
+    req = normalize_asset_role(requested_role)
+    reg = normalize_asset_role(registry_role)
+    if not manifest_role:
+        return None
+    if req == GLOBAL_TOP_ROLE and manifest_role == "bottom_shot":
+        return "manifest_role_conflict"
+    if req in (GLOBAL_TOP_ROLE, KOREA_TOP_ROLE) and manifest_role == "bottom_shot":
+        return "manifest_role_conflict"
+    if reg == KOREA_BOTTOM_ROLE and manifest_role == "bottom_shot" and req != KOREA_BOTTOM_ROLE:
+        return "manifest_role_conflict"
+    if reg in (GLOBAL_TOP_ROLE, KOREA_TOP_ROLE) and manifest_role == "bottom_shot":
+        return "manifest_role_conflict"
+    return None
+
+
 def validate_visual_identity_gate(
     html: str,
     *,
     image_path: Optional[str] = None,
     manifest_path: Optional[str] = None,
     owner_visual_approved: bool = False,
+    repo_root: Optional[str | Path] = None,
+    program_id: Optional[str] = None,
+    image_source_mode: Optional[ImageSourceMode] = None,
+    use_case: str = "contract_preview",
+    requested_role: Optional[str] = None,
 ) -> VisualIdentityQualityResult:
     """
     Visual identity gate — never PASS solely on data URI + watermark.
 
-    Without face-recognition or owner approval, generated_test images return
-    manual_review_required (not pass).
+    Approved registry assets pass via approved_asset_registry_match.
+    Generated candidates and explicit test overrides require registry match
+    or return manual_review_required / fail.
     """
     issues: List[VisualIdentityIssue] = []
     warnings: List[VisualIdentityIssue] = []
@@ -179,6 +226,166 @@ def validate_visual_identity_gate(
         )
 
     _check_html_hero_css(html, warnings)
+
+    req_role = normalize_asset_role(
+        requested_role or (default_top_role_for_program(program_id) if program_id else GLOBAL_TOP_ROLE)
+    )
+
+    if image_path and program_id and req_role in (GLOBAL_TOP_ROLE, KOREA_TOP_ROLE):
+        try:
+            from keysuri_approved_image_assets import _sha256_file
+
+            actual_sha = _sha256_file(Path(image_path))
+            if is_korea_bottom_sha256(actual_sha):
+                issues.append(
+                    VisualIdentityIssue(
+                        "fallback_role_mismatch",
+                        "105936 korea_bottom asset hash cannot pass as global/korea top hero",
+                        section="registry",
+                    )
+                )
+                return VisualIdentityQualityResult(
+                    status="fail",
+                    issues=issues,
+                    warnings=warnings,
+                    manual_checks=list(MANUAL_VISUAL_CHECKS),
+                    image_source_mode=image_source_mode,
+                )
+        except OSError:
+            pass
+
+    if repo_root and image_path and program_id:
+        registry_match = match_registry_asset(
+            Path(repo_root),
+            Path(image_path),
+            program_id,
+            role=req_role,
+            use_case=use_case,
+        )
+        if registry_match is not None:
+            asset_role = normalize_asset_role(registry_match.role)
+            if asset_role == KOREA_BOTTOM_ROLE and req_role in (GLOBAL_TOP_ROLE, KOREA_TOP_ROLE):
+                issues.append(
+                    VisualIdentityIssue(
+                        "asset_role_mismatch",
+                        f"Registry asset {registry_match.asset_id!r} is korea_bottom but {req_role!r} was requested",
+                        section="registry",
+                    )
+                )
+                return VisualIdentityQualityResult(
+                    status="fail",
+                    issues=issues,
+                    warnings=warnings,
+                    manual_checks=list(MANUAL_VISUAL_CHECKS),
+                    image_source_mode=image_source_mode,
+                )
+            resolved_manifest = manifest_path
+            if not resolved_manifest and registry_match.manifest_path:
+                resolved_manifest = str(
+                    (Path(repo_root) / registry_match.manifest_path).resolve()
+                )
+            manifest_data = _load_manifest(resolved_manifest)
+            if manifest_data:
+                conflict = _manifest_conflicts_with_role(
+                    manifest_data,
+                    req_role,
+                    registry_match.role,
+                )
+                if conflict:
+                    issues.append(
+                        VisualIdentityIssue(
+                            conflict,
+                            f"Manifest image_role={manifest_data.get('image_role')!r} conflicts with requested {req_role!r}",
+                            section="manifest",
+                        )
+                    )
+                    return VisualIdentityQualityResult(
+                        status="fail",
+                        issues=issues,
+                        warnings=warnings,
+                        manual_checks=list(MANUAL_VISUAL_CHECKS),
+                        manifest_path=resolved_manifest,
+                        image_source_mode=image_source_mode,
+                    )
+            if registry_match.status == PENDING_OWNER_STATUS:
+                warnings.append(
+                    VisualIdentityIssue(
+                        "owner_visual_approval_pending",
+                        f"Registry asset {registry_match.asset_id!r} is pending owner visual check",
+                        section="registry",
+                        severity="warning",
+                    )
+                )
+                return VisualIdentityQualityResult(
+                    status="manual_review_required",
+                    warnings=warnings,
+                    manual_checks=list(MANUAL_VISUAL_CHECKS),
+                    manifest_path=resolved_manifest,
+                    match_reason="approved_candidate_pending_owner_visual_check",
+                    approved_asset_id=registry_match.asset_id,
+                    image_source_mode=image_source_mode or "approved_registry",
+                )
+            if registry_match.status in (
+                APPROVED_STATUS,
+                APPROVED_LOCKED_STATUS,
+                APPROVED_DIRECTION_LOCKED_STATUS,
+            ):
+                if registry_match.watermark_status in (
+                    "no_watermark_or_pending_watermark",
+                    "",
+                ):
+                    warnings.append(
+                        VisualIdentityIssue(
+                            "watermark_pending",
+                            "Locked top asset has no MirAI:ON watermark yet — preview uses original JPG",
+                            section="registry",
+                            severity="warning",
+                        )
+                    )
+                return VisualIdentityQualityResult(
+                    status="pass",
+                    warnings=warnings,
+                    manual_checks=list(MANUAL_VISUAL_CHECKS),
+                    manifest_path=resolved_manifest,
+                    match_reason="approved_asset_registry_match",
+                    approved_asset_id=registry_match.asset_id,
+                    image_source_mode=image_source_mode or "approved_registry",
+                )
+            warnings.append(
+                VisualIdentityIssue(
+                    "registry_status_not_approved",
+                    f"Registry asset status is {registry_match.status!r}",
+                    section="registry",
+                    severity="warning",
+                )
+            )
+            return VisualIdentityQualityResult(
+                status="manual_review_required",
+                warnings=warnings,
+                manual_checks=list(MANUAL_VISUAL_CHECKS),
+                manifest_path=resolved_manifest,
+                match_reason="registry_match_requires_review",
+                approved_asset_id=registry_match.asset_id,
+                image_source_mode=image_source_mode or "approved_registry",
+            )
+
+    if image_source_mode == "explicit_test_override":
+        warnings.append(
+            VisualIdentityIssue(
+                "not_approved_asset",
+                "Explicit --image-path override is not an approved registry asset",
+                section="registry",
+                severity="warning",
+            )
+        )
+        return VisualIdentityQualityResult(
+            status="manual_review_required",
+            warnings=warnings,
+            manual_checks=list(MANUAL_VISUAL_CHECKS),
+            manifest_path=manifest_path,
+            match_reason="explicit_test_override_not_in_registry",
+            image_source_mode=image_source_mode,
+        )
 
     resolved_manifest_path = manifest_path
     if not resolved_manifest_path and image_path:
@@ -226,6 +433,14 @@ def validate_visual_identity_gate(
     candidate_id = manifest.get("candidate_id")
 
     if image_source == "generated_test":
+        warnings.append(
+            VisualIdentityIssue(
+                "not_approved_asset",
+                "generated_test image is not in approved asset registry — candidate only",
+                section="registry",
+                severity="warning",
+            )
+        )
         if not ref_path and not ref_sha:
             issues.append(
                 VisualIdentityIssue(
@@ -282,6 +497,22 @@ def validate_visual_identity_gate(
                 )
             )
 
+    if image_role == "bottom_shot" and req_role in (GLOBAL_TOP_ROLE, KOREA_TOP_ROLE):
+        issues.append(
+            VisualIdentityIssue(
+                "manifest_role_conflict",
+                f"bottom_shot manifest cannot pass as {req_role!r} hero",
+                section="manifest",
+            )
+        )
+        return VisualIdentityQualityResult(
+            status="fail",
+            issues=issues,
+            warnings=warnings,
+            manual_checks=list(MANUAL_VISUAL_CHECKS),
+            manifest_path=resolved_manifest_path,
+        )
+
     if image_role and "hero" not in image_role and image_role not in ("top_shot", "email_hero_wide_candidate"):
         warnings.append(
             VisualIdentityIssue(
@@ -335,4 +566,6 @@ def validate_visual_identity_gate(
         warnings=warnings,
         manual_checks=list(MANUAL_VISUAL_CHECKS),
         manifest_path=resolved_manifest_path,
+        match_reason="not_approved_asset",
+        image_source_mode=image_source_mode,
     )
