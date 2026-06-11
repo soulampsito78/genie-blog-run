@@ -3,4 +3,5 @@ uvicorn[standard]
 pydantic
 python-multipart
 google-cloud-aiplatform
+Pillow
 playwright

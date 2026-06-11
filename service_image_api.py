@@ -54,12 +54,13 @@ def invoke_vertex_image_generation(
     if fn is None:
         try:
             from image_generator import generate_image_file as fn  # noqa: PLC0415
-        except ImportError as exc:
-            return ServiceImageOutcome(
-                image_generation_status=IMAGE_GEN_FAILED,
-                error_code=ERROR_IMAGE_GENERATION_NOT_IMPLEMENTED,
-                error_message=str(exc),
-            )
+    except ImportError as exc:
+        logger.warning("image_generator import failed: %s", exc)
+        return ServiceImageOutcome(
+            image_generation_status=IMAGE_GEN_FAILED,
+            error_code=ERROR_IMAGE_GENERATION_NOT_IMPLEMENTED,
+            error_message=f"image_generator_import_failed: {exc}",
+        )
 
     project = (
         str(project_id or "").strip()
