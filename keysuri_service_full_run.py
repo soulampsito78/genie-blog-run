@@ -18,7 +18,6 @@ from keysuri_contract_preview_renderer import (
 )
 from keysuri_briefing_content_enricher import enrich_generated_briefing_content
 from keysuri_generation_prompt import parse_keysuri_generated_response
-from keysuri_image_api_canary_client import run_keysuri_image_api_canary
 from keysuri_live_source_smoke import (
     PROGRAM_GLOBAL,
     PROGRAM_KOREA,
@@ -35,6 +34,7 @@ from service_full_run_contract import (
     ServiceImageOutcome,
     build_service_artifact_fields,
 )
+from service_image_api import invoke_vertex_image_generation
 
 logger = logging.getLogger(__name__)
 
@@ -58,39 +58,58 @@ def _validation_result_from_smoke(smoke: LiveSourceSmokeResult) -> str:
     return "block"
 
 
+def _build_service_keysuri_image_prompt(program_id: str) -> str:
+    label = "Global Tech" if program_id == PROGRAM_GLOBAL else "Korea Tech"
+    return (
+        f"Kee-Suri private tech assistant hero image for {label} owner-review briefing. "
+        "Premium Korean woman in her late 20s, same recognizable face identity, refined editorial portrait, "
+        "trustworthy private tech assistant tone, not a public news anchor, not a weathercaster, "
+        "smart business-casual wardrobe, natural Seoul morning light, high detail commercial realism, "
+        "no text, no logo, no watermark, no split screen.\n\n"
+        "NEGATIVE:\nnot a public news anchor\nnot a weathercaster\nno readable text overlay\nno collage\nno split screen"
+    )
+
+
 def _generate_keysuri_service_image(
     program_id: str,
     *,
     generate_fn: Optional[Callable[..., Path]] = None,
 ) -> ServiceImageOutcome:
-    report = run_keysuri_image_api_canary(
-        program_id=program_id,
-        manual_approval=True,
-        dry_run=False,
-        _generate_image_fn=generate_fn,
-    )
-    side = report.get("side_effects") if isinstance(report.get("side_effects"), dict) else {}
-    called = bool(side.get("called_image_api"))
-    gen_status = str(report.get("image_generation_status") or "")
-    out_path = str(report.get("output_image_path") or "").strip()
-    if gen_status == IMAGE_GEN_GENERATED and out_path and called:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from keysuri_image_api_canary_client import DEFAULT_LOCK_PATH, _gate_prompt_source
+    from keysuri_image_provider_contract import OUTPUT_IMAGES_DIR, resolve_keysuri_reference_asset_path
+
+    ref_path, ref_issues = resolve_keysuri_reference_asset_path(None)
+    repo = _REPO
+    ref_abs = repo / ref_path
+    if ref_issues or not ref_abs.is_file():
         return ServiceImageOutcome(
-            called_image_api=True,
-            image_generation_status=IMAGE_GEN_GENERATED,
-            image_source=IMAGE_SOURCE_GENERATED,
-            generated_image_path=out_path,
+            error_code=ERROR_IMAGE_GENERATION_FAILED,
+            error_message=f"missing reference asset: {ref_path}",
         )
-    issues = report.get("issues") or []
-    issue_text = "; ".join(
-        str(i.get("code") or i.get("message") or i)
-        for i in issues[:3]
-        if i
+
+    prompt_source, gate_issues, gate_ready = _gate_prompt_source(
+        DEFAULT_LOCK_PATH,
+        program_id,
+        manual_approval_for_gate=True,
     )
-    return ServiceImageOutcome(
-        called_image_api=called,
-        image_generation_status=gen_status or "failed",
-        error_code=ERROR_IMAGE_GENERATION_FAILED,
-        error_message=issue_text or str(report.get("canary_status") or "image_generation_failed"),
+    if gate_ready and prompt_source:
+        positive = str(prompt_source.get("positive_prompt") or "").strip()
+        negative = str(prompt_source.get("negative_prompt") or "").strip()
+        full_prompt = f"{positive}\n\nNEGATIVE:\n{negative}".strip()
+    else:
+        full_prompt = _build_service_keysuri_image_prompt(program_id)
+
+    slug = "global" if program_id == PROGRAM_GLOBAL else "korea"
+    stamp = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d_%H%M%S")
+    out = repo / OUTPUT_IMAGES_DIR / f"keysuri_{slug}_service_{stamp}.jpg"
+    return invoke_vertex_image_generation(
+        prompt=full_prompt,
+        output_path=out,
+        reference_image_path=ref_abs,
+        generate_fn=generate_fn,
     )
 
 
