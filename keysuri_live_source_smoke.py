@@ -343,6 +343,7 @@ class LiveSourceSmokeResult:
     parse_status: Optional[str] = None
     raw_response_path: Optional[str] = None
     generated_body: Dict[str, str] = field(default_factory=dict)
+    generated_briefing: Optional[dict] = None
     contract_preview: bool = False
     image_path: Optional[str] = None
     image_source_mode: Optional[str] = None
@@ -392,6 +393,7 @@ class LiveSourceSmokeResult:
             "parse_status": self.parse_status,
             "raw_response_path": self.raw_response_path,
             "generated_body": self.generated_body,
+            "generated_briefing": self.generated_briefing,
             "contract_preview": self.contract_preview,
             "image_path": self.image_path,
             "image_source_mode": self.image_source_mode,
@@ -1552,6 +1554,7 @@ def run_keysuri_live_source_smoke(
         parse_status=parse_status,
         raw_response_path=raw_response_path,
         generated_body=generated_body,
+        generated_briefing=generated_briefing if isinstance(generated_briefing, dict) else None,
         contract_preview=contract_preview,
         image_path=str(image_path.resolve()) if image_path else None,
         image_source_mode=image_source_mode,

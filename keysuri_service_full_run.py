@@ -291,7 +291,9 @@ def run_keysuri_service_full_run(
     source_pack = json.loads(Path(smoke.source_pack_path).read_text(encoding="utf-8"))
     prompt_input = build_keysuri_prompt_input(pid, source_pack)
     prompt_input["source_pack"] = source_pack
-    generated_briefing = _reload_generated_briefing(smoke, pid, prompt_input)
+    generated_briefing = smoke.generated_briefing if isinstance(smoke.generated_briefing, dict) else None
+    if not generated_briefing:
+        generated_briefing = _reload_generated_briefing(smoke, pid, prompt_input)
     if not generated_briefing:
         meta = build_service_artifact_fields(
             run_id=run_id,
