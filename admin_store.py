@@ -9,8 +9,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
+_RUN_ID_MODES = (
+    "today_genie",
+    "tomorrow_genie",
+    "keysuri_global_tech",
+    "keysuri_korea_tech",
+)
 _RUN_ID_RE = re.compile(
-    r"^[0-9]{8}_[0-9]{6}_(today_genie|tomorrow_genie)_[a-f0-9]{8}$"
+    r"^[0-9]{8}_[0-9]{6}_(today_genie|tomorrow_genie|keysuri_global_tech|keysuri_korea_tech)_[a-f0-9]{8}$"
 )
 
 OWNER_REVIEW_STATUSES = frozenset(
@@ -84,7 +90,7 @@ def generate_run_id(mode: str) -> str:
     kst = datetime.now(ZoneInfo("Asia/Seoul"))
     stamp = kst.strftime("%Y%m%d_%H%M%S")
     short = secrets.token_hex(4)
-    safe_mode = mode if mode in ("today_genie", "tomorrow_genie") else "unknown"
+    safe_mode = mode if mode in _RUN_ID_MODES else "unknown"
     return f"{stamp}_{safe_mode}_{short}"
 
 

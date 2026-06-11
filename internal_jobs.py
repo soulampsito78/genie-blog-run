@@ -54,8 +54,17 @@ _FORBIDDEN_RESPONSE_KEYS = frozenset(
 )
 
 
+class OwnerReviewJobRequest(BaseModel):
+    service_full_run: bool = False
+    send_owner_email: bool = True
+    dry_run: bool = False
+    trigger_source: str = DEFAULT_TRIGGER_SOURCE
+
+
 class KeysuriOwnerReviewJobRequest(BaseModel):
     program_id: Optional[str] = Field(default=None)
+    service_full_run: bool = False
+    send_owner_email: bool = True
     dry_run: bool = False
     trigger_source: str = DEFAULT_TRIGGER_SOURCE
 
@@ -176,18 +185,32 @@ def create_keysuri_owner_review_job(
     *,
     trigger_source: str = DEFAULT_TRIGGER_SOURCE,
     dry_run: bool = False,
+    service_full_run: bool = False,
+    send_owner_email: bool = True,
     smoke_runner: Optional[Callable[..., LiveSourceSmokeResult]] = None,
 ) -> Dict[str, Any]:
     """
     Dispatch Kee-Suri scheduled owner-review generation.
 
     dry_run=True performs validation only — no Gemini, HTML, or email.
+    service_full_run=True uses keysuri_service_full_run (generated images, admin_runs, SMTP).
     """
     normalized, err = validate_keysuri_owner_review_program_id(program_id)
     if err:
         raise ValueError(str(err.get("error")))
 
     trigger = (trigger_source or DEFAULT_TRIGGER_SOURCE).strip() or DEFAULT_TRIGGER_SOURCE
+
+    if service_full_run:
+        from keysuri_service_full_run import run_keysuri_service_full_run
+
+        return run_keysuri_service_full_run(
+            normalized,
+            trigger_source=trigger,
+            send_owner_email=send_owner_email,
+            dry_run=dry_run,
+            smoke_runner=smoke_runner,
+        )
 
     if dry_run:
         return {
@@ -196,6 +219,7 @@ def create_keysuri_owner_review_job(
             "dry_run": True,
             "trigger_source": trigger,
             "would_run": True,
+            "service_full_run": False,
         }
 
     runner = smoke_runner or run_keysuri_live_source_smoke
@@ -205,16 +229,19 @@ def create_keysuri_owner_review_job(
         contract_preview=True,
         send=False,
     )
-    return _smoke_result_to_job_payload(
+    payload = _smoke_result_to_job_payload(
         result,
         program_id=normalized,
         trigger_source=trigger,
     )
+    payload["service_full_run"] = False
+    return payload
 
 
 @router.post("/internal/jobs/create-owner-review")
 def create_owner_review_endpoint(
     request: Request,
+    body: OwnerReviewJobRequest = OwnerReviewJobRequest(),
     x_genie_internal_job_token: Optional[str] = Header(None, alias="X-Genie-Internal-Job-Token"),
 ):
     """Scheduler entry: today_genie owner-review via execute_orchestrator_run (no admin session)."""
@@ -225,6 +252,34 @@ def create_owner_review_endpoint(
     store_err, _desc = check_artifact_store_ready()
     if store_err:
         return _artifact_store_not_ready_response()
+
+    trigger = (body.trigger_source or DEFAULT_TRIGGER_SOURCE).strip() or DEFAULT_TRIGGER_SOURCE
+
+    if body.service_full_run:
+        from today_genie_service_full_run import run_today_genie_service_full_run
+
+        try:
+            payload = run_today_genie_service_full_run(
+                trigger_source=trigger,
+                send_owner_email=body.send_owner_email,
+                dry_run=body.dry_run,
+            )
+        except Exception as exc:
+            logger.exception(
+                "create_owner_review service_full_run failed error_type=%s",
+                type(exc).__name__,
+            )
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "ok": False,
+                    "error": "orchestration_failed",
+                    "error_type": type(exc).__name__,
+                    "service_full_run": True,
+                },
+            )
+        status_code = 200 if payload.get("ok") else 500
+        return JSONResponse(status_code=status_code, content=payload)
 
     existing = find_scheduled_owner_review_for_kst_date("today_genie")
     if existing:
@@ -240,7 +295,7 @@ def create_owner_review_endpoint(
     try:
         run_id, result, email_sent = execute_orchestrator_run(
             "today_genie",
-            trigger_source="scheduled_owner_review",
+            trigger_source=trigger,
         )
     except Exception as exc:
         logger.exception(
@@ -336,6 +391,8 @@ def create_keysuri_owner_review_endpoint(
             normalized,
             trigger_source=body.trigger_source,
             dry_run=body.dry_run,
+            service_full_run=body.service_full_run,
+            send_owner_email=body.send_owner_email,
         )
     except Exception as exc:
         logger.exception(
@@ -353,4 +410,5 @@ def create_keysuri_owner_review_endpoint(
             },
         )
 
-    return JSONResponse(status_code=200, content=payload)
+    status_code = 200 if payload.get("ok", True) else 500
+    return JSONResponse(status_code=status_code, content=payload)

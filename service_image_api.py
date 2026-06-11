@@ -1,0 +1,108 @@
+"""Service-level image API wrapper — called_image_api only when wrapper is invoked."""
+from __future__ import annotations
+
+import logging
+import os
+from pathlib import Path
+from typing import Callable, Optional
+
+from service_full_run_contract import (
+    ERROR_IMAGE_GENERATION_FAILED,
+    ERROR_IMAGE_GENERATION_NOT_IMPLEMENTED,
+    IMAGE_GEN_FAILED,
+    IMAGE_GEN_GENERATED,
+    IMAGE_SOURCE_GENERATED,
+    ServiceImageOutcome,
+)
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_VERTEX_IMAGE_MODEL = os.getenv("VERTEX_IMAGE_MODEL", "gemini-2.5-flash-image")
+DEFAULT_VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "global")
+
+
+def _repo_rel(path: Path) -> str:
+    root = Path(__file__).resolve().parent
+    try:
+        return path.resolve().relative_to(root).as_posix()
+    except ValueError:
+        return str(path.resolve())
+
+
+def invoke_vertex_image_generation(
+    *,
+    prompt: str,
+    output_path: Path,
+    reference_image_path: Optional[Path] = None,
+    project_id: Optional[str] = None,
+    model_name: Optional[str] = None,
+    location: Optional[str] = None,
+    generate_fn: Optional[Callable[..., Path]] = None,
+) -> ServiceImageOutcome:
+    """
+    Invoke Vertex image generation. Sets called_image_api=True only on actual API call attempt.
+    """
+    prompt_text = str(prompt or "").strip()
+    if not prompt_text:
+        return ServiceImageOutcome(
+            image_generation_status=IMAGE_GEN_FAILED,
+            error_code=ERROR_IMAGE_GENERATION_FAILED,
+            error_message="empty prompt",
+        )
+
+    fn = generate_fn
+    if fn is None:
+        try:
+            from image_generator import generate_image_file as fn  # noqa: PLC0415
+        except ImportError as exc:
+            return ServiceImageOutcome(
+                image_generation_status=IMAGE_GEN_FAILED,
+                error_code=ERROR_IMAGE_GENERATION_NOT_IMPLEMENTED,
+                error_message=str(exc),
+            )
+
+    project = (
+        str(project_id or "").strip()
+        or os.getenv("GENIE_VERTEX_PROJECT_ID", "").strip()
+        or os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
+        or os.getenv("PROJECT_ID", "").strip()
+    )
+    if not project:
+        return ServiceImageOutcome(
+            image_generation_status=IMAGE_GEN_FAILED,
+            error_code=ERROR_IMAGE_GENERATION_NOT_IMPLEMENTED,
+            error_message="missing vertex project id",
+        )
+
+    model = str(model_name or DEFAULT_VERTEX_IMAGE_MODEL).strip()
+    loc = str(location or DEFAULT_VERTEX_LOCATION).strip()
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    ref = Path(reference_image_path) if reference_image_path else None
+
+    try:
+        fn(
+            prompt=prompt_text,
+            output_path=out,
+            model_name=model,
+            reference_image_path=ref if ref and ref.is_file() else None,
+            project_id=project,
+            location=loc,
+        )
+        if not out.is_file():
+            raise RuntimeError(f"image file not written: {out}")
+        return ServiceImageOutcome(
+            called_image_api=True,
+            image_generation_status=IMAGE_GEN_GENERATED,
+            image_source=IMAGE_SOURCE_GENERATED,
+            generated_image_path=_repo_rel(out),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("invoke_vertex_image_generation failed: %s", exc)
+        return ServiceImageOutcome(
+            called_image_api=True,
+            image_generation_status=IMAGE_GEN_FAILED,
+            image_source="",
+            error_code=ERROR_IMAGE_GENERATION_FAILED,
+            error_message=f"{type(exc).__name__}: {exc}",
+        )
