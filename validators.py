@@ -415,7 +415,9 @@ def _is_functional_watchpoint(item: Dict[str, Any]) -> bool:
     return True
 
 
-_SHORT_CRITICAL_TOKENS = frozenset({"cpi", "fed", "imf", "gdp", "oil", "ust"})
+_SHORT_CRITICAL_TOKENS = frozenset(
+    {"ai", "cpi", "doj", "fed", "gdp", "imf", "ipo", "iran", "oil", "ust"}
+)
 
 
 def _significant_tokens(text: str) -> List[str]:

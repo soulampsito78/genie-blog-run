@@ -311,20 +311,11 @@ def apply_briefing_repetition_guard(data: Dict[str, Any]) -> None:
                     data["market_setup"] = trimmed_ms
 
 
-from today_genie_grounding import (
-    anchor_phrase_for_headline,
-    text_covers_headline_entities,
-)
+from today_genie_grounding import inject_headline_grounding_into_detail
 
 
 def _inject_headline_grounding_anchor(detail: str, headline: str) -> str:
-    nh = headline.strip()
-    if not nh or text_covers_headline_entities(detail, nh):
-        return detail
-    anchor = anchor_phrase_for_headline(nh)
-    if not anchor or anchor in detail:
-        return detail
-    return f"{anchor} {detail}".strip()
+    return inject_headline_grounding_into_detail(detail, headline)
 
 
 def watchpoint_covers_feed_blobs(wp: Dict[str, Any], runtime_input: Dict[str, Any]) -> bool:

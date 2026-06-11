@@ -178,6 +178,115 @@ def missing_required_anchors(text: str, headline: str) -> List[str]:
     return missing
 
 
+_HEADLINE_TOPIC_STOPWORDS: FrozenSet[str] = frozenset(
+    {
+        "says",
+        "after",
+        "isn't",
+        "isnt",
+        "over",
+        "with",
+        "for",
+        "the",
+        "and",
+        "amid",
+        "that",
+        "it's",
+        "its",
+        "from",
+        "into",
+        "most",
+        "advanced",
+        "model",
+        "files",
+        "filed",
+        "prepping",
+        "confidentially",
+        "nominates",
+        "nominated",
+        "general",
+        "controversy",
+        "halting",
+        "strikes",
+        "isn't",
+        "partnering",
+        "declines",
+        "testimony",
+        "china",
+        "exports",
+        "senate",
+        "wall",
+        "street",
+        "mega",
+        "debut",
+        "tech",
+        "isn",
+        "t",
+    }
+)
+
+_SHORT_TOPIC_TOKENS: Dict[str, str] = {
+    "ipo": "IPO",
+    "iran": "Iran",
+    "ai": "AI",
+    "doj": "DOJ",
+    "ust": "UST",
+    "cpi": "CPI",
+    "fed": "Fed",
+}
+
+
+def headline_topic_tokens(headline: str, *, max_tokens: int = 6) -> List[str]:
+    """Distinctive proper-noun / topic tokens when market-entity extraction is thin."""
+    raw = str(headline or "").strip()
+    if not raw:
+        return []
+
+    tokens: List[str] = []
+    seen: Set[str] = set()
+
+    def add(label: str) -> None:
+        clean = str(label or "").strip()
+        if not clean:
+            return
+        key = clean.lower()
+        if key in _HEADLINE_TOPIC_STOPWORDS or key in seen:
+            return
+        seen.add(key)
+        tokens.append(clean)
+
+    covered_words: Set[str] = set()
+    for match in re.finditer(
+        r"\b[A-Z][A-Za-z0-9&'+.-]*(?:\s+[A-Z][A-Za-z0-9&'+.-]*)*\b",
+        raw,
+    ):
+        phrase = match.group(0).strip()
+        add(phrase)
+        for part in phrase.lower().split():
+            covered_words.add(part)
+
+    norm = normalize_text_for_grounding(raw)
+    for word in norm.split():
+        if word in covered_words:
+            continue
+        mapped = _SHORT_TOPIC_TOKENS.get(word)
+        if mapped:
+            add(mapped)
+            covered_words.add(word)
+
+    for word in norm.split():
+        if word in covered_words:
+            continue
+        if len(word) < 4 or word in _HEADLINE_TOPIC_STOPWORDS:
+            continue
+        if word in _SHORT_TOPIC_TOKENS:
+            continue
+        add(word.title() if word.isalpha() else word)
+        covered_words.add(word)
+
+    return tokens[:max_tokens]
+
+
 def headline_grounding_anchors(headline: str) -> List[str]:
     found = extract_market_entities(headline)
     order = (
@@ -203,12 +312,41 @@ def headline_grounding_anchors(headline: str) -> List[str]:
         if key not in seen:
             anchors.append(canonical)
             seen.add(key)
-    return anchors[:8]
+    for topic in headline_topic_tokens(headline):
+        key = topic.lower()
+        if key not in seen:
+            anchors.append(topic)
+            seen.add(key)
+    return anchors[:10]
+
+
+def inject_headline_grounding_into_detail(detail: str, headline: str) -> str:
+    """Append deterministic Korean lead-in and English topic tokens for validator grounding."""
+    nh = str(headline or "").strip()
+    body = str(detail or "").strip()
+    if not nh:
+        return body
+    if text_covers_headline_entities(body, nh):
+        return body
+    anchor = anchor_phrase_for_headline(nh)
+    if anchor and anchor not in body:
+        body = f"{anchor} {body}".strip()
+    if text_covers_headline_entities(body, nh):
+        return body
+    topics = headline_topic_tokens(nh)
+    if topics:
+        tail = "원문 키워드: " + ", ".join(topics) + "."
+        if tail not in body:
+            body = f"{body} {tail}".strip()
+    return body
 
 
 def anchor_phrase_for_headline(headline: str) -> str:
     found = extract_market_entities(headline)
     if not found:
+        topics = headline_topic_tokens(headline)
+        if topics:
+            return f"원문 헤드라인 기준: {', '.join(topics)}."
         return ""
 
     index_parts: List[str] = []

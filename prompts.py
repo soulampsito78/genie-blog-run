@@ -408,7 +408,33 @@ def _english_image_anchor_hints(runtime_input: Dict[str, Any]) -> List[str]:
             push("Middle East")
     if re.search(r"\bai\b", blob) or "ai optimism" in blob:
         push("AI optimism")
-    return hints[:10]
+    if "openai" in blob:
+        push("OpenAI")
+    if re.search(r"\bipo\b", blob) or "wall street" in blob:
+        push("IPO")
+        if "wall street" in blob:
+            push("Wall Street")
+    if re.search(r"\btrump\b", blob):
+        push("Trump")
+    if "attorney general" in blob or "blanche" in blob:
+        push("attorney general")
+    if re.search(r"\bdoj\b", blob) or "justice" in blob:
+        push("DOJ")
+    if "netanyahu" in blob:
+        push("Netanyahu")
+    if "hezbollah" in blob:
+        push("Hezbollah")
+    if "tehran" in blob:
+        push("Tehran")
+    if "apple" in blob:
+        push("Apple")
+    if "nvidia" in blob:
+        push("Nvidia")
+    if "google" in blob:
+        push("Google")
+    if "jensen" in blob or "huang" in blob:
+        push("Jensen Huang")
+    return hints[:12]
 
 
 def feed_image_anchor_hints(runtime_input: Dict[str, Any]) -> List[str]:

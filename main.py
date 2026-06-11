@@ -898,6 +898,37 @@ def stabilize_today_genie_image_prompt_anchors(
     return normalized
 
 
+def stabilize_today_genie_top3_grounding(
+    data: Dict[str, Any],
+    runtime_input: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Re-apply headline/topic anchors on assembled TOP3 before validation."""
+    from today_genie_grounding import inject_headline_grounding_into_detail
+    from today_genie_top3_assembly import collect_valid_major_overseas_news
+
+    wps = data.get("key_watchpoints")
+    if not isinstance(wps, list):
+        return data
+    valid = collect_valid_major_overseas_news(runtime_input, max_items=3)
+    patched: List[Any] = []
+    for position, wp in enumerate(wps):
+        if not isinstance(wp, dict):
+            patched.append(wp)
+            continue
+        wp2 = dict(wp)
+        if position < len(valid):
+            nh = str(valid[position][1].get("headline") or "").strip()
+            if nh:
+                wp2["detail"] = inject_headline_grounding_into_detail(
+                    str(wp2.get("detail") or ""),
+                    nh,
+                )
+        patched.append(wp2)
+    normalized = dict(data)
+    normalized["key_watchpoints"] = patched
+    return normalized
+
+
 def stabilize_today_genie_validation_fields(
     data: Dict[str, Any],
     runtime_input: Dict[str, Any],
@@ -908,6 +939,7 @@ def stabilize_today_genie_validation_fields(
     send attempts without weakening validators or publishing policy.
     """
     normalized = stabilize_today_genie_vague_phrases(data)
+    normalized = stabilize_today_genie_top3_grounding(normalized, runtime_input)
     normalized = stabilize_today_genie_image_prompt_anchors(normalized, runtime_input)
 
     risk_rows: List[Dict[str, str]] = []

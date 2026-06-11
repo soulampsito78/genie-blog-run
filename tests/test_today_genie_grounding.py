@@ -7,6 +7,8 @@ from today_genie_grounding import (
     anchor_phrase_for_headline,
     extract_market_entities,
     headline_grounding_anchors,
+    headline_topic_tokens,
+    inject_headline_grounding_into_detail,
     missing_required_anchors,
     text_covers_headline_entities,
 )
@@ -64,6 +66,19 @@ class TodayGenieGroundingHelperTests(unittest.TestCase):
         headline = "Seoul shares close at new high on tech rally, Mideast optimism"
         text = "코스피가 기술주 강세 속 신기록을 경신했습니다."
         self.assertTrue(text_covers_headline_entities(text, headline))
+
+    def test_topic_tokens_for_political_headline(self) -> None:
+        headline = "Trump nominates Todd Blanche for attorney general amid controversy over DOJ fund"
+        tokens = headline_topic_tokens(headline)
+        self.assertIn("Trump", tokens)
+        self.assertIn("Todd Blanche", tokens)
+
+    def test_inject_detail_adds_english_keywords_for_korean_body(self) -> None:
+        headline = "Trump nominates Todd Blanche for attorney general amid controversy over DOJ fund"
+        detail = "트럼프 행정부가 법무장관 후보를 지명하며 정치적 논란이 이어지고 있습니다."
+        out = inject_headline_grounding_into_detail(detail, headline)
+        self.assertIn("Trump", out)
+        self.assertIn("원문", out)
 
 
 if __name__ == "__main__":
