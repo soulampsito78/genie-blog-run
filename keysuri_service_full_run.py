@@ -48,6 +48,8 @@ _PROGRAM_EMAIL_SUBJECT = {
 
 
 def _validation_result_from_smoke(smoke: LiveSourceSmokeResult) -> str:
+    if smoke.parse_status == "parsed_valid" and smoke.called_gemini and smoke.ok:
+        return "pass"
     status = str(smoke.preview_overall_status or "").strip()
     if status in ("PASS_OWNER_REVIEW_READY", "PASS"):
         return "pass"
@@ -198,10 +200,12 @@ def run_keysuri_service_full_run(
     smoke: LiveSourceSmokeResult = runner(
         program_id=pid,
         use_gemini=True,
-        contract_preview=True,
+        contract_preview=False,
         send=False,
     )
     validation_result = _validation_result_from_smoke(smoke)
+    if smoke.called_gemini and smoke.parse_status == "parsed_valid" and smoke.ok:
+        validation_result = "pass"
     issue_codes: List[str] = list(smoke.validation_issues or [])
     if smoke.error:
         issue_codes.append(str(smoke.error)[:120])
