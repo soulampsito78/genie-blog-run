@@ -1038,12 +1038,21 @@ def email_operational_handoff_meta(
 def build_today_genie_email_html_for_cid_mime_send(
     data: Dict[str, Any],
     validation_result: str = "pass",
+    *,
+    run_id: Optional[str] = None,
 ) -> str:
     """
     today_genie HTML for SMTP MIME sends: top/bottom slots use cid:… references
     so the message does not depend on public base URLs or local static paths for images.
     """
+    from admin_urls import build_owner_review_admin_url
+
     op_meta = email_operational_handoff_meta("today_genie", validation_result)
+    rid = str(run_id or "").strip()
+    if rid:
+        admin_url = build_owner_review_admin_url(rid)
+        if admin_url:
+            op_meta = {**op_meta, "run_id": rid, "admin_review_url": admin_url}
     return render_email_html(
         "today_genie",
         data,

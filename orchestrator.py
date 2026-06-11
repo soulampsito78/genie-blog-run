@@ -234,7 +234,11 @@ def _program_allows_naver_draft(mode: str) -> bool:
     return bool(spec.naver_assets_enabled)
 
 
-def extract_email_html_for_artifact(result: OrchestrationResult) -> str:
+def extract_email_html_for_artifact(
+    result: OrchestrationResult,
+    *,
+    run_id: str | None = None,
+) -> str:
     """Best-effort email HTML for admin artifact storage (same render path as send)."""
     if result.response_status != 200 or not isinstance(result.response_data, dict):
         return ""
@@ -250,6 +254,7 @@ def extract_email_html_for_artifact(result: OrchestrationResult) -> str:
             return build_today_genie_email_html_for_cid_mime_send(
                 data,
                 validation_result=validation_result,
+                run_id=run_id,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("extract_email_html_for_artifact today_genie failed: %s", e)
@@ -311,27 +316,28 @@ def persist_orchestrator_run_artifact(
     parent_run_id: str | None = None,
     reissue_reason: str | None = None,
     trigger_source: str | None = None,
+    run_id: str | None = None,
 ) -> str:
     from admin_store import generate_run_id, save_run_artifact
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
     mode = str(result.mode or "unknown")
-    run_id = generate_run_id(mode)
+    rid = str(run_id or "").strip() or generate_run_id(mode)
     meta = build_run_artifact_metadata(
         result,
-        run_id=run_id,
+        run_id=rid,
         email_sent=email_sent,
         parent_run_id=parent_run_id,
         reissue_reason=reissue_reason,
         trigger_source=trigger_source,
     )
     meta["created_at"] = datetime.now(ZoneInfo("Asia/Seoul")).isoformat()
-    email_html = extract_email_html_for_artifact(result)
+    email_html = extract_email_html_for_artifact(result, run_id=rid)
     return save_run_artifact(meta, email_html=email_html)
 
 
-def send_email_if_allowed(result: OrchestrationResult) -> bool:
+def send_email_if_allowed(result: OrchestrationResult, *, run_id: str | None = None) -> bool:
     """
     If policy allows sending email and we have payload, send via email_sender.
     No send on suppress_external or when response_data is missing.
@@ -404,6 +410,7 @@ def send_email_if_allowed(result: OrchestrationResult) -> bool:
     # Canonical today_genie handoff send path: owner-review rich MIME + CID inline only.
     if mode == "today_genie":
         try:
+            from admin_urls import build_owner_review_admin_url
             from main import build_today_genie_email_html_for_cid_mime_send
             from renderers import today_genie_email_inline_cid_pair
         except Exception as e:  # noqa: BLE001
@@ -421,10 +428,23 @@ def send_email_if_allowed(result: OrchestrationResult) -> bool:
                 )
                 return False
 
+        rid = str(run_id or "").strip()
+        if validation_result == "pass" and allow_send and not _admin_reissue_send_active():
+            if not rid:
+                logger.warning("send_email_if_allowed: skipped (missing run_id for admin review link)")
+                return False
+            if not build_owner_review_admin_url(rid):
+                logger.warning("send_email_if_allowed: skipped (missing_admin_url)")
+                return False
+
         html_body = build_today_genie_email_html_for_cid_mime_send(
             data,
             validation_result=validation_result,
+            run_id=rid or None,
         )
+        if validation_result == "pass" and allow_send and "운영자 검수 화면 열기" not in html_body:
+            logger.warning("send_email_if_allowed: skipped (admin_review_link_missing_in_html)")
+            return False
         if not html_body.strip():
             logger.warning("send_email_if_allowed: skipped (empty today_genie rich html)")
             return False
@@ -510,8 +530,18 @@ def execute_orchestrator_run(
     if admin_reissue:
         os.environ["GENIE_ADMIN_REISSUE"] = "1"
     try:
+        from admin_store import generate_run_id
+
         result = run_genie_job(mode)
-        email_sent = send_email_if_allowed(result)
+        proposed_run_id: str | None = None
+        if (
+            result.response_status == 200
+            and str(result.mode or "") == "today_genie"
+            and isinstance(result.response_data, dict)
+            and str(result.response_data.get("validation_result") or "") == "pass"
+        ):
+            proposed_run_id = generate_run_id("today_genie")
+        email_sent = send_email_if_allowed(result, run_id=proposed_run_id)
         resolved_trigger = trigger_source
         if not resolved_trigger:
             if parent_run_id:
@@ -524,6 +554,7 @@ def execute_orchestrator_run(
             parent_run_id=parent_run_id,
             reissue_reason=reissue_reason,
             trigger_source=resolved_trigger,
+            run_id=proposed_run_id,
         )
         logger.info(
             "execute_orchestrator_run: mode=%s run_id=%s email_sent=%s parent_run_id=%s",

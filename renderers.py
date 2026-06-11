@@ -619,6 +619,23 @@ _REVISION_REQUEST_REASONS = (
 )
 
 
+def render_owner_review_admin_link_block(admin_review_url: str, run_id: str) -> str:
+    """Visible admin entry for owner-review email (button + plain fallback link)."""
+    url = _safe(admin_review_url)
+    rid = _safe(run_id)
+    if not url or not rid:
+        return ""
+    return f"""
+<div id="genie-owner-review-admin-link" style="margin-top:18px;padding-top:14px;border-top:1px solid #cbd5e1;text-align:center;">
+  <a href="{url}" style="display:inline-block;padding:12px 20px;background:#0f172a;color:#ffffff !important;text-decoration:none;border-radius:8px;font-size:14px;font-weight:700;">운영자 검수 화면 열기</a>
+  <p style="margin:12px 0 0 0;font-size:12px;line-height:1.6;color:#475569;word-break:break-all;">
+    <a href="{url}" style="color:#2563eb;text-decoration:underline;">{url}</a>
+  </p>
+  <p style="margin:8px 0 0 0;font-size:11px;line-height:1.5;color:#64748b;">run_id: {rid}</p>
+</div>
+""".strip()
+
+
 def render_email_operational_box(meta: Dict[str, Any]) -> str:
     """
     Read-only 운영자 검수 상태 + staged 재발행 요청 (internal_state revision_request).
@@ -653,6 +670,9 @@ def render_email_operational_box(meta: Dict[str, Any]) -> str:
         if not revision_live
         else "수정 요청은 운영자 검토 후 별도 안내됩니다."
     )
+    admin_url = str(meta.get("admin_review_url") or "").strip()
+    run_id = str(meta.get("run_id") or "").strip()
+    admin_link = render_owner_review_admin_link_block(admin_url, run_id)
     return f"""
 <section id="genie-operational-handoff" aria-label="운영자 검수 상태" style="margin-top:32px;padding:20px 20px 22px 20px;border:1px solid #cbd5e1;border-radius:10px;background:#f1f5f9;">
   <p style="margin:0 0 16px 0;padding-bottom:12px;border-bottom:1px solid #cbd5e1;font-size:13px;line-height:1.45;color:#334155;font-weight:800;letter-spacing:-0.01em;">운영자 검수 상태</p>
@@ -671,6 +691,7 @@ def render_email_operational_box(meta: Dict[str, Any]) -> str:
     <p style="margin:0 0 6px 0;font-size:12px;line-height:1.6;color:#334155;">상태: {revision_status}</p>
     <p style="margin:0;font-size:12px;line-height:1.6;color:#334155;">{revision_detail}</p>
   </div>
+  {admin_link}
 </section>
 """.strip()
 
