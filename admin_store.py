@@ -51,15 +51,10 @@ _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED = frozenset(
     }
 )
 LEGACY_CUSTOMER_DELIVERY_STATUSES = frozenset({"sent_after_timeout"})
-APPROVABLE_MODES = frozenset(
-    {
-        "today_genie",
-        "tomorrow_genie",
-        "keysuri_global_tech",
-        "keysuri_korea_tech",
-    }
+APPROVABLE_MODES = frozenset({"today_genie", "tomorrow_genie"})
+_KEYSURI_CUSTOMER_DELIVERY_BLOCKED_MODES = frozenset(
+    {"keysuri_global_tech", "keysuri_korea_tech"}
 )
-_KEYSURI_APPROVABLE_MODES = frozenset({"keysuri_global_tech", "keysuri_korea_tech"})
 
 _CUSTOMER_DELIVERY_STATUS_LABELS_KO = {
     "not_sent": "미발송",
@@ -327,6 +322,8 @@ def _is_legacy_timeout_artifact(meta: Dict[str, Any]) -> bool:
 
 def can_approve_customer_send(meta: Dict[str, Any], *, has_email_html: bool) -> tuple[bool, str]:
     mode = str(meta.get("mode") or "")
+    if mode in _KEYSURI_CUSTOMER_DELIVERY_BLOCKED_MODES:
+        return False, "keysuri_customer_delivery_not_ready"
     if mode not in APPROVABLE_MODES:
         return False, "unsupported_mode"
     if _is_legacy_timeout_artifact(meta):
@@ -348,11 +345,8 @@ def can_approve_customer_send(meta: Dict[str, Any], *, has_email_html: bool) -> 
         return False, "not_approvable"
     if not has_email_html:
         return False, "missing_email_html"
-    if mode in ("today_genie", *_KEYSURI_APPROVABLE_MODES):
-        if mode == "today_genie":
-            from today_geenee_customer_delivery import customer_delivery_config_ready
-        else:
-            from keysuri_customer_delivery import customer_delivery_config_ready
+    if mode == "today_genie":
+        from today_geenee_customer_delivery import customer_delivery_config_ready
 
         ready, err = customer_delivery_config_ready()
         if not ready:
@@ -412,7 +406,7 @@ def _record_customer_delivery_smtp_accepted(meta: Dict[str, Any], *, completed_a
 
 
 def approve_run(run_id: str, note: str = "") -> tuple[Optional[Dict[str, Any]], str]:
-    """Approve run and send customer final email immediately (Today or Kee-Suri HTML body)."""
+    """Approve run and send customer final email immediately (today_genie HTML body only)."""
     meta = load_run_artifact(run_id)
     if not meta:
         return None, "not_found"
@@ -432,16 +426,6 @@ def approve_run(run_id: str, note: str = "") -> tuple[Optional[Dict[str, Any]], 
 
         send_ok = send_today_geenee_customer_final_email(saved_html, meta)
         diag_source = last_send_diagnostic
-    elif mode in _KEYSURI_APPROVABLE_MODES:
-        from keysuri_customer_delivery import last_keysuri_delivery_result, send_keysuri_customer_final_email
-
-        send_ok = send_keysuri_customer_final_email(saved_html, meta)
-
-        def diag_source() -> str:
-            result = last_keysuri_delivery_result()
-            if result and result.reason not in ("ok",):
-                return result.reason
-            return "Customer email send failed."
     else:
         return None, "unsupported_mode"
 

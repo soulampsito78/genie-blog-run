@@ -70,7 +70,12 @@ _APPROVE_ERROR_MESSAGES = {
     "not_approvable": "승인할 수 없는 검증 상태입니다.",
     "send_failed": "고객 이메일 발송에 실패했습니다.",
     "unsupported_mode": "승인 발송을 지원하지 않는 mode입니다.",
+    "keysuri_customer_delivery_not_ready": "Kee-Suri 고객 발송은 아직 안전 검증 전입니다.",
 }
+
+_KEYSURI_CUSTOMER_DELIVERY_BLOCKED_MODES = frozenset(
+    {"keysuri_global_tech", "keysuri_korea_tech"}
+)
 
 
 def admin_password() -> str:
@@ -346,17 +351,18 @@ def admin_run_detail(request: Request, run_id: str):
     has_email = load_run_email_html(run_id) is not None
     email_link = f'<a href="/admin/runs/{_esc(run_id)}/email" target="_blank">이메일 HTML 미리보기</a>' if has_email else "<em>저장된 이메일 HTML 없음</em>"
     can_approve, approve_err = can_approve_customer_send(meta, has_email_html=has_email)
+    mode = str(meta.get("mode") or "")
     approve_block = ""
     if can_approve:
         approve_block = (
             f'<div class="form-actions"><p style="margin:0;"><a class="btn" href="/admin/runs/{_esc(run_id)}/approve-confirm">'
             "승인 검토 페이지 열기</a></p></div>"
         )
-    elif str(meta.get("mode") or "") in (
-        "today_genie",
-        "keysuri_global_tech",
-        "keysuri_korea_tech",
-    ):
+    elif mode in _KEYSURI_CUSTOMER_DELIVERY_BLOCKED_MODES:
+        approve_block = (
+            f'<p class="warn">{_esc(_APPROVE_ERROR_MESSAGES.get(approve_err, approve_err))}</p>'
+        )
+    elif mode == "today_genie":
         approve_block = (
             f'<p class="warn">승인 발송 불가: {_esc(_APPROVE_ERROR_MESSAGES.get(approve_err, approve_err))}</p>'
         )

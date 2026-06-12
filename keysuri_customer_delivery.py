@@ -1,4 +1,8 @@
-"""Kee-Suri customer-final email: premium briefing HTML + inline CID only."""
+"""Kee-Suri customer-final email: premium briefing HTML + inline CID only.
+
+Production-blocked: admin_store.approve_run does not call this module until durable
+artifact storage, Gmail-safe rendering, and owner/customer surface separation exist.
+"""
 from __future__ import annotations
 
 import html

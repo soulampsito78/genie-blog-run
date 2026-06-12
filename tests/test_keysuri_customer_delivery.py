@@ -1,4 +1,4 @@
-"""Kee-Suri owner-review → approve → customer delivery recovery tests."""
+"""Kee-Suri customer delivery safety gate tests (production-blocked until ready)."""
 from __future__ import annotations
 
 import os
@@ -69,14 +69,21 @@ def _keysuri_global_artifact_meta(run_id: str) -> dict:
     }
 
 
-class KeysuriApproveRunCustomerDeliveryTests(unittest.TestCase):
+class KeysuriApproveRunBlockedTests(unittest.TestCase):
     def setUp(self) -> None:
         os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
         os.environ["SMTP_HOST"] = "smtp.example.com"
         os.environ["SMTP_USER"] = "user@example.com"
         os.environ["SMTP_PASSWORD"] = "secret"
 
-    def test_keysuri_global_approve_run_customer_delivery(self) -> None:
+    def test_keysuri_can_approve_returns_not_ready(self) -> None:
+        run_id = "20260612_120000_keysuri_global_tech_aabbccdd"
+        meta = _keysuri_global_artifact_meta(run_id)
+        ok, err = can_approve_customer_send(meta, has_email_html=True)
+        self.assertFalse(ok)
+        self.assertEqual(err, "keysuri_customer_delivery_not_ready")
+
+    def test_keysuri_global_approve_run_does_not_send(self) -> None:
         run_id = "20260612_120000_keysuri_global_tech_aabbccdd"
         save_run_artifact(
             _keysuri_global_artifact_meta(run_id),
@@ -87,11 +94,12 @@ class KeysuriApproveRunCustomerDeliveryTests(unittest.TestCase):
             return_value=True,
         ) as mock_send:
             updated, status = approve_run(run_id)
-        self.assertEqual(status, "ok")
-        assert updated is not None
-        self.assertEqual(updated.get("owner_review_status"), "approved")
-        self.assertEqual(updated.get("customer_delivery_status"), "smtp_accepted")
-        mock_send.assert_called_once()
+        self.assertIsNone(updated)
+        self.assertEqual(status, "keysuri_customer_delivery_not_ready")
+        mock_send.assert_not_called()
+        meta = load_run_artifact(run_id) or {}
+        self.assertEqual(meta.get("owner_review_status"), "pending_review")
+        self.assertEqual(meta.get("customer_delivery_status"), "not_sent")
 
 
 class KeysuriCustomerDeliveryHtmlTests(unittest.TestCase):
@@ -150,7 +158,7 @@ class KeysuriAdminApproveButtonTests(unittest.TestCase):
         else:
             os.environ["GENIE_ADMIN_PASSWORD"] = self._prev_pwd
 
-    def test_admin_run_detail_keysuri_shows_approve_button(self) -> None:
+    def test_admin_run_detail_keysuri_no_active_approve_button(self) -> None:
         run_id = "20260612_130000_keysuri_global_tech_bbccddee"
         save_run_artifact(
             _keysuri_global_artifact_meta(run_id),
@@ -159,7 +167,8 @@ class KeysuriAdminApproveButtonTests(unittest.TestCase):
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
         resp = self.client.get(f"/admin/runs/{run_id}")
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("승인 검토 페이지 열기", resp.text)
+        self.assertNotIn("승인 검토 페이지 열기", resp.text)
+        self.assertIn("Kee-Suri 고객 발송은 아직 안전 검증 전입니다", resp.text)
 
 
 class KeysuriApproveRouteTests(unittest.TestCase):
@@ -184,7 +193,7 @@ class KeysuriApproveRouteTests(unittest.TestCase):
                 os.environ[key] = prev
 
     @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
-    def test_approve_post_keysuri_sends_once(self, mock_send: MagicMock) -> None:
+    def test_approve_post_keysuri_blocked(self, mock_send: MagicMock) -> None:
         mock_send.return_value = True
         run_id = "20260612_140000_keysuri_global_tech_ccddeeff"
         save_run_artifact(
@@ -198,11 +207,10 @@ class KeysuriApproveRouteTests(unittest.TestCase):
             follow_redirects=False,
         )
         self.assertEqual(resp.status_code, 303)
-        mock_send.assert_called_once()
+        self.assertIn("keysuri_customer_delivery_not_ready", resp.headers.get("location", ""))
+        mock_send.assert_not_called()
         meta = load_run_artifact(run_id) or {}
-        ok, err = can_approve_customer_send(meta, has_email_html=True)
-        self.assertFalse(ok)
-        self.assertEqual(err, "already_approved")
+        self.assertEqual(meta.get("owner_review_status"), "pending_review")
 
 
 class TodayServiceFullRunCustomerImageTests(unittest.TestCase):
@@ -264,7 +272,7 @@ class ServiceFullRunRegistryApprovalTests(unittest.TestCase):
         os.environ["SMTP_USER"] = "user@example.com"
         os.environ["SMTP_PASSWORD"] = "secret"
 
-    def test_service_full_run_artifact_fields_match_registry(self) -> None:
+    def test_today_still_approvable_via_registry(self) -> None:
         for spec in list_programs():
             if not spec.customer_send_requires_approval:
                 continue
@@ -286,8 +294,12 @@ class ServiceFullRunRegistryApprovalTests(unittest.TestCase):
             }
             ok, err = can_approve_customer_send(meta, has_email_html=True)
             with self.subTest(program_id=spec.program_id, mode=mode):
-                self.assertTrue(ok, f"expected approvable, got {err!r}")
-                self.assertEqual(err, "ok")
+                if mode in (PROGRAM_GLOBAL, PROGRAM_KOREA):
+                    self.assertFalse(ok)
+                    self.assertEqual(err, "keysuri_customer_delivery_not_ready")
+                else:
+                    self.assertTrue(ok, f"expected approvable, got {err!r}")
+                    self.assertEqual(err, "ok")
             resolved = resolve_program_id(mode)
             self.assertEqual(resolved, spec.program_id)
 
