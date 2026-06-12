@@ -1198,3 +1198,63 @@ def render_keysuri_contract_preview_html(
 </body>
 </html>
 """
+
+
+_STYLE_BLOCK_RE = re.compile(r"<style[^>]*>(.*?)</style>", re.DOTALL | re.IGNORECASE)
+_BODY_INNER_RE = re.compile(r"<body[^>]*>(.*?)</body>", re.DOTALL | re.IGNORECASE)
+
+
+def extract_contract_preview_email_fragments(preview_html: str) -> tuple[str, str]:
+    """Split full contract-preview document into (css, body_inner) for owner-review email."""
+    raw = str(preview_html or "")
+    style_match = _STYLE_BLOCK_RE.search(raw)
+    styles = style_match.group(1).strip() if style_match else _premium_styles().strip()
+    body_match = _BODY_INNER_RE.search(raw)
+    if not body_match:
+        raise ValueError("contract preview html missing body")
+    return styles, body_match.group(1).strip()
+
+
+def _owner_review_admin_email_block(*, admin_url: str, run_id: str) -> str:
+    url = str(admin_url or "").strip()
+    if not url:
+        return ""
+    rid = _esc(str(run_id or "").strip())
+    return f"""
+<div class="owner-review-admin-entry" id="owner-review-admin-entry" style="margin:32px auto 0;max-width:680px;padding:20px 16px;text-align:center;border-top:1px solid rgba(80,100,130,0.18);">
+  <a href="{_esc(url)}" style="display:inline-block;padding:12px 20px;background:#0f172a;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:15px;">운영자 검수 화면 열기</a>
+  <p style="margin:12px 0 0;font-size:12px;word-break:break-all;"><a href="{_esc(url)}" style="color:#3f7ecb;">{_esc(url)}</a></p>
+  <p style="margin:8px 0 0;font-size:11px;color:#7b8795;">run_id: {rid}</p>
+</div>"""
+
+
+def build_keysuri_owner_review_email_html(
+    preview_html: str,
+    *,
+    subject: str,
+    admin_url: str = "",
+    run_id: str = "",
+) -> str:
+    """
+    Convert existing contract-preview premium briefing HTML into a single owner-review email document.
+
+    Preserves the renderer's design (styles + body hierarchy). Does not nest a second HTML document
+    and does not prepend service debug metadata above the hero.
+    """
+    styles, body_inner = extract_contract_preview_email_fragments(preview_html)
+    admin_block = _owner_review_admin_email_block(admin_url=admin_url, run_id=run_id)
+    title = _esc(str(subject or GLOBAL_HERO_TITLE).strip() or GLOBAL_HERO_TITLE)
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>{title}</title>
+<style>{styles}</style>
+</head>
+<body>
+{body_inner}
+{admin_block}
+</body>
+</html>
+"""

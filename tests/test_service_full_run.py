@@ -30,6 +30,24 @@ from today_genie_service_full_run import (
 )
 
 _TOKEN = "unit-test-internal-token"
+
+
+def _minimal_contract_preview_document(
+    *,
+    body_inner: str | None = None,
+    theme_class: str = "premium-briefing theme-global",
+) -> str:
+    inner = body_inner or (
+        '<header class="premium-hero" id="premium-hero">'
+        '<h1 class="hero-title">키수리 글로벌 테크 브리핑</h1>'
+        '<img src="cid:keysuri_topshot_global_20260611" class="top-shot-hero"/>'
+        "</header>"
+    )
+    return (
+        '<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"/>'
+        "<style>.premium-briefing.theme-global{--g-accent:#3f7ecb;}</style>"
+        f"</head><body class=\"{theme_class}\"><div class=\"briefing-shell\">{inner}</div></body></html>"
+    )
 _MINIMAL_TODAY_DATA = {
     "title": "오늘의 지니",
     "summary": "국내 증시는 장전 변동성에 주목합니다.",
@@ -340,10 +358,10 @@ class KeysuriServiceFullRunTests(unittest.TestCase):
             mode = _kwargs.get("image_mode", "preview")
             if mode == "email":
                 return (
-                    '<html><img src="cid:keysuri_topshot_global_20260611" class="top-shot-hero"/></html>',
+                    _minimal_contract_preview_document(),
                     "output/admin_runs/keysuri_service/x.html",
                 )
-            return ("<html>body</html>", "output/admin_runs/keysuri_service/x.html")
+            return (_minimal_contract_preview_document(), "output/admin_runs/keysuri_service/x.html")
 
         mock_render.side_effect = _render_side_effect
         mock_send.return_value = True
@@ -410,7 +428,7 @@ class KeysuriServiceFullRunTests(unittest.TestCase):
         )
         mock_prompt_input.return_value = {"program_id": PROGRAM_KOREA, "prompt_status": "ready_for_generation"}
         with patch("keysuri_service_full_run._reload_generated_briefing", return_value={"title": "k"}):
-            with patch("keysuri_service_full_run._render_service_html", return_value=("<p>k</p>", "out/k.html")):
+            with patch("keysuri_service_full_run._render_service_html", return_value=(_minimal_contract_preview_document(), "out/k.html")):
                 with patch("keysuri_service_full_run.send_genie_email", return_value=True):
                     with patch.dict(os.environ, {"GENIE_OWNER_REVIEW_SEND": "1", "GENIE_ADMIN_PUBLIC_BASE_URL": "https://ex.com"}, clear=False):
                         payload = run_keysuri_service_full_run(PROGRAM_KOREA, smoke_runner=_smoke, send_fn=MagicMock(return_value=True))
@@ -535,6 +553,24 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         self.assertIn(f"/admin/runs/{run_id}", email_html)
         self.assertNotIn("GENIE_INTERNAL_JOB_TOKEN", email_html)
         self.assertNotIn(self._token, email_html)
+        # Existing premium briefing design preserved in email (wiring restoration)
+        self.assertIn("키수리 글로벌 테크 브리핑", email_html)
+        self.assertIn("premium-briefing", email_html)
+        self.assertIn("theme-global", email_html)
+        self.assertIn("briefing-shell", email_html)
+        self.assertIn("premium-hero", email_html)
+        self.assertIn("top-shot-hero", email_html)
+        self.assertNotIn("서비스 full-run", email_html)
+        self.assertNotIn("image_source=generated", email_html)
+        self.assertEqual(email_html.lower().count("<!doctype html>"), 1)
+        self.assertEqual(email_html.lower().count("<html"), 1)
+        self.assertEqual(email_html.lower().count("<head>"), 1)
+        hero_pos = email_html.find('id="premium-hero"')
+        meta_pos = email_html.find('id="preview-metadata"')
+        if meta_pos >= 0:
+            self.assertGreater(meta_pos, hero_pos)
+        else:
+            self.assertGreaterEqual(hero_pos, 0)
 
         saved_meta = mock_save.call_args.args[0]
         self.assertTrue(saved_meta.get("service_full_run"))
@@ -549,6 +585,80 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
             generated_image_path="output/keysuri_preview/image_canary/x.jpg",
         )
         self.assertFalse(service_image_passes(outcome))
+
+
+class KeysuriGlobalOwnerReviewEmailDesignRestorationTests(unittest.TestCase):
+    """service_full_run email must reuse contract-preview premium briefing design."""
+
+    def test_renderer_source_used_and_email_preserves_global_design(self) -> None:
+        from keysuri_contract_preview_renderer import (
+            IMAGE_MODE_EMAIL,
+            IMAGE_MODE_PREVIEW,
+            build_keysuri_owner_review_email_html,
+            prepare_contract_preview_fixture,
+            render_keysuri_contract_preview_html,
+        )
+        from tests.test_keysuri_contract_preview_renderer import build_global_contract_fixture
+
+        repo = Path(__file__).resolve().parents[1]
+        fixture = build_global_contract_fixture()
+        fixture["top_shot_image_src"] = "cid:keysuri_topshot_global_20260611"
+        prepare_contract_preview_fixture(fixture, repo_root=repo, image_mode=IMAGE_MODE_EMAIL)
+
+        preview_html = render_keysuri_contract_preview_html(
+            fixture,
+            repo_root=repo,
+            image_mode=IMAGE_MODE_PREVIEW,
+            auto_prepare=False,
+        )
+        email_html = build_keysuri_owner_review_email_html(
+            render_keysuri_contract_preview_html(
+                fixture,
+                repo_root=repo,
+                image_mode=IMAGE_MODE_EMAIL,
+                auto_prepare=False,
+            ),
+            subject="[운영자 검토] Kee-Suri Global Tech",
+            admin_url="https://example.com/admin/runs/test_run",
+            run_id="test_run",
+        )
+
+        self.assertIn("키수리 글로벌 테크 브리핑", email_html)
+        self.assertIn("글로벌 신호", email_html)
+        self.assertIn("테크 비서 키수리", email_html)
+        self.assertIn("TOP 5", email_html.upper())
+        self.assertEqual(email_html.count("data-top-item"), 5)
+        self.assertIn("source-chip", email_html)
+        self.assertIn("https://blog.google/technology/ai/gemini-enterprise-update/", email_html)
+        self.assertIn("owner-angle-block", email_html)
+        self.assertIn("rights-policy", email_html)
+        self.assertIn("theme-global", email_html)
+        self.assertIn("운영자 검수 화면 열기", email_html)
+        self.assertIn("cid:keysuri_topshot_global_20260611", email_html)
+        self.assertNotIn("output/", email_html)
+        self.assertNotIn("image_canary/", email_html)
+        self.assertNotIn("서비스 full-run", email_html)
+        self.assertEqual(email_html.lower().count("<!doctype html>"), 1)
+        self.assertEqual(email_html.lower().count("<html"), 1)
+        self.assertEqual(email_html.lower().count("<head>"), 1)
+        self.assertNotIn("<html lang", email_html[email_html.lower().find("<body") :])
+
+        # Preview artifact keeps full premium document unchanged
+        self.assertIn("premium-briefing theme-global", preview_html)
+        self.assertIn('<div class="briefing-shell">', preview_html)
+        self.assertIn('id="top5-section"', preview_html)
+
+    def test_korea_renderer_available_but_not_sent_by_global_service_full_run(self) -> None:
+        from keysuri_contract_preview_renderer import render_keysuri_contract_preview_html
+        from tests.test_keysuri_contract_preview_renderer import build_korea_contract_fixture
+
+        repo = Path(__file__).resolve().parents[1]
+        korea_html = render_keysuri_contract_preview_html(
+            build_korea_contract_fixture(),
+            repo_root=repo,
+        )
+        self.assertIn("theme-korea", korea_html)
+        self.assertIn("키수리 국내 테크 브리핑", korea_html)
 
 
 class ServiceFullRunInternalEndpointTests(unittest.TestCase):

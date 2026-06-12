@@ -14,6 +14,7 @@ from keysuri_contract_preview_fixture import build_contract_preview_fixture_from
 from keysuri_contract_preview_renderer import (
     IMAGE_MODE_EMAIL,
     IMAGE_MODE_PREVIEW,
+    build_keysuri_owner_review_email_html,
     prepare_contract_preview_fixture,
     render_keysuri_contract_preview_html,
 )
@@ -216,24 +217,26 @@ def _render_service_html(
     return html, rel
 
 
-def _owner_review_email_html(html: str, *, program_id: str, run_id: str) -> str:
-    label = PROGRAM_DISPLAY.get(program_id, program_id)
+def _owner_review_email_html(
+    preview_html: str,
+    *,
+    program_id: str,
+    run_id: str,
+    subject: str | None = None,
+) -> str:
+    """Wrap contract-preview premium briefing HTML for SMTP without nesting or debug headers."""
     admin_url = build_owner_review_admin_url(run_id) or ""
-    admin_block = ""
-    if admin_url:
-        admin_block = (
-            f'<div style="margin:24px 0;text-align:center;">'
-            f'<a href="{admin_url}" style="display:inline-block;padding:12px 20px;background:#0f172a;color:#fff;text-decoration:none;border-radius:8px;font-weight:700;">'
-            f"운영자 검수 화면 열기</a>"
-            f'<p style="margin:12px 0 0;font-size:12px;word-break:break-all;"><a href="{admin_url}">{admin_url}</a></p>'
-            f'<p style="font-size:11px;color:#64748b;">run_id: {run_id}</p></div>'
-        )
-    header = (
-        f'<div style="margin:0 0 16px;padding:12px 16px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:8px;">'
-        f'<p style="margin:0;font-size:13px;"><strong>서비스 full-run</strong> · {label} · run_id: {run_id}</p>'
-        f'<p style="margin:6px 0 0;font-size:12px;color:#475569;">image_source=generated · service_full_run=true</p></div>'
+    email_subject = (
+        str(subject or "").strip()
+        or _PROGRAM_EMAIL_SUBJECT.get(program_id, "")
+        or PROGRAM_DISPLAY.get(program_id, program_id)
     )
-    return f"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>{label} owner review</title></head><body>{header}{html}{admin_block}</body></html>"
+    return build_keysuri_owner_review_email_html(
+        preview_html,
+        subject=email_subject,
+        admin_url=admin_url,
+        run_id=run_id,
+    )
 
 
 def run_keysuri_service_full_run(
@@ -369,8 +372,9 @@ def run_keysuri_service_full_run(
     owner_review_url = build_owner_review_admin_url(run_id) or ""
     storage_durable = _service_artifact_storage_durable()
 
+    email_preview_html = html_body
     if pid == PROGRAM_GLOBAL:
-        email_inner_html, _ = _render_service_html(
+        email_preview_html, _ = _render_service_html(
             pid,
             prompt_input=prompt_input,
             generated_briefing=generated_briefing,
@@ -378,9 +382,12 @@ def run_keysuri_service_full_run(
             run_id=run_id,
             image_mode=IMAGE_MODE_EMAIL,
         )
-        email_html = _owner_review_email_html(email_inner_html, program_id=pid, run_id=run_id)
-    else:
-        email_html = _owner_review_email_html(html_body, program_id=pid, run_id=run_id)
+    email_html = _owner_review_email_html(
+        email_preview_html,
+        program_id=pid,
+        run_id=run_id,
+        subject=_PROGRAM_EMAIL_SUBJECT.get(pid),
+    )
 
     email_sent = False
     smtp_attempted = False
