@@ -330,9 +330,22 @@ class KeysuriServiceFullRunTests(unittest.TestCase):
             image_source=IMAGE_SOURCE_GENERATED,
             generated_image_path="output/images/keysuri_global_canary.jpg",
         )
+        img_file = repo / "output" / "images" / "keysuri_global_canary.jpg"
+        img_file.parent.mkdir(parents=True, exist_ok=True)
+        img_file.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
         mock_prompt_input.return_value = {"program_id": PROGRAM_GLOBAL, "prompt_status": "ready_for_generation"}
         mock_reload.return_value = {"title": "t", "summary": "s", "top_5_news": []}
-        mock_render.return_value = ("<html>body</html>", "output/admin_runs/keysuri_service/x.html")
+
+        def _render_side_effect(*_args, **_kwargs):
+            mode = _kwargs.get("image_mode", "preview")
+            if mode == "email":
+                return (
+                    '<html><img src="cid:keysuri_topshot_global_20260611" class="top-shot-hero"/></html>',
+                    "output/admin_runs/keysuri_service/x.html",
+                )
+            return ("<html>body</html>", "output/admin_runs/keysuri_service/x.html")
+
+        mock_render.side_effect = _render_side_effect
         mock_send.return_value = True
 
         with patch.dict(os.environ, {"GENIE_OWNER_REVIEW_SEND": "1", "GENIE_ADMIN_PUBLIC_BASE_URL": "https://ex.com"}, clear=False):
@@ -347,6 +360,17 @@ class KeysuriServiceFullRunTests(unittest.TestCase):
         self.assertEqual(payload.get("image_source"), IMAGE_SOURCE_GENERATED)
         self.assertTrue(payload.get("email_sent"))
         mock_save.assert_called_once()
+        mock_send.assert_called_once()
+        send_kwargs = mock_send.call_args.kwargs
+        self.assertIn("inline_jpeg_parts", send_kwargs)
+        self.assertTrue(send_kwargs.get("inline_jpeg_parts"))
+        email_html = mock_save.call_args.kwargs.get("email_html") or mock_save.call_args.args[1]
+        self.assertIn("운영자 검수 화면 열기", email_html)
+        self.assertIn(payload["run_id"], email_html)
+        self.assertIn("cid:", email_html)
+        saved_meta = mock_save.call_args.args[0]
+        self.assertFalse(saved_meta.get("artifact_storage_durable"))
+        self.assertIn("/admin/runs/", str(saved_meta.get("owner_review_url") or ""))
 
     @patch("keysuri_service_full_run.build_keysuri_prompt_input")
     @patch("keysuri_service_full_run.save_run_artifact")
@@ -392,6 +416,139 @@ class KeysuriServiceFullRunTests(unittest.TestCase):
                         payload = run_keysuri_service_full_run(PROGRAM_KOREA, smoke_runner=_smoke, send_fn=MagicMock(return_value=True))
         self.assertEqual(payload.get("program_id"), PROGRAM_KOREA)
         self.assertNotEqual(payload.get("program_id"), PROGRAM_GLOBAL)
+
+
+class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
+    """Kee-Suri Global service_full_run owner-review email uses CID (Gmail-safe)."""
+
+    def setUp(self) -> None:
+        self._env = patch.dict(
+            os.environ,
+            {
+                "GENIE_ADMIN_PUBLIC_BASE_URL": "https://example.com",
+                "GENIE_OWNER_REVIEW_SEND": "1",
+                "GENIE_INTERNAL_JOB_TOKEN": "not-used",
+            },
+            clear=False,
+        )
+        self._env.start()
+        self._token = "unit-test-internal-token"
+
+    def tearDown(self) -> None:
+        self._env.stop()
+
+    def _global_smoke(self, pack_path: Path, raw_path: Path) -> LiveSourceSmokeResult:
+        return LiveSourceSmokeResult(
+            ok=True,
+            program_id=PROGRAM_GLOBAL,
+            source_pack_path=str(pack_path),
+            html_path=str(pack_path.parent / "h.html"),
+            fetched_item_count=5,
+            feed_urls_used=["https://example.com/feed"],
+            sample_marker_pass=True,
+            called_gemini=True,
+            use_gemini=True,
+            contract_preview=False,
+            parse_status="parsed_valid",
+            raw_response_path=str(raw_path),
+            preview_overall_status="PASS_OWNER_REVIEW_READY",
+            validation_status="PASS",
+            generated_briefing={"title": "글로벌 브리핑", "summary": "요약", "top_5_news": []},
+            side_effects={"called_gemini": True, "called_image_api": False},
+        )
+
+    @patch("keysuri_service_full_run.build_keysuri_prompt_input")
+    @patch("keysuri_service_full_run.save_run_artifact")
+    @patch("keysuri_service_full_run.send_genie_email")
+    @patch("keysuri_service_full_run._generate_keysuri_service_image")
+    @patch("keysuri_service_full_run.generate_run_id")
+    def test_global_email_uses_cid_not_local_paths(
+        self,
+        mock_run_id: MagicMock,
+        mock_image: MagicMock,
+        mock_send: MagicMock,
+        mock_save: MagicMock,
+        mock_prompt_input: MagicMock,
+    ) -> None:
+        from keysuri_service_full_run import (
+            keysuri_global_service_email_cid_src,
+            run_keysuri_service_full_run,
+        )
+
+        repo = Path(__file__).resolve().parents[1]
+        run_id = "20260611_150810_keysuri_global_tech_5cf81e6a"
+        mock_run_id.return_value = run_id
+        pack_path = repo / "output" / "keysuri_preview" / "test_pack_global_cid.json"
+        pack_path.parent.mkdir(parents=True, exist_ok=True)
+        pack_path.write_text(json.dumps({"sources": [], "program_id": PROGRAM_GLOBAL}), encoding="utf-8")
+        raw_path = repo / "output" / "keysuri_preview" / "raw_global_cid.txt"
+        raw_path.write_text("{}", encoding="utf-8")
+
+        image_rel = repo / "output" / "images" / "keysuri_global_service_test.jpg"
+        image_rel.parent.mkdir(parents=True, exist_ok=True)
+        image_rel.write_bytes(b"\xff\xd8\xff" + b"\x00" * 128)
+
+        mock_image.return_value = ServiceImageOutcome(
+            called_image_api=True,
+            image_generation_status="generated",
+            image_source=IMAGE_SOURCE_GENERATED,
+            generated_image_path=str(image_rel.relative_to(repo)),
+        )
+        mock_prompt_input.return_value = {
+            "program_id": PROGRAM_GLOBAL,
+            "prompt_status": "ready_for_generation",
+            "source_pack": {"sources": []},
+        }
+        mock_send.return_value = True
+
+        payload = run_keysuri_service_full_run(
+            PROGRAM_GLOBAL,
+            smoke_runner=lambda **_kw: self._global_smoke(pack_path, raw_path),
+            send_fn=mock_send,
+        )
+
+        self.assertTrue(payload.get("ok"))
+        self.assertTrue(payload.get("service_full_run"))
+        self.assertEqual(payload.get("program_id"), PROGRAM_GLOBAL)
+        self.assertTrue(payload.get("called_image_api"))
+        self.assertEqual(payload.get("image_source"), IMAGE_SOURCE_GENERATED)
+        self.assertTrue(payload.get("email_sent"))
+        self.assertFalse(payload.get("artifact_storage_durable"))
+        self.assertIn(run_id, str(payload.get("owner_review_url") or ""))
+        self.assertIn("/admin/runs/", str(payload.get("owner_review_url") or ""))
+        self.assertNotIn(self._token, str(payload.get("owner_review_url") or ""))
+
+        mock_send.assert_called_once()
+        send_kwargs = mock_send.call_args.kwargs
+        inline = send_kwargs.get("inline_jpeg_parts") or []
+        self.assertEqual(len(inline), 1)
+        fs_path, cid_token, _fname = inline[0]
+        self.assertTrue(Path(fs_path).is_file())
+        self.assertEqual(cid_token, keysuri_global_service_email_cid_src(run_id).replace("cid:", ""))
+
+        email_html = mock_send.call_args.args[0]
+        self.assertIn(keysuri_global_service_email_cid_src(run_id), email_html)
+        self.assertNotIn("output/images/", email_html)
+        self.assertNotIn("image_canary/", email_html)
+        self.assertNotIn("../", email_html)
+        self.assertIn("운영자 검수 화면 열기", email_html)
+        self.assertIn(f"/admin/runs/{run_id}", email_html)
+        self.assertNotIn("GENIE_INTERNAL_JOB_TOKEN", email_html)
+        self.assertNotIn(self._token, email_html)
+
+        saved_meta = mock_save.call_args.args[0]
+        self.assertTrue(saved_meta.get("service_full_run"))
+        self.assertTrue(saved_meta.get("called_image_api"))
+        self.assertEqual(saved_meta.get("image_source"), IMAGE_SOURCE_GENERATED)
+        self.assertFalse(saved_meta.get("artifact_storage_durable"))
+
+    def test_registry_image_cannot_pass_global_service_full_run_contract(self) -> None:
+        outcome = ServiceImageOutcome(
+            called_image_api=False,
+            image_source=IMAGE_SOURCE_REGISTRY,
+            generated_image_path="output/keysuri_preview/image_canary/x.jpg",
+        )
+        self.assertFalse(service_image_passes(outcome))
 
 
 class ServiceFullRunInternalEndpointTests(unittest.TestCase):

@@ -85,6 +85,8 @@ def build_service_artifact_fields(
     response_status: Optional[int] = None,
     workflow_status: Optional[str] = None,
     error_code: Optional[str] = None,
+    owner_review_url: Optional[str] = None,
+    artifact_storage_durable: bool = False,
 ) -> Dict[str, Any]:
     """Standard admin_runs metadata for service-level full runs."""
     called_image_api = False
@@ -132,4 +134,7 @@ def build_service_artifact_fields(
     }
     if error_code:
         meta["error_code"] = error_code
+    if owner_review_url:
+        meta["owner_review_url"] = owner_review_url
+    meta["artifact_storage_durable"] = bool(artifact_storage_durable)
     return meta

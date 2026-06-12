@@ -5,13 +5,14 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from admin_store import artifact_email_path, artifact_json_path, generate_run_id, save_run_artifact
 from admin_urls import build_owner_review_admin_url
 from email_sender import send_genie_email
 from keysuri_contract_preview_fixture import build_contract_preview_fixture_from_generated
 from keysuri_contract_preview_renderer import (
+    IMAGE_MODE_EMAIL,
     IMAGE_MODE_PREVIEW,
     prepare_contract_preview_fixture,
     render_keysuri_contract_preview_html,
@@ -45,6 +46,48 @@ _PROGRAM_EMAIL_SUBJECT = {
     PROGRAM_GLOBAL: "[운영자 검토] Kee-Suri Global Tech",
     PROGRAM_KOREA: "[운영자 검토] Kee-Suri Korea Tech",
 }
+
+# MIME Content-ID token (no angle brackets); HTML uses cid:{token}.
+KEYSURI_GLOBAL_SERVICE_EMAIL_CID_PREFIX = "keysuri_topshot_global"
+
+
+def _kst_date_from_run_id(run_id: str) -> str:
+    rid = str(run_id or "").strip()
+    if len(rid) >= 8 and rid[:8].isdigit():
+        return rid[:8]
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+
+
+def keysuri_global_service_email_cid_token(run_id: str) -> str:
+    """Content-ID token for Global service_full_run owner-review email hero image."""
+    stamp = _kst_date_from_run_id(run_id)
+    return f"{KEYSURI_GLOBAL_SERVICE_EMAIL_CID_PREFIX}_{stamp}"
+
+
+def keysuri_global_service_email_cid_src(run_id: str) -> str:
+    return f"cid:{keysuri_global_service_email_cid_token(run_id)}"
+
+
+def inline_jpeg_parts_for_global_service_email(
+    generated_image_path: Path,
+    run_id: str,
+) -> List[Tuple[str, str, str]]:
+    """Single hero inline JPEG for Global service_full_run SMTP (Gmail-safe CID)."""
+    cid_token = keysuri_global_service_email_cid_token(run_id)
+    fname = generated_image_path.name if generated_image_path.name else "keysuri_global_service.jpg"
+    return [(str(generated_image_path.resolve()), cid_token, fname)]
+
+
+def _service_artifact_storage_durable() -> bool:
+    from admin_store import check_artifact_store_ready
+
+    _err, desc = check_artifact_store_ready()
+    if desc and str(desc.get("backend") or "").strip().lower() == "local":
+        return False
+    return False
 
 
 def _validation_result_from_smoke(smoke: LiveSourceSmokeResult) -> str:
@@ -138,6 +181,7 @@ def _render_service_html(
     generated_briefing: dict,
     generated_image_path: Path,
     run_id: str,
+    image_mode: str = IMAGE_MODE_PREVIEW,
 ) -> tuple[str, str]:
     out_dir = _REPO / "output" / "admin_runs" / "keysuri_service"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -153,15 +197,18 @@ def _render_service_html(
     prepare_contract_preview_fixture(
         contract_fixture,
         repo_root=_REPO,
-        image_mode=IMAGE_MODE_PREVIEW,
+        image_mode=image_mode,
     )
+    if image_mode == IMAGE_MODE_EMAIL and program_id == PROGRAM_GLOBAL:
+        contract_fixture["top_shot_image_src"] = keysuri_global_service_email_cid_src(run_id)
     html = render_keysuri_contract_preview_html(
         contract_fixture,
         repo_root=_REPO,
-        image_mode=IMAGE_MODE_PREVIEW,
+        image_mode=image_mode,
         auto_prepare=False,
     )
-    html_path.write_text(html, encoding="utf-8")
+    if image_mode == IMAGE_MODE_PREVIEW:
+        html_path.write_text(html, encoding="utf-8")
     try:
         rel = html_path.resolve().relative_to(_REPO.resolve()).as_posix()
     except ValueError:
@@ -317,8 +364,23 @@ def run_keysuri_service_full_run(
         generated_briefing=generated_briefing,
         generated_image_path=gen_image_abs,
         run_id=run_id,
+        image_mode=IMAGE_MODE_PREVIEW,
     )
-    email_html = _owner_review_email_html(html_body, program_id=pid, run_id=run_id)
+    owner_review_url = build_owner_review_admin_url(run_id) or ""
+    storage_durable = _service_artifact_storage_durable()
+
+    if pid == PROGRAM_GLOBAL:
+        email_inner_html, _ = _render_service_html(
+            pid,
+            prompt_input=prompt_input,
+            generated_briefing=generated_briefing,
+            generated_image_path=gen_image_abs,
+            run_id=run_id,
+            image_mode=IMAGE_MODE_EMAIL,
+        )
+        email_html = _owner_review_email_html(email_inner_html, program_id=pid, run_id=run_id)
+    else:
+        email_html = _owner_review_email_html(html_body, program_id=pid, run_id=run_id)
 
     email_sent = False
     smtp_attempted = False
@@ -329,7 +391,22 @@ def run_keysuri_service_full_run(
             subject = _PROGRAM_EMAIL_SUBJECT.get(pid, f"[운영자 검토] {PROGRAM_DISPLAY.get(pid, pid)}")
             smtp_attempted = True
             sender = send_fn or send_genie_email
-            email_sent = bool(sender(email_html, subject))
+            if pid == PROGRAM_GLOBAL:
+                if not gen_image_abs.is_file():
+                    issue_codes.append("generated_image_missing_for_cid_email")
+                else:
+                    os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
+                    inline_parts = inline_jpeg_parts_for_global_service_email(gen_image_abs, run_id)
+                    email_sent = bool(
+                        sender(
+                            email_html,
+                            subject,
+                            inline_jpeg_parts=inline_parts,
+                            attachment_jpeg_parts=[],
+                        )
+                    )
+            else:
+                email_sent = bool(sender(email_html, subject))
 
     meta = build_service_artifact_fields(
         run_id=run_id,
@@ -345,6 +422,8 @@ def run_keysuri_service_full_run(
         smtp_attempted=smtp_attempted,
         email_sent=email_sent,
         workflow_status=smoke.preview_overall_status,
+        owner_review_url=owner_review_url or None,
+        artifact_storage_durable=storage_durable,
     )
     meta["artifact_status"] = "emailed" if email_sent else "stored"
     save_run_artifact(meta, email_html=email_html)
@@ -364,6 +443,8 @@ def run_keysuri_service_full_run(
         "generated_image_path": image_outcome.generated_image_path,
         "html_path": html_rel,
         "owner_review_html_path": meta.get("owner_review_html_path"),
+        "owner_review_url": owner_review_url,
+        "artifact_storage_durable": storage_durable,
         "artifact_status": meta.get("artifact_status"),
         "smtp_attempted": smtp_attempted,
         "email_sent": email_sent,
