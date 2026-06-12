@@ -83,14 +83,23 @@ def admin_runs_dir() -> Path:
 
 
 def admin_artifact_bucket_name() -> Optional[str]:
-    """GCS bucket for durable admin artifacts (``GENIE_ADMIN_ARTIFACT_BUCKET``)."""
-    name = os.environ.get("GENIE_ADMIN_ARTIFACT_BUCKET", "").strip()
-    return name or None
+    """GCS bucket for durable admin artifacts.
+
+    Primary: ``GENIE_ADMIN_ARTIFACT_BUCKET``. Legacy Cloud Run alias: ``GENIE_ARTIFACT_BUCKET``.
+    """
+    for key in ("GENIE_ADMIN_ARTIFACT_BUCKET", "GENIE_ARTIFACT_BUCKET"):
+        name = os.environ.get(key, "").strip()
+        if name:
+            return name
+    return None
 
 
 def admin_artifact_gcs_prefix() -> str:
-    raw = os.environ.get("GENIE_ADMIN_ARTIFACT_GCS_PREFIX", "admin_runs").strip().strip("/")
-    return raw or "admin_runs"
+    for key in ("GENIE_ADMIN_ARTIFACT_GCS_PREFIX", "GENIE_ARTIFACT_PREFIX"):
+        raw = os.environ.get(key, "").strip().strip("/")
+        if raw:
+            return raw
+    return "admin_runs"
 
 
 def artifact_storage_backend_name() -> str:

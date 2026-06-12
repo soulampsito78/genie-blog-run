@@ -61,16 +61,21 @@ class _FakeBucket:
 
 class AdminArtifactStorageEnvTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._prev_bucket = os.environ.get("GENIE_ADMIN_ARTIFACT_BUCKET")
-        self._prev_prefix = os.environ.get("GENIE_ADMIN_ARTIFACT_GCS_PREFIX")
-        os.environ.pop("GENIE_ADMIN_ARTIFACT_BUCKET", None)
-        os.environ.pop("GENIE_ADMIN_ARTIFACT_GCS_PREFIX", None)
+        self._prev_env = {
+            key: os.environ.get(key)
+            for key in (
+                "GENIE_ADMIN_ARTIFACT_BUCKET",
+                "GENIE_ADMIN_ARTIFACT_GCS_PREFIX",
+                "GENIE_ARTIFACT_BUCKET",
+                "GENIE_ARTIFACT_PREFIX",
+            )
+        }
+        for key in self._prev_env:
+            os.environ.pop(key, None)
 
     def tearDown(self) -> None:
-        for key, prev in (
-            ("GENIE_ADMIN_ARTIFACT_BUCKET", self._prev_bucket),
-            ("GENIE_ADMIN_ARTIFACT_GCS_PREFIX", self._prev_prefix),
-        ):
+        for key in self._prev_env:
+            prev = self._prev_env[key]
             if prev is None:
                 os.environ.pop(key, None)
             else:
@@ -110,6 +115,13 @@ class AdminArtifactStorageEnvTests(unittest.TestCase):
         self.assertTrue(
             artifact_store_display_path().startswith("gs://genie-artifacts-test/")
         )
+
+    def test_legacy_genie_artifact_bucket_alias(self) -> None:
+        os.environ["GENIE_ARTIFACT_BUCKET"] = "legacy-bucket"
+        os.environ["GENIE_ARTIFACT_PREFIX"] = "runs/admin"
+        self.assertEqual(admin_artifact_bucket_name(), "legacy-bucket")
+        self.assertEqual(admin_artifact_gcs_prefix(), "runs/admin")
+        self.assertEqual(artifact_storage_backend_name(), "gcs")
 
 
 class LocalArtifactStorageTests(unittest.TestCase):
