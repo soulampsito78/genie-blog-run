@@ -1,7 +1,8 @@
-"""File-based run artifacts for owner admin review and reissue tracking."""
+"""Run artifacts for owner admin review and reissue tracking (local or GCS)."""
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 from datetime import datetime
@@ -81,6 +82,170 @@ def admin_runs_dir() -> Path:
     return d
 
 
+def admin_artifact_bucket_name() -> Optional[str]:
+    """GCS bucket for durable admin artifacts (``GENIE_ADMIN_ARTIFACT_BUCKET``)."""
+    name = os.environ.get("GENIE_ADMIN_ARTIFACT_BUCKET", "").strip()
+    return name or None
+
+
+def admin_artifact_gcs_prefix() -> str:
+    raw = os.environ.get("GENIE_ADMIN_ARTIFACT_GCS_PREFIX", "admin_runs").strip().strip("/")
+    return raw or "admin_runs"
+
+
+def artifact_storage_backend_name() -> str:
+    return "gcs" if admin_artifact_bucket_name() else "local"
+
+
+def is_artifact_storage_durable() -> bool:
+    return artifact_storage_backend_name() == "gcs"
+
+
+def artifact_store_display_path() -> str:
+    bucket = admin_artifact_bucket_name()
+    if bucket:
+        return f"gs://{bucket}/{admin_artifact_gcs_prefix()}"
+    return str(admin_runs_dir())
+
+
+def gcs_artifact_object_key(run_id: str, suffix: str) -> str:
+    """Build a GCS object key under the configured prefix (suffix includes leading dot)."""
+    if not validate_run_id(run_id):
+        raise ValueError("invalid run_id")
+    return f"{admin_artifact_gcs_prefix()}/{run_id}{suffix}"
+
+
+def gcs_json_object_key(run_id: str) -> str:
+    return gcs_artifact_object_key(run_id, ".json")
+
+
+def gcs_email_object_key(run_id: str) -> str:
+    return gcs_artifact_object_key(run_id, ".email.html")
+
+
+def gcs_contract_preview_object_key(run_id: str) -> str:
+    return gcs_artifact_object_key(run_id, ".contract_preview.html")
+
+
+_gcs_client: Any = None
+
+
+def _uses_gcs_backend() -> bool:
+    return admin_artifact_bucket_name() is not None
+
+
+def _get_gcs_client() -> Any:
+    global _gcs_client
+    if _gcs_client is None:
+        from google.cloud import storage
+
+        _gcs_client = storage.Client()
+    return _gcs_client
+
+
+def _get_gcs_bucket() -> Any:
+    bucket_name = admin_artifact_bucket_name()
+    if not bucket_name:
+        raise RuntimeError("GCS backend requested without GENIE_ADMIN_ARTIFACT_BUCKET")
+    return _get_gcs_client().bucket(bucket_name)
+
+
+def _gcs_upload_text(key: str, text: str, *, content_type: str) -> None:
+    blob = _get_gcs_bucket().blob(key)
+    blob.upload_from_string(text, content_type=content_type)
+
+
+def _gcs_download_text(key: str) -> Optional[str]:
+    blob = _get_gcs_bucket().blob(key)
+    if not blob.exists():
+        return None
+    return blob.download_as_text(encoding="utf-8")
+
+
+def _gcs_delete_object(key: str) -> None:
+    blob = _get_gcs_bucket().blob(key)
+    if blob.exists():
+        blob.delete()
+
+
+def _write_json_blob(run_id: str, meta: Dict[str, Any]) -> None:
+    payload = json.dumps(meta, ensure_ascii=False, indent=2)
+    if _uses_gcs_backend():
+        _gcs_upload_text(gcs_json_object_key(run_id), payload, content_type="application/json")
+        return
+    artifact_json_path(run_id).write_text(payload, encoding="utf-8")
+
+
+def _read_json_blob(run_id: str) -> Optional[Dict[str, Any]]:
+    if _uses_gcs_backend():
+        raw = _gcs_download_text(gcs_json_object_key(run_id))
+        if raw is None:
+            return None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return data if isinstance(data, dict) else None
+    path = artifact_json_path(run_id)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_email_blob(run_id: str, email_html: str) -> None:
+    if _uses_gcs_backend():
+        _gcs_upload_text(
+            gcs_email_object_key(run_id),
+            email_html,
+            content_type="text/html; charset=utf-8",
+        )
+        return
+    artifact_email_path(run_id).write_text(email_html, encoding="utf-8")
+
+
+def _read_email_blob(run_id: str) -> Optional[str]:
+    if _uses_gcs_backend():
+        return _gcs_download_text(gcs_email_object_key(run_id))
+    path = artifact_email_path(run_id)
+    if not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _sync_optional_preview_artifacts(run_id: str, meta: Dict[str, Any]) -> None:
+    """Upload contract preview HTML to GCS when ``html_path`` is present in metadata."""
+    if not _uses_gcs_backend():
+        return
+    preview_rel = str(meta.get("html_path") or "").strip()
+    if not preview_rel:
+        return
+    path = Path(preview_rel)
+    if not path.is_absolute():
+        path = repo_root() / path
+    if not path.is_file():
+        return
+    try:
+        preview_html = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    key = gcs_contract_preview_object_key(run_id)
+    _gcs_upload_text(key, preview_html, content_type="text/html; charset=utf-8")
+    meta["contract_preview_gcs_object"] = key
+
+
+def _apply_artifact_storage_fields(meta: Dict[str, Any]) -> None:
+    backend = artifact_storage_backend_name()
+    meta["artifact_storage_backend"] = backend
+    meta["artifact_storage_durable"] = backend == "gcs"
+
+
 def validate_run_id(run_id: str) -> bool:
     return bool(_RUN_ID_RE.match(str(run_id or "").strip()))
 
@@ -154,13 +319,11 @@ def save_run_artifact(
     if meta.get("customer_delivery_status") is None:
         meta["customer_delivery_status"] = "not_sent"
     meta["artifact_status"] = derive_artifact_status(meta)
-
-    artifact_json_path(run_id).write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    _apply_artifact_storage_fields(meta)
+    _sync_optional_preview_artifacts(run_id, meta)
+    _write_json_blob(run_id, meta)
     if email_html and email_html.strip():
-        artifact_email_path(run_id).write_text(email_html, encoding="utf-8")
+        _write_email_blob(run_id, email_html)
 
     parent_id = str(meta.get("parent_run_id") or "").strip()
     if parent_id and validate_run_id(parent_id):
@@ -170,18 +333,12 @@ def save_run_artifact(
 
 
 def _increment_parent_reissue_count(parent_run_id: str) -> None:
-    path = artifact_json_path(parent_run_id)
-    if not path.is_file():
-        return
-    try:
-        parent = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return
-    if not isinstance(parent, dict):
+    parent = _read_json_blob(parent_run_id)
+    if not parent:
         return
     parent["reissue_count"] = int(parent.get("reissue_count") or 0) + 1
     parent["artifact_status"] = "reissue_requested"
-    path.write_text(json.dumps(parent, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json_blob(parent_run_id, parent)
 
 
 def sanitize_delivery_error_summary(raw: str, *, max_len: int = 240) -> str:
@@ -250,14 +407,8 @@ def apply_reissue_child_metadata(
 def load_run_artifact(run_id: str, *, normalize: bool = True) -> Optional[Dict[str, Any]]:
     if not validate_run_id(run_id):
         return None
-    path = artifact_json_path(run_id)
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    if not isinstance(data, dict):
+    data = _read_json_blob(run_id)
+    if not data:
         return None
     if normalize:
         return normalize_artifact_view(data, run_id)
@@ -267,23 +418,50 @@ def load_run_artifact(run_id: str, *, normalize: bool = True) -> Optional[Dict[s
 def load_run_email_html(run_id: str) -> Optional[str]:
     if not validate_run_id(run_id):
         return None
-    path = artifact_email_path(run_id)
-    if not path.is_file():
-        return None
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return None
+    return _read_email_blob(run_id)
+
+
+def _list_run_ids_from_gcs(limit: int) -> List[str]:
+    prefix = f"{admin_artifact_gcs_prefix()}/"
+    blobs = list(_get_gcs_bucket().list_blobs(prefix=prefix))
+    json_blobs = [b for b in blobs if b.name.endswith(".json")]
+    def _blob_sort_key(blob: Any) -> datetime:
+        ts = getattr(blob, "updated", None) or getattr(blob, "time_created", None)
+        if ts is None:
+            return datetime.min.replace(tzinfo=ZoneInfo("UTC"))
+        return ts
+
+    json_blobs.sort(key=_blob_sort_key, reverse=True)
+    run_ids: List[str] = []
+    for blob in json_blobs:
+        name = blob.name
+        if not name.startswith(prefix):
+            continue
+        stem = name[len(prefix) :]
+        if not stem.endswith(".json"):
+            continue
+        run_id = stem[: -len(".json")]
+        if validate_run_id(run_id):
+            run_ids.append(run_id)
+        if len(run_ids) >= max(1, limit):
+            break
+    return run_ids
 
 
 def list_run_artifacts(limit: int = 50) -> List[Dict[str, Any]]:
-    root = admin_runs_dir()
-    files = sorted(root.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if _uses_gcs_backend():
+        run_ids = _list_run_ids_from_gcs(limit)
+    else:
+        root = admin_runs_dir()
+        files = sorted(root.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        run_ids = []
+        for path in files:
+            if validate_run_id(path.stem):
+                run_ids.append(path.stem)
+            if len(run_ids) >= max(1, limit):
+                break
     out: List[Dict[str, Any]] = []
-    for path in files[: max(1, limit)]:
-        run_id = path.stem
-        if not validate_run_id(run_id):
-            continue
+    for run_id in run_ids[: max(1, limit)]:
         meta = load_run_artifact(run_id)
         if meta:
             out.append(meta)
@@ -296,18 +474,12 @@ def update_run_artifact(
 ) -> Optional[Dict[str, Any]]:
     if not validate_run_id(run_id):
         return None
-    path = artifact_json_path(run_id)
-    if not path.is_file():
-        return None
-    try:
-        meta = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    if not isinstance(meta, dict):
+    meta = _read_json_blob(run_id)
+    if not meta:
         return None
     mutator(meta)
     meta["artifact_status"] = derive_artifact_status(meta)
-    path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json_blob(run_id, meta)
     return meta
 
 
@@ -466,12 +638,26 @@ _SCHEDULER_OWNER_REVIEW_STATUSES = frozenset({"pending_review", "approved", "reo
 
 def check_artifact_store_ready() -> tuple[Optional[str], Optional[Dict[str, Any]]]:
     """Return (error_message, store_desc). Exactly one side is populated on failure paths."""
+    bucket_name = admin_artifact_bucket_name()
+    if bucket_name:
+        try:
+            probe_key = f"{admin_artifact_gcs_prefix()}/.store_ready_probe"
+            _gcs_upload_text(probe_key, "ok", content_type="text/plain")
+            _gcs_delete_object(probe_key)
+            return None, {
+                "backend": "gcs",
+                "bucket": bucket_name,
+                "prefix": admin_artifact_gcs_prefix(),
+                "durable": True,
+            }
+        except Exception as exc:
+            return str(exc), None
     try:
         root = admin_runs_dir()
         probe = root / ".store_ready_probe"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink(missing_ok=True)
-        return None, {"backend": "local", "path": str(root)}
+        return None, {"backend": "local", "path": str(root), "durable": False}
     except OSError as exc:
         return str(exc), None
 

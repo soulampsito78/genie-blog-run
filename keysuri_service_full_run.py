@@ -83,12 +83,12 @@ def inline_jpeg_parts_for_global_service_email(
 
 
 def _service_artifact_storage_durable() -> bool:
-    from admin_store import check_artifact_store_ready
+    from admin_store import artifact_storage_backend_name, check_artifact_store_ready
 
-    _err, desc = check_artifact_store_ready()
-    if desc and str(desc.get("backend") or "").strip().lower() == "local":
+    if artifact_storage_backend_name() != "gcs":
         return False
-    return False
+    err, _desc = check_artifact_store_ready()
+    return err is None
 
 
 def _validation_result_from_smoke(smoke: LiveSourceSmokeResult) -> str:

@@ -14,7 +14,7 @@ from admin_store import (
     EXECUTABLE_REISSUE_SCOPE,
     REISSUE_SCOPES,
     UNSUPPORTED_REISSUE_SCOPES,
-    admin_runs_dir,
+    artifact_store_display_path,
     apply_reissue_child_metadata,
     approve_run,
     can_approve_customer_send,
@@ -326,7 +326,7 @@ def admin_runs_list(request: Request):
 <h1>최근 실행 기록</h1>
 <form method="post" action="/admin/logout" style="margin:0;"><button class="btn" type="submit">로그아웃</button></form>
 </div>
-<p class="break-long">저장 경로: <code>{_esc(admin_runs_dir())}</code></p>
+<p class="break-long">저장 경로: <code>{_esc(artifact_store_display_path())}</code></p>
 <div class="card"><div class="table-wrap">{table}</div></div>
 """
     return HTMLResponse(_layout("Runs", inner))
