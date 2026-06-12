@@ -58,7 +58,37 @@ def customer_delivery_config_ready() -> tuple[bool, str]:
     return True, "ok"
 
 
-def _resolve_today_genie_inline_jpeg_parts() -> Optional[List[Tuple[str, str, str]]]:
+def _resolve_path_under_repo(path_value: str) -> Path:
+    repo = Path(__file__).resolve().parent
+    raw = Path(str(path_value or "").strip())
+    if raw.is_absolute():
+        return raw.resolve()
+    return (repo / raw).resolve()
+
+
+def _resolve_today_genie_inline_jpeg_parts_from_meta(
+    meta: Dict[str, Any],
+) -> Optional[List[Tuple[str, str, str]]]:
+    paths = meta.get("generated_image_paths")
+    if meta.get("service_full_run") and isinstance(paths, dict):
+        top_path = _resolve_path_under_repo(str(paths.get("top") or ""))
+        bot_path = _resolve_path_under_repo(str(paths.get("bottom") or ""))
+        if top_path.is_file() and bot_path.is_file():
+            cid_top, cid_bottom = today_genie_email_inline_cid_pair()
+            return [
+                (str(top_path), cid_top, top_path.name or "GENIE_EMAIL_today_genie_top.jpg"),
+                (str(bot_path), cid_bottom, bot_path.name or "GENIE_EMAIL_today_genie_bottom.jpg"),
+            ]
+    return None
+
+
+def _resolve_today_genie_inline_jpeg_parts(
+    meta: Optional[Dict[str, Any]] = None,
+) -> Optional[List[Tuple[str, str, str]]]:
+    if meta:
+        generated = _resolve_today_genie_inline_jpeg_parts_from_meta(meta)
+        if generated is not None:
+            return generated
     repo = Path(__file__).resolve().parent
     top_latest = repo / "static" / "email" / "GENIE_EMAIL_today_genie_top_latest.jpg"
     bottom_latest = repo / "static" / "email" / "GENIE_EMAIL_today_genie_bottom_latest.jpg"
@@ -148,7 +178,7 @@ def send_today_geenee_customer_final_email(
         logger.warning("send_today_geenee_customer_final_email: %s", exc)
         return False
 
-    inline_parts = _resolve_today_genie_inline_jpeg_parts()
+    inline_parts = _resolve_today_genie_inline_jpeg_parts(meta)
     if inline_parts is None:
         logger.warning("send_today_geenee_customer_final_email: missing latest inline JPEG assets")
         return False

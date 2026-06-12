@@ -347,16 +347,19 @@ def admin_run_detail(request: Request, run_id: str):
     email_link = f'<a href="/admin/runs/{_esc(run_id)}/email" target="_blank">이메일 HTML 미리보기</a>' if has_email else "<em>저장된 이메일 HTML 없음</em>"
     can_approve, approve_err = can_approve_customer_send(meta, has_email_html=has_email)
     approve_block = ""
-    if meta.get("mode") == "today_genie":
-        if can_approve:
-            approve_block = (
-                f'<div class="form-actions"><p style="margin:0;"><a class="btn" href="/admin/runs/{_esc(run_id)}/approve-confirm">'
-                "승인 검토 페이지 열기</a></p></div>"
-            )
-        else:
-            approve_block = (
-                f'<p class="warn">승인 발송 불가: {_esc(_APPROVE_ERROR_MESSAGES.get(approve_err, approve_err))}</p>'
-            )
+    if can_approve:
+        approve_block = (
+            f'<div class="form-actions"><p style="margin:0;"><a class="btn" href="/admin/runs/{_esc(run_id)}/approve-confirm">'
+            "승인 검토 페이지 열기</a></p></div>"
+        )
+    elif str(meta.get("mode") or "") in (
+        "today_genie",
+        "keysuri_global_tech",
+        "keysuri_korea_tech",
+    ):
+        approve_block = (
+            f'<p class="warn">승인 발송 불가: {_esc(_APPROVE_ERROR_MESSAGES.get(approve_err, approve_err))}</p>'
+        )
     if request.query_params.get("approve_error"):
         err_code = request.query_params.get("approve_error", "")
         warn += (

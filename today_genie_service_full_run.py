@@ -293,6 +293,11 @@ def run_today_genie_service_full_run(
         response_status=result.response_status,
         workflow_status=workflow_status,
     )
+    if image_bundle.ok:
+        meta["generated_image_paths"] = {
+            "top": image_bundle.top.generated_image_path,
+            "bottom": image_bundle.bottom.generated_image_path,
+        }
     meta["artifact_status"] = "emailed" if email_sent else "stored"
     save_run_artifact(meta, email_html=email_html)
 
