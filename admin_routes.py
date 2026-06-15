@@ -73,9 +73,7 @@ _APPROVE_ERROR_MESSAGES = {
     "keysuri_customer_delivery_not_ready": "Kee-Suri 고객 발송은 아직 안전 검증 전입니다.",
 }
 
-_KEYSURI_CUSTOMER_DELIVERY_BLOCKED_MODES = frozenset(
-    {"keysuri_global_tech", "keysuri_korea_tech"}
-)
+_KEYSURI_CUSTOMER_DELIVERY_BLOCKED_MODES = frozenset({"keysuri_korea_tech"})
 
 
 def admin_password() -> str:

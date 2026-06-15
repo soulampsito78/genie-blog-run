@@ -52,10 +52,8 @@ _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED = frozenset(
     }
 )
 LEGACY_CUSTOMER_DELIVERY_STATUSES = frozenset({"sent_after_timeout"})
-APPROVABLE_MODES = frozenset({"today_genie", "tomorrow_genie"})
-_KEYSURI_CUSTOMER_DELIVERY_BLOCKED_MODES = frozenset(
-    {"keysuri_global_tech", "keysuri_korea_tech"}
-)
+APPROVABLE_MODES = frozenset({"today_genie", "tomorrow_genie", "keysuri_global_tech"})
+_KEYSURI_CUSTOMER_DELIVERY_BLOCKED_MODES = frozenset({"keysuri_korea_tech"})
 
 _CUSTOMER_DELIVERY_STATUS_LABELS_KO = {
     "not_sent": "미발송",
@@ -507,6 +505,12 @@ def can_approve_customer_send(meta: Dict[str, Any], *, has_email_html: bool) -> 
         return False, "keysuri_customer_delivery_not_ready"
     if mode not in APPROVABLE_MODES:
         return False, "unsupported_mode"
+    if mode == "keysuri_global_tech":
+        from keysuri_customer_delivery import customer_delivery_config_ready
+
+        ready, err = customer_delivery_config_ready()
+        if not ready:
+            return False, err
     if _is_legacy_timeout_artifact(meta):
         return False, "legacy_timeout_sent"
     owner_status = str(meta.get("owner_review_status") or "pending_review")
@@ -606,6 +610,12 @@ def approve_run(run_id: str, note: str = "") -> tuple[Optional[Dict[str, Any]], 
         from today_geenee_customer_delivery import send_today_geenee_customer_final_email
 
         send_ok = send_today_geenee_customer_final_email(saved_html, meta)
+        diag_source = last_send_diagnostic
+    elif mode == "keysuri_global_tech":
+        from email_sender import last_send_diagnostic
+        from keysuri_customer_delivery import send_keysuri_customer_final_email
+
+        send_ok = send_keysuri_customer_final_email(saved_html, meta)
         diag_source = last_send_diagnostic
     else:
         return None, "unsupported_mode"

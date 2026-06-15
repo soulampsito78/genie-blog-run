@@ -1,4 +1,4 @@
-"""Kee-Suri customer delivery safety gate tests (production-blocked until ready)."""
+"""Kee-Suri customer delivery tests (Global enabled; Korea blocked)."""
 from __future__ import annotations
 
 import os
@@ -15,7 +15,23 @@ from main import app
 from programs.registry import list_programs, resolve_program_id
 
 
-def _keysuri_global_owner_review_email_html(
+def _keysuri_global_gmail_owner_review_email_html(
+    run_id: str = "20260612_120000_keysuri_global_tech_aabbccdd",
+) -> str:
+    from keysuri_contract_preview_renderer import build_keysuri_global_gmail_owner_email_html
+    from tests.test_keysuri_contract_preview_renderer import build_global_contract_fixture
+
+    fixture = build_global_contract_fixture()
+    fixture["top_shot_image_src"] = keysuri_global_service_email_cid_src(run_id)
+    return build_keysuri_global_gmail_owner_email_html(
+        fixture,
+        subject="[운영자 검토] Kee-Suri Global Tech",
+        admin_url=f"https://example.com/admin/runs/{run_id}",
+        run_id=run_id,
+    )
+
+
+def _keysuri_global_legacy_owner_review_email_html(
     run_id: str = "20260612_120000_keysuri_global_tech_aabbccdd",
 ) -> str:
     cid = keysuri_global_service_email_cid_src(run_id)
@@ -69,6 +85,59 @@ def _keysuri_global_artifact_meta(run_id: str) -> dict:
     }
 
 
+class KeysuriApproveRunGateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
+        os.environ["SMTP_HOST"] = "smtp.example.com"
+        os.environ["SMTP_USER"] = "user@example.com"
+        os.environ["SMTP_PASSWORD"] = "secret"
+
+    def test_keysuri_korea_can_approve_returns_not_ready(self) -> None:
+        run_id = "20260612_120000_keysuri_korea_tech_aabbccdd"
+        meta = {
+            "run_id": run_id,
+            "mode": PROGRAM_KOREA,
+            "program_id": PROGRAM_KOREA,
+            "validation_result": "pass",
+            "owner_review_status": "pending_review",
+            "customer_delivery_status": "not_sent",
+        }
+        ok, err = can_approve_customer_send(meta, has_email_html=True)
+        self.assertFalse(ok)
+        self.assertEqual(err, "keysuri_customer_delivery_not_ready")
+
+    def test_keysuri_global_can_approve_when_ready(self) -> None:
+        run_id = "20260612_120000_keysuri_global_tech_aabbccdd"
+        meta = _keysuri_global_artifact_meta(run_id)
+        ok, err = can_approve_customer_send(meta, has_email_html=True)
+        self.assertTrue(ok)
+        self.assertEqual(err, "ok")
+
+
+class KeysuriGlobalApproveRunTests(unittest.TestCase):
+    def setUp(self) -> None:
+        os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
+        os.environ["SMTP_HOST"] = "smtp.example.com"
+        os.environ["SMTP_USER"] = "user@example.com"
+        os.environ["SMTP_PASSWORD"] = "secret"
+
+    @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
+    def test_keysuri_global_approve_run_sends_customer_email(self, mock_send: MagicMock) -> None:
+        mock_send.return_value = True
+        run_id = "20260612_120000_keysuri_global_tech_aabbccdd"
+        save_run_artifact(
+            _keysuri_global_artifact_meta(run_id),
+            email_html=_keysuri_global_gmail_owner_review_email_html(run_id),
+        )
+        updated, status = approve_run(run_id)
+        self.assertEqual(status, "ok")
+        self.assertIsNotNone(updated)
+        mock_send.assert_called_once()
+        meta = load_run_artifact(run_id) or {}
+        self.assertEqual(meta.get("owner_review_status"), "approved")
+        self.assertEqual(meta.get("customer_delivery_status"), "smtp_accepted")
+
+
 class KeysuriApproveRunBlockedTests(unittest.TestCase):
     def setUp(self) -> None:
         os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
@@ -76,18 +145,20 @@ class KeysuriApproveRunBlockedTests(unittest.TestCase):
         os.environ["SMTP_USER"] = "user@example.com"
         os.environ["SMTP_PASSWORD"] = "secret"
 
-    def test_keysuri_can_approve_returns_not_ready(self) -> None:
-        run_id = "20260612_120000_keysuri_global_tech_aabbccdd"
-        meta = _keysuri_global_artifact_meta(run_id)
-        ok, err = can_approve_customer_send(meta, has_email_html=True)
-        self.assertFalse(ok)
-        self.assertEqual(err, "keysuri_customer_delivery_not_ready")
-
-    def test_keysuri_global_approve_run_does_not_send(self) -> None:
-        run_id = "20260612_120000_keysuri_global_tech_aabbccdd"
+    def test_keysuri_korea_approve_run_does_not_send(self) -> None:
+        run_id = "20260612_120000_keysuri_korea_tech_aabbccdd"
         save_run_artifact(
-            _keysuri_global_artifact_meta(run_id),
-            email_html=_keysuri_global_owner_review_email_html(run_id),
+            {
+                "run_id": run_id,
+                "mode": PROGRAM_KOREA,
+                "program_id": PROGRAM_KOREA,
+                "service_full_run": True,
+                "validation_result": "pass",
+                "owner_review_status": "pending_review",
+                "customer_delivery_status": "not_sent",
+                "artifact_status": "emailed",
+            },
+            email_html="<p>brief</p>",
         )
         with patch(
             "keysuri_customer_delivery.send_keysuri_customer_final_email",
@@ -103,12 +174,48 @@ class KeysuriApproveRunBlockedTests(unittest.TestCase):
 
 
 class KeysuriCustomerDeliveryHtmlTests(unittest.TestCase):
-    def test_keysuri_customer_delivery_strips_owner_admin_block(self) -> None:
+    def test_keysuri_gmail_customer_delivery_strips_owner_admin_block(self) -> None:
         from keysuri_customer_delivery import prepare_keysuri_customer_final_html
 
         run_id = "20260612_120000_keysuri_global_tech_aabbccdd"
         html = prepare_keysuri_customer_final_html(
-            _keysuri_global_owner_review_email_html(run_id),
+            _keysuri_global_gmail_owner_review_email_html(run_id),
+            meta=_keysuri_global_artifact_meta(run_id),
+        )
+        lowered = html.lower()
+        self.assertNotIn("owner-review-admin-entry", html)
+        self.assertNotIn("운영자 검수 화면 열기", html)
+        self.assertNotIn("/admin/runs/", html)
+        self.assertNotIn("운영자 검수용", html)
+        self.assertNotIn("아직 발송 전", html)
+        self.assertNotIn("run_id:", lowered)
+        self.assertNotIn("<style", lowered)
+        self.assertNotIn("var(--", html)
+        self.assertNotIn("display:flex", html.replace(" ", ""))
+        self.assertIn("키수리 글로벌 테크 브리핑", html)
+        self.assertIn('role="presentation"', html)
+        self.assertIn("https://blog.google/technology/ai/", html)
+        self.assertIn(keysuri_global_service_email_cid_src(run_id), html)
+
+    def test_keysuri_gmail_customer_delivery_sent_archived_box(self) -> None:
+        from keysuri_contract_preview_renderer import REVIEW_CONFIRMATION_TEXT, REVIEW_STATE_SENT_ARCHIVED
+        from keysuri_customer_delivery import prepare_keysuri_customer_final_html
+
+        run_id = "20260612_120000_keysuri_global_tech_aabbccdd"
+        html = prepare_keysuri_customer_final_html(
+            _keysuri_global_gmail_owner_review_email_html(run_id),
+            meta=_keysuri_global_artifact_meta(run_id),
+        )
+        self.assertIn(REVIEW_CONFIRMATION_TEXT[REVIEW_STATE_SENT_ARCHIVED], html)
+        self.assertNotIn("preview_pending", html)
+        self.assertNotIn("검수 대기", html)
+
+    def test_keysuri_legacy_customer_delivery_strips_owner_admin_block(self) -> None:
+        from keysuri_customer_delivery import prepare_keysuri_customer_final_html
+
+        run_id = "20260612_120000_keysuri_global_tech_aabbccdd"
+        html = prepare_keysuri_customer_final_html(
+            _keysuri_global_legacy_owner_review_email_html(run_id),
             meta=_keysuri_global_artifact_meta(run_id),
         )
         self.assertNotIn("owner-review-admin-entry", html)
@@ -126,13 +233,13 @@ class KeysuriCustomerDeliveryHtmlTests(unittest.TestCase):
         self.assertIn("https://example.com/source-1", html)
         self.assertIn(keysuri_global_service_email_cid_src(run_id), html)
 
-    def test_keysuri_customer_delivery_sent_archived_box(self) -> None:
+    def test_keysuri_legacy_customer_delivery_sent_archived_box(self) -> None:
         from keysuri_contract_preview_renderer import REVIEW_CONFIRMATION_TEXT, REVIEW_STATE_SENT_ARCHIVED
         from keysuri_customer_delivery import prepare_keysuri_customer_final_html
 
         run_id = "20260612_120000_keysuri_global_tech_aabbccdd"
         html = prepare_keysuri_customer_final_html(
-            _keysuri_global_owner_review_email_html(run_id),
+            _keysuri_global_legacy_owner_review_email_html(run_id),
             meta=_keysuri_global_artifact_meta(run_id),
         )
         self.assertIn('id="review-confirmation-box"', html)
@@ -158,11 +265,32 @@ class KeysuriAdminApproveButtonTests(unittest.TestCase):
         else:
             os.environ["GENIE_ADMIN_PASSWORD"] = self._prev_pwd
 
-    def test_admin_run_detail_keysuri_no_active_approve_button(self) -> None:
+    def test_admin_run_detail_keysuri_global_shows_active_approve_button(self) -> None:
         run_id = "20260612_130000_keysuri_global_tech_bbccddee"
         save_run_artifact(
             _keysuri_global_artifact_meta(run_id),
-            email_html=_keysuri_global_owner_review_email_html(run_id),
+            email_html=_keysuri_global_gmail_owner_review_email_html(run_id),
+        )
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        resp = self.client.get(f"/admin/runs/{run_id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("승인 검토 페이지 열기", resp.text)
+        self.assertNotIn("Kee-Suri 고객 발송은 아직 안전 검증 전입니다", resp.text)
+
+    def test_admin_run_detail_keysuri_korea_no_active_approve_button(self) -> None:
+        run_id = "20260612_130000_keysuri_korea_tech_bbccddee"
+        save_run_artifact(
+            {
+                "run_id": run_id,
+                "mode": PROGRAM_KOREA,
+                "program_id": PROGRAM_KOREA,
+                "service_full_run": True,
+                "validation_result": "pass",
+                "owner_review_status": "pending_review",
+                "customer_delivery_status": "not_sent",
+                "artifact_status": "emailed",
+            },
+            email_html="<p>brief</p>",
         )
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
         resp = self.client.get(f"/admin/runs/{run_id}")
@@ -193,12 +321,41 @@ class KeysuriApproveRouteTests(unittest.TestCase):
                 os.environ[key] = prev
 
     @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
-    def test_approve_post_keysuri_blocked(self, mock_send: MagicMock) -> None:
+    def test_approve_post_keysuri_global_sends(self, mock_send: MagicMock) -> None:
         mock_send.return_value = True
         run_id = "20260612_140000_keysuri_global_tech_ccddeeff"
         save_run_artifact(
             _keysuri_global_artifact_meta(run_id),
-            email_html=_keysuri_global_owner_review_email_html(run_id),
+            email_html=_keysuri_global_gmail_owner_review_email_html(run_id),
+        )
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        resp = self.client.post(
+            f"/admin/runs/{run_id}/approve",
+            data={"approve_note": "ok"},
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        self.assertNotIn("approve_error", resp.headers.get("location", ""))
+        mock_send.assert_called_once()
+        meta = load_run_artifact(run_id) or {}
+        self.assertEqual(meta.get("owner_review_status"), "approved")
+
+    @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
+    def test_approve_post_keysuri_korea_blocked(self, mock_send: MagicMock) -> None:
+        mock_send.return_value = True
+        run_id = "20260612_140000_keysuri_korea_tech_ccddeeff"
+        save_run_artifact(
+            {
+                "run_id": run_id,
+                "mode": PROGRAM_KOREA,
+                "program_id": PROGRAM_KOREA,
+                "service_full_run": True,
+                "validation_result": "pass",
+                "owner_review_status": "pending_review",
+                "customer_delivery_status": "not_sent",
+                "artifact_status": "emailed",
+            },
+            email_html="<p>brief</p>",
         )
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
         resp = self.client.post(
@@ -294,9 +451,12 @@ class ServiceFullRunRegistryApprovalTests(unittest.TestCase):
             }
             ok, err = can_approve_customer_send(meta, has_email_html=True)
             with self.subTest(program_id=spec.program_id, mode=mode):
-                if mode in (PROGRAM_GLOBAL, PROGRAM_KOREA):
+                if mode == PROGRAM_KOREA:
                     self.assertFalse(ok)
                     self.assertEqual(err, "keysuri_customer_delivery_not_ready")
+                elif mode == PROGRAM_GLOBAL:
+                    self.assertTrue(ok, f"expected approvable, got {err!r}")
+                    self.assertEqual(err, "ok")
                 else:
                     self.assertTrue(ok, f"expected approvable, got {err!r}")
                     self.assertEqual(err, "ok")

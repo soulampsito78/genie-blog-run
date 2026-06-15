@@ -1,7 +1,7 @@
 """Kee-Suri customer-final email: premium briefing HTML + inline CID only.
 
-Production-blocked: admin_store.approve_run does not call this module until durable
-artifact storage, Gmail-safe rendering, and owner/customer surface separation exist.
+Global (keysuri_global_tech) customer delivery is enabled via admin approve_run.
+Korea remains blocked in admin_store until Gmail-safe customer rendering is ready.
 """
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from email_sender import parse_customer_to_addrs, send_genie_email
 from keysuri_contract_preview_renderer import (
     REVIEW_CONFIRMATION_TEXT,
+    REVIEW_STATE_PREVIEW_PENDING,
+    REVIEW_STATE_REVIEW_PASSED,
     REVIEW_STATE_SENT_ARCHIVED,
 )
 from keysuri_live_source_smoke import PROGRAM_GLOBAL, PROGRAM_KOREA
@@ -33,6 +35,11 @@ _OWNER_ADMIN_ENTRY_RE = re.compile(
     r'<div[^>]*\bid=["\']owner-review-admin-entry["\'][^>]*>.*?</div>',
     re.IGNORECASE | re.DOTALL,
 )
+_RUN_ID_ADMIN_LINE_RE = re.compile(
+    r'<p[^>]*>\s*run_id:\s*[^<]+</p>',
+    re.IGNORECASE,
+)
+_ADMIN_RUN_URL_RE = re.compile(r"/admin/runs/[^\s\"'<>]+", re.IGNORECASE)
 _REVIEW_BOX_RE = re.compile(
     r'<section[^>]*\bid=["\']review-confirmation-box["\'][^>]*>.*?</section>',
     re.IGNORECASE | re.DOTALL,
@@ -93,9 +100,17 @@ def keysuri_service_email_cid_token(program_id: str, run_id: str) -> str:
     return keysuri_korea_service_email_cid_token(run_id)
 
 
-def render_keysuri_customer_review_confirmation_box() -> str:
+def render_keysuri_customer_review_confirmation_box(*, gmail_safe: bool = False) -> str:
     text = REVIEW_CONFIRMATION_TEXT[REVIEW_STATE_SENT_ARCHIVED]
     state = REVIEW_STATE_SENT_ARCHIVED
+    if gmail_safe:
+        return (
+            '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+            'style="background:#eef3f8;border:1px solid #dce4ef;border-radius:12px;">'
+            '<tr><td style="padding:14px 16px;text-align:center;">'
+            f'<p style="margin:0;font-size:13px;line-height:1.6;color:#536274;">{html.escape(text)}</p>'
+            "</td></tr></table>"
+        )
     return (
         f'<section id="review-confirmation-box" class="review-box" '
         f'data-review-state="{state}">'
@@ -104,11 +119,49 @@ def render_keysuri_customer_review_confirmation_box() -> str:
     )
 
 
+def _is_gmail_safe_keysuri_html(html_body: str) -> bool:
+    raw = str(html_body or "")
+    if not raw.strip():
+        return False
+    lowered = raw.lower()
+    if "<style" in lowered:
+        return False
+    return 'role="presentation"' in lowered and "cid:keysuri_topshot_global_" in lowered
+
+
+def _finalize_gmail_global_customer_review_state(html_body: str) -> str:
+    out = html_body
+    sent_text = REVIEW_CONFIRMATION_TEXT[REVIEW_STATE_SENT_ARCHIVED]
+    for state in (REVIEW_STATE_PREVIEW_PENDING, REVIEW_STATE_REVIEW_PASSED):
+        pending_text = REVIEW_CONFIRMATION_TEXT[state]
+        if pending_text in out:
+            out = out.replace(pending_text, sent_text)
+    if sent_text not in out:
+        box = render_keysuri_customer_review_confirmation_box(gmail_safe=True)
+        marker = "Copyright Ⓒ MirAI:ON"
+        if marker in out:
+            out = out.replace(marker, f"{box}\n{marker}", 1)
+        else:
+            out = f"{out}\n{box}"
+    return out
+
+
+def prepare_gmail_global_customer_final_html(saved_html: str) -> str:
+    out = strip_keysuri_owner_review_controls(saved_html)
+    out = _RUN_ID_ADMIN_LINE_RE.sub("", out)
+    out = _ADMIN_RUN_URL_RE.sub("", out)
+    out = out.replace("[운영자 검토]", "")
+    out = _finalize_gmail_global_customer_review_state(out)
+    return out.strip()
+
+
 def strip_keysuri_owner_review_controls(html_body: str) -> str:
     if not html_body:
         return ""
     out = html_body
     out = _OWNER_ADMIN_ENTRY_RE.sub("", out)
+    out = _RUN_ID_ADMIN_LINE_RE.sub("", out)
+    out = _ADMIN_RUN_URL_RE.sub("", out)
     out = _OWNER_REVIEW_BADGE_RE.sub("", out)
     out = _INTERNAL_BLOCK_RE.sub("", out)
     out = _REVIEW_BOX_RE.sub("", out)
@@ -117,6 +170,7 @@ def strip_keysuri_owner_review_controls(html_body: str) -> str:
         "운영자 검수용",
         "아직 발송 전",
         "운영자 검수 화면 열기",
+        "[운영자 검토]",
     ):
         out = out.replace(fragment, "")
     return out.strip()
@@ -127,11 +181,18 @@ def prepare_keysuri_customer_final_html(
     *,
     meta: Dict[str, Any],
 ) -> str:
-    html_body = strip_keysuri_owner_review_controls(saved_html)
+    mode = str(meta.get("mode") or meta.get("program_id") or "")
+    if mode == PROGRAM_GLOBAL and _is_gmail_safe_keysuri_html(saved_html):
+        html_body = prepare_gmail_global_customer_final_html(saved_html)
+    else:
+        html_body = strip_keysuri_owner_review_controls(saved_html)
+        if not html_body.strip():
+            raise ValueError("Kee-Suri customer final HTML is empty after stripping owner controls")
+        review_box = render_keysuri_customer_review_confirmation_box()
+        html_body = f"{html_body}\n{review_box}"
     if not html_body.strip():
         raise ValueError("Kee-Suri customer final HTML is empty after stripping owner controls")
-    review_box = render_keysuri_customer_review_confirmation_box()
-    return f"{html_body}\n{review_box}"
+    return html_body
 
 
 def build_keysuri_customer_final_subject(meta: Dict[str, Any], saved_html: str) -> str:
@@ -144,6 +205,12 @@ def build_keysuri_customer_final_subject(meta: Dict[str, Any], saved_html: str) 
             saved_html or "",
             re.IGNORECASE,
         )
+        if not m:
+            m = re.search(
+                r"<h1[^>]*>([^<]+)</h1>",
+                saved_html or "",
+                re.IGNORECASE,
+            )
         if m:
             drafts_subj = m.group(1).strip()
     if not drafts_subj:
