@@ -4,6 +4,7 @@ from __future__ import annotations
 import unittest
 
 from keysuri_briefing_content_quality import validate_briefing_content_gate
+from keysuri_briefing_body_ux_normalizer import normalize_generated_briefing_visible_prose
 from keysuri_korea_longform_ux import (
     KOREA_CLOSING_PARAGRAPH_MAX_CHARS,
     KOREA_DEEP_DIVE_FORBIDDEN_LABELS,
@@ -116,6 +117,74 @@ class KeysuriKoreaLongformUxTests(unittest.TestCase):
         self.assertFalse(has_incomplete_korean_sentence_ending(broken))
         self.assertNotRegex(broken, r"조명합(?:\s|<|$)")
 
+    def test_real_owner_review_broken_endings_are_detected(self) -> None:
+        for broken in (
+            "이 뉴스는 국내 기술 혁신과 자본 흐름에 직접적인 영향을 미칠 수 있어 국내 스타트업/투",
+            "새만금 사업과 AI 건설·로봇 혁신센터 설립 논의는 국내 산업 전반에 미칠 파급력이 커 국내 대기업 테크 전략",
+            "글로벌 로봇 트렌드가 국내 기업에 미치는 영향을 분석하는 데 중요하여 글로벌",
+            "관련 정책 변화는 국내 스타트업 생태계 전반에 큰 영향을 미 미칩니다.",
+        ):
+            with self.subTest(broken=broken):
+                self.assertTrue(has_incomplete_korean_sentence_ending(broken))
+
+    def test_normalizer_removes_real_owner_review_failures(self) -> None:
+        generated = {
+            "program_id": "keysuri_korea_tech",
+            "top_5_news": {
+                "items": [
+                    {
+                        "rank": 1,
+                        "korean_title": "삼성전자, 'C랩 아웃사이드' 9기 스타트업 모집 시작",
+                        "selection_reason": "이 뉴스는 삼성전자의 국내 스타트업 생태계 지원 의지를 보여주는 중요한 신호입니다. 특히 AI, 로봇 등 미래 기술 분야 스타트업 발굴은 국내 기술 혁신과 자본 흐름에 직접적인 영향을 미칠 수 있어 국내 스타트업/투",
+                        "what_happened": "삼성전자가 유망 스타트업 발굴 프로그램을 시작했습니다.",
+                        "why_now": "국내 스타트업 지원 프로그램은 기술 혁신과 일자리 창출에 영향을 줍니다.",
+                        "owner_angle": "내일 협력 가능성이 있는 스타트업 분야를 점검하시면 됩니다.",
+                        "keysuri_judgment_label": "기회",
+                        "keysuri_judgment": "대기업과 스타트업 협력 기회가 열리는 신호입니다.",
+                    },
+                    {
+                        "rank": 2,
+                        "korean_title": "전기공사협회 전북도회, 국토부 장관과 건설산업 활성화 간담회 참석",
+                        "selection_reason": "새만금 사업과 AI 건설·로봇 혁신센터 설립 논의는 국내 산업 전반에 미칠 파급력이 커 국내 대기업 테크 전략",
+                        "what_happened": "국토부 장관과 건설산업 활성화 방안이 논의됐습니다.",
+                        "why_now": "정부 정책과 대기업 투자가 맞물려 산업 생태계에 영향을 줍니다.",
+                        "owner_angle": "내일 새만금 투자와 AI 건설 후속 일정을 보시면 됩니다.",
+                        "keysuri_judgment_label": "사업 신호",
+                        "keysuri_judgment": "정책과 대기업 투자가 결합된 사업 신호입니다.",
+                    },
+                    {
+                        "rank": 3,
+                        "korean_title": "벤처업계, 자본시장 개편에 코스닥 보완책 5가지 제안",
+                        "selection_reason": "자본시장 개편은 벤처 투자 회수 시장에 영향을 줍니다.",
+                        "what_happened": "벤처업계가 정부에 보완책을 제안했습니다.",
+                        "why_now": "코스닥 시장은 국내 벤처기업의 주요 자금 조달 및 회수 통로이므로, 관련 정책 변화는 국내 스타트업 생태계 전반에 큰 영향을 미 미칩니다.",
+                        "owner_angle": "내일 자본시장 정책 후속 논의를 점검하시면 됩니다.",
+                        "keysuri_judgment_label": "리스크 신호",
+                        "keysuri_judgment": "벤처 자금 조달 환경에 부담이 생길 수 있습니다.",
+                    },
+                ]
+            },
+            "deep_dive": {
+                "body": "오늘 국내 테크 신호는 정책·투자·로봇 공급망이 겹친 흐름입니다.",
+                "uncertainty": "삼성전자 C랩 아웃사이드 9기 선정 기업들이 실제 어떤 혁신을 이끌어낼지, 그리고 이들이 국내 산업 생태계에 미칠 구체적인 영향은 무엇일까요?",
+            },
+            "one_line_checkpoint": {"body": "국내 시장의 기회와 리스크를 함께 보겠습니다."},
+            "closing_sources": {},
+        }
+        normalized = normalize_generated_briefing_visible_prose(
+            generated,
+            "keysuri_korea_tech",
+            {"program_id": "keysuri_korea_tech"},
+        )
+        blob = str(normalized)
+        for forbidden in (
+            "국내 스타트업/투",
+            "국내 대기업 테크 전략",
+            "무엇일까요",
+            "영향을 미 미칩니다",
+        ):
+            self.assertNotIn(forbidden, blob)
+
     def test_risk_block_converts_questions_to_declarative(self) -> None:
         sections = structure_korea_deep_dive(
             "",
@@ -125,6 +194,30 @@ class KeysuriKoreaLongformUxTests(unittest.TestCase):
         risk = next(section for section in sections if section["label"] == "위험 요인")
         self.assertNotIn("?", risk["body"])
         self.assertIn("불확실", risk["body"])
+
+    def test_risk_block_converts_what_would_it_be_questions(self) -> None:
+        sections = structure_korea_deep_dive(
+            "",
+            _top_items(),
+            uncertainty="삼성전자 C랩 선정 기업들이 국내 산업 생태계에 미칠 구체적인 영향은 무엇일까요?",
+        )
+        risk = next(section for section in sections if section["label"] == "위험 요인")
+        self.assertNotIn("?", risk["body"])
+        self.assertNotIn("무엇일까요", risk["body"])
+        self.assertIn("불확실", risk["body"])
+
+    def test_global_impact_block_bridges_without_concatenating_titles(self) -> None:
+        items = [
+            {"korean_title": "삼성전자, 'C랩 아웃사이드' 9기 스타트업 모집 시작"},
+            {"korean_title": "전기공사협회 전북도회, 국토부 장관과 건설산업 활성화 간담회 참석"},
+            {"korean_title": "KH바텍, 휴머노이드 로봇 감속기 공급 협력 논의 중"},
+        ]
+        sections = structure_korea_deep_dive("", items)
+        global_block = next(section for section in sections if section["label"] == "글로벌 영향")
+        self.assertIn("글로벌 AI 인프라", global_block["body"])
+        self.assertIn("한국 기업", global_block["body"])
+        self.assertNotIn("삼성전자, 'C랩 아웃사이드'", global_block["body"])
+        self.assertNotIn("전기공사협회 전북도회", global_block["body"])
 
     def test_forbidden_label_detector(self) -> None:
         retired = [{"label": "오늘의 핵심 흐름", "body": "본문"}]

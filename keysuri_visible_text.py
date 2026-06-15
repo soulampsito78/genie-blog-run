@@ -311,10 +311,24 @@ _MACHINE_IMPACT_RE = re.compile(
 )
 
 _SNAKE_TOKEN_RE = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+_KOREA_DUPLICATE_MORPHEME_RE = re.compile(r"(?<![가-힣])([가-힣]{1,3})\s+\1(?=[가-힣])")
 
 
 def _normalize_sentence_ws(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip())
+
+
+def repair_obvious_korean_quality_artifacts(text: Any) -> str:
+    """Repair visible Korean copy glitches that should never reach owner review."""
+    out = _normalize_sentence_ws(html_module.unescape(str(text or "")))
+    if not out:
+        return ""
+    previous = None
+    while previous != out:
+        previous = out
+        out = _KOREA_DUPLICATE_MORPHEME_RE.sub(r"\1", out)
+    out = re.sub(r"\s+([,.!?…])", r"\1", out)
+    return out.strip()
 
 
 def looks_like_internal_owner_copy(text: str) -> bool:
@@ -359,7 +373,7 @@ def strip_watch_arrow_prefixes(text: str) -> str:
 
 
 def dedupe_sentences_in_paragraph(text: str) -> str:
-    raw = str(text or "").strip()
+    raw = repair_obvious_korean_quality_artifacts(text)
     if not raw:
         return ""
     sentences = [s.strip() for s in re.split(r"(?<=[.!?…])\s+", raw) if s.strip()]
@@ -472,12 +486,12 @@ def build_visible_selection_reason(
 
     candidate = normalize_visible_text(existing, style="inline")
     if candidate and not looks_like_internal_owner_copy(candidate):
-        return dedupe_sentences_in_paragraph(candidate)[:120]
+        return dedupe_sentences_in_paragraph(candidate)
 
     for key in ("selection_reason", "selection_rationale", "reason_for_selection"):
         raw = normalize_visible_text(item.get(key) or meta.get(key) or "", style="inline")
         if raw and not looks_like_internal_owner_copy(raw):
-            return dedupe_sentences_in_paragraph(raw)[:120]
+            return dedupe_sentences_in_paragraph(raw)
 
     category = str(
         meta.get("primary_category")

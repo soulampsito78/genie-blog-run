@@ -354,6 +354,31 @@ class KeysuriBriefingContentQualityTests(unittest.TestCase):
         result = validate_briefing_content_gate(html, source_metadata=metadata)
         self.assertTrue(any(i.code == "visible_snake_case_token" for i in result.issues))
 
+    def test_korea_gate_fails_on_real_owner_review_broken_endings(self) -> None:
+        import re
+
+        fixture = build_korea_contract_fixture()
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        broken = re.sub(
+            r'(<h4 class="block-label">\s*선정 이유\s*</h4>\s*<p class="block-body">).*?(</p>)',
+            r"\1이 뉴스는 국내 기술 혁신과 자본 흐름에 직접적인 영향을 미칠 수 있어 국내 스타트업/투\2",
+            html,
+            count=1,
+            flags=re.DOTALL,
+        )
+        broken = re.sub(
+            r'(<h4 class="block-label">\s*왜 지금 중요한가\s*</h4>\s*<p class="block-body">).*?(</p>)',
+            r"\1관련 정책 변화는 국내 스타트업 생태계 전반에 큰 영향을 미 미칩니다.\2",
+            broken,
+            count=1,
+            flags=re.DOTALL,
+        )
+        self.assertNotEqual(html, broken)
+        metadata = {"korea_top5_selection": {"policy": "keysuri_korea_top5_selection_v2_duplicate_guard"}}
+        result = validate_briefing_content_gate(broken, source_metadata=metadata)
+        codes = {i.code for i in result.issues}
+        self.assertIn("korea_incomplete_sentence_ending", codes)
+
     def test_korea_gate_accepts_domestic_application_wording(self) -> None:
         fixture = build_korea_contract_fixture()
         fixture["opening_lead"] = (

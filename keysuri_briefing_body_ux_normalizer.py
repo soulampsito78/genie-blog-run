@@ -473,7 +473,28 @@ def normalize_generated_briefing_visible_prose(
         deep_out["body"] = normalized_body
         unc_raw = deep_out.get("uncertainty") or deep_out.get("open_questions")
         if unc_raw not in (None, ""):
-            deep_out["uncertainty"] = normalize_visible_text(unc_raw, style="sentence")
+            if is_korea:
+                risk_body = next(
+                    (
+                        str(section.get("body") or "")
+                        for section in deep_out.get("korea_deep_dive_sections") or []
+                        if isinstance(section, dict) and section.get("label") == "위험 요인"
+                    ),
+                    "",
+                )
+                risk_lines = [
+                    line.lstrip("• ").strip()
+                    for line in risk_body.splitlines()
+                    if line.lstrip("• ").strip()
+                ]
+                if risk_lines:
+                    deep_out["uncertainty"] = risk_lines[-1]
+                else:
+                    deep_out["uncertainty"] = finalize_korea_visible_field(
+                        normalize_visible_text(unc_raw, style="sentence")
+                    )
+            else:
+                deep_out["uncertainty"] = normalize_visible_text(unc_raw, style="sentence")
         deep_out["linked_signal_titles"] = linked_titles
         deep_out["linked_signal_ids"] = [
             _text(i.get("news_id"))

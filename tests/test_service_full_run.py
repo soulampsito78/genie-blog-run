@@ -763,12 +763,35 @@ class KeysuriKoreaOwnerReviewEmailDesignTests(unittest.TestCase):
                 continue
             if idx == 0:
                 item["selection_reason"] = (
-                    "국내 기업 언급이 명확하며 로봇 산업에서 국내 부품 기업의 역할을 조명합"
+                    "이 뉴스는 삼성전자의 국내 스타트업 생태계 지원 의지를 보여주는 중요한 신호입니다. "
+                    "특히 AI, 로봇 등 미래 기술 분야 스타트업 발굴은 국내 기술 혁신과 자본 흐름에 직접적인 영향을 미칠 수 있어 국내 스타트업/투"
                 )
                 item["why_now"] = (
                     "국내 스타트업 생태계에 직접적인 투자 기회를 제공하는 중요한 창구입니"
                 )
+            if idx == 1:
+                item["korean_title"] = "전기공사협회 전북도회, 국토부 장관과 건설산업 활성화 간담회 참석"
+                item["selection_reason"] = (
+                    "이 뉴스는 국내 건설 및 인프라 산업의 정책 방향과 대기업의 지역 투자 연계 가능성을 보여줍니다. "
+                    "특히 새만금 사업과 AI 건설·로봇 혁신센터 설립 논의는 국내 산업 전반에 미칠 파급력이 커 국내 대기업 테크 전략"
+                )
+            if idx == 2:
+                item["korean_title"] = "KH바텍, 휴머노이드 로봇 감속기 공급 협력 논의 중"
+                item["selection_reason"] = (
+                    "국내 전자부품 기업이 글로벌 휴머노이드 로봇 시장에 핵심 부품을 공급할 가능성은 국내 로봇 산업의 성장 잠재력과 기술력을 보여줍니다. "
+                    "이는 글로벌 로봇 트렌드가 국내 기업에 미치는 영향을 분석하는 데 중요하여 글로벌"
+                )
+            if idx == 3:
+                item["why_now"] = (
+                    "정부의 자본시장 개편은 시장의 신뢰 회복을 목표로 하지만, 벤처업계는 혁신 기업의 성장을 저해할 수 있다고 보고 있습니다. "
+                    "코스닥 시장은 국내 벤처기업의 주요 자금 조달 및 회수 통로이므로, 관련 정책 변화는 국내 스타트업 생태계 전반에 큰 영향을 미 미칩니다."
+                )
             item["owner_angle"] = item.get("owner_angle") or "내일 파트너 일정을 점검하시면 됩니다."
+        fixture["korea_deep_dive_sections"] = []
+        fixture["deep_dive_uncertainty"] = (
+            "삼성전자 C랩 아웃사이드 9기 선정 기업들이 실제 어떤 혁신을 이끌어낼지, "
+            "그리고 이들이 국내 산업 생태계에 미칠 구체적인 영향은 무엇일까요?"
+        )
         prepare_contract_preview_fixture(fixture, repo_root=repo, image_mode=IMAGE_MODE_EMAIL)
 
         email_html = build_keysuri_korea_gmail_owner_email_html(
@@ -780,6 +803,11 @@ class KeysuriKoreaOwnerReviewEmailDesignTests(unittest.TestCase):
         import re
 
         for broken in (
+            "국내 스타트업/투",
+            "국내 대기업 테크 전략",
+            "중요하여 글로벌",
+            "무엇일까요",
+            "영향을 미 미칩니다",
             "창구입니",
             "사업 전략 수립에",
             "중요한 흐름",
@@ -792,6 +820,11 @@ class KeysuriKoreaOwnerReviewEmailDesignTests(unittest.TestCase):
         self.assertIn("글로벌 AI 인프라", email_html)
         self.assertIn("한국 기업", email_html)
         deep_start = email_html.find("키수리의 딥-다이브")
+        checkpoint_start = email_html.find("원-라인 체크포인트", deep_start)
+        deep_section = email_html[deep_start:checkpoint_start]
+        self.assertNotIn("삼성전자, &#x27;C랩 아웃사이드&#x27;", deep_section)
+        self.assertNotIn("전기공사협회 전북도회", deep_section)
+        self.assertIn('id="bottom-shot-placeholder"', email_html)
         risk_start = email_html.find("위험 요인", deep_start)
         judgment_start = email_html.find("키수리 판단", risk_start)
         risk_blob = email_html[risk_start:judgment_start]

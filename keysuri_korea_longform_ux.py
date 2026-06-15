@@ -8,6 +8,7 @@ from keysuri_visible_text import (
     coerce_visible_lines,
     dedupe_sentences_in_paragraph,
     normalize_visible_text,
+    repair_obvious_korean_quality_artifacts,
     sanitize_visible_impact_line,
     strip_watch_arrow_prefixes,
 )
@@ -64,7 +65,11 @@ _INCOMPLETE_KOREAN_TAIL_RE = re.compile(
     r"[가-힣]{0,3}했습$|"
     r"수립에$|"
     r"중요한 흐름$|"
+    r"중요하여 글로벌$|"
     r"국내 로봇$|"
+    r"국내 스타트업/투$|"
+    r"국내 대기업 테크 전략$|"
+    r"/투$|"
     r"주인님의 투$|"
     r"[가-힣]\s*내$|"
     r"조명합$|"
@@ -76,10 +81,15 @@ _KOREA_VISIBLE_FIELD_MAX_CHARS = 220
 _THIN_CLOSING_ONLY_RE = re.compile(
     r"^(?:오늘도 수고하셨습니다\.?\s*)?(?:내일 다시 뵙겠습니다\.?\s*)?$"
 )
+_DUPLICATE_KOREAN_MORPHEME_RE = re.compile(r"(?<![가-힣])([가-힣]{1,3})\s+\1(?=[가-힣])")
 
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _has_duplicate_korean_morpheme(text: str) -> bool:
+    return bool(_DUPLICATE_KOREAN_MORPHEME_RE.search(_text(text)))
 
 
 def _split_sentences(text: str) -> List[str]:
@@ -126,7 +136,7 @@ def remove_truncated_headline_fragments(text: str) -> str:
     out = _GENERIC_AXIS_RE.sub("", out)
     out = re.sub(r"[가-힣A-Za-z0-9]{1,2}…", "", out)
     out = re.sub(r"\s+", " ", out).strip()
-    return out
+    return repair_obvious_korean_quality_artifacts(out)
 
 
 def contains_truncated_headline_fragment(text: str) -> bool:
@@ -167,6 +177,8 @@ def has_incomplete_korean_sentence_ending(text: str) -> bool:
         return False
     if contains_truncated_headline_fragment(blob):
         return True
+    if _has_duplicate_korean_morpheme(blob):
+        return True
     last = _last_visible_sentence(blob)
     if _sentence_ends_complete_korean(last):
         return False
@@ -201,7 +213,7 @@ def clamp_korea_visible_field_at_sentence(text: str, *, max_chars: int = _KOREA_
 
 
 def repair_incomplete_korean_visible_text(text: str, *, fallback: str = "") -> str:
-    blob = remove_truncated_headline_fragments(_text(text))
+    blob = remove_truncated_headline_fragments(repair_obvious_korean_quality_artifacts(_text(text)))
     if not blob:
         return remove_truncated_headline_fragments(_text(fallback))
     if not has_incomplete_korean_sentence_ending(blob):
@@ -363,6 +375,18 @@ _GLOBAL_BRIDGE_MARKERS: tuple[str, ...] = (
     "한국 기업",
     "국내 산업",
 )
+_KOREA_INDUSTRY_LABELS: Dict[str, str] = {
+    "korea_ai_enterprise": "국내 AI·기업 도입",
+    "korea_semiconductor": "국내 반도체·장비·소재",
+    "korea_robotics_manufacturing": "국내 로보틱스·스마트팩토리",
+    "korea_battery_energy": "국내 배터리·에너지",
+    "korea_platform_cloud_saas": "국내 플랫폼·클라우드",
+    "korea_policy_regulation": "국내 정책·규제",
+    "korea_startup_investment": "국내 스타트업·투자",
+    "korea_big_company_strategy": "국내 대기업 테크 전략",
+    "korea_consumer_mobility": "국내 소비자 테크·모빌리티",
+    "global_to_korea_translation": "글로벌→한국 번역 신호",
+}
 
 
 def _korea_top_axis(items: Sequence[Mapping[str, Any]]) -> str:
@@ -379,6 +403,17 @@ def _korea_top_axis(items: Sequence[Mapping[str, Any]]) -> str:
     return _theme_phrase(items)
 
 
+def _korea_industry_label(value: str) -> str:
+    raw = _text(value)
+    if not raw:
+        return ""
+    if raw in _KOREA_INDUSTRY_LABELS:
+        return _KOREA_INDUSTRY_LABELS[raw]
+    if "_" in raw:
+        return ""
+    return raw
+
+
 def _strip_keysuri_judgment_label_prefix(text: str) -> str:
     out = _text(text)
     out = re.sub(r"^키수리\s*판단\s*[:：]\s*", "", out)
@@ -392,10 +427,32 @@ def _declarative_risk_statement(line: str) -> str:
     stripped = re.sub(r"[?？]+\s*$", "", out).strip()
     if not stripped:
         return ""
-    question_markers = ("무엇인가", "얼마나", "이어질 것인가", "어떻게", "무엇을", "몇 ", "인가")
+    question_markers = (
+        "무엇일까요",
+        "무엇일까",
+        "무엇인가",
+        "무엇인지",
+        "어떨까요",
+        "될까요",
+        "있을까요",
+        "얼마나",
+        "이어질 것인가",
+        "어떻게",
+        "무엇을",
+        "몇 ",
+        "인가",
+    )
     if "?" in out or any(marker in stripped for marker in question_markers):
         topic = re.sub(r"[?？].*$", "", stripped).strip()
+        topic = re.sub(
+            r"\s*(?:무엇일까요|무엇일까|무엇인가|무엇인지|어떨까요|될까요|있을까요)\s*$",
+            "",
+            topic,
+        ).strip()
+        topic = re.sub(r"(?:구체적인\s*)?영향은\s*$", "영향", topic).strip()
         topic = re.sub(r"(?:은|는|이|가|을|를|에|의)\s*$", "", topic).strip()
+        if any(marker in topic for marker in question_markers):
+            topic = ""
         if len(topic) >= 8:
             return f"{topic}에 대한 불확실성과 검증 공백이 리스크로 남아 있습니다."
         return "세부 방향·규모·일정에 대한 불확실성이 리스크로 남아 있습니다."
@@ -411,7 +468,6 @@ def _build_global_impact_block(
     cleaned_body: str,
 ) -> str:
     items = [item for item in items if isinstance(item, dict)]
-    axis = _korea_top_axis(items)
     global_pressure: List[str] = []
     if any(_is_global_signal_item(item) for item in items):
         global_pressure.append("해외 빅테크·플랫폼 일정")
@@ -420,25 +476,24 @@ def _build_global_impact_block(
         global_pressure.append("글로벌 공급망·인프라 변화")
     pressure = "·".join(global_pressure[:2]) if global_pressure else "글로벌 AI 인프라·플랫폼 경쟁"
     body = (
-        f"글로벌 AI 인프라·플랫폼 경쟁과 반도체 공급망·로봇/에이전트 AI 축이 "
-        f"{pressure}를 통해 {axis} 흐름에 반영되며, 한국 기업·스타트업·공급망과 "
-        f"정책·자본시장에 압력을 전달합니다. 국내 산업은 해외 인프라·조달 구조 변화에 "
-        f"맞춰 협력·투자 우선순위를 재배치해야 하는 단계입니다."
+        f"글로벌 AI 인프라·플랫폼 경쟁과 반도체 공급망·로봇/에이전트 AI 축은 "
+        f"{pressure}와 맞물려 한국 기업·스타트업·공급망과 정책·자본시장에 압력을 전달합니다. "
+        f"한국 쪽에서는 해외 인프라·조달 구조 변화에 맞춰 투자·조달·파트너십 우선순위를 "
+        f"재배치해야 하는 단계입니다."
     )
     return clamp_korea_block(finalize_korea_visible_field(body))
 
 
 def _build_domestic_industry_block(items: Sequence[Mapping[str, Any]]) -> str:
     items = [item for item in items if isinstance(item, dict)]
-    axis = _korea_top_axis(items)
     industries: List[str] = []
     for item in items:
-        cat = _text(item.get("category_label_ko") or item.get("primary_category"))
+        cat = _korea_industry_label(_text(item.get("category_label_ko") or item.get("primary_category")))
         if cat and cat not in industries:
             industries.append(cat)
     industry_phrase = ", ".join(industries[:3]) if industries else "반도체·AI·정책·투자"
     body = (
-        f"국내 TOP5({axis})를 묶으면 {industry_phrase} 축이 동시에 움직이며 "
+        f"국내 TOP5를 묶으면 {industry_phrase} 축이 동시에 움직이며 "
         f"산업 일정·자본 배분·규제 대응이 겹칩니다. "
         f"한국 기업·공급망 관점에서 협력·조달·투자 우선순위가 함께 흔들리는 국내 산업 영향입니다."
     )
@@ -562,12 +617,7 @@ def build_korea_one_line_checkpoint(
 
     items = [i for i in top5_items if isinstance(i, dict)][:5]
     theme = _theme_phrase(items)
-    titles = [
-        _short_title(_text(i.get("korean_title") or i.get("headline")))
-        for i in items[:3]
-    ]
-    titles = [t for t in titles if t]
-    axis = "·".join(titles[:2]) if len(titles) >= 2 else (titles[0] if titles else theme)
+    axis = theme
 
     opportunity = False
     risk = False
