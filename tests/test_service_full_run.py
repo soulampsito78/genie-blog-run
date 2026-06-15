@@ -729,13 +729,22 @@ class KeysuriKoreaOwnerReviewEmailDesignTests(unittest.TestCase):
         self.assertIn("원-라인 체크포인트", email_html)
         self.assertIn("한국 시장 관찰 포인트", email_html)
         self.assertIn("글로벌·국내 TOP5", email_html)
+        self.assertIn('id="bottom-shot-placeholder"', email_html)
         self.assertIn("마무리 및 출처 리스트", email_html)
         self.assertIn("운영자 검수 화면 열기", email_html)
         self.assertIn("/admin/runs/test_korea_run", email_html)
         self.assertIn('role="presentation"', email_html)
         self.assertIn("#14110d", email_html)
+        self.assertNotIn("105936", email_html)
+        self.assertNotIn("cid:keysuri_bottom", email_html.lower())
+        self.assertNotIn("production-ready", email_html.lower())
+        self.assertNotIn("production_asset", email_html.lower())
+        review_marker = "본 브리핑은 운영책임자의 직접 검수 대기 상태입니다"
         self.assertLess(email_html.find("키수리의 딥-다이브"), email_html.find("원-라인 체크포인트"))
-        self.assertLess(email_html.find("원-라인 체크포인트"), email_html.find("마무리 및 출처 리스트"))
+        self.assertLess(email_html.find("원-라인 체크포인트"), email_html.find('id="bottom-shot-placeholder"'))
+        self.assertLess(email_html.find('id="bottom-shot-placeholder"'), email_html.find(review_marker))
+        self.assertLess(email_html.find(review_marker), email_html.find("퇴근 전 메모"))
+        self.assertLess(email_html.find("퇴근 전 메모"), email_html.find("마무리 및 출처 리스트"))
 
 
 class ServiceFullRunInternalEndpointTests(unittest.TestCase):
