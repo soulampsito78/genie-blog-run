@@ -1382,6 +1382,119 @@ def _gmail_render_global_sources(source_list: Sequence[Mapping[str, Any]]) -> st
     )
 
 
+def _gmail_render_global_deep_dive(fixture: Mapping[str, Any]) -> str:
+    c = _GMAIL_GLOBAL_COLORS
+    heading = str(fixture.get("deep_dive_heading") or SECTION_DEEP_DIVE).strip()
+    subframe = GLOBAL_DEEP_SUBFRAME
+    body = str(fixture.get("deep_dive_body") or "").strip()
+    confirmed = fixture.get("deep_dive_confirmed_facts") or []
+    interpretation = str(fixture.get("deep_dive_interpretation") or "").strip()
+    impact = str(fixture.get("deep_dive_owner_impact") or "").strip()
+    uncertainty = normalize_visible_text(fixture.get("deep_dive_uncertainty") or "", style="sentence")
+    layers = fixture.get("deep_dive_layers") or []
+
+    inner_parts: list[str] = []
+    if isinstance(confirmed, list) and confirmed:
+        facts = "".join(
+            f'<li style="margin:0 0 8px 0;font-size:14px;line-height:1.7;color:{c["text"]};">'
+            f'{_esc(str(f).strip())}</li>'
+            for f in confirmed
+            if str(f).strip()
+        )
+        if facts:
+            inner_parts.append(
+                f'<p style="margin:0 0 8px 0;font-size:12px;font-weight:700;color:{c["accent"]};">확인된 사실</p>'
+                f'<ul style="margin:0 0 14px 18px;padding:0;">{facts}</ul>'
+            )
+
+    if body:
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
+        if not paragraphs:
+            paragraphs = [body]
+        for para in paragraphs:
+            inner_parts.append(
+                f'<p style="margin:0 0 14px 0;font-size:14px;line-height:1.75;color:{c["text"]};">{_esc(para)}</p>'
+            )
+
+    if interpretation:
+        inner_parts.append(
+            f'<p style="margin:0 0 8px 0;font-size:12px;font-weight:700;color:{c["accent"]};">키수리 해석</p>'
+            f'<p style="margin:0 0 14px 0;font-size:14px;line-height:1.75;color:{c["text"]};">{_esc(interpretation)}</p>'
+        )
+    if impact:
+        inner_parts.append(
+            f'<p style="margin:0 0 8px 0;font-size:12px;font-weight:700;color:{c["accent"]};">주인님·운영자 영향</p>'
+            f'<p style="margin:0 0 14px 0;font-size:14px;line-height:1.75;color:{c["text"]};">{_esc(impact)}</p>'
+        )
+    if uncertainty:
+        inner_parts.append(
+            f'<p style="margin:0 0 8px 0;font-size:12px;font-weight:700;color:{c["accent"]};">아직 불확실한 점</p>'
+            f'<p style="margin:0 0 14px 0;font-size:14px;line-height:1.75;color:{c["dim"]};">{_esc(uncertainty)}</p>'
+        )
+
+    for layer in layers[:3]:
+        if not isinstance(layer, dict):
+            continue
+        layer_title = str(layer.get("layer_title") or "").strip()
+        layer_body = str(layer.get("layer_body") or "").strip()
+        if not layer_title and not layer_body:
+            continue
+        layer_num = str(layer.get("layer_number") or "").strip()
+        num_html = (
+            f'<p style="margin:0 0 6px 0;font-size:11px;font-weight:700;color:{c["mute"]};">{_esc(layer_num)}</p>'
+            if layer_num
+            else ""
+        )
+        inner_parts.append(
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+            f'style="margin:0 0 12px 0;background:#f5f9fd;border:1px solid {c["line"]};border-radius:10px;">'
+            f'<tr><td style="padding:14px 16px;">'
+            f'{num_html}'
+            f'<p style="margin:0 0 8px 0;font-size:15px;font-weight:700;color:{c["text"]};">{_esc(layer_title)}</p>'
+            f'<p style="margin:0;font-size:14px;line-height:1.75;color:{c["text"]};">{_esc(layer_body)}</p>'
+            f'</td></tr></table>'
+        )
+
+    if not inner_parts:
+        return ""
+
+    return (
+        f'{_gmail_spacer(18)}'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">'
+        f'<tr><td>'
+        f'<h2 style="margin:0 0 8px 0;font-size:20px;line-height:1.4;font-weight:700;color:{c["text"]};'
+        f'border-left:4px solid {c["accent"]};padding-left:12px;">{_esc(heading)}</h2>'
+        f'<p style="margin:0 0 16px 0;font-size:12px;font-weight:700;letter-spacing:0.04em;color:{c["silver"]};">'
+        f'{_esc(subframe)}</p>'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="background:{c["surface"]};border:1px solid {c["line"]};border-radius:12px;">'
+        f'<tr><td style="padding:18px;">{"".join(inner_parts)}</td></tr></table>'
+        f'</td></tr></table>'
+    )
+
+
+def _gmail_render_global_one_line_checkpoint(fixture: Mapping[str, Any]) -> str:
+    c = _GMAIL_GLOBAL_COLORS
+    checkpoint = str(fixture.get("one_line_checkpoint") or "").strip()
+    if not checkpoint:
+        return ""
+    return (
+        f'{_gmail_spacer(18)}'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">'
+        f'<tr><td>'
+        f'<h2 style="margin:0 0 8px 0;font-size:20px;line-height:1.4;font-weight:700;color:{c["text"]};'
+        f'border-left:4px solid {c["signal"]};padding-left:12px;">{_esc(SECTION_ONE_LINE)}</h2>'
+        f'<p style="margin:0 0 12px 0;font-size:12px;font-weight:700;letter-spacing:0.04em;color:{c["silver"]};">'
+        f'{_esc(GLOBAL_CHECKPOINT_SUBFRAME)}</p>'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="background:#eef8f7;border:1px solid #cfe9e6;border-left:4px solid {c["signal"]};border-radius:12px;">'
+        f'<tr><td style="padding:16px 18px;">'
+        f'<p style="margin:0;font-size:15px;line-height:1.7;color:{c["text"]};">{_esc(checkpoint)}</p>'
+        f'</td></tr></table>'
+        f'</td></tr></table>'
+    )
+
+
 def build_keysuri_global_gmail_owner_email_html(
     fixture: Mapping[str, Any],
     *,
@@ -1403,7 +1516,6 @@ def build_keysuri_global_gmail_owner_email_html(
     _subject, preheader = _selected_subject_preheader(fixture, program_id)
     opening_lead = str(fixture.get("opening_lead") or "").strip()
     hero_src = str(fixture.get("top_shot_image_src") or "").strip()
-    checkpoint = str(fixture.get("one_line_checkpoint") or "").strip()
     title = _esc(str(subject or _subject or GLOBAL_HERO_TITLE).strip() or GLOBAL_HERO_TITLE)
 
     hero_image_row = ""
@@ -1417,19 +1529,9 @@ def build_keysuri_global_gmail_owner_email_html(
 
     signal_board = _gmail_render_global_signal_chips(fixture)
     top5 = _gmail_render_global_top5(fixture)
+    deep_dive = _gmail_render_global_deep_dive(fixture)
+    checkpoint_html = _gmail_render_global_one_line_checkpoint(fixture)
     sources = _gmail_render_global_sources(fixture.get("source_list") or [])
-
-    checkpoint_html = ""
-    if checkpoint:
-        checkpoint_html = (
-            f'{_gmail_spacer(18)}'
-            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
-            f'style="background:#eef8f7;border:1px solid #cfe9e6;border-left:4px solid {c["signal"]};border-radius:12px;">'
-            f'<tr><td style="padding:16px 18px;">'
-            f'<p style="margin:0 0 8px 0;font-size:12px;font-weight:700;color:{c["silver"]};">{_esc(GLOBAL_CHECKPOINT_SUBFRAME)}</p>'
-            f'<p style="margin:0;font-size:15px;line-height:1.7;color:{c["text"]};">{_esc(checkpoint)}</p>'
-            f'</td></tr></table>'
-        )
 
     open_ending_html = (
         f'{_gmail_spacer(14)}'
@@ -1488,6 +1590,7 @@ def build_keysuri_global_gmail_owner_email_html(
 {signal_board}
 {_gmail_spacer(18)}
 {top5}
+{deep_dive}
 {checkpoint_html}
 {open_ending_html}
 {review_html}

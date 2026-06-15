@@ -636,6 +636,18 @@ class KeysuriGlobalOwnerReviewEmailDesignRestorationTests(unittest.TestCase):
         self.assertIn("글로벌 신호", email_html)
         self.assertIn("테크 비서 키수리", email_html)
         self.assertIn("TOP 5", email_html.upper())
+        self.assertIn("키수리의 딥-다이브", email_html)
+        self.assertIn("원-라인 체크포인트", email_html)
+        self.assertIn("다음 48시간 관찰 포인트", email_html)
+        self.assertIn("산업 레이어가 어디로 이동하나", email_html)
+        self.assertLess(
+            email_html.find("키수리의 딥-다이브"),
+            email_html.find("원-라인 체크포인트"),
+        )
+        self.assertLess(
+            email_html.find("원-라인 체크포인트"),
+            email_html.find("다음 48시간 관찰 포인트"),
+        )
         self.assertIn("https://blog.google/technology/ai/", email_html)
         self.assertIn("운영자 검수 화면 열기", email_html)
         self.assertIn("/admin/runs/test_run", email_html)
@@ -644,6 +656,8 @@ class KeysuriGlobalOwnerReviewEmailDesignRestorationTests(unittest.TestCase):
         self.assertIn("premium-briefing theme-global", preview_html)
         self.assertIn('<div class="briefing-shell">', preview_html)
         self.assertIn('id="top5-section"', preview_html)
+        self.assertIn("키수리의 딥-다이브", preview_html)
+        self.assertIn("원-라인 체크포인트", preview_html)
         self.assertIn("<style", preview_html.lower())
 
     def test_korea_renderer_available_but_not_sent_by_global_service_full_run(self) -> None:
