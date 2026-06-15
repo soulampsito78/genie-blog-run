@@ -55,6 +55,24 @@ _GENERIC_AXIS_RE = re.compile(
 _TRUNCATED_TOKEN_RE = re.compile(
     r"(?:^|[\s,·])[\uac00-\ud7a3A-Za-z0-9]{1,3}…"
 )
+_INCOMPLETE_KOREAN_TAIL_RE = re.compile(
+    r"(?:"
+    r"[가-힣]{1,4}합$|"
+    r"[가-힣]{0,3}입니$|"
+    r"[가-힣]{0,3}습니$|"
+    r"[가-힣]{0,3}됩니$|"
+    r"[가-힣]{0,3}했습$|"
+    r"수립에$|"
+    r"중요한 흐름$|"
+    r"국내 로봇$|"
+    r"주인님의 투$|"
+    r"[가-힣]\s*내$|"
+    r"조명합$|"
+    r"작용합$|"
+    r"제공합니$"
+    r")"
+)
+_KOREA_VISIBLE_FIELD_MAX_CHARS = 220
 _THIN_CLOSING_ONLY_RE = re.compile(
     r"^(?:오늘도 수고하셨습니다\.?\s*)?(?:내일 다시 뵙겠습니다\.?\s*)?$"
 )
@@ -122,6 +140,100 @@ def contains_truncated_headline_fragment(text: str) -> bool:
     if re.search(r"[가-힣]{1,2}…", blob):
         return True
     return "동시에 보인다는 것입니다" in blob and "…" in blob
+
+
+def _last_visible_sentence(text: str) -> str:
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?…])\s+", _text(text)) if s.strip()]
+    return sentences[-1] if sentences else _text(text)
+
+
+def _sentence_ends_complete_korean(sentence: str) -> bool:
+    sent = _text(sentence)
+    if not sent:
+        return True
+    if re.search(r"[.!?…]$", sent):
+        return True
+    if re.search(
+        r"(습니다|입니다|니다|세요|요|다|함|음|겠습니다|되었습니다|할 수 있습니다|있습니다|됩니다)\.?$",
+        sent,
+    ):
+        return True
+    return False
+
+
+def has_incomplete_korean_sentence_ending(text: str) -> bool:
+    blob = _text(text)
+    if not blob:
+        return False
+    if contains_truncated_headline_fragment(blob):
+        return True
+    last = _last_visible_sentence(blob)
+    if _sentence_ends_complete_korean(last):
+        return False
+    if _INCOMPLETE_KOREAN_TAIL_RE.search(last):
+        return True
+    if re.search(r"[가-힣]{2,}(?:합|입니|습니|됩니|했습)$", last):
+        return True
+    if len(last) >= 10 and not re.search(r"[.!?…]$", last):
+        if re.search(r"(?:에|의|를|을|와|과|로|에서|으로|및|등)$", last):
+            return True
+    return False
+
+
+def clamp_korea_visible_field_at_sentence(text: str, *, max_chars: int = _KOREA_VISIBLE_FIELD_MAX_CHARS) -> str:
+    out = dedupe_sentences_in_paragraph(_text(text))
+    if not out:
+        return ""
+    if len(out) <= max_chars:
+        return out
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?…])\s+", out) if s.strip()]
+    kept: List[str] = []
+    total = 0
+    for sent in sentences:
+        extra = len(sent) + (1 if kept else 0)
+        if total + extra > max_chars and kept:
+            break
+        kept.append(sent)
+        total += extra
+    if kept:
+        return " ".join(kept)
+    return out[: max_chars - 1].rstrip() + "…"
+
+
+def repair_incomplete_korean_visible_text(text: str, *, fallback: str = "") -> str:
+    blob = remove_truncated_headline_fragments(_text(text))
+    if not blob:
+        return remove_truncated_headline_fragments(_text(fallback))
+    if not has_incomplete_korean_sentence_ending(blob):
+        return blob
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?…])\s+", blob) if s.strip()]
+    while sentences and has_incomplete_korean_sentence_ending(sentences[-1]):
+        sentences.pop()
+    if sentences:
+        repaired = " ".join(sentences)
+        if not has_incomplete_korean_sentence_ending(repaired):
+            return remove_truncated_headline_fragments(repaired)
+    repaired = re.sub(
+        r"(?:\s*[가-힣A-Za-z0-9·,]{0,48}(?:합|입니|습니|됩니|했습|수립에|중요한 흐름|국내 로봇|주인님의 투))\s*$",
+        "",
+        blob,
+    ).strip()
+    if repaired and has_incomplete_korean_sentence_ending(repaired):
+        clauses = [c.strip() for c in re.split(r"[,，]", repaired) if c.strip()]
+        complete = [c for c in clauses if not has_incomplete_korean_sentence_ending(c)]
+        if complete:
+            repaired = ". ".join(f"{clause.rstrip('.')}." for clause in complete)
+    if repaired and not has_incomplete_korean_sentence_ending(repaired):
+        return remove_truncated_headline_fragments(repaired)
+    fb = remove_truncated_headline_fragments(_text(fallback))
+    if fb and not has_incomplete_korean_sentence_ending(fb):
+        return fb
+    return remove_truncated_headline_fragments(repaired or fb)
+
+
+def finalize_korea_visible_field(text: str, *, fallback: str = "") -> str:
+    clamped = clamp_korea_visible_field_at_sentence(text)
+    return repair_incomplete_korean_visible_text(clamped, fallback=fallback)
 
 
 def _short_title(title: str, *, max_len: int = 42) -> str:
@@ -242,56 +354,95 @@ def _is_global_signal_item(item: Mapping[str, Any]) -> bool:
     return any(marker in blob for marker in _GLOBAL_MARKERS)
 
 
+_GLOBAL_BRIDGE_MARKERS: tuple[str, ...] = (
+    "글로벌 AI 인프라",
+    "플랫폼 경쟁",
+    "반도체 공급망",
+    "로봇",
+    "에이전트 AI",
+    "한국 기업",
+    "국내 산업",
+)
+
+
+def _korea_top_axis(items: Sequence[Mapping[str, Any]]) -> str:
+    titles = [
+        _short_title(_text(item.get("korean_title") or item.get("headline")))
+        for item in items
+        if isinstance(item, dict)
+    ]
+    titles = [title for title in titles if title]
+    if len(titles) >= 2:
+        return "·".join(titles[:2])
+    if titles:
+        return titles[0]
+    return _theme_phrase(items)
+
+
+def _strip_keysuri_judgment_label_prefix(text: str) -> str:
+    out = _text(text)
+    out = re.sub(r"^키수리\s*판단\s*[:：]\s*", "", out)
+    return out.strip()
+
+
+def _declarative_risk_statement(line: str) -> str:
+    out = finalize_korea_visible_field(line)
+    if not out:
+        return ""
+    stripped = re.sub(r"[?？]+\s*$", "", out).strip()
+    if not stripped:
+        return ""
+    question_markers = ("무엇인가", "얼마나", "이어질 것인가", "어떻게", "무엇을", "몇 ", "인가")
+    if "?" in out or any(marker in stripped for marker in question_markers):
+        topic = re.sub(r"[?？].*$", "", stripped).strip()
+        topic = re.sub(r"(?:은|는|이|가|을|를|에|의)\s*$", "", topic).strip()
+        if len(topic) >= 8:
+            return f"{topic}에 대한 불확실성과 검증 공백이 리스크로 남아 있습니다."
+        return "세부 방향·규모·일정에 대한 불확실성이 리스크로 남아 있습니다."
+    if not _sentence_ends_complete_korean(stripped):
+        stripped = finalize_korea_visible_field(stripped)
+    if stripped and not stripped.endswith((".", "!", "…")):
+        stripped += "."
+    return stripped
+
+
 def _build_global_impact_block(
     items: Sequence[Mapping[str, Any]],
     cleaned_body: str,
 ) -> str:
-    bits: List[str] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        if not _is_global_signal_item(item):
-            continue
-        what = remove_truncated_headline_fragments(
-            _text(item.get("what_happened") or item.get("summary"))
-        )
-        why = remove_truncated_headline_fragments(
-            _text(item.get("why_now") or item.get("why_it_matters"))
-        )
-        sent = _first_sentences(what or why, 1)
-        if sent and sent not in bits:
-            bits.append(sent)
-    if bits:
-        return clamp_korea_block(
-            " ".join(bits[:2])
-            + " 글로벌 공급망·플랫폼 변화가 한국 의사결정에 전달되는 압력으로 읽힙니다."
-        )
-    if cleaned_body and any(marker in cleaned_body for marker in _GLOBAL_MARKERS):
-        return clamp_korea_block(_first_sentences(cleaned_body, 2))
-    theme = _theme_phrase(items)
-    return clamp_korea_block(
-        f"오늘 선정된 {theme}는 글로벌 플랫폼·공급망 움직임이 국내 산업 일정에 반영되는 신호입니다. "
-        f"해외 빅테크·인프라 변화가 한국 파트너십·조달 구조에 압력을 주는 흐름입니다."
+    items = [item for item in items if isinstance(item, dict)]
+    axis = _korea_top_axis(items)
+    global_pressure: List[str] = []
+    if any(_is_global_signal_item(item) for item in items):
+        global_pressure.append("해외 빅테크·플랫폼 일정")
+    blob = " ".join(_item_blob(item) for item in items)
+    if any(marker in blob for marker in _GLOBAL_MARKERS):
+        global_pressure.append("글로벌 공급망·인프라 변화")
+    pressure = "·".join(global_pressure[:2]) if global_pressure else "글로벌 AI 인프라·플랫폼 경쟁"
+    body = (
+        f"글로벌 AI 인프라·플랫폼 경쟁과 반도체 공급망·로봇/에이전트 AI 축이 "
+        f"{pressure}를 통해 {axis} 흐름에 반영되며, 한국 기업·스타트업·공급망과 "
+        f"정책·자본시장에 압력을 전달합니다. 국내 산업은 해외 인프라·조달 구조 변화에 "
+        f"맞춰 협력·투자 우선순위를 재배치해야 하는 단계입니다."
     )
+    return clamp_korea_block(finalize_korea_visible_field(body))
 
 
 def _build_domestic_industry_block(items: Sequence[Mapping[str, Any]]) -> str:
-    bits: List[str] = []
+    items = [item for item in items if isinstance(item, dict)]
+    axis = _korea_top_axis(items)
+    industries: List[str] = []
     for item in items:
-        if not isinstance(item, dict):
-            continue
-        why = remove_truncated_headline_fragments(
-            _text(item.get("why_now") or item.get("why_it_matters") or item.get("owner_angle"))
-        )
-        sent = _first_sentences(why, 1)
-        if sent and sent not in bits:
-            bits.append(sent)
-    if bits:
-        return clamp_korea_block(" ".join(bits[:2]))
-    return clamp_korea_block(
-        "국내 반도체·AI·정책·투자 축이 동시에 움직이면서 산업 일정과 자본 배분 우선순위가 겹칩니다. "
-        "한국 기업·공급망 관점에서 협력·조달·규제 대응이 바로 연결됩니다."
+        cat = _text(item.get("category_label_ko") or item.get("primary_category"))
+        if cat and cat not in industries:
+            industries.append(cat)
+    industry_phrase = ", ".join(industries[:3]) if industries else "반도체·AI·정책·투자"
+    body = (
+        f"국내 TOP5({axis})를 묶으면 {industry_phrase} 축이 동시에 움직이며 "
+        f"산업 일정·자본 배분·규제 대응이 겹칩니다. "
+        f"한국 기업·공급망 관점에서 협력·조달·투자 우선순위가 함께 흔들리는 국내 산업 영향입니다."
     )
+    return clamp_korea_block(finalize_korea_visible_field(body))
 
 
 def _build_opportunity_block(items: Sequence[Mapping[str, Any]]) -> str:
@@ -336,17 +487,19 @@ def _build_risk_block(
         label, explanation = _item_judgment(item)
         hype = _text(item.get("hype_caution"))
         if label in _RISK_LABELS and explanation:
-            line = remove_truncated_headline_fragments(explanation)
+            line = _declarative_risk_statement(explanation)
             if line and line not in lines:
                 lines.append(line)
-        elif hype and hype not in lines:
-            lines.append(remove_truncated_headline_fragments(hype))
+        elif hype:
+            line = _declarative_risk_statement(hype)
+            if line and line not in lines:
+                lines.append(line)
         if item.get("detail_insufficient"):
             line = "세부 수치·일정은 공개 요약만으로는 아직 제한적입니다."
             if line not in lines:
                 lines.append(line)
     unc_lines = [
-        remove_truncated_headline_fragments(line)
+        _declarative_risk_statement(line)
         for line in coerce_visible_lines(uncertainty)
         if _text(line)
     ]
@@ -371,7 +524,7 @@ def _build_keysuri_judgment_block(items: Sequence[Mapping[str, Any]]) -> str:
         if label and label not in labels:
             labels.append(label)
         if explanation and explanation not in explanations:
-            explanations.append(explanation)
+            explanations.append(_strip_keysuri_judgment_label_prefix(explanation))
     if explanations:
         core = " ".join(explanations[:2])
     elif labels:
@@ -382,7 +535,7 @@ def _build_keysuri_judgment_block(items: Sequence[Mapping[str, Any]]) -> str:
             "확인 가능한 범위 안에서만 실행 포인트를 좁혀 가겠습니다."
         )
     return clamp_korea_block(
-        f"키수리 판단: {remove_truncated_headline_fragments(core)} "
+        f"{finalize_korea_visible_field(core)} "
         f"주인님께서는 협력·조달·투자 우선순위를 내일 의사결정 기준에 맞춰 점검하시면 됩니다."
     )
 

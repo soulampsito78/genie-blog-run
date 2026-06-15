@@ -746,6 +746,61 @@ class KeysuriKoreaOwnerReviewEmailDesignTests(unittest.TestCase):
         self.assertLess(email_html.find(review_marker), email_html.find("퇴근 전 메모"))
         self.assertLess(email_html.find("퇴근 전 메모"), email_html.find("마무리 및 출처 리스트"))
 
+    def test_korea_gmail_email_rejects_known_broken_endings_and_synthesizes_deep_dive(self) -> None:
+        from keysuri_contract_preview_renderer import (
+            IMAGE_MODE_EMAIL,
+            build_keysuri_korea_gmail_owner_email_html,
+            prepare_contract_preview_fixture,
+        )
+        from keysuri_service_full_run import keysuri_korea_service_email_cid_src
+        from tests.test_keysuri_contract_preview_renderer import build_korea_contract_fixture
+
+        repo = Path(__file__).resolve().parents[1]
+        fixture = build_korea_contract_fixture()
+        fixture["top_shot_image_src"] = keysuri_korea_service_email_cid_src("20260615_180000_keysuri_korea_tech_test")
+        for idx, item in enumerate(fixture.get("top_5_items") or []):
+            if not isinstance(item, dict):
+                continue
+            if idx == 0:
+                item["selection_reason"] = (
+                    "국내 기업 언급이 명확하며 로봇 산업에서 국내 부품 기업의 역할을 조명합"
+                )
+                item["why_now"] = (
+                    "국내 스타트업 생태계에 직접적인 투자 기회를 제공하는 중요한 창구입니"
+                )
+            item["owner_angle"] = item.get("owner_angle") or "내일 파트너 일정을 점검하시면 됩니다."
+        prepare_contract_preview_fixture(fixture, repo_root=repo, image_mode=IMAGE_MODE_EMAIL)
+
+        email_html = build_keysuri_korea_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Korea Tech",
+            admin_url="https://example.com/admin/runs/test_korea_quality",
+            run_id="test_korea_quality",
+        )
+        import re
+
+        for broken in (
+            "창구입니",
+            "사업 전략 수립에",
+            "중요한 흐름",
+            "주인님의 투",
+            "작용합",
+            "제공합니",
+        ):
+            self.assertNotRegex(email_html, rf"{re.escape(broken)}(?:\s|<|$)", msg=f"broken ending leaked: {broken}")
+        self.assertNotRegex(email_html, r"조명합(?:\s|<|$)")
+        self.assertIn("글로벌 AI 인프라", email_html)
+        self.assertIn("한국 기업", email_html)
+        deep_start = email_html.find("키수리의 딥-다이브")
+        risk_start = email_html.find("위험 요인", deep_start)
+        judgment_start = email_html.find("키수리 판단", risk_start)
+        risk_blob = email_html[risk_start:judgment_start]
+        self.assertNotIn("?", risk_blob)
+        self.assertNotRegex(
+            email_html[judgment_start : judgment_start + 400],
+            r"키수리\s*판단\s*[:：]",
+        )
+
 
 class ServiceFullRunInternalEndpointTests(unittest.TestCase):
     def setUp(self) -> None:

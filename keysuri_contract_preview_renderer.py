@@ -20,6 +20,7 @@ from keysuri_korea_longform_ux import (
     KOREA_WARM_FAREWELL_LINES,
     build_korea_evening_memo,
     build_korea_one_line_checkpoint,
+    finalize_korea_visible_field,
     korea_closing_internal_label_leak,
     korea_closing_structure_incomplete,
     korea_evening_memo_too_thin,
@@ -296,6 +297,11 @@ def _is_korea_program(program_id: str) -> bool:
     return pid == PROGRAM_KOREA or pid.startswith("keysuri_korea")
 
 
+def _korea_visible_field(item: Mapping[str, Any], *keys: str) -> str:
+    title_fb = _item_field(item, "korean_title", "headline")
+    return finalize_korea_visible_field(_item_field(item, *keys), fallback=title_fb)
+
+
 def _theme_body_class(program_id: str) -> str:
     return "theme-korea" if _is_korea_program(program_id) else "theme-global"
 
@@ -424,6 +430,14 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
     why_now = _item_field(item, "why_now", "why_it_matters")
     owner_angle = _item_field(item, "owner_angle", "business_implication", "keysuri_comment")
     if _is_korea_program(program_id):
+        what_happened = _korea_visible_field(item, "what_happened", "summary")
+        why_now = _korea_visible_field(item, "why_now", "why_it_matters")
+        owner_angle = _korea_visible_field(item, "owner_angle", "business_implication", "keysuri_comment")
+        selection_reason = finalize_korea_visible_field(
+            selection_reason,
+            fallback=_item_field(item, "korean_title", "headline"),
+        )
+    else:
         what_happened = dedupe_sentences_in_paragraph(what_happened)
         why_now = dedupe_sentences_in_paragraph(why_now)
         owner_angle = dedupe_sentences_in_paragraph(owner_angle)
@@ -459,9 +473,12 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
     emphasis_label = _card_emphasis_label(program_id)
     emphasis_body = _item_field(item, "next_day_impact_line", "owner_action_line")
     if _is_korea_program(program_id) and emphasis_body:
-        emphasis_body = sanitize_visible_impact_line(
-            emphasis_body,
-            category=str(item.get("primary_category") or ""),
+        emphasis_body = finalize_korea_visible_field(
+            sanitize_visible_impact_line(
+                emphasis_body,
+                category=str(item.get("primary_category") or ""),
+            ),
+            fallback=_item_field(item, "korean_title", "headline"),
         )
     if emphasis_body:
         emphasis_html = (
@@ -1570,18 +1587,23 @@ def _gmail_render_korea_top_item(item: Mapping[str, Any], rank: int) -> str:
             program_id=PROGRAM_KOREA,
         ),
     )
-    what_happened = dedupe_sentences_in_paragraph(_item_field(item, "what_happened", "summary"))
-    why_now = dedupe_sentences_in_paragraph(_item_field(item, "why_now", "why_it_matters"))
-    owner_angle = dedupe_sentences_in_paragraph(
-        _item_field(item, "owner_angle", "business_implication", "keysuri_comment")
+    selection_reason = finalize_korea_visible_field(
+        selection_reason,
+        fallback=_item_field(item, "korean_title", "headline"),
     )
+    what_happened = _korea_visible_field(item, "what_happened", "summary")
+    why_now = _korea_visible_field(item, "why_now", "why_it_matters")
+    owner_angle = _korea_visible_field(item, "owner_angle", "business_implication", "keysuri_comment")
     source_url = _item_field(item, "source_url")
     source_name = _item_field(item, "source_name") or "출처"
     emphasis_body = _item_field(item, "next_day_impact_line", "owner_action_line")
     if emphasis_body:
-        emphasis_body = sanitize_visible_impact_line(
-            emphasis_body,
-            category=str(item.get("primary_category") or ""),
+        emphasis_body = finalize_korea_visible_field(
+            sanitize_visible_impact_line(
+                emphasis_body,
+                category=str(item.get("primary_category") or ""),
+            ),
+            fallback=_item_field(item, "korean_title", "headline"),
         )
     j_label, j_text = _judgment_block(item)
 

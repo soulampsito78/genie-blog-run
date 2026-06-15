@@ -24,6 +24,7 @@ from keysuri_korea_longform_ux import (
     contains_truncated_headline_fragment,
     count_korea_memo_action_lines_in_closing,
     extract_korea_memo_action_lines_from_html,
+    has_incomplete_korean_sentence_ending,
     korea_closing_internal_label_leak,
     korea_closing_paragraph_too_long,
     korea_closing_repeats_title_only,
@@ -453,6 +454,23 @@ def _validate_visible_serialization_issues(
                 ("무슨 일이 있었나", "what_happened"),
                 ("왜 지금 중요한가", "why_now"),
                 ("주인님 관점", "owner_angle"),
+                ("선정 이유", "selection_reason"),
+            ):
+                body = _block_text(block, label)
+                if body and has_incomplete_korean_sentence_ending(body):
+                    issues.append(
+                        BriefingContentIssue(
+                            "korea_incomplete_sentence_ending",
+                            f"TOP item {idx} {code} has incomplete Korean sentence ending",
+                            section="top5",
+                            item_index=idx,
+                            excerpt=body[:100],
+                        )
+                    )
+            for label, code in (
+                ("무슨 일이 있었나", "what_happened"),
+                ("왜 지금 중요한가", "why_now"),
+                ("주인님 관점", "owner_angle"),
             ):
                 body = _block_text(block, label)
                 if body and _has_duplicate_adjacent_sentence(body):
@@ -613,11 +631,54 @@ def _validate_korea_longform_visible_ux(
             )
         for block in deep_blocks:
             body = block.get("body", "")
+            label = str(block.get("label") or "").strip()
             if contains_truncated_headline_fragment(body):
                 issues.append(
                     BriefingContentIssue(
                         "korea_truncated_headline_fragment",
                         "Korea deep-dive contains malformed truncated headline fragment",
+                        section="deep_dive",
+                        excerpt=body[:100],
+                    )
+                )
+                break
+            if has_incomplete_korean_sentence_ending(body):
+                issues.append(
+                    BriefingContentIssue(
+                        "korea_incomplete_sentence_ending",
+                        f"Korea deep-dive block {label!r} has incomplete Korean sentence ending",
+                        section="deep_dive",
+                        excerpt=body[:100],
+                    )
+                )
+                break
+            if label == "위험 요인" and "?" in body:
+                issues.append(
+                    BriefingContentIssue(
+                        "korea_risk_section_question_style",
+                        "Korea risk section must use declarative risk statements, not questions",
+                        section="deep_dive",
+                        excerpt=body[:100],
+                    )
+                )
+                break
+            if label == "키수리 판단" and re.search(r"^키수리\s*판단\s*[:：]", body.strip()):
+                issues.append(
+                    BriefingContentIssue(
+                        "korea_judgment_label_duplicated",
+                        "Korea judgment block body must not repeat the section label",
+                        section="deep_dive",
+                        excerpt=body[:100],
+                    )
+                )
+                break
+            if label == "글로벌 영향" and not any(
+                term in body for term in ("글로벌", "한국 기업", "국내 산업", "공급망", "플랫폼")
+            ):
+                issues.append(
+                    BriefingContentIssue(
+                        "korea_global_impact_missing_bridge",
+                        "Korea global-impact block must bridge global pressure to Korea",
                         section="deep_dive",
                         excerpt=body[:100],
                     )

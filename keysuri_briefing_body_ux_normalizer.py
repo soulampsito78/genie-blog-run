@@ -9,6 +9,7 @@ from keysuri_contract_preview_quality import _sentence_count
 from keysuri_korea_longform_ux import (
     build_korea_evening_memo,
     build_korea_one_line_checkpoint,
+    finalize_korea_visible_field,
     korea_evening_memo_too_thin,
     remove_internal_glue,
     structure_korea_deep_dive,
@@ -217,7 +218,7 @@ def rewrite_signal_marker_sentence_to_natural_prose(
     return f"{natural}\n\n{cleaned}".strip()
 
 
-def normalize_visible_item_fields(item: dict, *, thin_source: bool = False) -> dict:
+def normalize_visible_item_fields(item: dict, *, thin_source: bool = False, korea_program: bool = False) -> dict:
     out = copy.deepcopy(item)
 
     def _norm_field(key: str) -> None:
@@ -246,6 +247,16 @@ def normalize_visible_item_fields(item: dict, *, thin_source: bool = False) -> d
         if key == "what_happened" and not thin_source:
             val = val.replace(_THIN_MARKER, "").replace(_THIN_MARKER_ALT, "")
             val = re.sub(r"\s+", " ", val).strip()
+        if korea_program and key in (
+            "selection_reason",
+            "what_happened",
+            "why_now",
+            "owner_angle",
+            "next_day_impact_line",
+            "owner_action_line",
+        ):
+            title_fb = _text(out.get("korean_title") or out.get("headline"))
+            val = finalize_korea_visible_field(val, fallback=title_fb)
         _set_briefing_field(out, key, val)
 
     thin = thin_source or bool(out.get("detail_insufficient"))
@@ -407,7 +418,7 @@ def normalize_generated_briefing_visible_prose(
             normalized_items.append(item)
             continue
         thin = bool(item.get("detail_insufficient"))
-        normalized = normalize_visible_item_fields(item, thin_source=thin)
+        normalized = normalize_visible_item_fields(item, thin_source=thin, korea_program=is_korea)
         if is_korea:
             meta_stub = {
                 "primary_category": normalized.get("primary_category"),
@@ -422,13 +433,19 @@ def normalize_generated_briefing_visible_prose(
                 existing=_text(normalized.get("selection_reason")),
             )
             if reason:
-                normalized["selection_reason"] = reason
+                normalized["selection_reason"] = finalize_korea_visible_field(
+                    reason,
+                    fallback=_text(normalized.get("korean_title") or normalized.get("headline")),
+                )
             impact = sanitize_visible_impact_line(
                 normalized.get("next_day_impact_line") or "",
                 category=str(normalized.get("primary_category") or ""),
             )
             if impact:
-                normalized["next_day_impact_line"] = impact
+                normalized["next_day_impact_line"] = finalize_korea_visible_field(
+                    impact,
+                    fallback=_text(normalized.get("korean_title") or normalized.get("headline")),
+                )
         normalized_items.append(normalized)
 
     if isinstance(top, dict):

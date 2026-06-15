@@ -15,6 +15,8 @@ from keysuri_korea_longform_ux import (
     build_korea_one_line_checkpoint,
     clamp_action_line,
     contains_truncated_headline_fragment,
+    finalize_korea_visible_field,
+    has_incomplete_korean_sentence_ending,
     korea_closing_paragraph_too_long,
     korea_deep_block_too_long,
     korea_deep_dive_uses_forbidden_labels,
@@ -22,6 +24,7 @@ from keysuri_korea_longform_ux import (
     korea_memo_action_line_too_long,
     korea_warm_farewell_missing,
     remove_truncated_headline_fragments,
+    repair_incomplete_korean_visible_text,
     structure_korea_deep_dive,
 )
 from tests.test_keysuri_contract_preview_renderer import (
@@ -83,6 +86,45 @@ class KeysuriKoreaLongformUxTests(unittest.TestCase):
         blob = " ".join(section["body"] for section in sections)
         self.assertNotIn("H…", blob)
         self.assertNotIn("한쪽은 산업·인프라", blob)
+        global_block = next(section for section in sections if section["label"] == "글로벌 영향")
+        self.assertIn("글로벌 AI 인프라", global_block["body"])
+        self.assertIn("한국 기업", global_block["body"])
+        self.assertNotIn("?", next(section for section in sections if section["label"] == "위험 요인")["body"])
+        judgment_block = next(section for section in sections if section["label"] == "키수리 판단")
+        self.assertNotRegex(judgment_block["body"], r"^키수리\s*판단\s*[:：]")
+
+    def test_truncated_fixture_is_repaired(self) -> None:
+        broken = "국내 로봇 산업에서 핵심 부품 역할을 조명합"
+        repaired = repair_incomplete_korean_visible_text(
+            broken,
+            fallback="국내 로봇 산업 핵심 부품 역할이 강화되는 신호입니다.",
+        )
+        self.assertFalse(has_incomplete_korean_sentence_ending(repaired))
+        self.assertNotIn("조명합", repaired)
+
+    def test_finalize_clamps_selection_reason_without_midword_cut(self) -> None:
+        long_reason = (
+            "국내 기업 언급이 명확하며, 미래 성장 동력인 로봇 산업에서 국내 부품 기업의 역할을 조명합니다. "
+            "글로벌→한국 번역 신호로 선정했습니다."
+        )
+        finalized = finalize_korea_visible_field(long_reason)
+        self.assertFalse(has_incomplete_korean_sentence_ending(finalized))
+        broken = finalize_korea_visible_field(
+            "국내 기업 언급이 명확하며 로봇 산업에서 국내 부품 기업의 역할을 조명합",
+            fallback="국내 로봇 산업 핵심 부품 역할이 강화되는 신호입니다.",
+        )
+        self.assertFalse(has_incomplete_korean_sentence_ending(broken))
+        self.assertNotRegex(broken, r"조명합(?:\s|<|$)")
+
+    def test_risk_block_converts_questions_to_declarative(self) -> None:
+        sections = structure_korea_deep_dive(
+            "",
+            _top_items(),
+            uncertainty="삼성 C랩 선정 스타트업의 구체적 기술 방향은 무엇인가?",
+        )
+        risk = next(section for section in sections if section["label"] == "위험 요인")
+        self.assertNotIn("?", risk["body"])
+        self.assertIn("불확실", risk["body"])
 
     def test_forbidden_label_detector(self) -> None:
         retired = [{"label": "오늘의 핵심 흐름", "body": "본문"}]
