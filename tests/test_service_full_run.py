@@ -71,6 +71,14 @@ def _mock_generate(_path: Path) -> Path:
     return _path
 
 
+def _mock_keysuri_watermark(source: Path, target: Path) -> Path:
+    src = Path(source)
+    dst = Path(target)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_bytes(src.read_bytes() + b"MirAI:ON")
+    return dst.resolve()
+
+
 def _pass_today_orchestration_result() -> OrchestrationResult:
     return OrchestrationResult(
         decision=PublishingDecision(
@@ -300,6 +308,7 @@ class KeysuriServiceFullRunTests(unittest.TestCase):
         self.assertFalse(payload.get("service_full_run", False))
         self.assertFalse(payload.get("side_effects", {}).get("called_image_api"))
 
+    @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
     @patch("keysuri_service_full_run.build_keysuri_prompt_input")
     @patch("keysuri_service_full_run.save_run_artifact")
     @patch("keysuri_service_full_run.send_genie_email")
@@ -314,6 +323,7 @@ class KeysuriServiceFullRunTests(unittest.TestCase):
         mock_send: MagicMock,
         mock_save: MagicMock,
         mock_prompt_input: MagicMock,
+        mock_watermark: MagicMock,
     ) -> None:
         from keysuri_service_full_run import run_keysuri_service_full_run
 
@@ -351,6 +361,7 @@ class KeysuriServiceFullRunTests(unittest.TestCase):
         img_file = repo / "output" / "images" / "keysuri_global_canary.jpg"
         img_file.parent.mkdir(parents=True, exist_ok=True)
         img_file.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+        mock_watermark.side_effect = _mock_keysuri_watermark
         mock_prompt_input.return_value = {"program_id": PROGRAM_GLOBAL, "prompt_status": "ready_for_generation"}
         mock_reload.return_value = {"title": "t", "summary": "s", "top_5_news": []}
 
@@ -381,7 +392,9 @@ class KeysuriServiceFullRunTests(unittest.TestCase):
         mock_send.assert_called_once()
         send_kwargs = mock_send.call_args.kwargs
         self.assertIn("inline_jpeg_parts", send_kwargs)
-        self.assertTrue(send_kwargs.get("inline_jpeg_parts"))
+        inline = send_kwargs.get("inline_jpeg_parts") or []
+        self.assertTrue(inline)
+        self.assertIn("_mirai_on_watermarked", Path(inline[0][0]).name)
         email_html = mock_save.call_args.kwargs.get("email_html") or mock_save.call_args.args[1]
         self.assertIn("운영자 검수 화면 열기", email_html)
         self.assertIn(payload["run_id"], email_html)
@@ -389,7 +402,11 @@ class KeysuriServiceFullRunTests(unittest.TestCase):
         saved_meta = mock_save.call_args.args[0]
         self.assertFalse(saved_meta.get("artifact_storage_durable"))
         self.assertIn("/admin/runs/", str(saved_meta.get("owner_review_url") or ""))
+        self.assertEqual(saved_meta.get("top_shot_watermark_status"), "applied")
+        self.assertEqual(saved_meta.get("generated_image_path_raw"), "output/images/keysuri_global_canary.jpg")
+        self.assertIn("_mirai_on_watermarked", str(saved_meta.get("generated_image_path")))
 
+    @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
     @patch("keysuri_service_full_run.build_keysuri_prompt_input")
     @patch("keysuri_service_full_run.save_run_artifact")
     @patch("keysuri_service_full_run._generate_keysuri_service_image")
@@ -398,6 +415,7 @@ class KeysuriServiceFullRunTests(unittest.TestCase):
         mock_image: MagicMock,
         mock_save: MagicMock,
         mock_prompt_input: MagicMock,
+        mock_watermark: MagicMock,
     ) -> None:
         from keysuri_service_full_run import run_keysuri_service_full_run
 
@@ -426,6 +444,10 @@ class KeysuriServiceFullRunTests(unittest.TestCase):
             image_source=IMAGE_SOURCE_GENERATED,
             generated_image_path="output/images/keysuri_korea_canary.jpg",
         )
+        img_file = repo / "output" / "images" / "keysuri_korea_canary.jpg"
+        img_file.parent.mkdir(parents=True, exist_ok=True)
+        img_file.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+        mock_watermark.side_effect = _mock_keysuri_watermark
         mock_prompt_input.return_value = {"program_id": PROGRAM_KOREA, "prompt_status": "ready_for_generation"}
         with patch("keysuri_service_full_run._reload_generated_briefing", return_value={"title": "k"}):
             with patch("keysuri_service_full_run._render_service_html", return_value=(_minimal_contract_preview_document(), "out/k.html")):
@@ -475,6 +497,7 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
             side_effects={"called_gemini": True, "called_image_api": False},
         )
 
+    @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
     @patch("keysuri_service_full_run.build_keysuri_prompt_input")
     @patch("keysuri_service_full_run.save_run_artifact")
     @patch("keysuri_service_full_run.send_genie_email")
@@ -487,6 +510,7 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         mock_send: MagicMock,
         mock_save: MagicMock,
         mock_prompt_input: MagicMock,
+        mock_watermark: MagicMock,
     ) -> None:
         from keysuri_service_full_run import (
             keysuri_global_service_email_cid_src,
@@ -505,6 +529,7 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         image_rel = repo / "output" / "images" / "keysuri_global_service_test.jpg"
         image_rel.parent.mkdir(parents=True, exist_ok=True)
         image_rel.write_bytes(b"\xff\xd8\xff" + b"\x00" * 128)
+        mock_watermark.side_effect = _mock_keysuri_watermark
 
         mock_image.return_value = ServiceImageOutcome(
             called_image_api=True,
@@ -542,6 +567,7 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         self.assertEqual(len(inline), 1)
         fs_path, cid_token, _fname = inline[0]
         self.assertTrue(Path(fs_path).is_file())
+        self.assertIn("_mirai_on_watermarked", Path(fs_path).name)
         self.assertEqual(cid_token, keysuri_global_service_email_cid_src(run_id).replace("cid:", ""))
 
         email_html = mock_send.call_args.args[0]
@@ -573,6 +599,11 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         self.assertTrue(saved_meta.get("service_full_run"))
         self.assertTrue(saved_meta.get("called_image_api"))
         self.assertEqual(saved_meta.get("image_source"), IMAGE_SOURCE_GENERATED)
+        self.assertEqual(saved_meta.get("top_shot_watermark_status"), "applied")
+        self.assertEqual(saved_meta.get("top_shot_watermark_text"), "MirAI:ON")
+        self.assertEqual(saved_meta.get("generated_image_path_raw"), str(image_rel.relative_to(repo)))
+        self.assertIn("_mirai_on_watermarked", str(saved_meta.get("generated_image_path")))
+        self.assertIn("_mirai_on_watermarked", str(saved_meta.get("generated_image_path_watermarked")))
         self.assertFalse(saved_meta.get("artifact_storage_durable"))
 
     def test_registry_image_cannot_pass_global_service_full_run_contract(self) -> None:
@@ -599,6 +630,7 @@ class KeysuriKoreaServiceFullRunBottomEmailTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._env.stop()
 
+    @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
     @patch("keysuri_service_full_run.resolve_korea_bottom_email_asset_path")
     @patch("keysuri_service_full_run.build_keysuri_prompt_input")
     @patch("keysuri_service_full_run.save_run_artifact")
@@ -611,6 +643,7 @@ class KeysuriKoreaServiceFullRunBottomEmailTests(unittest.TestCase):
         mock_save: MagicMock,
         mock_prompt_input: MagicMock,
         mock_bottom: MagicMock,
+        mock_watermark: MagicMock,
     ) -> None:
         from keysuri_service_full_run import (
             keysuri_korea_bottom_service_email_cid_src,
@@ -632,6 +665,7 @@ class KeysuriKoreaServiceFullRunBottomEmailTests(unittest.TestCase):
         top_image.write_bytes(b"\xff\xd8\xff" + b"\x00" * 128)
         bottom_image = repo / "output" / "images" / "keysuri_korea_bottom_105936_test.jpg"
         bottom_image.write_bytes(b"\xff\xd8\xff" + b"\x11" * 128)
+        mock_watermark.side_effect = _mock_keysuri_watermark
 
         mock_image.return_value = ServiceImageOutcome(
             called_image_api=True,
@@ -679,6 +713,7 @@ class KeysuriKoreaServiceFullRunBottomEmailTests(unittest.TestCase):
         self.assertEqual(len(inline), 2)
         self.assertEqual(inline[0][1], keysuri_korea_service_email_cid_src(run_id).replace("cid:", ""))
         self.assertEqual(inline[1][1], keysuri_korea_bottom_service_email_cid_src(run_id).replace("cid:", ""))
+        self.assertIn("_mirai_on_watermarked", Path(inline[0][0]).name)
         self.assertEqual(Path(inline[1][0]).resolve(), bottom_image.resolve())
 
         email_html = mock_send.call_args.args[0]
@@ -693,6 +728,9 @@ class KeysuriKoreaServiceFullRunBottomEmailTests(unittest.TestCase):
         self.assertEqual(saved_meta.get("customer_delivery_status"), "not_sent")
         self.assertEqual(saved_meta.get("korea_bottom_shot_asset_id"), "keysuri_korea_bottom_20260605_105936")
         self.assertEqual(saved_meta.get("korea_bottom_shot_status"), "available")
+        self.assertEqual(saved_meta.get("top_shot_watermark_status"), "applied")
+        self.assertEqual(saved_meta.get("generated_image_path_raw"), str(top_image.relative_to(repo)))
+        self.assertIn("_mirai_on_watermarked", str(saved_meta.get("generated_image_path_watermarked")))
 
 
 class KeysuriGlobalOwnerReviewEmailDesignRestorationTests(unittest.TestCase):

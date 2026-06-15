@@ -12,6 +12,7 @@ from admin_store import admin_artifact_bucket_name, artifact_email_path, artifac
 from admin_urls import build_owner_review_admin_url
 from email_sender import send_genie_email
 from keysuri_approved_image_assets import KOREA_BOTTOM_ROLE, list_approved_assets
+from keysuri_image_overlay import apply_keysuri_mirai_on_watermark
 from keysuri_contract_preview_fixture import build_contract_preview_fixture_from_generated
 from keysuri_contract_preview_renderer import (
     IMAGE_MODE_EMAIL,
@@ -139,6 +140,23 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _repo_rel(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(_REPO.resolve()).as_posix()
+    except ValueError:
+        return str(path.resolve())
+
+
+def _watermarked_top_shot_path(source_path: Path) -> Path:
+    source = Path(source_path)
+    if not source.is_file():
+        raise FileNotFoundError(f"Kee-Suri generated top-shot missing: {source}")
+    if source.stem.endswith("_mirai_on_watermarked"):
+        return source.resolve()
+    target = source.with_name(f"{source.stem}_mirai_on_watermarked{source.suffix}")
+    return apply_keysuri_mirai_on_watermark(source, target)
 
 
 def _korea_bottom_registry_asset() -> Any:
@@ -514,7 +532,44 @@ def run_keysuri_service_full_run(
         save_run_artifact(meta, email_html="")
         return {"ok": False, "run_id": run_id, "program_id": pid, "service_full_run": True, "email_sent": False, "error": "generated_briefing_reload_failed"}
 
-    gen_image_abs = _REPO / str(image_outcome.generated_image_path or "")
+    raw_generated_image_path = str(image_outcome.generated_image_path or "")
+    gen_image_raw_abs = _REPO / raw_generated_image_path
+    try:
+        gen_image_abs = _watermarked_top_shot_path(gen_image_raw_abs)
+    except Exception as exc:
+        issue_codes.append("keysuri_top_shot_watermark_failed")
+        meta = build_service_artifact_fields(
+            run_id=run_id,
+            mode=pid,
+            program_id=pid,
+            trigger_source=trigger_source,
+            validation_result=validation_result,
+            issue_codes=issue_codes,
+            called_gemini=True,
+            image_outcome=image_outcome,
+            email_sent=False,
+            error_code="keysuri_top_shot_watermark_failed",
+        )
+        meta["generated_image_path_raw"] = raw_generated_image_path
+        meta["top_shot_watermark_status"] = "failed"
+        meta["top_shot_watermark_error_type"] = type(exc).__name__
+        save_run_artifact(meta, email_html="")
+        return {
+            "ok": False,
+            "run_id": run_id,
+            "program_id": pid,
+            "service_full_run": True,
+            "validation_result": validation_result,
+            "called_gemini": True,
+            "called_image_api": image_outcome.called_image_api,
+            "image_generation_status": image_outcome.image_generation_status,
+            "image_source": image_outcome.image_source,
+            "generated_image_path": raw_generated_image_path,
+            "email_sent": False,
+            "error": "keysuri_top_shot_watermark_failed",
+        }
+    watermarked_generated_image_path = _repo_rel(gen_image_abs)
+    image_outcome.generated_image_path = watermarked_generated_image_path
     contract_fixture_preview = _build_service_contract_fixture(
         pid,
         prompt_input=prompt_input,
@@ -650,6 +705,10 @@ def run_keysuri_service_full_run(
         artifact_storage_durable=storage_durable,
     )
     meta["artifact_status"] = "emailed" if email_sent else "stored"
+    meta["generated_image_path_raw"] = raw_generated_image_path
+    meta["generated_image_path_watermarked"] = watermarked_generated_image_path
+    meta["top_shot_watermark_status"] = "applied"
+    meta["top_shot_watermark_text"] = "MirAI:ON"
     if pid == PROGRAM_KOREA:
         meta["korea_bottom_shot_asset_id"] = KEYSURI_KOREA_BOTTOM_ASSET_ID
         meta["korea_bottom_shot_status"] = bottom_image_status
@@ -676,6 +735,9 @@ def run_keysuri_service_full_run(
         "image_generation_status": image_outcome.image_generation_status,
         "image_source": image_outcome.image_source,
         "generated_image_path": image_outcome.generated_image_path,
+        "generated_image_path_raw": raw_generated_image_path,
+        "generated_image_path_watermarked": watermarked_generated_image_path,
+        "top_shot_watermark_status": meta.get("top_shot_watermark_status"),
         "html_path": html_rel,
         "owner_review_html_path": meta.get("owner_review_html_path"),
         "owner_review_url": owner_review_url,
