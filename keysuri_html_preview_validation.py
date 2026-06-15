@@ -57,9 +57,11 @@ KOREA_LAYER_LABELS = (
     "워크플로·락인",
 )
 KOREA_LONGFORM_BLOCK_LABELS = (
-    "오늘의 핵심 흐름",
-    "국내 적용",
-    "내일 볼 지점",
+    "글로벌 영향",
+    "국내 산업 영향",
+    "기회 요인",
+    "위험 요인",
+    "키수리 판단",
 )
 
 VERIFICATION_MARKERS = (

@@ -155,6 +155,9 @@ def _contract_top_item(rank: int, *, scope: str) -> dict[str, Any]:
             f"항목 {rank}를 제품 로드맵·파트너 선정 기준에 반영할지 점검하시면 됩니다. "
             f"단기 과장과 장기 구조 변화를 구분해 보시는 것이 좋습니다."
         )
+        next_day_impact = (
+            f"항목 {rank} 관련 국내 파트너·조달 일정이 내일 의사결정에 반영될 수 있습니다."
+        )
     else:
         why_now = (
             f"항목 {rank}는 엔터프라이즈 배포·API 정책 변경이 겹치는 시점이라 "
@@ -164,7 +167,8 @@ def _contract_top_item(rank: int, *, scope: str) -> dict[str, Any]:
             f"주인님께서는 항목 {rank}를 제품 로드맵·파트너 선정 기준에 반영할지 점검하시면 됩니다. "
             f"단기 과장과 장기 구조 변화를 구분해 보시는 것이 좋습니다."
         )
-    return {
+        next_day_impact = ""
+    item: dict[str, Any] = {
         "rank": rank,
         "korean_title": title,
         "headline": title,
@@ -185,6 +189,9 @@ def _contract_top_item(rank: int, *, scope: str) -> dict[str, Any]:
         "checked_at": "2026-06-05T12:00:00+09:00",
         "verification_status": "rss_summary / not_verified",
     }
+    if next_day_impact:
+        item["next_day_impact_line"] = next_day_impact
+    return item
 
 
 def _contract_deep_dive_layers(*, scope: str) -> list[dict[str, str]]:
@@ -276,7 +283,7 @@ def build_korea_contract_fixture(*, review_state: str = "preview_pending") -> di
         "evening_memo_heading": KOREA_EVENING_MEMO_HEADING,
         "korea_evening_memo": evening_memo,
         "evening_memo_body": evening_memo_text,
-        "one_line_checkpoint": "오늘은 인프라·조달 일정 변동을 먼저 보시면 됩니다.",
+        "one_line_checkpoint": "글로벌·국내 TOP5를 종합하면, 엔비디아 방한 이슈·국내 투자 축에서 한국 시장의 관건은 기회와 리스크가 동시에 이동하고 있습니다.",
         "closing_message": "오늘 신호는 여기까지 정리해 두었습니다. 출처는 아래에 그대로 남깁니다.",
         "source_list": [
             {
@@ -412,7 +419,7 @@ class KeysuriContractPreviewFixtureTests(unittest.TestCase):
         self.assertEqual(len(fixture["title_candidates"]), 2)
         self.assertIn(fixture["selected_title"], fixture["title_candidates"])
         self.assertEqual(len(fixture["top_5_items"]), 5)
-        self.assertGreaterEqual(len(fixture["korea_deep_dive_sections"]), 3)
+        self.assertGreaterEqual(len(fixture["korea_deep_dive_sections"]), 5)
         self.assertIn("evening_memo_body", fixture)
         self.assertIn("operation_metadata", fixture)
         self.assertEqual(fixture["review_state"], "preview_pending")
@@ -778,9 +785,11 @@ class KeysuriContractPreviewRendererTests(unittest.TestCase):
         assert mod is not None
         html = _render_contract_html(mod, build_korea_contract_fixture())
         block_count = len(re.findall(r'class="[^"]*\bkorea-deep-block\b', html, flags=re.IGNORECASE))
-        self.assertGreaterEqual(block_count, 3)
-        for title in ("오늘의 핵심 흐름", "국내 적용", "내일 볼 지점"):
+        self.assertGreaterEqual(block_count, 5)
+        for title in ("글로벌 영향", "국내 산업 영향", "기회 요인", "위험 요인", "키수리 판단"):
             self.assertIn(title, html)
+        for forbidden in ("오늘의 핵심 흐름", "내일 볼 지점", "아직 불확실한 점"):
+            self.assertNotIn(forbidden, html)
 
 
 class KeysuriThemeSeparationRendererTests(unittest.TestCase):
@@ -824,14 +833,15 @@ class KeysuriThemeSeparationRendererTests(unittest.TestCase):
         self.assertIn("산업 레이어가 어디로 이동하나", html)
 
     @_require_contract_renderer
-    def test_korea_checkpoint_polishes_strategy_cta(self) -> None:
+    def test_korea_checkpoint_replaces_thin_strategy_cta_with_synthesis(self) -> None:
         mod = _CONTRACT_RENDERER
         fixture = build_korea_contract_fixture()
         fixture["one_line_checkpoint"] = (
             "주인님, HBM·파운드리 신호를 중심으로 내일의 사업 전략을 구체화하십시오."
         )
         html = _render_contract_html(mod, fixture)
-        self.assertIn("투자 및 사업 전략", html)
+        self.assertIn("글로벌·국내 TOP5", html)
+        self.assertIn("한국 시장", html)
         self.assertNotIn("내일의 사업 전략을 구체화하십시오", html)
 
     @_require_contract_renderer

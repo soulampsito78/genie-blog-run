@@ -300,8 +300,8 @@ class KeysuriBriefingContentEnricherTests(unittest.TestCase):
         out = enrich_generated_briefing_content(generated, "keysuri_korea_tech", prompt_input)
         self.assertNotIn("TOP 신호", out["deep_dive"]["body"])
         self.assertNotIn("gate", out["deep_dive"]["body"].lower())
-        self.assertIn("오늘의 핵심 흐름", out["deep_dive"]["body"])
-        self.assertGreaterEqual(len(out["deep_dive"].get("korea_deep_dive_sections") or []), 3)
+        self.assertIn("글로벌 영향", out["deep_dive"]["body"])
+        self.assertGreaterEqual(len(out["deep_dive"].get("korea_deep_dive_sections") or []), 5)
 
 
 if __name__ == "__main__":

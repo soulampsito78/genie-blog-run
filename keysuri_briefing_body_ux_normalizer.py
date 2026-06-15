@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from keysuri_contract_preview_quality import _sentence_count
 from keysuri_korea_longform_ux import (
     build_korea_evening_memo,
+    build_korea_one_line_checkpoint,
     korea_evening_memo_too_thin,
     remove_internal_glue,
     structure_korea_deep_dive,
@@ -465,12 +466,22 @@ def normalize_generated_briefing_visible_prose(
         out["deep_dive"] = deep_out
 
     one_line = out.get("one_line_checkpoint")
-    if is_korea and isinstance(one_line, dict):
-        body = _text(one_line.get("body"))
-        if body:
+    if is_korea:
+        existing = ""
+        if isinstance(one_line, dict):
+            existing = _text(one_line.get("body"))
+        elif one_line not in (None, ""):
+            existing = _text(one_line)
+        synthesized = build_korea_one_line_checkpoint(
+            normalized_items,
+            existing=polish_korea_checkpoint_text(existing),
+        )
+        if isinstance(one_line, dict):
             one_line_out = dict(one_line)
-            one_line_out["body"] = polish_korea_checkpoint_text(body)
+            one_line_out["body"] = synthesized
             out["one_line_checkpoint"] = one_line_out
+        else:
+            out["one_line_checkpoint"] = synthesized
 
     if is_korea:
         memo = build_korea_evening_memo(normalized_items)

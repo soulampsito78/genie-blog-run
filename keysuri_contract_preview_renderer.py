@@ -15,9 +15,11 @@ from keysuri_approved_image_assets import (
 from keysuri_contract_preview_quality import GENERIC_CLOSING_PHRASES
 from keysuri_private_briefing import SECTION_CLOSING, SECTION_DEEP_DIVE, SECTION_ONE_LINE
 from keysuri_korea_longform_ux import (
+    KOREA_CHECKPOINT_SUBFRAME,
     KOREA_EVENING_MEMO_HEADING,
     KOREA_WARM_FAREWELL_LINES,
     build_korea_evening_memo,
+    build_korea_one_line_checkpoint,
     korea_closing_internal_label_leak,
     korea_closing_structure_incomplete,
     korea_evening_memo_too_thin,
@@ -48,7 +50,6 @@ KOREA_CARD_EMPHASIS = "내일 영향"
 GLOBAL_DEEP_SUBFRAME = "산업 레이어가 어디로 이동하나"
 KOREA_DEEP_SUBFRAME = "한국 기업·정책으로 읽으면"
 GLOBAL_CHECKPOINT_SUBFRAME = "다음 48시간 관찰 포인트"
-KOREA_CHECKPOINT_SUBFRAME = "내일 영향을 줄 한 가지"
 GLOBAL_OPEN_ENDING = (
     "다음 48시간은 위 관찰 포인트를 열어 둔 채 이어가시면 됩니다."
 )
@@ -1082,7 +1083,10 @@ def render_keysuri_contract_preview_html(
     checkpoint_subframe = _esc(_checkpoint_subframe(program_id))
     checkpoint_body = str(working.get("one_line_checkpoint") or "")
     if is_korea:
-        checkpoint_body = polish_korea_checkpoint_text(checkpoint_body)
+        checkpoint_body = build_korea_one_line_checkpoint(
+            working.get("top_5_items") or [],
+            existing=polish_korea_checkpoint_text(checkpoint_body),
+        )
     checkpoint = f"""
     <section id="one-line-section" class="section-card">
       <h2 class="section-heading">{SECTION_ONE_LINE}</h2>
@@ -1727,7 +1731,10 @@ def _gmail_render_korea_deep_dive(fixture: Mapping[str, Any]) -> str:
 
 def _gmail_render_korea_one_line_checkpoint(fixture: Mapping[str, Any]) -> str:
     c = _GMAIL_KOREA_COLORS
-    checkpoint = polish_korea_checkpoint_text(str(fixture.get("one_line_checkpoint") or "").strip())
+    checkpoint = build_korea_one_line_checkpoint(
+        fixture.get("top_5_items") or [],
+        existing=polish_korea_checkpoint_text(str(fixture.get("one_line_checkpoint") or "").strip()),
+    )
     if not checkpoint:
         return ""
     return (

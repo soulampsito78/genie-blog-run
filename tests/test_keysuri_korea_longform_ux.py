@@ -6,14 +6,18 @@ import unittest
 from keysuri_briefing_content_quality import validate_briefing_content_gate
 from keysuri_korea_longform_ux import (
     KOREA_CLOSING_PARAGRAPH_MAX_CHARS,
+    KOREA_DEEP_DIVE_FORBIDDEN_LABELS,
+    KOREA_DEEP_DIVE_REQUIRED_LABELS,
     KOREA_DEEP_MAX_PARAGRAPH_CHARS,
     KOREA_MEMO_ACTION_MAX_CHARS,
     KOREA_WARM_FAREWELL_LINES,
     build_korea_evening_memo,
+    build_korea_one_line_checkpoint,
     clamp_action_line,
     contains_truncated_headline_fragment,
     korea_closing_paragraph_too_long,
     korea_deep_block_too_long,
+    korea_deep_dive_uses_forbidden_labels,
     korea_evening_memo_too_thin,
     korea_memo_action_line_too_long,
     korea_warm_farewell_missing,
@@ -32,25 +36,33 @@ def _top_items() -> list[dict]:
     return [
         {
             "korean_title": "엔비디아 CEO 방한, HBM4 협력 논의",
+            "what_happened": "엔비디아가 국내 반도체 파트너와 HBM4 협력을 논의했습니다.",
+            "why_now": "국내 메모리 밸류체인 일정에 직접 영향을 줍니다.",
+            "keysuri_judgment_label": "기회",
+            "keysuri_judgment": "협력 일정이 열리면 실행 속도를 앞당길 여지가 있습니다.",
             "next_watch": "삼성전자·SK하이닉스 HBM4 후속 일정; GPU 공급 약속 대상 확인",
         },
         {
             "korean_title": "국내 AI 스타트업 투자 확대",
+            "what_happened": "국내 딥테크 투자 라운드가 확대되었습니다.",
+            "why_now": "정책·자본 신호가 동시에 맞물립니다.",
+            "keysuri_judgment_label": "관찰",
+            "keysuri_judgment": "후속 공시 전까지는 과장 없이 관찰하는 편이 안전합니다.",
             "next_watch": "정부 AI 팩토리 구체화; 국내 스타트업 투자 후속",
         },
     ]
 
 
 def _korea_closing_html(memo_html: str) -> str:
+    blocks = "".join(
+        f"""
+      <div class="korea-deep-block"><h4 class="korea-deep-label">{label}</h4>
+      <div class="korea-deep-body"><p>짧은 본문입니다.</p></div></div>"""
+        for label in KOREA_DEEP_DIVE_REQUIRED_LABELS
+    )
     return f"""
     <html><body class="premium-briefing theme-korea">
-    <section id="deep-dive-section">
-      <div class="korea-deep-block"><h4 class="korea-deep-label">오늘의 핵심 흐름</h4>
-      <div class="korea-deep-body"><p>짧은 흐름입니다.</p></div></div>
-      <div class="korea-deep-block"><h4 class="korea-deep-label">국내 적용</h4>
-      <div class="korea-deep-body"><p>국내 적용 문장입니다.</p></div></div>
-      <div class="korea-deep-block"><h4 class="korea-deep-label">내일 볼 지점</h4>
-      <div class="korea-deep-body"><ul><li>후속 확인</li><li>일정 점검</li></ul></div></div>
+    <section id="deep-dive-section">{blocks}
     </section>
     <section id="closing-section"><h2>퇴근 전 메모</h2>{memo_html}</section>
   </body></html>
@@ -58,23 +70,36 @@ def _korea_closing_html(memo_html: str) -> str:
 
 
 class KeysuriKoreaLongformUxTests(unittest.TestCase):
-    def test_structure_splits_wall_paragraph_into_blocks(self) -> None:
+    def test_structure_uses_five_contract_blocks(self) -> None:
         wall = (
             "오늘 눈에 띄는 점은 H… 이슈가 동시에 보인다는 것입니다. "
             "한쪽은 산업·인프라 쪽이고, 다른 쪽은 소프트웨어·운영 쪽입니다."
         )
         sections = structure_korea_deep_dive(wall, _top_items())
         labels = [section["label"] for section in sections]
-        self.assertIn("오늘의 핵심 흐름", labels)
-        self.assertIn("국내 적용", labels)
-        self.assertIn("내일 볼 지점", labels)
-        self.assertGreaterEqual(len(sections), 3)
+        self.assertEqual(labels, list(KOREA_DEEP_DIVE_REQUIRED_LABELS))
+        for forbidden in KOREA_DEEP_DIVE_FORBIDDEN_LABELS:
+            self.assertNotIn(forbidden, labels)
         blob = " ".join(section["body"] for section in sections)
         self.assertNotIn("H…", blob)
         self.assertNotIn("한쪽은 산업·인프라", blob)
 
+    def test_forbidden_label_detector(self) -> None:
+        retired = [{"label": "오늘의 핵심 흐름", "body": "본문"}]
+        self.assertTrue(korea_deep_dive_uses_forbidden_labels(retired))
+
+    def test_checkpoint_synthesizes_market_observation(self) -> None:
+        checkpoint = build_korea_one_line_checkpoint(
+            _top_items(),
+            existing="오늘은 인프라·조달 일정 변동을 먼저 보시면 됩니다.",
+        )
+        self.assertIn("글로벌·국내 TOP5", checkpoint)
+        self.assertIn("한국 시장", checkpoint)
+        self.assertNotIn("먼저 보시면 됩니다", checkpoint)
+        self.assertNotIn("내일 영향을 줄", checkpoint)
+
     def test_wall_text_gate_flags_unnormalized_paragraph(self) -> None:
-        sections = [{"label": "오늘의 핵심 흐름", "body": "가" * (KOREA_DEEP_MAX_PARAGRAPH_CHARS + 5)}]
+        sections = [{"label": "글로벌 영향", "body": "가" * (KOREA_DEEP_MAX_PARAGRAPH_CHARS + 5)}]
         self.assertTrue(korea_deep_block_too_long(sections))
 
     def test_remove_truncated_headline_fragments(self) -> None:

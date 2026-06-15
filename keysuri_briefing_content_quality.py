@@ -29,6 +29,7 @@ from keysuri_korea_longform_ux import (
     korea_closing_repeats_title_only,
     korea_deep_block_too_long,
     korea_deep_dive_missing_blocks,
+    korea_deep_dive_uses_forbidden_labels,
     korea_memo_action_line_too_long,
     korea_section_label_not_user_facing,
     korea_warm_farewell_missing,
@@ -598,7 +599,15 @@ def _validate_korea_longform_visible_ux(
             issues.append(
                 BriefingContentIssue(
                     "korea_deep_dive_missing_blocks",
-                    "Korea deep-dive must contain at least 3 visible sub-blocks",
+                    "Korea deep-dive must include all five contract blocks",
+                    section="deep_dive",
+                )
+            )
+        if korea_deep_dive_uses_forbidden_labels(deep_blocks):
+            issues.append(
+                BriefingContentIssue(
+                    "korea_deep_dive_forbidden_labels",
+                    "Korea deep-dive uses retired four-box labels instead of contract blocks",
                     section="deep_dive",
                 )
             )

@@ -8,6 +8,7 @@ from keysuri_visible_text import (
     coerce_visible_lines,
     dedupe_sentences_in_paragraph,
     normalize_visible_text,
+    sanitize_visible_impact_line,
     strip_watch_arrow_prefixes,
 )
 
@@ -16,6 +17,20 @@ KOREA_CLOSING_PARAGRAPH_MAX_CHARS = 220
 KOREA_MEMO_ACTION_MAX_CHARS = 180
 KOREA_EVENING_MEMO_HEADING = "퇴근 전 메모"
 KOREA_DEEP_SUBFRAME = "한국 기업·정책으로 읽으면"
+KOREA_CHECKPOINT_SUBFRAME = "한국 시장 관찰 포인트"
+KOREA_DEEP_DIVE_REQUIRED_LABELS: tuple[str, ...] = (
+    "글로벌 영향",
+    "국내 산업 영향",
+    "기회 요인",
+    "위험 요인",
+    "키수리 판단",
+)
+KOREA_DEEP_DIVE_FORBIDDEN_LABELS: tuple[str, ...] = (
+    "오늘의 핵심 흐름",
+    "국내 적용",
+    "내일 볼 지점",
+    "아직 불확실한 점",
+)
 KOREA_WARM_FAREWELL_LINES: tuple[str, ...] = (
     "오늘도 수고 많으셨습니다.",
     "내일 아침에 다시 볼 흐름만 남겨두겠습니다.",
@@ -171,86 +186,279 @@ def _format_bullets(lines: Sequence[str]) -> str:
     return "\n".join(f"• {line}" for line in cleaned)
 
 
+def _item_judgment(item: Mapping[str, Any]) -> tuple[str, str]:
+    nested = item.get("keysuri_judgment")
+    if isinstance(nested, dict):
+        label = _text(nested.get("label"))
+        explanation = _text(nested.get("explanation") or nested.get("text"))
+        if label or explanation:
+            return label, explanation
+    label = _text(item.get("keysuri_judgment_label") or item.get("judgment_label"))
+    text = _text(
+        item.get("keysuri_judgment")
+        if isinstance(item.get("keysuri_judgment"), str)
+        else item.get("keysuri_judgment_text") or item.get("judgment_explanation")
+    )
+    return label, text
+
+
+_OPPORTUNITY_LABELS = frozenset({"기회", "활용 후보", "사업 신호"})
+_RISK_LABELS = frozenset({"경계", "리스크 신호", "과장 주의", "추가 확인 필요"})
+_GLOBAL_MARKERS = (
+    "엔비디아",
+    "NVIDIA",
+    "nvidia",
+    "OpenAI",
+    "구글",
+    "Google",
+    "Microsoft",
+    "미국",
+    "글로벌",
+    "해외",
+    "빅테크",
+    "AWS",
+)
+
+
+def _item_blob(item: Mapping[str, Any]) -> str:
+    return " ".join(
+        _text(item.get(key))
+        for key in (
+            "korean_title",
+            "headline",
+            "what_happened",
+            "why_now",
+            "why_it_matters",
+            "owner_angle",
+            "selection_reason",
+        )
+    )
+
+
+def _is_global_signal_item(item: Mapping[str, Any]) -> bool:
+    if item.get("global_duplicate_detected") or item.get("global_overlap"):
+        return True
+    blob = _item_blob(item)
+    return any(marker in blob for marker in _GLOBAL_MARKERS)
+
+
+def _build_global_impact_block(
+    items: Sequence[Mapping[str, Any]],
+    cleaned_body: str,
+) -> str:
+    bits: List[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if not _is_global_signal_item(item):
+            continue
+        what = remove_truncated_headline_fragments(
+            _text(item.get("what_happened") or item.get("summary"))
+        )
+        why = remove_truncated_headline_fragments(
+            _text(item.get("why_now") or item.get("why_it_matters"))
+        )
+        sent = _first_sentences(what or why, 1)
+        if sent and sent not in bits:
+            bits.append(sent)
+    if bits:
+        return clamp_korea_block(
+            " ".join(bits[:2])
+            + " 글로벌 공급망·플랫폼 변화가 한국 의사결정에 전달되는 압력으로 읽힙니다."
+        )
+    if cleaned_body and any(marker in cleaned_body for marker in _GLOBAL_MARKERS):
+        return clamp_korea_block(_first_sentences(cleaned_body, 2))
+    theme = _theme_phrase(items)
+    return clamp_korea_block(
+        f"오늘 선정된 {theme}는 글로벌 플랫폼·공급망 움직임이 국내 산업 일정에 반영되는 신호입니다. "
+        f"해외 빅테크·인프라 변화가 한국 파트너십·조달 구조에 압력을 주는 흐름입니다."
+    )
+
+
+def _build_domestic_industry_block(items: Sequence[Mapping[str, Any]]) -> str:
+    bits: List[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        why = remove_truncated_headline_fragments(
+            _text(item.get("why_now") or item.get("why_it_matters") or item.get("owner_angle"))
+        )
+        sent = _first_sentences(why, 1)
+        if sent and sent not in bits:
+            bits.append(sent)
+    if bits:
+        return clamp_korea_block(" ".join(bits[:2]))
+    return clamp_korea_block(
+        "국내 반도체·AI·정책·투자 축이 동시에 움직이면서 산업 일정과 자본 배분 우선순위가 겹칩니다. "
+        "한국 기업·공급망 관점에서 협력·조달·규제 대응이 바로 연결됩니다."
+    )
+
+
+def _build_opportunity_block(items: Sequence[Mapping[str, Any]]) -> str:
+    lines: List[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        label, explanation = _item_judgment(item)
+        if label in _OPPORTUNITY_LABELS:
+            line = explanation or _first_sentences(
+                _text(item.get("owner_angle") or item.get("next_day_impact_line")), 1
+            )
+            line = remove_truncated_headline_fragments(line)
+            if line and line not in lines:
+                lines.append(line)
+    if not lines:
+        for item in items[:2]:
+            if not isinstance(item, dict):
+                continue
+            impact = sanitize_visible_impact_line(
+                _text(item.get("next_day_impact_line") or item.get("owner_action_line")),
+                category=str(item.get("primary_category") or ""),
+            )
+            if impact and impact not in lines:
+                lines.append(impact)
+    if not lines:
+        lines = [
+            "국내 파트너십·투자 후속 일정이 열리면 실행 속도를 앞당길 여지가 있습니다.",
+            "정책·조달 신호가 맞물리면 밸류체인 내 협력 포인트가 분명해질 수 있습니다.",
+        ]
+    return _format_bullets(lines[:3])
+
+
+def _build_risk_block(
+    items: Sequence[Mapping[str, Any]],
+    uncertainty: str,
+) -> str:
+    lines: List[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        label, explanation = _item_judgment(item)
+        hype = _text(item.get("hype_caution"))
+        if label in _RISK_LABELS and explanation:
+            line = remove_truncated_headline_fragments(explanation)
+            if line and line not in lines:
+                lines.append(line)
+        elif hype and hype not in lines:
+            lines.append(remove_truncated_headline_fragments(hype))
+        if item.get("detail_insufficient"):
+            line = "세부 수치·일정은 공개 요약만으로는 아직 제한적입니다."
+            if line not in lines:
+                lines.append(line)
+    unc_lines = [
+        remove_truncated_headline_fragments(line)
+        for line in coerce_visible_lines(uncertainty)
+        if _text(line)
+    ]
+    for line in unc_lines[:2]:
+        if line and line not in lines:
+            lines.append(line)
+    if not lines:
+        lines = [
+            "과장된 해석이나 보도자료 톤은 분리해 볼 필요가 있습니다.",
+            "세부 일정·수치는 향후 공식 발표로 보완될 가능성이 있습니다.",
+        ]
+    return _format_bullets(lines[:3])
+
+
+def _build_keysuri_judgment_block(items: Sequence[Mapping[str, Any]]) -> str:
+    labels: List[str] = []
+    explanations: List[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        label, explanation = _item_judgment(item)
+        if label and label not in labels:
+            labels.append(label)
+        if explanation and explanation not in explanations:
+            explanations.append(explanation)
+    if explanations:
+        core = " ".join(explanations[:2])
+    elif labels:
+        core = f"오늘 신호는 {', '.join(labels[:3])} 관점에서 균형 있게 관찰하는 편이 안전합니다."
+    else:
+        core = (
+            "오늘 신호는 단기 과장과 구조 변화를 구분해 보는 것이 중요합니다. "
+            "확인 가능한 범위 안에서만 실행 포인트를 좁혀 가겠습니다."
+        )
+    return clamp_korea_block(
+        f"키수리 판단: {remove_truncated_headline_fragments(core)} "
+        f"주인님께서는 협력·조달·투자 우선순위를 내일 의사결정 기준에 맞춰 점검하시면 됩니다."
+    )
+
+
+def build_korea_one_line_checkpoint(
+    top5_items: Sequence[Mapping[str, Any]],
+    *,
+    existing: str = "",
+) -> str:
+    """Synthesize a Korea-market observation from global+domestic TOP5 (not item recap)."""
+    existing = remove_truncated_headline_fragments(_text(existing))
+    thin_markers = (
+        "먼저 보시면 됩니다",
+        "내일 영향을 줄",
+        "한 가지",
+        "사업 전략을 구체화",
+        "사업 전략을 점검",
+        "사업 전략을 재점검",
+    )
+    if existing and not any(marker in existing for marker in thin_markers):
+        if "한국" in existing or "국내" in existing or "글로벌" in existing:
+            if len(existing) >= 28:
+                return existing
+
+    items = [i for i in top5_items if isinstance(i, dict)][:5]
+    theme = _theme_phrase(items)
+    titles = [
+        _short_title(_text(i.get("korean_title") or i.get("headline")))
+        for i in items[:3]
+    ]
+    titles = [t for t in titles if t]
+    axis = "·".join(titles[:2]) if len(titles) >= 2 else (titles[0] if titles else theme)
+
+    opportunity = False
+    risk = False
+    for item in items:
+        label, _ = _item_judgment(item)
+        if label in _OPPORTUNITY_LABELS:
+            opportunity = True
+        if label in _RISK_LABELS or item.get("hype_caution") or item.get("detail_insufficient"):
+            risk = True
+
+    if opportunity and risk:
+        move = "기회와 리스크가 동시에 이동"
+    elif opportunity:
+        move = "실행·협력 기회 신호가 앞으로 이동"
+    elif risk:
+        move = "일정·수치 불확실성과 리스크 관리 압력이 앞으로 이동"
+    else:
+        move = "구조 변화 판단 압력이 앞으로 이동"
+
+    return (
+        f"글로벌·국내 TOP5를 종합하면, {axis} 축에서 한국 시장의 관건은 {move}하고 있습니다."
+    )
+
+
 def structure_korea_deep_dive(
     body: str,
     top5_items: Sequence[Mapping[str, Any]],
     *,
     uncertainty: str = "",
 ) -> List[Dict[str, str]]:
-    """Return four Korea deep-dive blocks for visible rendering."""
+    """Return five Korea deep-dive contract blocks for visible rendering."""
     items = [i for i in top5_items if isinstance(i, dict)][:5]
     cleaned_body = remove_truncated_headline_fragments(
         dedupe_sentences_in_paragraph(remove_internal_glue(_text(body)))
     )
 
-    titles = [_short_title(_text(i.get("korean_title") or i.get("headline"))) for i in items[:2]]
-    titles = [t for t in titles if t]
-    if len(titles) >= 2:
-        core = (
-            f"오늘은 {titles[0]}와 {titles[1]} 흐름이 동시에 겹쳤습니다. "
-            f"국내 반도체·AI 밸류체인에서 협력과 투자 신호가 함께 읽힙니다."
-        )
-    elif titles:
-        core = (
-            f"오늘은 {titles[0]} 흐름이 국내 테크 의사결정의 중심에 올라왔습니다. "
-            f"공급망·투자·정책 일정을 같이 보는 날입니다."
-        )
-    elif cleaned_body:
-        core = _first_sentences(cleaned_body, 2)
-    else:
-        core = (
-            "오늘은 국내 반도체·AI·투자 신호가 한 흐름으로 겹쳤습니다. "
-            "퇴근 전에 내일 실행 포인트만 추려두면 됩니다."
-        )
-
-    domestic_bits: List[str] = []
-    for item in items[:2]:
-        why = remove_truncated_headline_fragments(
-            _text(item.get("why_now") or item.get("why_it_matters") or item.get("owner_angle"))
-        )
-        sent = _first_sentences(why, 1)
-        if sent and sent not in domestic_bits:
-            domestic_bits.append(sent)
-    if domestic_bits:
-        domestic = " ".join(domestic_bits[:2])
-    else:
-        domestic = (
-            "국내 기업·정책·공급망 관점에서 협력 일정과 투자 우선순위를 같이 봐야 합니다. "
-            "내일 미팅·파트너십·조달 검토에 바로 연결됩니다."
-        )
-
-    watch_lines: List[str] = []
-    for item in items[:3]:
-        for line in _item_watch_lines(item):
-            if line not in watch_lines:
-                watch_lines.append(line)
-    watch_lines = _expand_action_candidates(watch_lines, max_chars=KOREA_DEEP_MAX_PARAGRAPH_CHARS)[:3]
-    if not watch_lines:
-        watch_lines = [
-            "공식 후속 발표·원문 업데이트 확인",
-            "국내 정책·공급망·기업 일정 추적",
-            "내일 미팅·투자 검토 우선순위 점검",
-        ]
-
-    unc_lines = [
-        remove_truncated_headline_fragments(line)
-        for line in coerce_visible_lines(uncertainty)
-        if _text(line)
-    ]
-    if not unc_lines:
-        unc_source = cleaned_body if any(k in cleaned_body for k in ("불확실", "미확정", "원문", "부족")) else ""
-        if unc_source:
-            unc_lines = _split_sentences(unc_source)[-2:]
-    if not unc_lines:
-        unc_lines = ["세부 수치·양산 일정은 공개 요약만으로는 아직 부족합니다."]
-
     sections: List[Dict[str, str]] = [
-        {"label": "오늘의 핵심 흐름", "body": clamp_korea_block(core)},
-        {"label": "국내 적용", "body": clamp_korea_block(domestic)},
-        {"label": "내일 볼 지점", "body": _format_bullets(watch_lines[:3])},
-        {"label": "아직 불확실한 점", "body": _format_bullets(unc_lines[:3])},
+        {"label": "글로벌 영향", "body": _build_global_impact_block(items, cleaned_body)},
+        {"label": "국내 산업 영향", "body": _build_domestic_industry_block(items)},
+        {"label": "기회 요인", "body": _build_opportunity_block(items)},
+        {"label": "위험 요인", "body": _build_risk_block(items, uncertainty)},
+        {"label": "키수리 판단", "body": _build_keysuri_judgment_block(items)},
     ]
-    return [s for s in sections if _text(s.get("body"))]
+    return [s for s in sections if _text(s.get("body")) and _text(s.get("label"))]
 
 
 def remove_internal_glue(text: str) -> str:
@@ -435,8 +643,13 @@ def korea_deep_dive_wall_text(sections: Sequence[Mapping[str, str]]) -> bool:
 
 
 def korea_deep_dive_missing_blocks(sections: Sequence[Mapping[str, str]]) -> bool:
-    visible = [s for s in sections if _text(s.get("body"))]
-    return len(visible) < 3
+    visible = {str(s.get("label") or "").strip() for s in sections if _text(s.get("body"))}
+    return not all(label in visible for label in KOREA_DEEP_DIVE_REQUIRED_LABELS)
+
+
+def korea_deep_dive_uses_forbidden_labels(sections: Sequence[Mapping[str, str]]) -> bool:
+    labels = {str(s.get("label") or "").strip() for s in sections}
+    return any(label in labels for label in KOREA_DEEP_DIVE_FORBIDDEN_LABELS)
 
 
 def korea_closing_internal_label_leak(text: str) -> bool:
