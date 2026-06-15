@@ -14,6 +14,7 @@ from keysuri_contract_preview_fixture import build_contract_preview_fixture_from
 from keysuri_contract_preview_renderer import (
     IMAGE_MODE_EMAIL,
     IMAGE_MODE_PREVIEW,
+    build_keysuri_global_gmail_owner_email_html,
     build_keysuri_owner_review_email_html,
     prepare_contract_preview_fixture,
     render_keysuri_contract_preview_html,
@@ -175,7 +176,7 @@ def _reload_generated_briefing(
     return enrich_generated_briefing_content(briefing, program_id, prompt_input)
 
 
-def _render_service_html(
+def _build_service_contract_fixture(
     program_id: str,
     *,
     prompt_input: dict,
@@ -183,10 +184,7 @@ def _render_service_html(
     generated_image_path: Path,
     run_id: str,
     image_mode: str = IMAGE_MODE_PREVIEW,
-) -> tuple[str, str]:
-    out_dir = _REPO / "output" / "admin_runs" / "keysuri_service"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    html_path = out_dir / f"{run_id}.html"
+) -> dict:
     contract_fixture = build_contract_preview_fixture_from_generated(
         program_id=program_id,
         prompt_input=prompt_input,
@@ -202,6 +200,29 @@ def _render_service_html(
     )
     if image_mode == IMAGE_MODE_EMAIL and program_id == PROGRAM_GLOBAL:
         contract_fixture["top_shot_image_src"] = keysuri_global_service_email_cid_src(run_id)
+    return contract_fixture
+
+
+def _render_service_html(
+    program_id: str,
+    *,
+    prompt_input: dict,
+    generated_briefing: dict,
+    generated_image_path: Path,
+    run_id: str,
+    image_mode: str = IMAGE_MODE_PREVIEW,
+) -> tuple[str, str]:
+    out_dir = _REPO / "output" / "admin_runs" / "keysuri_service"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_path = out_dir / f"{run_id}.html"
+    contract_fixture = _build_service_contract_fixture(
+        program_id,
+        prompt_input=prompt_input,
+        generated_briefing=generated_briefing,
+        generated_image_path=generated_image_path,
+        run_id=run_id,
+        image_mode=image_mode,
+    )
     html = render_keysuri_contract_preview_html(
         contract_fixture,
         repo_root=_REPO,
@@ -361,7 +382,7 @@ def run_keysuri_service_full_run(
         return {"ok": False, "run_id": run_id, "program_id": pid, "service_full_run": True, "email_sent": False, "error": "generated_briefing_reload_failed"}
 
     gen_image_abs = _REPO / str(image_outcome.generated_image_path or "")
-    html_body, html_rel = _render_service_html(
+    contract_fixture_preview = _build_service_contract_fixture(
         pid,
         prompt_input=prompt_input,
         generated_briefing=generated_briefing,
@@ -369,11 +390,34 @@ def run_keysuri_service_full_run(
         run_id=run_id,
         image_mode=IMAGE_MODE_PREVIEW,
     )
+    html = render_keysuri_contract_preview_html(
+        contract_fixture_preview,
+        repo_root=_REPO,
+        image_mode=IMAGE_MODE_PREVIEW,
+        auto_prepare=False,
+    )
+    out_dir = _REPO / "output" / "admin_runs" / "keysuri_service"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_path = out_dir / f"{run_id}.html"
+    html_path.write_text(html, encoding="utf-8")
+    try:
+        html_rel = html_path.resolve().relative_to(_REPO.resolve()).as_posix()
+    except ValueError:
+        html_rel = str(html_path.resolve())
+    html_body = html
     owner_review_url = build_owner_review_admin_url(run_id) or ""
     storage_durable = _service_artifact_storage_durable()
 
-    email_preview_html = html_body
     if pid == PROGRAM_GLOBAL:
+        contract_fixture_email = dict(contract_fixture_preview)
+        contract_fixture_email["top_shot_image_src"] = keysuri_global_service_email_cid_src(run_id)
+        email_html = build_keysuri_global_gmail_owner_email_html(
+            contract_fixture_email,
+            subject=_PROGRAM_EMAIL_SUBJECT.get(pid, ""),
+            admin_url=owner_review_url,
+            run_id=run_id,
+        )
+    else:
         email_preview_html, _ = _render_service_html(
             pid,
             prompt_input=prompt_input,
@@ -382,12 +426,12 @@ def run_keysuri_service_full_run(
             run_id=run_id,
             image_mode=IMAGE_MODE_EMAIL,
         )
-    email_html = _owner_review_email_html(
-        email_preview_html,
-        program_id=pid,
-        run_id=run_id,
-        subject=_PROGRAM_EMAIL_SUBJECT.get(pid),
-    )
+        email_html = _owner_review_email_html(
+            email_preview_html,
+            program_id=pid,
+            run_id=run_id,
+            subject=_PROGRAM_EMAIL_SUBJECT.get(pid),
+        )
 
     email_sent = False
     smtp_attempted = False

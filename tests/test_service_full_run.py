@@ -553,24 +553,18 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         self.assertIn(f"/admin/runs/{run_id}", email_html)
         self.assertNotIn("GENIE_INTERNAL_JOB_TOKEN", email_html)
         self.assertNotIn(self._token, email_html)
-        # Existing premium briefing design preserved in email (wiring restoration)
+        # Gmail-safe Global owner email renderer
         self.assertIn("키수리 글로벌 테크 브리핑", email_html)
-        self.assertIn("premium-briefing", email_html)
-        self.assertIn("theme-global", email_html)
-        self.assertIn("briefing-shell", email_html)
-        self.assertIn("premium-hero", email_html)
-        self.assertIn("top-shot-hero", email_html)
+        self.assertIn("글로벌 신호", email_html)
+        self.assertIn('role="presentation"', email_html)
+        self.assertNotIn("<style", email_html.lower())
+        self.assertNotIn("audit-fold", email_html)
+        self.assertNotIn("preview-metadata", email_html)
         self.assertNotIn("서비스 full-run", email_html)
         self.assertNotIn("image_source=generated", email_html)
         self.assertEqual(email_html.lower().count("<!doctype html>"), 1)
         self.assertEqual(email_html.lower().count("<html"), 1)
         self.assertEqual(email_html.lower().count("<head>"), 1)
-        hero_pos = email_html.find('id="premium-hero"')
-        meta_pos = email_html.find('id="preview-metadata"')
-        if meta_pos >= 0:
-            self.assertGreater(meta_pos, hero_pos)
-        else:
-            self.assertGreaterEqual(hero_pos, 0)
 
         saved_meta = mock_save.call_args.args[0]
         self.assertTrue(saved_meta.get("service_full_run"))
@@ -588,13 +582,13 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
 
 
 class KeysuriGlobalOwnerReviewEmailDesignRestorationTests(unittest.TestCase):
-    """service_full_run email must reuse contract-preview premium briefing design."""
+    """Global service_full_run owner email must use Gmail-safe inline/table renderer."""
 
-    def test_renderer_source_used_and_email_preserves_global_design(self) -> None:
+    def test_global_gmail_owner_email_is_safe_and_preserves_hierarchy(self) -> None:
         from keysuri_contract_preview_renderer import (
             IMAGE_MODE_EMAIL,
             IMAGE_MODE_PREVIEW,
-            build_keysuri_owner_review_email_html,
+            build_keysuri_global_gmail_owner_email_html,
             prepare_contract_preview_fixture,
             render_keysuri_contract_preview_html,
         )
@@ -611,42 +605,46 @@ class KeysuriGlobalOwnerReviewEmailDesignRestorationTests(unittest.TestCase):
             image_mode=IMAGE_MODE_PREVIEW,
             auto_prepare=False,
         )
-        email_html = build_keysuri_owner_review_email_html(
-            render_keysuri_contract_preview_html(
-                fixture,
-                repo_root=repo,
-                image_mode=IMAGE_MODE_EMAIL,
-                auto_prepare=False,
-            ),
+        email_html = build_keysuri_global_gmail_owner_email_html(
+            fixture,
             subject="[운영자 검토] Kee-Suri Global Tech",
             admin_url="https://example.com/admin/runs/test_run",
             run_id="test_run",
         )
+        lowered = email_html.lower()
 
+        for forbidden in (
+            "<style",
+            "var(--",
+            "display:flex",
+            "<details",
+            "audit-fold",
+            "operation-metadata",
+            "validation-result-box",
+            "compliance-checklist",
+            "운영 정보",
+            "contract compliance checklist",
+            "output/",
+            "image_canary/",
+            "../",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden.lower(), lowered)
+
+        self.assertIn("cid:keysuri_topshot_global_", email_html)
         self.assertIn("키수리 글로벌 테크 브리핑", email_html)
         self.assertIn("글로벌 신호", email_html)
         self.assertIn("테크 비서 키수리", email_html)
         self.assertIn("TOP 5", email_html.upper())
-        self.assertEqual(email_html.count("data-top-item"), 5)
-        self.assertIn("source-chip", email_html)
-        self.assertIn("https://blog.google/technology/ai/gemini-enterprise-update/", email_html)
-        self.assertIn("owner-angle-block", email_html)
-        self.assertIn("rights-policy", email_html)
-        self.assertIn("theme-global", email_html)
+        self.assertIn("https://blog.google/technology/ai/", email_html)
         self.assertIn("운영자 검수 화면 열기", email_html)
-        self.assertIn("cid:keysuri_topshot_global_20260611", email_html)
-        self.assertNotIn("output/", email_html)
-        self.assertNotIn("image_canary/", email_html)
-        self.assertNotIn("서비스 full-run", email_html)
-        self.assertEqual(email_html.lower().count("<!doctype html>"), 1)
-        self.assertEqual(email_html.lower().count("<html"), 1)
-        self.assertEqual(email_html.lower().count("<head>"), 1)
-        self.assertNotIn("<html lang", email_html[email_html.lower().find("<body") :])
+        self.assertIn("/admin/runs/test_run", email_html)
+        self.assertIn('role="presentation"', email_html)
 
-        # Preview artifact keeps full premium document unchanged
         self.assertIn("premium-briefing theme-global", preview_html)
         self.assertIn('<div class="briefing-shell">', preview_html)
         self.assertIn('id="top5-section"', preview_html)
+        self.assertIn("<style", preview_html.lower())
 
     def test_korea_renderer_available_but_not_sent_by_global_service_full_run(self) -> None:
         from keysuri_contract_preview_renderer import render_keysuri_contract_preview_html
