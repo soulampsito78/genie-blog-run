@@ -69,6 +69,7 @@
       "status": "approved_direction_locked",
       "file_path": "output/keysuri_preview/image_canary/keysuri_global_canary_20260605_105936.jpg",
       "watermarked_path": "output/keysuri_preview/image_canary/keysuri_global_canary_20260605_105936_mirai_on_watermarked.jpg",
+      "gcs_object": "assets/keysuri/korea_bottom/keysuri_global_canary_20260605_105936_mirai_on_watermarked.jpg",
       "manifest_path": "output/keysuri_preview/image_canary/keysuri_global_canary_20260605_105936_mirai_on_watermarked.manifest.json",
       "sha256": "2792aca4c5d1011e822d563ddd7108e6c96c45fa56766d4368ac65af26f7370c",
       "watermarked_sha256": "c6209f406717aa68ef8be70fbfd9dbc30b882e9fae800633d570111bb1b3faf9",

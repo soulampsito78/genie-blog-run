@@ -147,6 +147,10 @@ class KeysuriApprovedImageAssetRegistryTests(unittest.TestCase):
         asset = resolve_korea_bottom_asset(_REPO)
         self.assertEqual(asset.asset_id, "keysuri_korea_bottom_20260605_105936")
         self.assertEqual(asset.resolved_file_path(_REPO).resolve(), _KOREA_BOTTOM.resolve())
+        self.assertEqual(
+            asset.gcs_object,
+            "assets/keysuri/korea_bottom/keysuri_global_canary_20260605_105936_mirai_on_watermarked.jpg",
+        )
 
     @unittest.skipUnless(_REGISTRY.is_file(), "registry not present")
     @unittest.skipUnless(_GLOBAL_TOP.is_file(), "global top missing")

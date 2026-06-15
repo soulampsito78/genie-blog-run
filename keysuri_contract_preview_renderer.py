@@ -1776,9 +1776,21 @@ def _gmail_render_korea_one_line_checkpoint(fixture: Mapping[str, Any]) -> str:
     )
 
 
-def _gmail_render_korea_bottom_shot_placeholder() -> str:
-    """Gmail-safe Korea 18:30 bottom-shot slot — placeholder rhythm only, no image."""
+def _gmail_render_korea_bottom_shot(fixture: Mapping[str, Any]) -> str:
+    """Gmail-safe Korea 18:30 bottom-shot slot; image only when CID is supplied."""
     c = _GMAIL_KOREA_COLORS
+    src = str(fixture.get("bottom_shot_image_src") or "").strip()
+    if src:
+        return (
+            f'{_gmail_spacer(18)}'
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">'
+            f'<tr><td style="padding:0;">'
+            f'<img id="bottom-shot-image" src="{_esc(src)}" '
+            f'alt="테크 비서 키수리 — 국내 18:30 마무리" width="100%" '
+            f'style="display:block;width:100%;max-width:100%;height:auto;'
+            f'border:0;border-radius:10px;outline:none;text-decoration:none;" />'
+            f'</td></tr></table>'
+        )
     placeholder_copy = (
         "국내 18:30 바텀샷 자리입니다. 향후 퇴근 전 마무리 리듬용 슬롯이며, "
         "현재 운영자 검수 메일에는 이미지 없이 구조만 표시합니다."
@@ -1891,7 +1903,7 @@ def build_keysuri_korea_gmail_owner_email_html(
     top5 = _gmail_render_korea_top5(fixture)
     deep_dive = _gmail_render_korea_deep_dive(fixture)
     checkpoint_html = _gmail_render_korea_one_line_checkpoint(fixture)
-    bottom_shot_placeholder = _gmail_render_korea_bottom_shot_placeholder()
+    bottom_shot = _gmail_render_korea_bottom_shot(fixture)
     evening_memo = _gmail_render_korea_evening_memo(fixture)
     sources = _gmail_render_korea_sources(fixture.get("source_list") or [])
 
@@ -1950,7 +1962,7 @@ def build_keysuri_korea_gmail_owner_email_html(
 {top5}
 {deep_dive}
 {checkpoint_html}
-{bottom_shot_placeholder}
+{bottom_shot}
 {review_html}
 {evening_memo}
 {sources}

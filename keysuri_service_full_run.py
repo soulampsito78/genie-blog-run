@@ -4,12 +4,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import hashlib
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from admin_store import artifact_email_path, artifact_json_path, generate_run_id, save_run_artifact
+from admin_store import admin_artifact_bucket_name, artifact_email_path, artifact_json_path, generate_run_id, save_run_artifact
 from admin_urls import build_owner_review_admin_url
 from email_sender import send_genie_email
+from keysuri_approved_image_assets import KOREA_BOTTOM_ROLE, list_approved_assets
 from keysuri_contract_preview_fixture import build_contract_preview_fixture_from_generated
 from keysuri_contract_preview_renderer import (
     IMAGE_MODE_EMAIL,
@@ -53,6 +55,15 @@ _PROGRAM_EMAIL_SUBJECT = {
 # MIME Content-ID token (no angle brackets); HTML uses cid:{token}.
 KEYSURI_GLOBAL_SERVICE_EMAIL_CID_PREFIX = "keysuri_topshot_global"
 KEYSURI_KOREA_SERVICE_EMAIL_CID_PREFIX = "keysuri_topshot_korea"
+KEYSURI_KOREA_BOTTOM_SERVICE_EMAIL_CID_PREFIX = "keysuri_bottomshot_korea"
+KEYSURI_KOREA_BOTTOM_ASSET_ID = "keysuri_korea_bottom_20260605_105936"
+KEYSURI_KOREA_BOTTOM_GCS_OBJECT = (
+    "assets/keysuri/korea_bottom/"
+    "keysuri_global_canary_20260605_105936_mirai_on_watermarked.jpg"
+)
+KEYSURI_KOREA_BOTTOM_WATERMARKED_SHA256 = (
+    "c6209f406717aa68ef8be70fbfd9dbc30b882e9fae800633d570111bb1b3faf9"
+)
 
 
 def _kst_date_from_run_id(run_id: str) -> str:
@@ -85,6 +96,16 @@ def keysuri_korea_service_email_cid_src(run_id: str) -> str:
     return f"cid:{keysuri_korea_service_email_cid_token(run_id)}"
 
 
+def keysuri_korea_bottom_service_email_cid_token(run_id: str) -> str:
+    """Content-ID token for Korea service_full_run bottom-shot image."""
+    stamp = _kst_date_from_run_id(run_id)
+    return f"{KEYSURI_KOREA_BOTTOM_SERVICE_EMAIL_CID_PREFIX}_{stamp}"
+
+
+def keysuri_korea_bottom_service_email_cid_src(run_id: str) -> str:
+    return f"cid:{keysuri_korea_bottom_service_email_cid_token(run_id)}"
+
+
 def inline_jpeg_parts_for_global_service_email(
     generated_image_path: Path,
     run_id: str,
@@ -98,11 +119,98 @@ def inline_jpeg_parts_for_global_service_email(
 def inline_jpeg_parts_for_korea_service_email(
     generated_image_path: Path,
     run_id: str,
+    *,
+    bottom_image_path: Optional[Path] = None,
 ) -> List[Tuple[str, str, str]]:
-    """Single hero inline JPEG for Korea service_full_run SMTP (Gmail-safe CID)."""
+    """Hero plus optional Korea-only bottom-shot inline JPEGs for Gmail-safe SMTP."""
     cid_token = keysuri_korea_service_email_cid_token(run_id)
     fname = generated_image_path.name if generated_image_path.name else "keysuri_korea_service.jpg"
-    return [(str(generated_image_path.resolve()), cid_token, fname)]
+    parts = [(str(generated_image_path.resolve()), cid_token, fname)]
+    if bottom_image_path is not None:
+        bottom_cid = keysuri_korea_bottom_service_email_cid_token(run_id)
+        bottom_name = bottom_image_path.name if bottom_image_path.name else "keysuri_korea_bottom_105936.jpg"
+        parts.append((str(bottom_image_path.resolve()), bottom_cid, bottom_name))
+    return parts
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _korea_bottom_registry_asset() -> Any:
+    for asset in list_approved_assets(_REPO):
+        if asset.asset_id == KEYSURI_KOREA_BOTTOM_ASSET_ID:
+            return asset
+    return None
+
+
+def _validate_korea_bottom_asset_record(asset: Any) -> Optional[str]:
+    if asset is None:
+        return "korea_bottom_asset_registry_missing"
+    if asset.program != PROGRAM_KOREA:
+        return "korea_bottom_asset_program_mismatch"
+    if asset.role != KOREA_BOTTOM_ROLE or asset.image_role != "bottom_shot":
+        return "korea_bottom_asset_role_mismatch"
+    if asset.status != "approved_direction_locked":
+        return "korea_bottom_asset_status_not_direction_locked"
+    if "korea_bottom_preview" not in asset.approved_for:
+        return "korea_bottom_asset_not_approved_for_preview"
+    if asset.watermarked_sha256 != KEYSURI_KOREA_BOTTOM_WATERMARKED_SHA256:
+        return "korea_bottom_asset_sha_mismatch"
+    gcs_object = str(getattr(asset, "gcs_object", "") or "")
+    if gcs_object and not gcs_object.startswith("assets/keysuri/korea_bottom/"):
+        return "korea_bottom_asset_gcs_object_role_mismatch"
+    return None
+
+
+def _download_korea_bottom_asset_from_gcs(dest: Path, gcs_object: str) -> Optional[str]:
+    bucket_name = admin_artifact_bucket_name()
+    if not bucket_name:
+        return "korea_bottom_asset_gcs_bucket_not_configured"
+    object_name = str(gcs_object or KEYSURI_KOREA_BOTTOM_GCS_OBJECT).strip()
+    if not object_name:
+        return "korea_bottom_asset_gcs_object_not_configured"
+    try:
+        from google.cloud import storage
+
+        blob = storage.Client().bucket(bucket_name).blob(object_name)
+        if not blob.exists():
+            return "korea_bottom_asset_gcs_missing"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        blob.download_to_filename(str(dest))
+    except Exception as exc:
+        logger.warning("korea bottom asset GCS download failed: %s", type(exc).__name__)
+        return "korea_bottom_asset_gcs_download_failed"
+    return None
+
+
+def resolve_korea_bottom_email_asset_path(run_id: str) -> Tuple[Optional[Path], List[str]]:
+    """Resolve the locked 105936 bottom shot for Korea owner-review CID email only."""
+    asset = _korea_bottom_registry_asset()
+    issue = _validate_korea_bottom_asset_record(asset)
+    if issue:
+        return None, [issue]
+
+    local = asset.resolved_watermarked_path(_REPO) if asset is not None else None
+    if local is not None and local.is_file():
+        if _sha256_file(local) == KEYSURI_KOREA_BOTTOM_WATERMARKED_SHA256:
+            return local, []
+        return None, ["korea_bottom_asset_local_sha_mismatch"]
+
+    dest = _REPO / "output" / "admin_runs" / "keysuri_service_assets" / f"{run_id}_korea_bottom_105936.jpg"
+    gcs_object = getattr(asset, "gcs_object", "") or KEYSURI_KOREA_BOTTOM_GCS_OBJECT
+    issue = _download_korea_bottom_asset_from_gcs(dest, gcs_object)
+    if issue:
+        return None, [issue]
+    if not dest.is_file():
+        return None, ["korea_bottom_asset_download_missing"]
+    if _sha256_file(dest) != KEYSURI_KOREA_BOTTOM_WATERMARKED_SHA256:
+        return None, ["korea_bottom_asset_download_sha_mismatch"]
+    return dest, []
 
 
 def _service_artifact_storage_durable() -> bool:
@@ -432,6 +540,17 @@ def run_keysuri_service_full_run(
     html_body = html
     owner_review_url = build_owner_review_admin_url(run_id) or ""
     storage_durable = _service_artifact_storage_durable()
+    bottom_image_path: Optional[Path] = None
+    bottom_image_status = "not_applicable"
+    bottom_image_source = ""
+    if pid == PROGRAM_KOREA:
+        bottom_image_path, bottom_issues = resolve_korea_bottom_email_asset_path(run_id)
+        if bottom_image_path is not None:
+            bottom_image_status = "available"
+            bottom_image_source = "approved_gcs_or_local_registry"
+        else:
+            bottom_image_status = "placeholder"
+            issue_codes.extend(bottom_issues)
 
     if pid == PROGRAM_GLOBAL:
         contract_fixture_email = dict(contract_fixture_preview)
@@ -445,6 +564,8 @@ def run_keysuri_service_full_run(
     elif pid == PROGRAM_KOREA:
         contract_fixture_email = dict(contract_fixture_preview)
         contract_fixture_email["top_shot_image_src"] = keysuri_korea_service_email_cid_src(run_id)
+        if bottom_image_path is not None:
+            contract_fixture_email["bottom_shot_image_src"] = keysuri_korea_bottom_service_email_cid_src(run_id)
         email_html = build_keysuri_korea_gmail_owner_email_html(
             contract_fixture_email,
             subject=_PROGRAM_EMAIL_SUBJECT.get(pid, ""),
@@ -495,7 +616,11 @@ def run_keysuri_service_full_run(
                     issue_codes.append("generated_image_missing_for_cid_email")
                 else:
                     os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
-                    inline_parts = inline_jpeg_parts_for_korea_service_email(gen_image_abs, run_id)
+                    inline_parts = inline_jpeg_parts_for_korea_service_email(
+                        gen_image_abs,
+                        run_id,
+                        bottom_image_path=bottom_image_path,
+                    )
                     email_sent = bool(
                         sender(
                             email_html,
@@ -525,6 +650,17 @@ def run_keysuri_service_full_run(
         artifact_storage_durable=storage_durable,
     )
     meta["artifact_status"] = "emailed" if email_sent else "stored"
+    if pid == PROGRAM_KOREA:
+        meta["korea_bottom_shot_asset_id"] = KEYSURI_KOREA_BOTTOM_ASSET_ID
+        meta["korea_bottom_shot_status"] = bottom_image_status
+        if bottom_image_source:
+            meta["korea_bottom_shot_source"] = bottom_image_source
+        if bottom_image_path is not None:
+            try:
+                meta["korea_bottom_shot_path"] = bottom_image_path.resolve().relative_to(_REPO.resolve()).as_posix()
+            except ValueError:
+                meta["korea_bottom_shot_path"] = str(bottom_image_path.resolve())
+            meta["korea_bottom_shot_cid"] = keysuri_korea_bottom_service_email_cid_token(run_id)
     save_run_artifact(meta, email_html=email_html)
 
     ok = image_outcome.ok and (not send_owner_email or email_sent)
@@ -547,4 +683,5 @@ def run_keysuri_service_full_run(
         "artifact_status": meta.get("artifact_status"),
         "smtp_attempted": smtp_attempted,
         "email_sent": email_sent,
+        "korea_bottom_shot_status": meta.get("korea_bottom_shot_status"),
     }

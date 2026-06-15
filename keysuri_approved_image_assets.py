@@ -66,6 +66,7 @@ class ApprovedImageAsset:
     image_role: str = ""
     watermarked_path: Optional[str] = None
     watermarked_sha256: str = ""
+    gcs_object: str = ""
 
     def resolved_file_path(self, repo_root: Path) -> Path:
         return (repo_root / self.file_path).resolve()
@@ -122,6 +123,8 @@ class ApprovedImageAsset:
             out["watermarked_path"] = self.watermarked_path
         if self.watermarked_sha256:
             out["watermarked_sha256"] = self.watermarked_sha256
+        if self.gcs_object:
+            out["gcs_object"] = self.gcs_object
         return out
 
 
@@ -154,6 +157,7 @@ def _parse_asset(raw: dict) -> ApprovedImageAsset:
         image_role=str(raw.get("image_role") or ""),
         watermarked_path=str(raw.get("watermarked_path") or "") or None,
         watermarked_sha256=str(raw.get("watermarked_sha256") or "").lower(),
+        gcs_object=str(raw.get("gcs_object") or ""),
     )
 
 

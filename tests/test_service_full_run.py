@@ -546,6 +546,9 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
 
         email_html = mock_send.call_args.args[0]
         self.assertIn(keysuri_global_service_email_cid_src(run_id), email_html)
+        self.assertNotIn("cid:keysuri_bottomshot_korea_", email_html)
+        self.assertNotIn('id="bottom-shot-image"', email_html)
+        self.assertNotIn('id="bottom-shot-placeholder"', email_html)
         self.assertNotIn("output/images/", email_html)
         self.assertNotIn("image_canary/", email_html)
         self.assertNotIn("../", email_html)
@@ -579,6 +582,117 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
             generated_image_path="output/keysuri_preview/image_canary/x.jpg",
         )
         self.assertFalse(service_image_passes(outcome))
+
+
+class KeysuriKoreaServiceFullRunBottomEmailTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._env = patch.dict(
+            os.environ,
+            {
+                "GENIE_ADMIN_PUBLIC_BASE_URL": "https://example.com",
+                "GENIE_OWNER_REVIEW_SEND": "1",
+            },
+            clear=False,
+        )
+        self._env.start()
+
+    def tearDown(self) -> None:
+        self._env.stop()
+
+    @patch("keysuri_service_full_run.resolve_korea_bottom_email_asset_path")
+    @patch("keysuri_service_full_run.build_keysuri_prompt_input")
+    @patch("keysuri_service_full_run.save_run_artifact")
+    @patch("keysuri_service_full_run._generate_keysuri_service_image")
+    @patch("keysuri_service_full_run.generate_run_id")
+    def test_korea_owner_email_uses_top_and_bottom_inline_cids(
+        self,
+        mock_run_id: MagicMock,
+        mock_image: MagicMock,
+        mock_save: MagicMock,
+        mock_prompt_input: MagicMock,
+        mock_bottom: MagicMock,
+    ) -> None:
+        from keysuri_service_full_run import (
+            keysuri_korea_bottom_service_email_cid_src,
+            keysuri_korea_service_email_cid_src,
+            run_keysuri_service_full_run,
+        )
+
+        repo = Path(__file__).resolve().parents[1]
+        run_id = "20260615_183000_keysuri_korea_tech_5cf81e6a"
+        mock_run_id.return_value = run_id
+        pack_path = repo / "output" / "keysuri_preview" / "test_pack_korea_bottom_cid.json"
+        pack_path.parent.mkdir(parents=True, exist_ok=True)
+        pack_path.write_text(json.dumps({"sources": [], "program_id": PROGRAM_KOREA}), encoding="utf-8")
+        raw_path = repo / "output" / "keysuri_preview" / "raw_korea_bottom_cid.txt"
+        raw_path.write_text("{}", encoding="utf-8")
+
+        top_image = repo / "output" / "images" / "keysuri_korea_service_test.jpg"
+        top_image.parent.mkdir(parents=True, exist_ok=True)
+        top_image.write_bytes(b"\xff\xd8\xff" + b"\x00" * 128)
+        bottom_image = repo / "output" / "images" / "keysuri_korea_bottom_105936_test.jpg"
+        bottom_image.write_bytes(b"\xff\xd8\xff" + b"\x11" * 128)
+
+        mock_image.return_value = ServiceImageOutcome(
+            called_image_api=True,
+            image_generation_status="generated",
+            image_source=IMAGE_SOURCE_GENERATED,
+            generated_image_path=str(top_image.relative_to(repo)),
+        )
+        mock_prompt_input.return_value = {
+            "program_id": PROGRAM_KOREA,
+            "prompt_status": "ready_for_generation",
+            "source_pack": {"sources": []},
+        }
+        mock_bottom.return_value = (bottom_image, [])
+        mock_send = MagicMock(return_value=True)
+
+        smoke = LiveSourceSmokeResult(
+            ok=True,
+            program_id=PROGRAM_KOREA,
+            source_pack_path=str(pack_path),
+            html_path=str(pack_path.parent / "k.html"),
+            fetched_item_count=5,
+            feed_urls_used=["https://example.com/feed"],
+            sample_marker_pass=True,
+            called_gemini=True,
+            use_gemini=True,
+            contract_preview=False,
+            parse_status="parsed_valid",
+            raw_response_path=str(raw_path),
+            preview_overall_status="PASS_OWNER_REVIEW_READY",
+            validation_status="PASS",
+            generated_briefing={"title": "국내 브리핑", "summary": "요약", "top_5_news": []},
+            side_effects={"called_gemini": True, "called_image_api": False},
+        )
+
+        payload = run_keysuri_service_full_run(
+            PROGRAM_KOREA,
+            smoke_runner=lambda **_kw: smoke,
+            send_fn=mock_send,
+        )
+
+        self.assertTrue(payload.get("ok"))
+        self.assertEqual(payload.get("program_id"), PROGRAM_KOREA)
+        self.assertEqual(payload.get("korea_bottom_shot_status"), "available")
+        inline = mock_send.call_args.kwargs.get("inline_jpeg_parts") or []
+        self.assertEqual(len(inline), 2)
+        self.assertEqual(inline[0][1], keysuri_korea_service_email_cid_src(run_id).replace("cid:", ""))
+        self.assertEqual(inline[1][1], keysuri_korea_bottom_service_email_cid_src(run_id).replace("cid:", ""))
+        self.assertEqual(Path(inline[1][0]).resolve(), bottom_image.resolve())
+
+        email_html = mock_send.call_args.args[0]
+        self.assertIn(keysuri_korea_service_email_cid_src(run_id), email_html)
+        self.assertIn(keysuri_korea_bottom_service_email_cid_src(run_id), email_html)
+        self.assertIn('id="bottom-shot-image"', email_html)
+        self.assertNotIn('id="bottom-shot-placeholder"', email_html)
+        self.assertLess(email_html.find("원-라인 체크포인트"), email_html.find('id="bottom-shot-image"'))
+        self.assertLess(email_html.find('id="bottom-shot-image"'), email_html.find("본 브리핑은 운영책임자의 직접 검수 대기 상태입니다"))
+
+        saved_meta = mock_save.call_args.args[0]
+        self.assertEqual(saved_meta.get("customer_delivery_status"), "not_sent")
+        self.assertEqual(saved_meta.get("korea_bottom_shot_asset_id"), "keysuri_korea_bottom_20260605_105936")
+        self.assertEqual(saved_meta.get("korea_bottom_shot_status"), "available")
 
 
 class KeysuriGlobalOwnerReviewEmailDesignRestorationTests(unittest.TestCase):
@@ -745,6 +859,39 @@ class KeysuriKoreaOwnerReviewEmailDesignTests(unittest.TestCase):
         self.assertLess(email_html.find('id="bottom-shot-placeholder"'), email_html.find(review_marker))
         self.assertLess(email_html.find(review_marker), email_html.find("퇴근 전 메모"))
         self.assertLess(email_html.find("퇴근 전 메모"), email_html.find("마무리 및 출처 리스트"))
+
+    def test_korea_gmail_owner_email_renders_bottom_cid_when_available(self) -> None:
+        from keysuri_contract_preview_renderer import (
+            IMAGE_MODE_EMAIL,
+            build_keysuri_korea_gmail_owner_email_html,
+            prepare_contract_preview_fixture,
+        )
+        from keysuri_service_full_run import (
+            keysuri_korea_bottom_service_email_cid_src,
+            keysuri_korea_service_email_cid_src,
+        )
+        from tests.test_keysuri_contract_preview_renderer import build_korea_contract_fixture
+
+        repo = Path(__file__).resolve().parents[1]
+        run_id = "20260615_180000_keysuri_korea_tech_test"
+        fixture = build_korea_contract_fixture()
+        fixture["top_shot_image_src"] = keysuri_korea_service_email_cid_src(run_id)
+        fixture["bottom_shot_image_src"] = keysuri_korea_bottom_service_email_cid_src(run_id)
+        prepare_contract_preview_fixture(fixture, repo_root=repo, image_mode=IMAGE_MODE_EMAIL)
+
+        email_html = build_keysuri_korea_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Korea Tech",
+            admin_url="https://example.com/admin/runs/test_korea_bottom",
+            run_id="test_korea_bottom",
+        )
+        review_marker = "본 브리핑은 운영책임자의 직접 검수 대기 상태입니다"
+        self.assertIn("cid:keysuri_topshot_korea_", email_html)
+        self.assertIn("cid:keysuri_bottomshot_korea_", email_html)
+        self.assertIn('id="bottom-shot-image"', email_html)
+        self.assertNotIn('id="bottom-shot-placeholder"', email_html)
+        self.assertLess(email_html.find("원-라인 체크포인트"), email_html.find('id="bottom-shot-image"'))
+        self.assertLess(email_html.find('id="bottom-shot-image"'), email_html.find(review_marker))
 
     def test_korea_gmail_email_rejects_known_broken_endings_and_synthesizes_deep_dive(self) -> None:
         from keysuri_contract_preview_renderer import (
