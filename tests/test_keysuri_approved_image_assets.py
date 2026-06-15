@@ -52,6 +52,8 @@ _BOTTOM_MANIFEST = _REPO / (
     "keysuri_global_canary_20260605_105936_mirai_on_watermarked.manifest.json"
 )
 _REGISTRY = _REPO / "assets/keysuri/keysuri_approved_image_assets.json"
+_R6B_PROMOTION_CHECKLIST = _REPO / "docs/keysuri/KEYSURI_R6B_PRODUCTION_PROMOTION_CHECKLIST.md"
+_R6B_OFFDUTY_DECISION = _REPO / "docs/keysuri/KEYSURI_R6B_OFFDUTY_02C_PROMPT_DIRECTION_ONLY_DECISION.md"
 
 
 def _write_minimal_registry(repo: Path, *, file_path: str, sha256: str, role: str = GLOBAL_TOP_ROLE) -> None:
@@ -147,10 +149,63 @@ class KeysuriApprovedImageAssetRegistryTests(unittest.TestCase):
         asset = resolve_korea_bottom_asset(_REPO)
         self.assertEqual(asset.asset_id, "keysuri_korea_bottom_20260605_105936")
         self.assertEqual(asset.resolved_file_path(_REPO).resolve(), _KOREA_BOTTOM.resolve())
+        self.assertEqual(asset.role, KOREA_BOTTOM_ROLE)
+        self.assertEqual(asset.image_role, "bottom_shot")
+        self.assertEqual(asset.status, "approved_direction_locked")
+        self.assertIn("owner_review_preview", asset.approved_for)
+        self.assertIn("korea_bottom_preview", asset.approved_for)
         self.assertEqual(
             asset.gcs_object,
             "assets/keysuri/korea_bottom/keysuri_global_canary_20260605_105936_mirai_on_watermarked.jpg",
         )
+
+    @unittest.skipUnless(_REGISTRY.is_file(), "registry not present")
+    def test_korea_bottom_105936_owner_review_only_registry_policy(self) -> None:
+        registry = json.loads(_REGISTRY.read_text(encoding="utf-8"))
+        policy = registry.get("policy", {})
+        asset = next(
+            item
+            for item in registry.get("assets", [])
+            if item.get("asset_id") == "keysuri_korea_bottom_20260605_105936"
+        )
+
+        self.assertEqual(asset.get("role"), KOREA_BOTTOM_ROLE)
+        self.assertEqual(asset.get("image_role"), "bottom_shot")
+        self.assertEqual(asset.get("status"), "approved_direction_locked")
+        self.assertEqual(asset.get("approved_for"), ["owner_review_preview", "korea_bottom_preview"])
+        self.assertFalse(policy.get("image_generation_default"))
+        self.assertTrue(policy.get("image_refresh_frozen"))
+        self.assertTrue(policy.get("promotion_required_for_new_asset"))
+        self.assertTrue(policy.get("global_top_cannot_fallback_to_bottom_shot"))
+
+    @unittest.skipUnless(_R6B_PROMOTION_CHECKLIST.is_file(), "promotion checklist not present")
+    @unittest.skipUnless(_R6B_OFFDUTY_DECISION.is_file(), "offduty decision not present")
+    def test_korea_bottom_105936_docs_record_owner_review_only_state(self) -> None:
+        docs = "\n".join(
+            [
+                _R6B_PROMOTION_CHECKLIST.read_text(encoding="utf-8"),
+                _R6B_OFFDUTY_DECISION.read_text(encoding="utf-8"),
+            ]
+        )
+        required_policy_markers = [
+            "owner_review_email_attachment_ready=true",
+            "customer_email_attachment_ready=false",
+            "scheduler_variation_ready=false",
+            "production_prompt_default=false",
+            "generated_variation_allowed=false",
+            "role=korea_bottom only",
+        ]
+        for marker in required_policy_markers:
+            self.assertIn(marker, docs)
+
+        forbidden_ready_markers = [
+            "customer_email_attachment_ready=true",
+            "scheduler_variation_ready=true",
+            "production_prompt_default=true",
+            "generated_variation_allowed=true",
+        ]
+        for marker in forbidden_ready_markers:
+            self.assertNotIn(marker, docs)
 
     @unittest.skipUnless(_REGISTRY.is_file(), "registry not present")
     @unittest.skipUnless(_GLOBAL_TOP.is_file(), "global top missing")

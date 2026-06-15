@@ -7,7 +7,8 @@ This document defines the **checklist and decision gate** required before any Ke
 Clarifications:
 
 - **PASS_DIRECTION is not production approval.**
-- **`PROMPT_DIRECTION_ONLY` is creative/prompt direction only** — not a production asset, not scheduler-ready, not email-attachment-ready.
+- **`PROMPT_DIRECTION_ONLY` is creative/prompt direction only** — not a customer production asset, not scheduler-ready, not variation-ready.
+- **Owner-review-only fixed asset attachment is a separate narrow allowance** for the watermarked `105936` registry asset in Korea owner-review email only.
 - **Production promotion is a separate decision gate** from creative direction validation.
 - This checklist **blocks accidental wiring** of QA canary images into email, scheduler, or production content.
 - This file does **not** connect Cloud Scheduler, enable image API auto-calls, or send email.
@@ -31,21 +32,23 @@ Kee-Suri R6B bottom-shot work has produced an accepted **creative direction** (`
 
 It does **not** automatically authorize:
 
-- Attaching the QA JPG to production email
+- Attaching the QA JPG to customer production email
 - Scheduling automatic bottom-shot generation
 - Copying the canary image into `static/email/` or other committed asset paths
 - Flipping `scheduler_allowed` or `ready_for_scheduler`
 - Using the canary output as the permanent production image asset
+- Generating per-run offduty_02C variations
 
 ### 1.2 What this gate protects
 
 | Risk | Gate action |
 |------|-------------|
-| QA canary JPG wired into email | **Block** until promotion decision and asset path approved |
+| QA canary JPG wired into customer email | **Block** until customer production promotion decision and asset path approved |
 | PASS_DIRECTION treated as final asset | **Block** — direction ≠ production asset |
 | Bottom-shot attached to wrong slot (12:30 global) | **Block** — slot binding enforced |
 | Scheduler fires before promotion | **Block** — `SKIP_NO_PRODUCTION_PROMOTION` until checklist passes |
 | Genie program image confusion | **Block** — Today/Tomorrow_Geenee forbidden |
+| Owner-review asset mistaken for variation approval | **Block** — fixed `105936` reuse only |
 
 ### 1.3 Current promotion status
 
@@ -63,12 +66,22 @@ A **`PROMPT_DIRECTION_ONLY`** decision has been recorded in:
 | Level | Status |
 |-------|--------|
 | `PROMOTE_PROMPT_DIRECTION_ONLY` | **APPROVED** — commit `07a98ac` |
+| `PROMOTE_OWNER_REVIEW_EMAIL_FIXED_ASSET` | **APPROVED** — fixed watermarked `105936`, Korea owner-review email only |
 | `PROMOTE_STATIC_REFERENCE_FOR_DESIGN_ONLY` | Optional / not required |
 | `PROMOTE_PRODUCTION_IMAGE_ASSET` | **NOT_APPROVED** |
 | `PROMOTE_PRODUCTION_PROMPT_DEFAULT` | **NOT_APPROVED** |
 | `PROMOTE_SCHEDULED_SLOT_ATTACHMENT` | **NOT_APPROVED** |
 
-**Operational flags (unchanged):** `production_asset=false`, `scheduler_ready=false`, `email_attachment_ready=false`. QA JPG under `output/` remains non-production and must not be committed or copied to `static/email/`.
+**Operational flags (current):** `owner_review_email_attachment_ready=true`, `customer_email_attachment_ready=false`, `scheduler_variation_ready=false`, `production_prompt_default=false`, `generated_variation_allowed=false`, `production_asset=false`, `scheduler_ready=false`, `role=korea_bottom only`.
+
+The approved owner-review path uses the fixed watermarked registry/GCS asset only:
+
+- Asset ID: `keysuri_korea_bottom_20260605_105936`
+- Role: `korea_bottom only`
+- Watermarked file: `output/keysuri_preview/image_canary/keysuri_global_canary_20260605_105936_mirai_on_watermarked.jpg`
+- GCS object: `assets/keysuri/korea_bottom/keysuri_global_canary_20260605_105936_mirai_on_watermarked.jpg`
+
+The raw QA JPG under `output/` remains non-production and must not be committed or copied to `static/email/`.
 
 ---
 
@@ -86,6 +99,11 @@ A **`PROMPT_DIRECTION_ONLY`** decision has been recorded in:
 | **intended slot** | 18:30 bottom-shot (`keysuri_korea_tech`) — validated via global canary for direction only |
 | **promotion level** | **`PROMPT_DIRECTION_ONLY`** — commit `07a98ac` |
 | **production asset** | **false** |
+| **owner-review email attachment** | **true** — fixed watermarked `105936` only |
+| **customer email attachment** | **false** |
+| **scheduler variation** | **false** |
+| **production prompt default** | **false** |
+| **generated variation allowed** | **false** |
 
 ### 2.2 Accepted direction formula
 
@@ -112,22 +130,24 @@ Identity-first 3/4 framing, premium off-duty luxury wardrobe, CEO wood-door back
 
 ## 3. Non-production boundary
 
-The following rules are **mandatory today** and remain until a **higher** promotion level is explicitly approved in §9 (above `PROMPT_DIRECTION_ONLY`).
+The following rules are **mandatory today** and remain until a **higher** promotion level is explicitly approved in §9. The only exception is the explicitly approved fixed watermarked `105936` Korea owner-review email attachment.
 
 | Rule | Detail |
 |------|--------|
 | `output/` image is QA reference only | Local gitignored path — not a production asset |
 | Do not commit generated JPG | `.gitignore` → `output/` |
-| Do not copy to `static/email/` | No email attachment from canary output |
-| Do not attach to production email | No SMTP/in_app image send from QA path |
+| Do not copy to `static/email/` | Owner-review uses registry/GCS/local watermarked resolver only; no static/email copy |
+| Do not attach to customer production email | `customer_email_attachment_ready=false`; Korea customer delivery remains blocked |
+| Owner-review fixed attachment is Korea-only | `owner_review_email_attachment_ready=true` only for `keysuri_korea_tech` bottom CID from fixed watermarked `105936` |
 | Do not schedule automatic generation | No Cloud Scheduler / orchestrator bottom-shot job |
 | Do not flip `scheduler_allowed` | `keysuri_image_provider_contract.py` remains `false` |
 | Do not flip `ready_for_scheduler` | Canary client remains `false` |
 | Do not use PASS_DIRECTION as final production asset approval | `PROMPT_DIRECTION_ONLY` recorded — production asset still requires separate approval |
-| No scheduler/email/static asset wiring approved | `scheduler_ready=false`, `email_attachment_ready=false`; no `static/email/` copy |
+| No scheduler/customer/static asset wiring approved | `scheduler_variation_ready=false`, `customer_email_attachment_ready=false`; no `static/email/` copy |
+| Do not generate variations | `generated_variation_allowed=false`; offduty_02C is not a production prompt default |
 | Do not wire Today/Tomorrow_Geenee | Forbidden program paths for Kee-Suri image ops |
 
-**Default operational mode:** Manual canary only; text/briefing pipeline separate; bottom-shot **not attached** to any production delivery surface.
+**Default operational mode:** Fixed watermarked `105936` may attach only to Korea owner-review email. It is not customer delivery, not scheduler generation, not a global asset, and not a Korea top-shot.
 
 ---
 
@@ -138,6 +158,7 @@ The following rules are **mandatory today** and remain until a **higher** promot
 | Level | Code | Meaning | Typical use |
 |-------|------|---------|-------------|
 | Prompt direction only | `PROMOTE_PROMPT_DIRECTION_ONLY` | Lock creative formula in prompt/docs; **no** committed image asset; **no** email attachment | **Recorded for offduty_02C** — commit `07a98ac` |
+| Owner-review fixed asset attachment | `PROMOTE_OWNER_REVIEW_EMAIL_FIXED_ASSET` | Reuse fixed watermarked registry/GCS asset in Korea owner-review email only; **no customer delivery**, **no scheduler**, **no variation generation** | **Approved for `105936` korea_bottom only** |
 | Static reference for design | `PROMOTE_STATIC_REFERENCE_FOR_DESIGN_ONLY` | Committed design reference under `assets/keysuri/` for human/design review — **not** email attachment | Future design lock |
 | Production image asset | `PROMOTE_PRODUCTION_IMAGE_ASSET` | Approved image copied to committed production asset path; may attach to email when policy allows | Requires full §5–§7 checks |
 | Production prompt default | `PROMOTE_PRODUCTION_PROMPT_DEFAULT` | Profile becomes default bottom-shot prompt template for scheduled generation | Requires asset or stable prompt lock |
@@ -149,7 +170,8 @@ Higher levels imply all lower-level creative checks pass, plus additional techni
 
 ```
 PROMOTE_PROMPT_DIRECTION_ONLY
-  → PROMOTE_STATIC_REFERENCE_FOR_DESIGN_ONLY
+  → PROMOTE_OWNER_REVIEW_EMAIL_FIXED_ASSET
+    → PROMOTE_STATIC_REFERENCE_FOR_DESIGN_ONLY
     → PROMOTE_PRODUCTION_IMAGE_ASSET
       → PROMOTE_PRODUCTION_PROMPT_DEFAULT
         → PROMOTE_SCHEDULED_SLOT_ATTACHMENT
@@ -167,7 +189,8 @@ Rationale at time of decision:
 - QA image remains local and gitignored — **not** a production asset
 - No production asset path exists
 - Scheduler is not connected (`scheduler_ready=false`)
-- Email sender is not connected for Kee-Suri (`email_attachment_ready=false`)
+- Customer email sender remains blocked for Kee-Suri Korea (`customer_email_attachment_ready=false`)
+- Owner-review email may attach the fixed watermarked `105936` bottom CID only (`owner_review_email_attachment_ready=true`)
 - Bottom-shot rotation variants may still be explored before locking a single production asset
 
 **Higher levels remain NOT_APPROVED:** `PRODUCTION_IMAGE_ASSET`, `PRODUCTION_PROMPT_DEFAULT`, `SCHEDULED_SLOT_READY`.

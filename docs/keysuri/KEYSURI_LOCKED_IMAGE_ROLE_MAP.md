@@ -15,6 +15,17 @@ Watermarked korea_bottom variant:
 - `output/keysuri_preview/image_canary/keysuri_global_canary_20260605_105936_mirai_on_watermarked.jpg`
 - Manifest: `...105936_mirai_on_watermarked.manifest.json` (`image_role: bottom_shot`, `offduty_02C`)
 
+Owner-review-only operating state for `105936`:
+
+- `owner_review_email_attachment_ready=true`
+- `customer_email_attachment_ready=false`
+- `scheduler_variation_ready=false`
+- `production_prompt_default=false`
+- `generated_variation_allowed=false`
+- `role=korea_bottom only`
+- Allowed surface: KeeSuri Korea owner-review email bottom CID only.
+- Blocked surfaces: customer email, scheduler variation generation, Global top-shot, Korea top-shot, Today/Tomorrow_Geenee.
+
 Basis:
 
 - Global top — `KEYSURI_IMAGE_PROFILE_LOCK.md` R2-L (`221233`)

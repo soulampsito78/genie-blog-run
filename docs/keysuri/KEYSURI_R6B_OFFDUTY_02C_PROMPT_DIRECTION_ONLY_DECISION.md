@@ -1,7 +1,7 @@
 # Kee-Suri R6B — offduty_02C PROMPT_DIRECTION_ONLY Decision Record
 
 Status:
-**Decision recorded** / documentation only / no production wiring
+**Decision recorded** / owner-review fixed asset amendment / no customer or scheduler production wiring
 
 Candidate:
 `offduty_02C_luxury_knit_silk_skirt_farewell`
@@ -16,11 +16,14 @@ Related documents:
 Non-scope:
 
 - live image generation
-- production asset commit
+- customer production asset approval
 - Scheduler / GCP / Cloud Run changes
-- email attachment
+- customer email attachment
+- scheduler variation generation
+- production prompt default
 - copying QA JPG to `static/email/` or `assets/keysuri/production/`
 - Today_Geenee / Tomorrow_Geenee paths
+- Global top-shot or Korea top-shot reuse
 
 ---
 
@@ -37,11 +40,18 @@ Non-scope:
 | **target slot (design intent)** | 18:30 bottom-shot — `keysuri_korea_tech` |
 | **production_asset** | **false** |
 | **scheduler_ready** | **false** |
-| **email_attachment_ready** | **false** |
+| **owner_review_email_attachment_ready** | **true** — fixed watermarked `105936` only |
+| **customer_email_attachment_ready** | **false** |
+| **scheduler_variation_ready** | **false** |
+| **production_prompt_default** | **false** |
+| **generated_variation_allowed** | **false** |
+| **role** | `korea_bottom only` |
+| **fixed asset id** | `keysuri_korea_bottom_20260605_105936` |
+| **fixed watermarked GCS object** | `assets/keysuri/korea_bottom/keysuri_global_canary_20260605_105936_mirai_on_watermarked.jpg` |
 | **decision date** | 2026-06-05 (KST) |
 | **approved_by** | Operator / product owner (prompt-direction lock) |
 
-**One-line summary:** `offduty_02C` is accepted **only** as a prompt and creative direction reference for future R6B bottom-shot generation. It is **not** promoted as a static production image asset or scheduled attachment.
+**One-line summary:** `offduty_02C` is accepted as prompt direction, and the fixed watermarked `105936` asset is approved only as the `korea_bottom` CID in KeeSuri Korea owner-review email. It is **not** customer-delivery-ready, variation-ready, scheduler-ready, global-usable, Korea-top-usable, or a production prompt default.
 
 ---
 
@@ -61,7 +71,16 @@ The following creative formula is **approved for prompt steering** in future R6B
 | Props | **No tablet** |
 | Slot role | **18:30 bottom-shot emotional closing** — end-of-day farewell after briefing body |
 
-This approval covers **how to prompt** future generations. It does **not** approve any specific JPG file for production delivery.
+This approval covers **how to prompt** future generations. It also records one fixed owner-review-only attachment allowance:
+
+| Allowance | Boundary |
+|-----------|----------|
+| Fixed owner-review bottom CID | Watermarked `keysuri_korea_bottom_20260605_105936` may attach only to `keysuri_korea_tech` owner-review email |
+| Customer delivery | **Not approved** |
+| Scheduler generation | **Not approved** |
+| Per-run variation | **Not approved** |
+| Production prompt default | **Not approved** |
+| Role reuse | **Blocked** outside `korea_bottom only` |
 
 ---
 
@@ -74,8 +93,10 @@ The following remain **explicitly not approved**:
 | Generated QA JPG as production asset | **NOT approved** |
 | Commit `output/` JPG to git | **NOT approved** |
 | Copy QA JPG to `static/email/` | **NOT approved** |
-| Attach QA JPG to production email | **NOT approved** |
+| Attach QA JPG to customer production email | **NOT approved** |
+| Use fixed `105936` in customer email | **NOT approved** |
 | Schedule automatic bottom-shot image generation | **NOT approved** |
+| Generate offduty_02C variations per run | **NOT approved** |
 | Flip `scheduler_allowed` in image provider contract | **NOT approved** |
 | Flip `ready_for_scheduler` in canary client | **NOT approved** |
 | Mark `SCHEDULED_SLOT_READY` | **NOT approved** |
@@ -96,10 +117,10 @@ The following remain **explicitly not approved**:
 | Reason | Detail |
 |--------|--------|
 | First accepted direction only | Single canary PASS — repeatability across runs not yet proven |
-| Static asset behavior not validated | Email thumbnail, mobile crop, and blog preview behavior not tested on a committed production path |
+| Static asset behavior not customer-validated | Owner-review placement is allowed, but customer email/mobile/blog production behavior is not approved |
 | Production asset path not selected | No approved path under `assets/keysuri/production/` |
 | Scheduler pipeline not wired | Kee-Suri has no active production scheduler (commit `1b23bcf`) |
-| Email pipeline not wired | No Kee-Suri production email sender connected |
+| Customer email pipeline blocked | Korea customer delivery remains blocked; owner-review email is the only attachment allowance |
 | Promotion checklist gate | `KEYSURI_R6B_PRODUCTION_PROMOTION_CHECKLIST.md` exists (`8c8b9a8`) but has **not** approved asset-level promotion |
 | Correct next level | **PROMPT_DIRECTION_ONLY** — not `PRODUCTION_ASSET` |
 
@@ -183,7 +204,7 @@ Lessons from NOT_ACCEPTED canaries and PASS_DIRECTION validation — apply to al
 
 ## 8. Future promotion path
 
-To promote beyond **PROMPT_DIRECTION_ONLY**, a **separate decision** must explicitly approve:
+To promote beyond **PROMPT_DIRECTION_ONLY** and the fixed owner-review-only `105936` allowance, a **separate decision** must explicitly approve:
 
 | Requirement | Detail |
 |-------------|--------|
@@ -191,6 +212,8 @@ To promote beyond **PROMPT_DIRECTION_ONLY**, a **separate decision** must explic
 | Exact production asset path | Under `assets/keysuri/production/r6b_bottom/` — not `output/` |
 | Crop and thumbnail behavior | Validated at email and mobile preview sizes |
 | Static/email placement | After briefing body — bottom slot only |
+| Customer delivery policy | Separate approval required before any customer email attachment |
+| Variation policy | Separate approval required before generated offduty_02C variations |
 | 18:30 slot use | `keysuri_korea_tech` only — unless separately approved |
 | Rollback rule | Per `KEYSURI_R6B_PRODUCTION_PROMOTION_CHECKLIST.md` §10 |
 | Scheduler dependency | Schedule gate implemented and tested (`keysuri_schedule_gate.py`) |
@@ -209,6 +232,7 @@ Promotion levels from `KEYSURI_R6B_PRODUCTION_PROMOTION_CHECKLIST.md` §4:
 | Promotion level | Status | Notes |
 |-----------------|--------|-------|
 | **PROMPT_DIRECTION_ONLY** | **APPROVED** | This document — creative formula locked |
+| **OWNER_REVIEW_EMAIL_FIXED_ASSET** | **APPROVED** | Fixed watermarked `105936` for `keysuri_korea_tech` owner-review bottom CID only |
 | **STATIC_REFERENCE_FOR_DESIGN_ONLY** | Optional / not required | May commit design reference later — not needed now |
 | **PRODUCTION_IMAGE_ASSET** | **NOT_APPROVED** | No committed asset path; QA JPG not promoted |
 | **PRODUCTION_PROMPT_DEFAULT** | **NOT_APPROVED** | No default generation profile binding |
@@ -223,6 +247,12 @@ Promotion levels from `KEYSURI_R6B_PRODUCTION_PROMOTION_CHECKLIST.md` §4:
 | `production_auto_call_allowed` | **false** |
 | `auto_send_after_timeout_enabled` | **false** (registry) |
 | `image_attachment_enabled` | **false** (registry) |
+| `owner_review_email_attachment_ready` | **true** — fixed `105936` Korea bottom only |
+| `customer_email_attachment_ready` | **false** |
+| `scheduler_variation_ready` | **false** |
+| `production_prompt_default` | **false** |
+| `generated_variation_allowed` | **false** |
+| `role` | `korea_bottom only` |
 
 ---
 
@@ -232,9 +262,9 @@ Promotion levels from `KEYSURI_R6B_PRODUCTION_PROMOTION_CHECKLIST.md` §4:
 |------|--------|--------|
 | **A** | Commit this decision record | Pending operator request |
 | **B** | Decide whether to create a second PASS_DIRECTION candidate from another wardrobe taste cluster | Optional — broadens rotation before asset lock |
-| **C** | Do not implement scheduler or email attachment yet | **Hold** until higher promotion level approved |
+| **C** | Do not implement scheduler, generated variation, or customer email attachment | **Hold** until higher promotion level approved |
 
-**Do not proceed to scheduler wiring or email attachment before step B evaluation and explicit asset-promotion decision.**
+**Do not proceed to scheduler wiring, variation generation, or customer email attachment before explicit asset-promotion and delivery decisions.**
 
 ---
 
@@ -262,7 +292,7 @@ This document fulfills the **PROMPT_DIRECTION_ONLY** branch of the promotion dec
 | promotion level | `PROMOTE_PROMPT_DIRECTION_ONLY` |
 | target slot | 18:30 bottom-shot |
 | target program | `keysuri_korea_tech` |
-| asset path | **none** |
+| asset path | `assets/keysuri/korea_bottom/keysuri_global_canary_20260605_105936_mirai_on_watermarked.jpg` for owner-review only; **none** for customer production |
 | scheduler impact | **none** |
-| email impact | **none** |
+| email impact | Owner-review bottom CID only; customer email **none** |
 | rollback rule | Per promotion checklist §10 |

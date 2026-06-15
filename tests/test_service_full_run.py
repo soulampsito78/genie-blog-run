@@ -715,6 +715,7 @@ class KeysuriKoreaServiceFullRunBottomEmailTests(unittest.TestCase):
         self.assertEqual(inline[1][1], keysuri_korea_bottom_service_email_cid_src(run_id).replace("cid:", ""))
         self.assertIn("_mirai_on_watermarked", Path(inline[0][0]).name)
         self.assertEqual(Path(inline[1][0]).resolve(), bottom_image.resolve())
+        self.assertIn("105936", Path(inline[1][0]).name)
 
         email_html = mock_send.call_args.args[0]
         self.assertIn(keysuri_korea_service_email_cid_src(run_id), email_html)

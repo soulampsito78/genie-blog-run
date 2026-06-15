@@ -41,6 +41,8 @@ Raster files live under `output/keysuri_preview/image_canary/` and are **not com
 - **Status:** `approved_direction_locked`
 - **Role:** **korea_bottom only** — Korea 18:30 bottom-shot slot. **Must NOT** be used as global_top, global hero, or Korea top-shot.
 - **Note:** Filename prefix `keysuri_global_canary_*` is historical canary naming only; manifest records `image_role: bottom_shot`.
+- **Owner-review policy:** `owner_review_email_attachment_ready=true` for KeeSuri Korea owner-review email only.
+- **Blocked policy:** `customer_email_attachment_ready=false`, `scheduler_variation_ready=false`, `production_prompt_default=false`, `generated_variation_allowed=false`.
 
 ## 105936 misuse history (do not repeat)
 
@@ -58,6 +60,8 @@ Previously `keysuri_global_hero_105936` incorrectly pointed the **korea_bottom**
 8. **Candidates are not embedded** into routine preview unless promoted to the registry.
 9. **Visual identity gate** passes approved registry assets by `approved_asset_registry_match` (sha256 + role + program + status).
 10. **Generated candidates** without registry promotion → `manual_review_required` or `blocked`, never routine-ready.
+11. **Korea bottom `105936`** may attach only as the fixed watermarked owner-review bottom CID for `keysuri_korea_tech`.
+12. **Korea bottom `105936`** is not customer-delivery-ready, scheduler-variation-ready, production-prompt-default-ready, global-usable, or Korea-top-usable.
 
 ## Visual theme (v2) — preview pairing
 
