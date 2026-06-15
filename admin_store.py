@@ -590,7 +590,12 @@ def _record_customer_delivery_smtp_accepted(meta: Dict[str, Any], *, completed_a
     )
 
 
-def approve_run(run_id: str, note: str = "") -> tuple[Optional[Dict[str, Any]], str]:
+def approve_run(
+    run_id: str,
+    note: str = "",
+    *,
+    approval_audit: Optional[Dict[str, Any]] = None,
+) -> tuple[Optional[Dict[str, Any]], str]:
     """Approve run and send customer final email immediately (today_genie HTML body only)."""
     meta = load_run_artifact(run_id)
     if not meta:
@@ -646,6 +651,9 @@ def approve_run(run_id: str, note: str = "") -> tuple[Optional[Dict[str, Any]], 
         m["customer_delivery_reason"] = "owner_approved"
         m["customer_sent_at"] = sent_ts
         _record_customer_delivery_smtp_accepted(m, completed_at=sent_ts)
+        if approval_audit:
+            for key, value in approval_audit.items():
+                m[key] = value
 
     updated = update_run_artifact(run_id, _mut)
     return updated, "ok"

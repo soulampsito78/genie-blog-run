@@ -13,6 +13,7 @@ from keysuri_live_source_smoke import PROGRAM_GLOBAL, PROGRAM_KOREA
 from keysuri_service_full_run import keysuri_global_service_email_cid_src
 from main import app
 from programs.registry import list_programs, resolve_program_id
+from tests.test_admin_routes import post_customer_approve_with_confirm
 
 
 def _keysuri_global_gmail_owner_review_email_html(
@@ -321,7 +322,7 @@ class KeysuriApproveRouteTests(unittest.TestCase):
                 os.environ[key] = prev
 
     @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
-    def test_approve_post_keysuri_global_sends(self, mock_send: MagicMock) -> None:
+    def test_approve_post_keysuri_global_sends_via_confirm_flow(self, mock_send: MagicMock) -> None:
         mock_send.return_value = True
         run_id = "20260612_140000_keysuri_global_tech_ccddeeff"
         save_run_artifact(
@@ -329,16 +330,32 @@ class KeysuriApproveRouteTests(unittest.TestCase):
             email_html=_keysuri_global_gmail_owner_review_email_html(run_id),
         )
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
-        resp = self.client.post(
-            f"/admin/runs/{run_id}/approve",
-            data={"approve_note": "ok"},
-            follow_redirects=False,
-        )
+        resp = post_customer_approve_with_confirm(self.client, run_id, note="ok")
         self.assertEqual(resp.status_code, 303)
         self.assertNotIn("approve_error", resp.headers.get("location", ""))
         mock_send.assert_called_once()
         meta = load_run_artifact(run_id) or {}
         self.assertEqual(meta.get("owner_review_status"), "approved")
+        self.assertEqual(meta.get("approval_channel"), "browser_confirm")
+        self.assertTrue(meta.get("approval_nonce_used"))
+
+    @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
+    def test_direct_post_keysuri_global_without_nonce_blocked(self, mock_send: MagicMock) -> None:
+        mock_send.return_value = True
+        run_id = "20260612_140100_keysuri_global_tech_ccddeeff"
+        save_run_artifact(
+            _keysuri_global_artifact_meta(run_id),
+            email_html=_keysuri_global_gmail_owner_review_email_html(run_id),
+        )
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        resp = self.client.post(
+            f"/admin/runs/{run_id}/approve",
+            data={"approve_note": "ok", "customer_send_confirm": "1"},
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        self.assertIn("missing_approval_nonce", resp.headers.get("location", ""))
+        mock_send.assert_not_called()
 
     @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
     def test_approve_post_keysuri_korea_blocked(self, mock_send: MagicMock) -> None:
@@ -358,13 +375,9 @@ class KeysuriApproveRouteTests(unittest.TestCase):
             email_html="<p>brief</p>",
         )
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
-        resp = self.client.post(
-            f"/admin/runs/{run_id}/approve",
-            data={"approve_note": "ok"},
-            follow_redirects=False,
-        )
-        self.assertEqual(resp.status_code, 303)
-        self.assertIn("keysuri_customer_delivery_not_ready", resp.headers.get("location", ""))
+        resp = self.client.get(f"/admin/runs/{run_id}/approve-confirm")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("안전 검증 전", resp.text)
         mock_send.assert_not_called()
         meta = load_run_artifact(run_id) or {}
         self.assertEqual(meta.get("owner_review_status"), "pending_review")

@@ -1,11 +1,16 @@
 """Minimal password-protected owner admin for run review and reissue."""
 from __future__ import annotations
 
-import html
-import hmac
 import hashlib
+import hmac
+import html
+import logging
 import os
+import secrets
+import time
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -18,6 +23,7 @@ from admin_store import (
     apply_reissue_child_metadata,
     approve_run,
     can_approve_customer_send,
+    now_kst_iso,
     customer_delivery_status_label_ko,
     load_run_artifact,
     load_run_email_html,
@@ -32,6 +38,11 @@ router = APIRouter(tags=["admin"])
 
 SESSION_COOKIE = "genie_admin_session"
 SESSION_SALT = b"genie-admin-session-v1"
+APPROVE_NONCE_COOKIE = "genie_approve_nonce"
+APPROVE_NONCE_SALT = b"genie-approve-nonce-v1"
+APPROVE_NONCE_TTL_SECONDS = 900
+APPROVE_NONCE_FORM_FIELD = "approve_nonce"
+CUSTOMER_SEND_CONFIRM_FIELD = "customer_send_confirm"
 REISSUE_REASONS = (
     "제목 수정 요청",
     "요약 수정 요청",
@@ -71,6 +82,10 @@ _APPROVE_ERROR_MESSAGES = {
     "send_failed": "고객 이메일 발송에 실패했습니다.",
     "unsupported_mode": "승인 발송을 지원하지 않는 mode입니다.",
     "keysuri_customer_delivery_not_ready": "Kee-Suri 고객 발송은 아직 안전 검증 전입니다.",
+    "missing_approval_nonce": "승인 확인 토큰이 없습니다. 승인 검토 페이지에서 다시 시도하세요.",
+    "invalid_approval_nonce": "승인 확인 토큰이 유효하지 않습니다. 승인 검토 페이지에서 다시 시도하세요.",
+    "approval_nonce_expired": "승인 확인 토큰이 만료되었습니다. 승인 검토 페이지에서 다시 시도하세요.",
+    "missing_customer_send_confirm": "고객 이메일 발송 승인 체크박스를 선택해야 합니다.",
 }
 
 _KEYSURI_CUSTOMER_DELIVERY_BLOCKED_MODES = frozenset({"keysuri_korea_tech"})
@@ -86,6 +101,61 @@ def admin_enabled() -> bool:
 
 def _session_token(password: str) -> str:
     return hmac.new(password.encode("utf-8"), SESSION_SALT, hashlib.sha256).hexdigest()
+
+
+def _session_token_from_request(request: Request) -> str:
+    return str(request.cookies.get(SESSION_COOKIE, "") or "")
+
+
+def _sign_approval_nonce(run_id: str, nonce: str, exp: int, session_token: str) -> str:
+    pwd = admin_password()
+    payload = f"{session_token}|{run_id}|{nonce}|{exp}".encode("utf-8")
+    return hmac.new(pwd.encode("utf-8"), APPROVE_NONCE_SALT + payload, hashlib.sha256).hexdigest()
+
+
+def issue_approval_nonce(run_id: str, session_token: str) -> tuple[str, str]:
+    nonce = secrets.token_urlsafe(32)
+    exp = int(time.time()) + APPROVE_NONCE_TTL_SECONDS
+    sig = _sign_approval_nonce(run_id, nonce, exp, session_token)
+    cookie_value = f"{run_id}|{nonce}|{exp}|{sig}"
+    return nonce, cookie_value
+
+
+def verify_approval_nonce(
+    run_id: str,
+    nonce: str,
+    cookie_value: str,
+    session_token: str,
+) -> tuple[bool, str]:
+    if not str(nonce or "").strip():
+        return False, "missing_approval_nonce"
+    if not str(cookie_value or "").strip():
+        return False, "missing_approval_nonce"
+    parts = str(cookie_value).split("|", 3)
+    if len(parts) != 4:
+        return False, "invalid_approval_nonce"
+    cookie_run_id, cookie_nonce, exp_raw, sig = parts
+    if cookie_run_id != run_id or cookie_nonce != nonce:
+        return False, "invalid_approval_nonce"
+    try:
+        exp = int(exp_raw)
+    except ValueError:
+        return False, "invalid_approval_nonce"
+    if exp < int(time.time()):
+        return False, "approval_nonce_expired"
+    expected = _sign_approval_nonce(run_id, nonce, exp, session_token)
+    if not hmac.compare_digest(expected, sig):
+        return False, "invalid_approval_nonce"
+    return True, "ok"
+
+
+def _clear_approval_nonce_cookie(response: Response) -> None:
+    response.delete_cookie(APPROVE_NONCE_COOKIE, path="/")
+
+
+def _request_client_ip(request: Request) -> str:
+    client = request.client
+    return str(client.host if client and client.host else "")
 
 
 def is_logged_in(request: Request) -> bool:
@@ -287,6 +357,7 @@ def admin_login(request: Request, password: str = Form(...)) -> Response:
 def admin_logout() -> RedirectResponse:
     resp = RedirectResponse(url="/admin", status_code=303)
     resp.delete_cookie(SESSION_COOKIE, path="/")
+    _clear_approval_nonce_cookie(resp)
     return resp
 
 
@@ -453,6 +524,8 @@ def admin_run_approve_confirm(request: Request, run_id: str):
         msg = _APPROVE_ERROR_MESSAGES.get(approve_err, approve_err)
         inner = f"<p>{_esc(msg)}</p><p><a href=\"/admin/runs/{_esc(run_id)}\">돌아가기</a></p>"
         return HTMLResponse(_layout("Approve blocked", inner), status_code=400)
+    session_token = _session_token_from_request(request)
+    nonce, cookie_value = issue_approval_nonce(run_id, session_token)
     inner = f"""
 <h1>고객 발송 승인 확인</h1>
 <p>run_id: <code>{_esc(run_id)}</code></p>
@@ -462,14 +535,28 @@ def admin_run_approve_confirm(request: Request, run_id: str):
 <strong>주의</strong> — 승인은 되돌릴 수 없으며 중복 승인 발송은 차단됩니다.
 </div>
 <form method="post" action="/admin/runs/{_esc(run_id)}/approve">
+<input type="hidden" name="{_esc(APPROVE_NONCE_FORM_FIELD)}" value="{_esc(nonce)}">
 <label>승인 메모 (선택)<br>
 <input type="text" name="approve_note" maxlength="500" placeholder="승인 메모">
 </label><br><br>
+<label style="display:block;margin:0 0 16px 0;">
+<input type="checkbox" name="{_esc(CUSTOMER_SEND_CONFIRM_FIELD)}" value="1" required>
+고객 이메일 발송을 승인합니다
+</label>
 <div class="form-actions"><button class="btn" type="submit">승인 및 고객 발송</button></div>
 </form>
 <p><a href="/admin/runs/{_esc(run_id)}">← 실행 상세</a></p>
 """
-    return HTMLResponse(_layout(f"Approve {run_id}", inner))
+    resp = HTMLResponse(_layout(f"Approve {run_id}", inner))
+    resp.set_cookie(
+        APPROVE_NONCE_COOKIE,
+        cookie_value,
+        httponly=True,
+        samesite="lax",
+        max_age=APPROVE_NONCE_TTL_SECONDS,
+        path="/",
+    )
+    return resp
 
 
 @router.post("/admin/runs/{run_id}/approve")
@@ -477,20 +564,61 @@ def admin_run_approve(
     request: Request,
     run_id: str,
     approve_note: str = Form(""),
+    approve_nonce: str = Form(""),
+    customer_send_confirm: str = Form(""),
 ):
     need = _require_login(request)
     if need is not None:
         return need
     if not validate_run_id(run_id):
         return HTMLResponse(_layout("Not found", "<p>잘못된 run_id</p>"), status_code=404)
-    updated, status = approve_run(run_id, note=approve_note)
-    if status != "ok" or not updated:
-        code = status if status in _APPROVE_ERROR_MESSAGES else "send_failed"
-        return RedirectResponse(
+
+    def _reject(code: str, *, consume_nonce: bool = True) -> RedirectResponse:
+        resp = RedirectResponse(
             url=f"/admin/runs/{run_id}?approve_error={code}",
             status_code=303,
         )
-    return RedirectResponse(url=f"/admin/runs/{run_id}", status_code=303)
+        if consume_nonce:
+            _clear_approval_nonce_cookie(resp)
+        return resp
+
+    if not str(customer_send_confirm or "").strip():
+        return _reject("missing_customer_send_confirm", consume_nonce=False)
+
+    cookie_value = str(request.cookies.get(APPROVE_NONCE_COOKIE, "") or "")
+    session_token = _session_token_from_request(request)
+    nonce_ok, nonce_err = verify_approval_nonce(run_id, approve_nonce, cookie_value, session_token)
+    if not nonce_ok:
+        return _reject(nonce_err)
+
+    cleaned_note = approve_note.strip()
+    client_ip = _request_client_ip(request)
+    user_agent = str(request.headers.get("user-agent", "") or "")
+    approval_audit = {
+        "approved_from_ip": client_ip or None,
+        "approved_user_agent": user_agent or None,
+        "approval_channel": "browser_confirm",
+        "approval_confirmed_at": now_kst_iso(),
+        "approval_note": cleaned_note or None,
+        "approval_nonce_used": True,
+    }
+    updated, status = approve_run(run_id, note=approve_note, approval_audit=approval_audit)
+    if status != "ok" or not updated:
+        code = status if status in _APPROVE_ERROR_MESSAGES else "send_failed"
+        return _reject(code)
+
+    mode = str(updated.get("mode") or "")
+    logger.info(
+        "customer_approval_success run_id=%s mode=%s approval_channel=%s ip=%s user_agent=%s",
+        run_id,
+        mode,
+        approval_audit["approval_channel"],
+        client_ip,
+        user_agent,
+    )
+    resp = RedirectResponse(url=f"/admin/runs/{run_id}", status_code=303)
+    _clear_approval_nonce_cookie(resp)
+    return resp
 
 
 @router.post("/admin/runs/{run_id}/reissue")

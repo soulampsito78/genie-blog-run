@@ -20,6 +20,7 @@ from today_geenee_customer_delivery import (
     send_customer_timeout_draft_email,
     strip_owner_operational_handoff,
 )
+from tests.test_admin_routes import post_customer_approve_with_confirm
 
 _FULL_RUNTIME = {"overnight_us_market": {"k": 1}, "macro_indicators": {"k": 2}}
 
@@ -186,15 +187,13 @@ class Batch83ApproveRouteTests(unittest.TestCase):
                 "workflow_status": "validated",
                 "response_status": 200,
                 "reason_summary": "ok",
+                "owner_review_status": "pending_review",
+                "customer_delivery_status": "not_sent",
             },
             email_html="<p>brief</p>",
         )
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
-        resp = self.client.post(
-            f"/admin/runs/{run_id}/approve",
-            data={"approve_note": "ok"},
-            follow_redirects=False,
-        )
+        resp = post_customer_approve_with_confirm(self.client, run_id, note="ok")
         self.assertEqual(resp.status_code, 303)
         mock_send.assert_called_once()
         from admin_store import load_run_artifact
@@ -228,15 +227,13 @@ class Batch83ApproveRouteTests(unittest.TestCase):
                 "workflow_status": "validated",
                 "response_status": 200,
                 "reason_summary": "ok",
+                "owner_review_status": "pending_review",
+                "customer_delivery_status": "not_sent",
             },
             email_html=email_html,
         )
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
-        resp = self.client.post(
-            f"/admin/runs/{run_id}/approve",
-            data={"approve_note": "ok"},
-            follow_redirects=False,
-        )
+        resp = post_customer_approve_with_confirm(self.client, run_id, note="ok")
         self.assertEqual(resp.status_code, 303)
         mock_send.assert_called_once()
         outbound_html = mock_send.call_args.args[0]

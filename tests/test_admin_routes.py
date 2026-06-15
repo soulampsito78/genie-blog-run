@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -17,6 +18,28 @@ from admin_store import (
     save_run_artifact,
 )
 from main import app
+
+
+def post_customer_approve_with_confirm(
+    client: TestClient,
+    run_id: str,
+    *,
+    note: str = "ok",
+    include_checkbox: bool = True,
+    include_nonce: bool = True,
+    nonce_override: str | None = None,
+):
+    confirm_resp = client.get(f"/admin/runs/{run_id}/approve-confirm")
+    nonce = nonce_override
+    if include_nonce and nonce is None:
+        match = re.search(r'name="approve_nonce" value="([^"]+)"', confirm_resp.text)
+        nonce = match.group(1) if match else ""
+    data: dict[str, str] = {"approve_note": note}
+    if include_nonce:
+        data["approve_nonce"] = nonce or ""
+    if include_checkbox:
+        data["customer_send_confirm"] = "1"
+    return client.post(f"/admin/runs/{run_id}/approve", data=data, follow_redirects=False)
 
 
 class AdminRoutesTests(unittest.TestCase):
@@ -335,6 +358,135 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 303)
         self.assertIn("invalid_reissue_scope", resp.headers.get("location", ""))
         mock_exec.assert_not_called()
+
+
+class AdminApprovalHardeningTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._prev_pwd = os.environ.get("GENIE_ADMIN_PASSWORD")
+        self._prev_customer = os.environ.get("GENIE_CUSTOMER_EMAIL_TO")
+        os.environ["GENIE_ADMIN_PASSWORD"] = "test-admin-secret"
+        os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
+        os.environ["SMTP_HOST"] = "smtp.example.com"
+        os.environ["SMTP_USER"] = "user@example.com"
+        os.environ["SMTP_PASSWORD"] = "secret"
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        for key, prev in (
+            ("GENIE_ADMIN_PASSWORD", self._prev_pwd),
+            ("GENIE_CUSTOMER_EMAIL_TO", self._prev_customer),
+        ):
+            if prev is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prev
+
+    def _save_today_run(self, run_id: str) -> None:
+        save_run_artifact(
+            {
+                "run_id": run_id,
+                "mode": "today_genie",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "reason_summary": "ok",
+                "owner_review_status": "pending_review",
+                "customer_delivery_status": "not_sent",
+            },
+            email_html="<p>brief</p>",
+        )
+
+    @patch("today_geenee_customer_delivery.send_today_geenee_customer_final_email")
+    def test_direct_post_approve_without_nonce_rejected(self, mock_send: MagicMock) -> None:
+        mock_send.return_value = True
+        run_id = "20260615_170000_today_genie_aabbccdd"
+        self._save_today_run(run_id)
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        resp = self.client.post(
+            f"/admin/runs/{run_id}/approve",
+            data={"approve_note": "ok", "customer_send_confirm": "1"},
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        self.assertIn("missing_approval_nonce", resp.headers.get("location", ""))
+        mock_send.assert_not_called()
+        meta = load_run_artifact(run_id) or {}
+        self.assertEqual(meta.get("customer_delivery_status"), "not_sent")
+
+    @patch("today_geenee_customer_delivery.send_today_geenee_customer_final_email")
+    def test_post_approve_without_checkbox_rejected(self, mock_send: MagicMock) -> None:
+        mock_send.return_value = True
+        run_id = "20260615_170100_today_genie_aabbccdd"
+        self._save_today_run(run_id)
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        resp = post_customer_approve_with_confirm(
+            self.client,
+            run_id,
+            include_checkbox=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        self.assertIn("missing_customer_send_confirm", resp.headers.get("location", ""))
+        mock_send.assert_not_called()
+
+    @patch("today_geenee_customer_delivery.send_today_geenee_customer_final_email")
+    def test_post_approve_with_valid_nonce_and_checkbox_sends_once(self, mock_send: MagicMock) -> None:
+        mock_send.return_value = True
+        run_id = "20260615_170200_today_genie_aabbccdd"
+        self._save_today_run(run_id)
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        resp = post_customer_approve_with_confirm(self.client, run_id, note="browser ok")
+        self.assertEqual(resp.status_code, 303)
+        self.assertNotIn("approve_error", resp.headers.get("location", ""))
+        mock_send.assert_called_once()
+        meta = load_run_artifact(run_id) or {}
+        self.assertEqual(meta.get("owner_review_status"), "approved")
+        self.assertEqual(meta.get("approval_channel"), "browser_confirm")
+        self.assertTrue(meta.get("approval_nonce_used"))
+        self.assertEqual(meta.get("approval_note"), "browser ok")
+
+    @patch("today_geenee_customer_delivery.send_today_geenee_customer_final_email")
+    def test_approval_nonce_cannot_be_reused(self, mock_send: MagicMock) -> None:
+        mock_send.return_value = True
+        run_id = "20260615_170300_today_genie_aabbccdd"
+        self._save_today_run(run_id)
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        confirm_resp = self.client.get(f"/admin/runs/{run_id}/approve-confirm")
+        match = re.search(r'name="approve_nonce" value="([^"]+)"', confirm_resp.text)
+        self.assertIsNotNone(match)
+        nonce = match.group(1)
+        first = self.client.post(
+            f"/admin/runs/{run_id}/approve",
+            data={
+                "approve_note": "once",
+                "approve_nonce": nonce,
+                "customer_send_confirm": "1",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(first.status_code, 303)
+        mock_send.assert_called_once()
+        second = self.client.post(
+            f"/admin/runs/{run_id}/approve",
+            data={
+                "approve_note": "twice",
+                "approve_nonce": nonce,
+                "customer_send_confirm": "1",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(second.status_code, 303)
+        self.assertIn("approve_error", second.headers.get("location", ""))
+        mock_send.assert_called_once()
+
+    def test_approve_confirm_includes_checkbox_and_hidden_nonce(self) -> None:
+        run_id = "20260615_170400_today_genie_aabbccdd"
+        self._save_today_run(run_id)
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        resp = self.client.get(f"/admin/runs/{run_id}/approve-confirm")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("고객 이메일 발송을 승인합니다", resp.text)
+        self.assertIn('name="approve_nonce"', resp.text)
+        self.assertIn("genie_approve_nonce", resp.cookies)
 
 
 class AdminStoreReissueMetadataTests(unittest.TestCase):
