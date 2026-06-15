@@ -15,6 +15,7 @@ from keysuri_contract_preview_renderer import (
     IMAGE_MODE_EMAIL,
     IMAGE_MODE_PREVIEW,
     build_keysuri_global_gmail_owner_email_html,
+    build_keysuri_korea_gmail_owner_email_html,
     build_keysuri_owner_review_email_html,
     prepare_contract_preview_fixture,
     render_keysuri_contract_preview_html,
@@ -51,6 +52,7 @@ _PROGRAM_EMAIL_SUBJECT = {
 
 # MIME Content-ID token (no angle brackets); HTML uses cid:{token}.
 KEYSURI_GLOBAL_SERVICE_EMAIL_CID_PREFIX = "keysuri_topshot_global"
+KEYSURI_KOREA_SERVICE_EMAIL_CID_PREFIX = "keysuri_topshot_korea"
 
 
 def _kst_date_from_run_id(run_id: str) -> str:
@@ -73,6 +75,16 @@ def keysuri_global_service_email_cid_src(run_id: str) -> str:
     return f"cid:{keysuri_global_service_email_cid_token(run_id)}"
 
 
+def keysuri_korea_service_email_cid_token(run_id: str) -> str:
+    """Content-ID token for Korea service_full_run owner-review email hero image."""
+    stamp = _kst_date_from_run_id(run_id)
+    return f"{KEYSURI_KOREA_SERVICE_EMAIL_CID_PREFIX}_{stamp}"
+
+
+def keysuri_korea_service_email_cid_src(run_id: str) -> str:
+    return f"cid:{keysuri_korea_service_email_cid_token(run_id)}"
+
+
 def inline_jpeg_parts_for_global_service_email(
     generated_image_path: Path,
     run_id: str,
@@ -80,6 +92,16 @@ def inline_jpeg_parts_for_global_service_email(
     """Single hero inline JPEG for Global service_full_run SMTP (Gmail-safe CID)."""
     cid_token = keysuri_global_service_email_cid_token(run_id)
     fname = generated_image_path.name if generated_image_path.name else "keysuri_global_service.jpg"
+    return [(str(generated_image_path.resolve()), cid_token, fname)]
+
+
+def inline_jpeg_parts_for_korea_service_email(
+    generated_image_path: Path,
+    run_id: str,
+) -> List[Tuple[str, str, str]]:
+    """Single hero inline JPEG for Korea service_full_run SMTP (Gmail-safe CID)."""
+    cid_token = keysuri_korea_service_email_cid_token(run_id)
+    fname = generated_image_path.name if generated_image_path.name else "keysuri_korea_service.jpg"
     return [(str(generated_image_path.resolve()), cid_token, fname)]
 
 
@@ -198,8 +220,11 @@ def _build_service_contract_fixture(
         repo_root=_REPO,
         image_mode=image_mode,
     )
-    if image_mode == IMAGE_MODE_EMAIL and program_id == PROGRAM_GLOBAL:
-        contract_fixture["top_shot_image_src"] = keysuri_global_service_email_cid_src(run_id)
+    if image_mode == IMAGE_MODE_EMAIL:
+        if program_id == PROGRAM_GLOBAL:
+            contract_fixture["top_shot_image_src"] = keysuri_global_service_email_cid_src(run_id)
+        elif program_id == PROGRAM_KOREA:
+            contract_fixture["top_shot_image_src"] = keysuri_korea_service_email_cid_src(run_id)
     return contract_fixture
 
 
@@ -417,6 +442,15 @@ def run_keysuri_service_full_run(
             admin_url=owner_review_url,
             run_id=run_id,
         )
+    elif pid == PROGRAM_KOREA:
+        contract_fixture_email = dict(contract_fixture_preview)
+        contract_fixture_email["top_shot_image_src"] = keysuri_korea_service_email_cid_src(run_id)
+        email_html = build_keysuri_korea_gmail_owner_email_html(
+            contract_fixture_email,
+            subject=_PROGRAM_EMAIL_SUBJECT.get(pid, ""),
+            admin_url=owner_review_url,
+            run_id=run_id,
+        )
     else:
         email_preview_html, _ = _render_service_html(
             pid,
@@ -448,6 +482,20 @@ def run_keysuri_service_full_run(
                 else:
                     os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
                     inline_parts = inline_jpeg_parts_for_global_service_email(gen_image_abs, run_id)
+                    email_sent = bool(
+                        sender(
+                            email_html,
+                            subject,
+                            inline_jpeg_parts=inline_parts,
+                            attachment_jpeg_parts=[],
+                        )
+                    )
+            elif pid == PROGRAM_KOREA:
+                if not gen_image_abs.is_file():
+                    issue_codes.append("generated_image_missing_for_cid_email")
+                else:
+                    os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
+                    inline_parts = inline_jpeg_parts_for_korea_service_email(gen_image_abs, run_id)
                     email_sent = bool(
                         sender(
                             email_html,

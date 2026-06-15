@@ -678,6 +678,65 @@ class KeysuriGlobalOwnerReviewEmailDesignRestorationTests(unittest.TestCase):
         self.assertIn("키수리 국내 테크 브리핑", korea_html)
 
 
+class KeysuriKoreaOwnerReviewEmailDesignTests(unittest.TestCase):
+    """Korea service_full_run owner email must use Gmail-safe inline/table renderer."""
+
+    def test_korea_gmail_owner_email_is_safe_and_preserves_hierarchy(self) -> None:
+        from keysuri_contract_preview_renderer import (
+            IMAGE_MODE_EMAIL,
+            build_keysuri_korea_gmail_owner_email_html,
+            prepare_contract_preview_fixture,
+        )
+        from keysuri_service_full_run import keysuri_korea_service_email_cid_src
+        from tests.test_keysuri_contract_preview_renderer import build_korea_contract_fixture
+
+        repo = Path(__file__).resolve().parents[1]
+        fixture = build_korea_contract_fixture()
+        fixture["top_shot_image_src"] = keysuri_korea_service_email_cid_src("20260615_180000_keysuri_korea_tech_test")
+        prepare_contract_preview_fixture(fixture, repo_root=repo, image_mode=IMAGE_MODE_EMAIL)
+
+        email_html = build_keysuri_korea_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Korea Tech",
+            admin_url="https://example.com/admin/runs/test_korea_run",
+            run_id="test_korea_run",
+        )
+        lowered = email_html.lower()
+
+        for forbidden in (
+            "<style",
+            "var(--",
+            "display:flex",
+            "<details",
+            "audit-fold",
+            "operation-metadata",
+            "validation-result-box",
+            "compliance-checklist",
+            "운영 정보",
+            "contract compliance checklist",
+            "output/",
+            "image_canary/",
+            "../",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden.lower(), lowered)
+
+        self.assertIn("cid:keysuri_topshot_korea_", email_html)
+        self.assertIn("키수리 국내 테크 브리핑", email_html)
+        self.assertIn("오늘 국내에서 움직인 것", email_html)
+        self.assertIn("국내 테크 TOP", email_html.upper())
+        self.assertIn("키수리의 딥-다이브", email_html)
+        self.assertIn("원-라인 체크포인트", email_html)
+        self.assertIn("내일 영향을 줄 한 가지", email_html)
+        self.assertIn("마무리 및 출처 리스트", email_html)
+        self.assertIn("운영자 검수 화면 열기", email_html)
+        self.assertIn("/admin/runs/test_korea_run", email_html)
+        self.assertIn('role="presentation"', email_html)
+        self.assertIn("#14110d", email_html)
+        self.assertLess(email_html.find("키수리의 딥-다이브"), email_html.find("원-라인 체크포인트"))
+        self.assertLess(email_html.find("원-라인 체크포인트"), email_html.find("마무리 및 출처 리스트"))
+
+
 class ServiceFullRunInternalEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(app)

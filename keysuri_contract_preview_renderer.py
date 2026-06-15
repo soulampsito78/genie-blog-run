@@ -1498,6 +1498,420 @@ def _gmail_render_global_one_line_checkpoint(fixture: Mapping[str, Any]) -> str:
     )
 
 
+_GMAIL_KOREA_COLORS = {
+    "bg": "#14110d",
+    "surface": "#1e1a14",
+    "surface2": "#27211a",
+    "line": "#3a3228",
+    "text": "#f3ece0",
+    "dim": "#c8bca8",
+    "mute": "#8a7d68",
+    "accent": "#cda85f",
+    "gold_soft": "rgba(205,168,95,0.14)",
+    "signal": "#b9763f",
+    "blue": "#8fa8c8",
+    "blue_soft": "rgba(143,168,200,0.12)",
+    "button_bg": "#cda85f",
+}
+
+
+def _gmail_render_korea_domestic_strip(fixture: Mapping[str, Any]) -> str:
+    items = fixture.get("top_5_items") or []
+    chips: list[str] = []
+    for item in items[:5]:
+        if isinstance(item, dict):
+            chips.append(_signal_chip_text(item))
+    if not chips:
+        return ""
+    c = _GMAIL_KOREA_COLORS
+    chip_cells = []
+    for chip in chips:
+        chip_cells.append(
+            f'<span style="display:inline-block;margin:0 6px 8px 0;padding:6px 10px;'
+            f'font-size:12px;line-height:1.4;color:{c["blue"]};'
+            f'background:{c["blue_soft"]};border:1px solid rgba(143,168,200,0.25);border-radius:999px;">'
+            f'{_esc(chip)}</span>'
+        )
+    return (
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="background:{c["surface2"]};border:1px solid {c["line"]};border-radius:12px;">'
+        f'<tr><td style="padding:16px 18px;">'
+        f'<p style="margin:0 0 8px 0;font-size:12px;font-weight:700;letter-spacing:0.04em;color:{c["accent"]};">'
+        f'오늘 국내에서 움직인 것</p>'
+        f'<p style="margin:0 0 12px 0;font-size:14px;line-height:1.6;color:{c["dim"]};">'
+        f'국내 적용 관점에서 오늘 다섯 신호를 정리했습니다.</p>'
+        f'{"".join(chip_cells)}'
+        f'</td></tr></table>'
+    )
+
+
+def _gmail_render_korea_top_item(item: Mapping[str, Any], rank: int) -> str:
+    c = _GMAIL_KOREA_COLORS
+    headline = _item_field(item, "korean_title", "headline")
+    meta_stub = {
+        "primary_category": item.get("primary_category"),
+        "selection_reason_tags": item.get("selection_reason_tags"),
+        "selection_rationale": item.get("selection_rationale"),
+        "reason_for_selection": item.get("reason_for_selection"),
+        "statement": item.get("korean_title") or item.get("headline"),
+    }
+    selection_reason = build_visible_selection_reason(
+        item,
+        meta_stub,
+        program_id=PROGRAM_KOREA,
+        existing=sanitize_visible_selection_reason(
+            _item_field(item, "selection_reason", "selection_rationale"),
+            item,
+            meta_stub,
+            program_id=PROGRAM_KOREA,
+        ),
+    )
+    what_happened = dedupe_sentences_in_paragraph(_item_field(item, "what_happened", "summary"))
+    why_now = dedupe_sentences_in_paragraph(_item_field(item, "why_now", "why_it_matters"))
+    owner_angle = dedupe_sentences_in_paragraph(
+        _item_field(item, "owner_angle", "business_implication", "keysuri_comment")
+    )
+    source_url = _item_field(item, "source_url")
+    source_name = _item_field(item, "source_name") or "출처"
+    emphasis_body = _item_field(item, "next_day_impact_line", "owner_action_line")
+    if emphasis_body:
+        emphasis_body = sanitize_visible_impact_line(
+            emphasis_body,
+            category=str(item.get("primary_category") or ""),
+        )
+    j_label, j_text = _judgment_block(item)
+
+    def _label(text: str) -> str:
+        return (
+            f'<p style="margin:0 0 6px 0;font-size:12px;font-weight:700;letter-spacing:0.03em;'
+            f'color:{c["accent"]};">{_esc(text)}</p>'
+        )
+
+    def _body(text: str) -> str:
+        if not text:
+            return ""
+        return (
+            f'<p style="margin:0 0 14px 0;font-size:14px;line-height:1.75;color:{c["text"]};">'
+            f'{_esc(text)}</p>'
+        )
+
+    emphasis_html = ""
+    if emphasis_body:
+        emphasis_html = (
+            f'<p style="margin:0 0 14px 0;font-size:13px;line-height:1.6;color:{c["signal"]};">'
+            f'<strong style="color:{c["accent"]};">{_esc(KOREA_CARD_EMPHASIS)}</strong> '
+            f'{_esc(emphasis_body)}</p>'
+        )
+
+    source_html = ""
+    if source_url:
+        source_html = (
+            f'<p style="margin:14px 0 0 0;font-size:12px;line-height:1.6;color:{c["mute"]};">'
+            f'<span style="font-weight:700;color:{c["dim"]};">출처</span> '
+            f'{_esc(source_name)} · '
+            f'<a href="{_esc(source_url)}" style="color:{c["accent"]};text-decoration:underline;">{_esc(source_url)}</a>'
+            f'</p>'
+        )
+
+    judgment_html = ""
+    if j_label or j_text:
+        judgment_html = (
+            f'<p style="margin:0;font-size:13px;line-height:1.6;color:{c["dim"]};">'
+            f'<strong style="color:{c["accent"]};">키수리 판단</strong> '
+            f'<span style="display:inline-block;padding:2px 8px;margin:0 6px 0 0;border-radius:999px;'
+            f'background:{c["gold_soft"]};color:{c["accent"]};font-size:12px;font-weight:700;">{_esc(j_label)}</span>'
+            f'{_esc(j_text)}</p>'
+        )
+
+    selection_html = ""
+    if selection_reason:
+        selection_html = _label("선정 이유") + _body(selection_reason)
+
+    return (
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="background:{c["surface"]};border:1px solid {c["line"]};border-left:4px solid {c["accent"]};border-radius:12px;">'
+        f'<tr><td style="padding:18px 18px 16px 18px;">'
+        f'<p style="margin:0 0 8px 0;font-size:11px;font-weight:700;color:{c["mute"]};">{rank}</p>'
+        f'<span style="display:inline-block;margin:0 0 10px 0;padding:4px 10px;font-size:11px;font-weight:700;'
+        f'color:{c["accent"]};background:{c["gold_soft"]};border:1px solid rgba(205,168,95,0.30);border-radius:999px;">'
+        f'{_esc(KOREA_ANGLE_CHIP)}</span>'
+        f'<h3 style="margin:0 0 12px 0;font-size:18px;line-height:1.45;font-weight:700;color:{c["text"]};">'
+        f'{rank}. {_esc(headline)}</h3>'
+        f'{selection_html}{emphasis_html}'
+        f'{_label("무슨 일이 있었나")}{_body(what_happened)}'
+        f'{_label("왜 지금 중요한가")}{_body(why_now)}'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="background:{c["surface2"]};border-left:3px solid {c["accent"]};border-radius:8px;">'
+        f'<tr><td style="padding:12px 14px;">'
+        f'{_label("주인님 관점")}{_body(owner_angle)}'
+        f'</td></tr></table>'
+        f'{_gmail_spacer(12)}{judgment_html}{source_html}'
+        f'</td></tr></table>'
+    )
+
+
+def _gmail_render_korea_top5(fixture: Mapping[str, Any]) -> str:
+    heading = _esc(fixture.get("top_5_heading") or "국내 테크 TOP 5")
+    items = fixture.get("top_5_items") or []
+    cards = ""
+    for idx, item in enumerate(items[:5], start=1):
+        if isinstance(item, dict):
+            cards += _gmail_render_korea_top_item(item, int(item.get("rank") or idx))
+            cards += _gmail_spacer(14)
+    c = _GMAIL_KOREA_COLORS
+    return (
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">'
+        f'<tr><td>'
+        f'<h2 style="margin:0 0 16px 0;font-size:20px;line-height:1.4;font-weight:700;color:{c["text"]};'
+        f'border-left:4px solid {c["accent"]};padding-left:12px;">{heading}</h2>'
+        f'{cards}'
+        f'</td></tr></table>'
+    )
+
+
+def _gmail_render_korea_deep_dive(fixture: Mapping[str, Any]) -> str:
+    c = _GMAIL_KOREA_COLORS
+    heading = str(fixture.get("deep_dive_heading") or SECTION_DEEP_DIVE).strip()
+    subframe = KOREA_DEEP_SUBFRAME
+    sections = fixture.get("korea_deep_dive_sections") or []
+    if not sections:
+        sections = structure_korea_deep_dive(
+            str(fixture.get("deep_dive_body") or ""),
+            fixture.get("top_5_items") or [],
+            uncertainty=normalize_visible_text(
+                fixture.get("deep_dive_uncertainty") or "",
+                style="sentence",
+            ),
+        )
+    inner_parts: list[str] = []
+    body = str(fixture.get("deep_dive_body") or "").strip()
+    if body and not sections:
+        for para in [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()] or [body]:
+            inner_parts.append(
+                f'<p style="margin:0 0 14px 0;font-size:14px;line-height:1.75;color:{c["text"]};">{_esc(para)}</p>'
+            )
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        label = str(section.get("label") or "").strip()
+        section_body = str(section.get("body") or "").strip()
+        if not label or not section_body:
+            continue
+        paras = [p.strip() for p in re.split(r"\n\s*\n", section_body) if p.strip()] or [section_body]
+        body_html = "".join(
+            f'<p style="margin:0 0 10px 0;font-size:14px;line-height:1.75;color:{c["text"]};">{_esc(p)}</p>'
+            for p in paras
+        )
+        inner_parts.append(
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+            f'style="margin:0 0 12px 0;background:{c["surface2"]};border:1px solid {c["line"]};border-radius:10px;">'
+            f'<tr><td style="padding:14px 16px;">'
+            f'<p style="margin:0 0 8px 0;font-size:13px;font-weight:700;color:{c["accent"]};">{_esc(label)}</p>'
+            f'{body_html}'
+            f'</td></tr></table>'
+        )
+    if not inner_parts:
+        return ""
+    return (
+        f'{_gmail_spacer(18)}'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">'
+        f'<tr><td>'
+        f'<h2 style="margin:0 0 8px 0;font-size:20px;line-height:1.4;font-weight:700;color:{c["text"]};'
+        f'border-left:4px solid {c["accent"]};padding-left:12px;">{_esc(heading)}</h2>'
+        f'<p style="margin:0 0 16px 0;font-size:12px;font-weight:700;letter-spacing:0.04em;color:{c["mute"]};">'
+        f'{_esc(subframe)}</p>'
+        f'{"".join(inner_parts)}'
+        f'</td></tr></table>'
+    )
+
+
+def _gmail_render_korea_one_line_checkpoint(fixture: Mapping[str, Any]) -> str:
+    c = _GMAIL_KOREA_COLORS
+    checkpoint = polish_korea_checkpoint_text(str(fixture.get("one_line_checkpoint") or "").strip())
+    if not checkpoint:
+        return ""
+    return (
+        f'{_gmail_spacer(18)}'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">'
+        f'<tr><td>'
+        f'<h2 style="margin:0 0 8px 0;font-size:20px;line-height:1.4;font-weight:700;color:{c["text"]};'
+        f'border-left:4px solid {c["accent"]};padding-left:12px;">{_esc(SECTION_ONE_LINE)}</h2>'
+        f'<p style="margin:0 0 12px 0;font-size:12px;font-weight:700;letter-spacing:0.04em;color:{c["accent"]};">'
+        f'{_esc(KOREA_CHECKPOINT_SUBFRAME)}</p>'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="background:{c["surface2"]};border:1px solid {c["line"]};border-left:4px solid {c["signal"]};border-radius:12px;">'
+        f'<tr><td style="padding:16px 18px;">'
+        f'<p style="margin:0;font-size:15px;line-height:1.7;color:{c["text"]};">{_esc(checkpoint)}</p>'
+        f'</td></tr></table>'
+        f'</td></tr></table>'
+    )
+
+
+def _gmail_render_korea_evening_memo(fixture: Mapping[str, Any]) -> str:
+    c = _GMAIL_KOREA_COLORS
+    memo_heading = str(fixture.get("evening_memo_heading") or KOREA_EVENING_MEMO_HEADING).strip()
+    memo = _resolve_korea_evening_memo(fixture)
+    action_lines = [str(line).strip() for line in memo.get("action_lines") or [] if str(line).strip()]
+    warm_lines = [str(line).strip() for line in memo.get("warm_lines") or [] if str(line).strip()]
+    if not warm_lines:
+        warm_lines = list(KOREA_WARM_FAREWELL_LINES)
+    items = "".join(
+        f'<li style="margin:0 0 8px 0;font-size:14px;line-height:1.7;color:{c["text"]};">{_esc(line)}</li>'
+        for line in action_lines[:3]
+    )
+    warm_html = "".join(
+        f'<p style="margin:12px 0 0 0;font-size:14px;line-height:1.7;color:{c["dim"]};">{_esc(line)}</p>'
+        for line in warm_lines[:2]
+    )
+    return (
+        f'{_gmail_spacer(18)}'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="background:{c["surface"]};border:1px solid {c["line"]};border-radius:12px;">'
+        f'<tr><td style="padding:18px;">'
+        f'<h2 style="margin:0 0 12px 0;font-size:20px;line-height:1.4;font-weight:700;color:{c["text"]};">{_esc(memo_heading)}</h2>'
+        f'<p style="margin:0 0 12px 0;font-size:14px;line-height:1.75;color:{c["text"]};">{_esc(memo.get("summary") or "")}</p>'
+        f'<p style="margin:0 0 10px 0;font-size:14px;line-height:1.75;color:{c["dim"]};">{_esc(memo.get("action_intro") or "내일은 세 가지만 확인하시면 됩니다.")}</p>'
+        f'<ol style="margin:0 0 14px 18px;padding:0;">{items}</ol>'
+        f'<p style="margin:0 0 8px 0;font-size:13px;line-height:1.6;color:{c["mute"]};">{_esc(memo.get("caution") or "확정되지 않은 수치와 일정은 아직 조심해서 보겠습니다.")}</p>'
+        f'{warm_html}'
+        f'</td></tr></table>'
+    )
+
+
+def _gmail_render_korea_sources(source_list: Sequence[Mapping[str, Any]]) -> str:
+    c = _GMAIL_KOREA_COLORS
+    rows = ""
+    for entry in source_list:
+        if not isinstance(entry, dict):
+            continue
+        source_url = str(entry.get("source_url") or "").strip()
+        if not source_url:
+            continue
+        rows += (
+            f'<p style="margin:0 0 10px 0;font-size:13px;line-height:1.6;color:{c["dim"]};">'
+            f'<strong style="color:{c["text"]};">{_esc(entry.get("source_name") or "출처")}</strong><br/>'
+            f'<a href="{_esc(source_url)}" style="color:{c["accent"]};text-decoration:underline;word-break:break-all;">'
+            f'{_esc(source_url)}</a></p>'
+        )
+    if not rows:
+        return ""
+    return (
+        f'{_gmail_spacer(18)}'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="background:{c["surface"]};border:1px solid {c["line"]};border-radius:12px;">'
+        f'<tr><td style="padding:18px;">'
+        f'<h2 style="margin:0 0 12px 0;font-size:18px;line-height:1.4;font-weight:700;color:{c["text"]};">{_esc(SECTION_CLOSING)}</h2>'
+        f'{rows}'
+        f'</td></tr></table>'
+    )
+
+
+def build_keysuri_korea_gmail_owner_email_html(
+    fixture: Mapping[str, Any],
+    *,
+    subject: str,
+    admin_url: str = "",
+    run_id: str = "",
+) -> str:
+    """Gmail-safe Korea owner-review email: dark theme, inline styles and table layout only."""
+    if not isinstance(fixture, dict):
+        raise TypeError("fixture must be a dict")
+    program_id = str(fixture.get("program_id") or "").strip()
+    if not _is_korea_program(program_id):
+        raise ValueError(f"Gmail owner renderer supports Korea only, got {program_id!r}")
+
+    c = _GMAIL_KOREA_COLORS
+    slot_badge = _slot_badge(program_id, str(fixture.get("slot") or "18:30"))
+    hero_title, hero_subtitle = _hero_copy(program_id)
+    _subject, preheader = _selected_subject_preheader(fixture, program_id)
+    opening_lead = str(fixture.get("opening_lead") or "").strip()
+    hero_src = str(fixture.get("top_shot_image_src") or "").strip()
+    title = _esc(str(subject or _subject or KOREA_HERO_TITLE).strip() or KOREA_HERO_TITLE)
+
+    hero_image_row = ""
+    if hero_src:
+        hero_image_row = (
+            f'<tr><td style="padding:0 0 16px 0;">'
+            f'<img src="{_esc(hero_src)}" alt="{_esc(TOP_SHOT_ALT)}" width="568" '
+            f'style="display:block;width:100%;max-width:568px;height:auto;border:0;border-radius:14px;" />'
+            f'</td></tr>'
+        )
+
+    domestic_strip = _gmail_render_korea_domestic_strip(fixture)
+    top5 = _gmail_render_korea_top5(fixture)
+    deep_dive = _gmail_render_korea_deep_dive(fixture)
+    checkpoint_html = _gmail_render_korea_one_line_checkpoint(fixture)
+    evening_memo = _gmail_render_korea_evening_memo(fixture)
+    sources = _gmail_render_korea_sources(fixture.get("source_list") or [])
+
+    review_state = _resolve_review_state(fixture)
+    review_text = REVIEW_CONFIRMATION_TEXT.get(review_state, REVIEW_CONFIRMATION_TEXT[DEFAULT_REVIEW_STATE])
+    review_html = (
+        f'{_gmail_spacer(18)}'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="background:{c["surface2"]};border:1px solid {c["line"]};border-radius:12px;">'
+        f'<tr><td style="padding:14px 16px;text-align:center;">'
+        f'<p style="margin:0;font-size:13px;line-height:1.6;color:{c["dim"]};">{_esc(review_text)}</p>'
+        f'</td></tr></table>'
+    )
+
+    rights_html = (
+        f'{_gmail_spacer(20)}'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">'
+        f'<tr><td style="padding:16px 0 0 0;border-top:1px solid {c["line"]};text-align:center;">'
+        f'<p style="margin:0 0 6px 0;font-size:12px;font-weight:700;color:{c["mute"]};">MirAI:ON</p>'
+        f'<p style="margin:0 0 4px 0;font-size:11px;line-height:1.5;color:{c["mute"]};">{RIGHTS_LINE_1}</p>'
+        f'<p style="margin:0;font-size:11px;line-height:1.5;color:{c["mute"]};">{RIGHTS_LINE_2}</p>'
+        f'</td></tr></table>'
+    )
+
+    admin_block = _owner_review_admin_email_block(admin_url=admin_url, run_id=run_id)
+
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="color-scheme" content="dark light"/>
+<title>{title}</title>
+</head>
+<body style="margin:0;padding:0;background:{c["bg"]};">
+<span style="{PREHEADER_STYLE}">{_esc(preheader)}</span>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:{c["bg"]};">
+<tr><td align="center" style="padding:20px 12px;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;background:{c["surface"]};border:1px solid {c["line"]};border-radius:16px;">
+<tr><td style="padding:20px 16px 8px 16px;background:linear-gradient(180deg,{c["surface2"]} 0%,{c["surface"]} 100%);border-radius:16px 16px 0 0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+{hero_image_row}
+<tr><td>
+<p style="margin:0 0 10px 0;font-size:12px;font-weight:700;letter-spacing:0.05em;color:{c["accent"]};">{_esc(slot_badge)}</p>
+<p style="margin:0 0 8px 0;font-size:13px;font-weight:700;color:{c["mute"]};">{_esc(IDENTITY_TITLE)}</p>
+<h1 style="margin:0 0 8px 0;font-size:24px;line-height:1.35;font-weight:700;color:{c["text"]};">{_esc(hero_title)}</h1>
+<p style="margin:0;font-size:15px;line-height:1.6;color:{c["dim"]};">{_esc(hero_subtitle)}</p>
+</td></tr>
+</table>
+</td></tr>
+<tr><td style="padding:8px 16px 20px 16px;">
+<p style="margin:0;font-size:15px;line-height:1.8;color:{c["text"]};">{_esc(opening_lead)}</p>
+{_gmail_spacer(18)}
+{domestic_strip}
+{_gmail_spacer(18)}
+{top5}
+{deep_dive}
+{checkpoint_html}
+{review_html}
+{evening_memo}
+{sources}
+{rights_html}
+{admin_block}
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>"""
+
+
 def build_keysuri_global_gmail_owner_email_html(
     fixture: Mapping[str, Any],
     *,
