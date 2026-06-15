@@ -273,6 +273,7 @@ def build_run_artifact_metadata(
     parent_run_id: str | None = None,
     reissue_reason: str | None = None,
     trigger_source: str | None = None,
+    today_image_result: Any = None,
 ) -> Dict[str, Any]:
     payload = result.response_data if isinstance(result.response_data, dict) else {}
     runtime_check = _runtime_check_from_api_payload(payload, reason_summary=result.reason_summary)
@@ -306,6 +307,19 @@ def build_run_artifact_metadata(
     }
     if resolved_trigger:
         meta["trigger_source"] = resolved_trigger
+    if today_image_result is not None:
+        from today_genie_orchestrator_images import orchestrator_image_fields_for_artifact
+
+        image_fields = orchestrator_image_fields_for_artifact(today_image_result)
+        if image_fields:
+            meta.update(image_fields)
+        extra_issues = list(today_image_result.issue_codes or [])
+        if extra_issues:
+            merged = list(meta.get("issue_codes") or [])
+            for code in extra_issues:
+                if code not in merged:
+                    merged.append(code)
+            meta["issue_codes"] = merged
     return meta
 
 
@@ -317,6 +331,7 @@ def persist_orchestrator_run_artifact(
     reissue_reason: str | None = None,
     trigger_source: str | None = None,
     run_id: str | None = None,
+    today_image_result: Any = None,
 ) -> str:
     from admin_store import generate_run_id, save_run_artifact
     from datetime import datetime
@@ -331,13 +346,19 @@ def persist_orchestrator_run_artifact(
         parent_run_id=parent_run_id,
         reissue_reason=reissue_reason,
         trigger_source=trigger_source,
+        today_image_result=today_image_result,
     )
     meta["created_at"] = datetime.now(ZoneInfo("Asia/Seoul")).isoformat()
     email_html = extract_email_html_for_artifact(result, run_id=rid)
     return save_run_artifact(meta, email_html=email_html)
 
 
-def send_email_if_allowed(result: OrchestrationResult, *, run_id: str | None = None) -> bool:
+def send_email_if_allowed(
+    result: OrchestrationResult,
+    *,
+    run_id: str | None = None,
+    today_image_result: Any = None,
+) -> bool:
     """
     If policy allows sending email and we have payload, send via email_sender.
     No send on suppress_external or when response_data is missing.
@@ -449,22 +470,38 @@ def send_email_if_allowed(result: OrchestrationResult, *, run_id: str | None = N
             logger.warning("send_email_if_allowed: skipped (empty today_genie rich html)")
             return False
 
-        repo = Path(__file__).resolve().parent
-        top_latest = repo / "static" / "email" / "GENIE_EMAIL_today_genie_top_latest.jpg"
-        bottom_latest = repo / "static" / "email" / "GENIE_EMAIL_today_genie_bottom_latest.jpg"
-        if not top_latest.is_file() or not bottom_latest.is_file():
-            logger.warning(
-                "send_email_if_allowed: skipped (today_genie latest image assets missing: top=%s bottom=%s)",
-                top_latest.is_file(),
-                bottom_latest.is_file(),
-            )
-            return False
+        inline_parts: list[tuple[str, str, str]] | None = None
+        if today_image_result is not None:
+            inline_parts = list(today_image_result.inline_parts or [])
+            if not inline_parts:
+                logger.warning(
+                    "send_email_if_allowed: skipped (today_genie run images unavailable; fallback_used=%s)",
+                    bool(getattr(today_image_result, "fallback_used", False)),
+                )
+                return False
+            if today_image_result.fallback_used:
+                logger.warning(
+                    "send_email_if_allowed: using static latest image fallback for run_id=%s issue_codes=%s",
+                    rid,
+                    today_image_result.issue_codes,
+                )
+        else:
+            repo = Path(__file__).resolve().parent
+            top_latest = repo / "static" / "email" / "GENIE_EMAIL_today_genie_top_latest.jpg"
+            bottom_latest = repo / "static" / "email" / "GENIE_EMAIL_today_genie_bottom_latest.jpg"
+            if not top_latest.is_file() or not bottom_latest.is_file():
+                logger.warning(
+                    "send_email_if_allowed: skipped (today_genie latest image assets missing: top=%s bottom=%s)",
+                    top_latest.is_file(),
+                    bottom_latest.is_file(),
+                )
+                return False
+            cid_top, cid_bottom = today_genie_email_inline_cid_pair()
+            inline_parts = [
+                (str(top_latest), cid_top, "GENIE_EMAIL_today_genie_top.jpg"),
+                (str(bottom_latest), cid_bottom, "GENIE_EMAIL_today_genie_bottom.jpg"),
+            ]
 
-        cid_top, cid_bottom = today_genie_email_inline_cid_pair()
-        inline_parts = [
-            (str(top_latest), cid_top, "GENIE_EMAIL_today_genie_top.jpg"),
-            (str(bottom_latest), cid_bottom, "GENIE_EMAIL_today_genie_bottom.jpg"),
-        ]
         os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
         return send_genie_email(
             html_body,
@@ -533,15 +570,34 @@ def execute_orchestrator_run(
         from admin_store import generate_run_id
 
         result = run_genie_job(mode)
-        proposed_run_id: str | None = None
+        run_id: str | None = None
+        today_image_result = None
+
         if (
-            result.response_status == 200
-            and str(result.mode or "") == "today_genie"
+            str(mode or "") == "today_genie"
+            and result.response_status == 200
             and isinstance(result.response_data, dict)
-            and str(result.response_data.get("validation_result") or "") == "pass"
         ):
-            proposed_run_id = generate_run_id("today_genie")
-        email_sent = send_email_if_allowed(result, run_id=proposed_run_id)
+            payload = result.response_data
+            validation_result = str(payload.get("validation_result") or "pass")
+            run_id = generate_run_id("today_genie")
+            if validation_result == "pass":
+                data = payload.get("data") or {}
+                runtime_input = payload.get("runtime_input") or {}
+                if isinstance(data, dict) and isinstance(runtime_input, dict):
+                    from today_genie_orchestrator_images import generate_today_genie_orchestrator_images
+
+                    today_image_result = generate_today_genie_orchestrator_images(
+                        run_id,
+                        data,
+                        runtime_input,
+                    )
+
+        email_sent = send_email_if_allowed(
+            result,
+            run_id=run_id,
+            today_image_result=today_image_result,
+        )
         resolved_trigger = trigger_source
         if not resolved_trigger:
             if parent_run_id:
@@ -554,7 +610,8 @@ def execute_orchestrator_run(
             parent_run_id=parent_run_id,
             reissue_reason=reissue_reason,
             trigger_source=resolved_trigger,
-            run_id=proposed_run_id,
+            run_id=run_id,
+            today_image_result=today_image_result,
         )
         logger.info(
             "execute_orchestrator_run: mode=%s run_id=%s email_sent=%s parent_run_id=%s",

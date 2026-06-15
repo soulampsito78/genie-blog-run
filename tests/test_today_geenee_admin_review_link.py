@@ -219,8 +219,22 @@ class TodayGeeneeAdminReviewSendPolicyTests(unittest.TestCase):
         bottom = repo / "static" / "email" / "GENIE_EMAIL_today_genie_bottom_latest.jpg"
         if not top.is_file() or not bottom.is_file():
             self.skipTest("today_genie email image assets missing in repo")
+        from today_genie_orchestrator_images import TodayGenieOrchestratorImageResult
+
+        image_result = TodayGenieOrchestratorImageResult(
+            inline_parts=[
+                (str(top), "cid:top", "GENIE_EMAIL_today_genie_top.jpg"),
+                (str(bottom), "cid:bottom", "GENIE_EMAIL_today_genie_bottom.jpg"),
+            ],
+            fallback_used=True,
+            image_source="static_fallback",
+        )
         result = _pass_today_result()
-        sent = send_email_if_allowed(result, run_id=_SAMPLE_RUN_ID)
+        sent = send_email_if_allowed(
+            result,
+            run_id=_SAMPLE_RUN_ID,
+            today_image_result=image_result,
+        )
         self.assertTrue(sent)
         mock_send.assert_called_once()
         outbound_html = mock_send.call_args.args[0]

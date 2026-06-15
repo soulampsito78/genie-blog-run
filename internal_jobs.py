@@ -132,6 +132,19 @@ def _safe_owner_review_summary(
         "email_sent": bool(view.get("email_sent")),
         "customer_delivery_status": view.get("customer_delivery_status") or "not_sent",
     }
+    for image_key in (
+        "called_image_api",
+        "image_source",
+        "image_generation_status",
+        "generated_image_path",
+        "generated_image_paths",
+        "fallback_used",
+        "artifact_storage_backend",
+        "artifact_storage_durable",
+        "owner_review_url",
+    ):
+        if image_key in view and view.get(image_key) is not None:
+            payload[image_key] = view.get(image_key)
     if message:
         payload["message"] = message
     for key in _FORBIDDEN_RESPONSE_KEYS:

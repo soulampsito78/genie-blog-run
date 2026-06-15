@@ -82,7 +82,7 @@ def generate_today_genie_service_images(
     return TodayGenieServiceImageBundle(top=top, bottom=bottom, primary_generated_image_path=primary)
 
 
-def _inline_parts_from_bundle(bundle: TodayGenieServiceImageBundle) -> List[Tuple[str, str, str]]:
+def inline_parts_from_today_genie_bundle(bundle: TodayGenieServiceImageBundle) -> List[Tuple[str, str, str]]:
     repo = _REPO
     cid_top, cid_bottom = today_genie_email_inline_cid_pair()
     top_path = repo / str(bundle.top.generated_image_path or "")
@@ -91,6 +91,10 @@ def _inline_parts_from_bundle(bundle: TodayGenieServiceImageBundle) -> List[Tupl
         (str(top_path), cid_top, f"{top_path.name}"),
         (str(bot_path), cid_bottom, f"{bot_path.name}"),
     ]
+
+
+def _inline_parts_from_bundle(bundle: TodayGenieServiceImageBundle) -> List[Tuple[str, str, str]]:
+    return inline_parts_from_today_genie_bundle(bundle)
 
 
 def _extract_issue_codes(result: OrchestrationResult) -> List[str]:
