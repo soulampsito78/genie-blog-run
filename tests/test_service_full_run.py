@@ -631,7 +631,7 @@ class KeysuriKoreaServiceFullRunBottomEmailTests(unittest.TestCase):
         self._env.stop()
 
     @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
-    @patch("keysuri_service_full_run.resolve_korea_bottom_email_asset_path")
+    @patch("keysuri_service_full_run.resolve_korea_bottom_email_image_path")
     @patch("keysuri_service_full_run.build_keysuri_prompt_input")
     @patch("keysuri_service_full_run.save_run_artifact")
     @patch("keysuri_service_full_run._generate_keysuri_service_image")
@@ -678,7 +678,17 @@ class KeysuriKoreaServiceFullRunBottomEmailTests(unittest.TestCase):
             "prompt_status": "ready_for_generation",
             "source_pack": {"sources": []},
         }
-        mock_bottom.return_value = (bottom_image, [])
+        mock_bottom.return_value = (
+            bottom_image,
+            [],
+            {
+                "bottom_shot_variation_enabled": False,
+                "bottom_shot_source": "fixed_105936_fallback",
+                "bottom_shot_asset_id": "keysuri_korea_bottom_20260605_105936",
+                "bottom_shot_image_path": str(bottom_image.relative_to(repo)),
+                "bottom_shot_watermark_status": "applied",
+            },
+        )
         mock_send = MagicMock(return_value=True)
 
         smoke = LiveSourceSmokeResult(
@@ -727,11 +737,78 @@ class KeysuriKoreaServiceFullRunBottomEmailTests(unittest.TestCase):
 
         saved_meta = mock_save.call_args.args[0]
         self.assertEqual(saved_meta.get("customer_delivery_status"), "not_sent")
+        self.assertFalse(saved_meta.get("bottom_shot_variation_enabled"))
+        self.assertEqual(saved_meta.get("bottom_shot_source"), "fixed_105936_fallback")
+        self.assertEqual(saved_meta.get("bottom_shot_asset_id"), "keysuri_korea_bottom_20260605_105936")
+        self.assertEqual(saved_meta.get("bottom_shot_image_path"), str(bottom_image.relative_to(repo)))
+        self.assertEqual(saved_meta.get("bottom_shot_watermark_status"), "applied")
         self.assertEqual(saved_meta.get("korea_bottom_shot_asset_id"), "keysuri_korea_bottom_20260605_105936")
         self.assertEqual(saved_meta.get("korea_bottom_shot_status"), "available")
         self.assertEqual(saved_meta.get("top_shot_watermark_status"), "applied")
         self.assertEqual(saved_meta.get("generated_image_path_raw"), str(top_image.relative_to(repo)))
         self.assertIn("_mirai_on_watermarked", str(saved_meta.get("generated_image_path_watermarked")))
+
+    @patch("keysuri_service_full_run.invoke_vertex_image_generation")
+    @patch("keysuri_service_full_run.resolve_korea_bottom_email_asset_path")
+    def test_korea_bottom_variation_disabled_uses_fixed_105936_without_bottom_api(
+        self,
+        mock_fixed_bottom: MagicMock,
+        mock_image_api: MagicMock,
+    ) -> None:
+        from keysuri_service_full_run import (
+            korea_bottom_variation_enabled,
+            resolve_korea_bottom_email_image_path,
+        )
+
+        repo = Path(__file__).resolve().parents[1]
+        bottom_image = repo / "output" / "images" / "keysuri_korea_bottom_105936_gate_test.jpg"
+        bottom_image.parent.mkdir(parents=True, exist_ok=True)
+        bottom_image.write_bytes(b"\xff\xd8\xff" + b"\x22" * 128)
+        mock_fixed_bottom.return_value = (bottom_image, [])
+
+        with patch.dict(os.environ, {"KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED": ""}, clear=False):
+            self.assertFalse(korea_bottom_variation_enabled())
+            path, issues, meta = resolve_korea_bottom_email_image_path("20260615_183000_keysuri_korea_tech_gate")
+
+        self.assertEqual(path, bottom_image)
+        self.assertEqual(issues, [])
+        self.assertFalse(meta.get("bottom_shot_variation_enabled"))
+        self.assertEqual(meta.get("bottom_shot_source"), "fixed_105936_fallback")
+        self.assertEqual(meta.get("bottom_shot_asset_id"), "keysuri_korea_bottom_20260605_105936")
+        self.assertEqual(meta.get("bottom_shot_watermark_status"), "applied")
+        mock_fixed_bottom.assert_called_once()
+        mock_image_api.assert_not_called()
+
+    @patch("keysuri_service_full_run.invoke_vertex_image_generation")
+    @patch("keysuri_service_full_run.resolve_korea_bottom_email_asset_path")
+    def test_korea_bottom_variation_enabled_is_not_implemented_and_does_not_call_bottom_api(
+        self,
+        mock_fixed_bottom: MagicMock,
+        mock_image_api: MagicMock,
+    ) -> None:
+        from keysuri_service_full_run import (
+            korea_bottom_variation_enabled,
+            resolve_korea_bottom_email_image_path,
+        )
+
+        repo = Path(__file__).resolve().parents[1]
+        bottom_image = repo / "output" / "images" / "keysuri_korea_bottom_105936_enabled_gate_test.jpg"
+        bottom_image.parent.mkdir(parents=True, exist_ok=True)
+        bottom_image.write_bytes(b"\xff\xd8\xff" + b"\x33" * 128)
+        mock_fixed_bottom.return_value = (bottom_image, [])
+
+        with patch.dict(os.environ, {"KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED": "true"}, clear=False):
+            self.assertTrue(korea_bottom_variation_enabled())
+            path, issues, meta = resolve_korea_bottom_email_image_path("20260615_183000_keysuri_korea_tech_gate")
+
+        self.assertEqual(path, bottom_image)
+        self.assertEqual(issues, [])
+        self.assertTrue(meta.get("bottom_shot_variation_enabled"))
+        self.assertEqual(meta.get("bottom_shot_source"), "fixed_105936_fallback_variation_not_implemented")
+        self.assertEqual(meta.get("bottom_shot_variation_status"), "not_implemented")
+        self.assertEqual(meta.get("bottom_shot_watermark_status"), "applied")
+        mock_fixed_bottom.assert_called_once()
+        mock_image_api.assert_not_called()
 
 
 class KeysuriGlobalOwnerReviewEmailDesignRestorationTests(unittest.TestCase):

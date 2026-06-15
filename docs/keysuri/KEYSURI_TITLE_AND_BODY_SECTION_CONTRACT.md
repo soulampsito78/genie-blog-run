@@ -448,9 +448,11 @@ Each **키수리의 딥-다이브** should identify **at least one** side-effect
 
 **Current image state (boundary reference):**
 
-- `offduty_02C` = **`PROMPT_DIRECTION_ONLY`** (`07a98ac`) — not production asset
+- `offduty_02C` = **`PROMPT_DIRECTION_ONLY`** (`07a98ac`) — `105936` is the direction reference asset, not the permanent fixed bottom image
+- fixed watermarked `105936` = temporary Korea owner-review bottom fallback only
+- `KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED=false` — generated variations are future gated mode
 - `scheduler_allowed=false`, `ready_for_scheduler=false` (`1b23bcf`)
-- No email attachment wiring for Kee-Suri bottom-shot
+- No customer email attachment or scheduler variation wiring for Kee-Suri bottom-shot
 
 **Text rhythm — global 12:30 (`keysuri_global_tech`):**
 
@@ -572,7 +574,7 @@ Full file-copy tracking, forensic watermarking, and per-download invisible water
 |-----------|-------|
 | program_id | `keysuri_korea_tech` |
 | Slot | 18:30 domestic tech |
-| Production gate | Bottom-shot **production-promoted** state only |
+| Production gate | Temporary owner-review fallback now; generated variation requires explicit future gate |
 
 **Does not apply to:** `keysuri_global_tech` 12:30, Today_Geenee, Tomorrow_Geenee.
 
@@ -1172,9 +1174,9 @@ These rules apply to all Kee-Suri output surfaces. Full shared policy: `docs/REV
 | Surface | Current state |
 |---------|---------------|
 | Scheduler | None in repo; `scheduler_allowed=false` |
-| Email | Not connected for Kee-Suri |
-| Image API | Manual canary only |
-| offduty_02C bottom-shot | `PROMPT_DIRECTION_ONLY` (`07a98ac`) |
+| Email | Korea owner-review fallback only; customer delivery blocked |
+| Image API | Top-shot service generation only; bottom variation gate disabled |
+| offduty_02C bottom-shot | `PROMPT_DIRECTION_ONLY` (`07a98ac`); `105936` reference + temporary fallback |
 | Warm close §11 | Future rhythm — not active production |
 
 ## Appendix D — Related commits

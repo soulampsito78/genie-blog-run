@@ -65,6 +65,8 @@ KEYSURI_KOREA_BOTTOM_GCS_OBJECT = (
 KEYSURI_KOREA_BOTTOM_WATERMARKED_SHA256 = (
     "c6209f406717aa68ef8be70fbfd9dbc30b882e9fae800633d570111bb1b3faf9"
 )
+KEYSURI_KOREA_BOTTOM_VARIATION_ENV = "KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED"
+KEYSURI_KOREA_BOTTOM_REFERENCE_DIRECTION = "offduty_02C"
 
 
 def _kst_date_from_run_id(run_id: str) -> str:
@@ -105,6 +107,16 @@ def keysuri_korea_bottom_service_email_cid_token(run_id: str) -> str:
 
 def keysuri_korea_bottom_service_email_cid_src(run_id: str) -> str:
     return f"cid:{keysuri_korea_bottom_service_email_cid_token(run_id)}"
+
+
+def korea_bottom_variation_enabled() -> bool:
+    """Future Korea bottom-shot variation gate; default is fixed 105936 fallback."""
+    return os.getenv(KEYSURI_KOREA_BOTTOM_VARIATION_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def inline_jpeg_parts_for_global_service_email(
@@ -229,6 +241,36 @@ def resolve_korea_bottom_email_asset_path(run_id: str) -> Tuple[Optional[Path], 
     if _sha256_file(dest) != KEYSURI_KOREA_BOTTOM_WATERMARKED_SHA256:
         return None, ["korea_bottom_asset_download_sha_mismatch"]
     return dest, []
+
+
+def resolve_korea_bottom_email_image_path(run_id: str) -> Tuple[Optional[Path], List[str], Dict[str, Any]]:
+    """
+    Resolve Korea bottom-shot email image through the disabled-by-default variation gate.
+
+    Generation is intentionally not implemented in this patch. When the gate is enabled,
+    the runtime still falls back to fixed watermarked 105936 and records not_implemented
+    metadata instead of calling any bottom image API.
+    """
+    variation_enabled = korea_bottom_variation_enabled()
+    path, issues = resolve_korea_bottom_email_asset_path(run_id)
+    metadata: Dict[str, Any] = {
+        "bottom_shot_variation_enabled": variation_enabled,
+        "bottom_shot_reference_direction": KEYSURI_KOREA_BOTTOM_REFERENCE_DIRECTION,
+        "bottom_shot_asset_id": KEYSURI_KOREA_BOTTOM_ASSET_ID,
+        "bottom_shot_watermark_status": "applied" if path is not None else "unavailable",
+    }
+    if variation_enabled:
+        metadata.update(
+            {
+                "bottom_shot_source": "fixed_105936_fallback_variation_not_implemented",
+                "bottom_shot_variation_status": "not_implemented",
+            }
+        )
+    else:
+        metadata["bottom_shot_source"] = "fixed_105936_fallback"
+    if path is not None:
+        metadata["bottom_shot_image_path"] = _repo_rel(path)
+    return path, issues, metadata
 
 
 def _service_artifact_storage_durable() -> bool:
@@ -598,11 +640,12 @@ def run_keysuri_service_full_run(
     bottom_image_path: Optional[Path] = None
     bottom_image_status = "not_applicable"
     bottom_image_source = ""
+    bottom_image_meta: Dict[str, Any] = {}
     if pid == PROGRAM_KOREA:
-        bottom_image_path, bottom_issues = resolve_korea_bottom_email_asset_path(run_id)
+        bottom_image_path, bottom_issues, bottom_image_meta = resolve_korea_bottom_email_image_path(run_id)
         if bottom_image_path is not None:
             bottom_image_status = "available"
-            bottom_image_source = "approved_gcs_or_local_registry"
+            bottom_image_source = str(bottom_image_meta.get("bottom_shot_source") or "fixed_105936_fallback")
         else:
             bottom_image_status = "placeholder"
             issue_codes.extend(bottom_issues)
@@ -710,6 +753,11 @@ def run_keysuri_service_full_run(
     meta["top_shot_watermark_status"] = "applied"
     meta["top_shot_watermark_text"] = "MirAI:ON"
     if pid == PROGRAM_KOREA:
+        meta.update(bottom_image_meta)
+        meta.setdefault("bottom_shot_variation_enabled", korea_bottom_variation_enabled())
+        meta.setdefault("bottom_shot_source", bottom_image_source or "fixed_105936_fallback_unavailable")
+        meta.setdefault("bottom_shot_asset_id", KEYSURI_KOREA_BOTTOM_ASSET_ID)
+        meta.setdefault("bottom_shot_watermark_status", "applied" if bottom_image_path is not None else "unavailable")
         meta["korea_bottom_shot_asset_id"] = KEYSURI_KOREA_BOTTOM_ASSET_ID
         meta["korea_bottom_shot_status"] = bottom_image_status
         if bottom_image_source:
@@ -720,6 +768,7 @@ def run_keysuri_service_full_run(
             except ValueError:
                 meta["korea_bottom_shot_path"] = str(bottom_image_path.resolve())
             meta["korea_bottom_shot_cid"] = keysuri_korea_bottom_service_email_cid_token(run_id)
+            meta.setdefault("bottom_shot_image_path", meta["korea_bottom_shot_path"])
     save_run_artifact(meta, email_html=email_html)
 
     ok = image_outcome.ok and (not send_owner_email or email_sent)

@@ -1,7 +1,7 @@
 # Kee-Suri R6B — offduty_02C PROMPT_DIRECTION_ONLY Decision Record
 
 Status:
-**Decision recorded** / owner-review fixed asset amendment / no customer or scheduler production wiring
+**Decision recorded** / owner-review fixed fallback amendment / no customer or scheduler production wiring
 
 Candidate:
 `offduty_02C_luxury_knit_silk_skirt_farewell`
@@ -21,6 +21,7 @@ Non-scope:
 - customer email attachment
 - scheduler variation generation
 - production prompt default
+- enabling `KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED`
 - copying QA JPG to `static/email/` or `assets/keysuri/production/`
 - Today_Geenee / Tomorrow_Geenee paths
 - Global top-shot or Korea top-shot reuse
@@ -45,13 +46,14 @@ Non-scope:
 | **scheduler_variation_ready** | **false** |
 | **production_prompt_default** | **false** |
 | **generated_variation_allowed** | **false** |
+| **KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED** | **false** |
 | **role** | `korea_bottom only` |
 | **fixed asset id** | `keysuri_korea_bottom_20260605_105936` |
 | **fixed watermarked GCS object** | `assets/keysuri/korea_bottom/keysuri_global_canary_20260605_105936_mirai_on_watermarked.jpg` |
 | **decision date** | 2026-06-05 (KST) |
 | **approved_by** | Operator / product owner (prompt-direction lock) |
 
-**One-line summary:** `offduty_02C` is accepted as prompt direction, and the fixed watermarked `105936` asset is approved only as the `korea_bottom` CID in KeeSuri Korea owner-review email. It is **not** customer-delivery-ready, variation-ready, scheduler-ready, global-usable, Korea-top-usable, or a production prompt default.
+**One-line summary:** `offduty_02C` is accepted as prompt direction, and `105936` is the reference asset for that direction. The fixed watermarked `105936` file is approved only as a temporary `korea_bottom` fallback CID in KeeSuri Korea owner-review email. It is **not** the permanent fixed bottom image, customer-delivery-ready, variation-ready, scheduler-ready, global-usable, Korea-top-usable, or a production prompt default.
 
 ---
 
@@ -71,11 +73,13 @@ The following creative formula is **approved for prompt steering** in future R6B
 | Props | **No tablet** |
 | Slot role | **18:30 bottom-shot emotional closing** — end-of-day farewell after briefing body |
 
-This approval covers **how to prompt** future generations. It also records one fixed owner-review-only attachment allowance:
+This approval covers **how to prompt** future generations. It also records one fixed owner-review-only fallback allowance:
 
 | Allowance | Boundary |
 |-----------|----------|
-| Fixed owner-review bottom CID | Watermarked `keysuri_korea_bottom_20260605_105936` may attach only to `keysuri_korea_tech` owner-review email |
+| Direction reference | `105936` anchors offduty_02C identity, wardrobe, mood, and wooden-door farewell direction |
+| Fixed owner-review bottom CID | Watermarked `keysuri_korea_bottom_20260605_105936` may attach only as temporary fallback to `keysuri_korea_tech` owner-review email |
+| Variation gate | `KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED=false` by default |
 | Customer delivery | **Not approved** |
 | Scheduler generation | **Not approved** |
 | Per-run variation | **Not approved** |
@@ -97,6 +101,7 @@ The following remain **explicitly not approved**:
 | Use fixed `105936` in customer email | **NOT approved** |
 | Schedule automatic bottom-shot image generation | **NOT approved** |
 | Generate offduty_02C variations per run | **NOT approved** |
+| Set `KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED=true` | **NOT approved** |
 | Flip `scheduler_allowed` in image provider contract | **NOT approved** |
 | Flip `ready_for_scheduler` in canary client | **NOT approved** |
 | Mark `SCHEDULED_SLOT_READY` | **NOT approved** |
@@ -204,7 +209,7 @@ Lessons from NOT_ACCEPTED canaries and PASS_DIRECTION validation — apply to al
 
 ## 8. Future promotion path
 
-To promote beyond **PROMPT_DIRECTION_ONLY** and the fixed owner-review-only `105936` allowance, a **separate decision** must explicitly approve:
+To promote beyond **PROMPT_DIRECTION_ONLY** and the fixed owner-review-only `105936` fallback allowance, a **separate decision** must explicitly approve:
 
 | Requirement | Detail |
 |-------------|--------|
@@ -214,6 +219,7 @@ To promote beyond **PROMPT_DIRECTION_ONLY** and the fixed owner-review-only `105
 | Static/email placement | After briefing body — bottom slot only |
 | Customer delivery policy | Separate approval required before any customer email attachment |
 | Variation policy | Separate approval required before generated offduty_02C variations |
+| Runtime gate | `KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED=true` only after explicit approval |
 | 18:30 slot use | `keysuri_korea_tech` only — unless separately approved |
 | Rollback rule | Per `KEYSURI_R6B_PRODUCTION_PROMOTION_CHECKLIST.md` §10 |
 | Scheduler dependency | Schedule gate implemented and tested (`keysuri_schedule_gate.py`) |
@@ -232,7 +238,8 @@ Promotion levels from `KEYSURI_R6B_PRODUCTION_PROMOTION_CHECKLIST.md` §4:
 | Promotion level | Status | Notes |
 |-----------------|--------|-------|
 | **PROMPT_DIRECTION_ONLY** | **APPROVED** | This document — creative formula locked |
-| **OWNER_REVIEW_EMAIL_FIXED_ASSET** | **APPROVED** | Fixed watermarked `105936` for `keysuri_korea_tech` owner-review bottom CID only |
+| **OWNER_REVIEW_EMAIL_FIXED_ASSET** | **APPROVED** | Temporary fixed watermarked `105936` fallback for `keysuri_korea_tech` owner-review bottom CID only |
+| **GENERATED_BOTTOM_VARIATION_GATE** | **NOT_APPROVED** | Future per-run offduty_02C variation mode; default false |
 | **STATIC_REFERENCE_FOR_DESIGN_ONLY** | Optional / not required | May commit design reference later — not needed now |
 | **PRODUCTION_IMAGE_ASSET** | **NOT_APPROVED** | No committed asset path; QA JPG not promoted |
 | **PRODUCTION_PROMPT_DEFAULT** | **NOT_APPROVED** | No default generation profile binding |
@@ -252,6 +259,7 @@ Promotion levels from `KEYSURI_R6B_PRODUCTION_PROMOTION_CHECKLIST.md` §4:
 | `scheduler_variation_ready` | **false** |
 | `production_prompt_default` | **false** |
 | `generated_variation_allowed` | **false** |
+| `KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED` | **false** |
 | `role` | `korea_bottom only` |
 
 ---
@@ -292,7 +300,7 @@ This document fulfills the **PROMPT_DIRECTION_ONLY** branch of the promotion dec
 | promotion level | `PROMOTE_PROMPT_DIRECTION_ONLY` |
 | target slot | 18:30 bottom-shot |
 | target program | `keysuri_korea_tech` |
-| asset path | `assets/keysuri/korea_bottom/keysuri_global_canary_20260605_105936_mirai_on_watermarked.jpg` for owner-review only; **none** for customer production |
+| asset path | `assets/keysuri/korea_bottom/keysuri_global_canary_20260605_105936_mirai_on_watermarked.jpg` for temporary owner-review fallback only; **none** for customer production |
 | scheduler impact | **none** |
 | email impact | Owner-review bottom CID only; customer email **none** |
 | rollback rule | Per promotion checklist §10 |

@@ -54,6 +54,7 @@ _BOTTOM_MANIFEST = _REPO / (
 _REGISTRY = _REPO / "assets/keysuri/keysuri_approved_image_assets.json"
 _R6B_PROMOTION_CHECKLIST = _REPO / "docs/keysuri/KEYSURI_R6B_PRODUCTION_PROMOTION_CHECKLIST.md"
 _R6B_OFFDUTY_DECISION = _REPO / "docs/keysuri/KEYSURI_R6B_OFFDUTY_02C_PROMPT_DIRECTION_ONLY_DECISION.md"
+_TITLE_BODY_CONTRACT = _REPO / "docs/keysuri/KEYSURI_TITLE_AND_BODY_SECTION_CONTRACT.md"
 
 
 def _write_minimal_registry(repo: Path, *, file_path: str, sha256: str, role: str = GLOBAL_TOP_ROLE) -> None:
@@ -180,11 +181,13 @@ class KeysuriApprovedImageAssetRegistryTests(unittest.TestCase):
 
     @unittest.skipUnless(_R6B_PROMOTION_CHECKLIST.is_file(), "promotion checklist not present")
     @unittest.skipUnless(_R6B_OFFDUTY_DECISION.is_file(), "offduty decision not present")
+    @unittest.skipUnless(_TITLE_BODY_CONTRACT.is_file(), "title/body contract not present")
     def test_korea_bottom_105936_docs_record_owner_review_only_state(self) -> None:
         docs = "\n".join(
             [
                 _R6B_PROMOTION_CHECKLIST.read_text(encoding="utf-8"),
                 _R6B_OFFDUTY_DECISION.read_text(encoding="utf-8"),
+                _TITLE_BODY_CONTRACT.read_text(encoding="utf-8"),
             ]
         )
         required_policy_markers = [
@@ -193,6 +196,9 @@ class KeysuriApprovedImageAssetRegistryTests(unittest.TestCase):
             "scheduler_variation_ready=false",
             "production_prompt_default=false",
             "generated_variation_allowed=false",
+            "KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED=false",
+            "105936` is the direction reference",
+            "temporary",
             "role=korea_bottom only",
         ]
         for marker in required_policy_markers:

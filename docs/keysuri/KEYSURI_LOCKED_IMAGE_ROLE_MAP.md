@@ -22,7 +22,10 @@ Owner-review-only operating state for `105936`:
 - `scheduler_variation_ready=false`
 - `production_prompt_default=false`
 - `generated_variation_allowed=false`
+- `KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED=false`
 - `role=korea_bottom only`
+- Direction role: offduty_02C reference asset / direction lock, not the permanent fixed bottom image.
+- Fallback role: temporary fixed watermarked owner-review bottom CID while variation is disabled or not implemented.
 - Allowed surface: KeeSuri Korea owner-review email bottom CID only.
 - Blocked surfaces: customer email, scheduler variation generation, Global top-shot, Korea top-shot, Today/Tomorrow_Geenee.
 
