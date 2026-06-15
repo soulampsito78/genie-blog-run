@@ -47,6 +47,15 @@ class KeysuriBriefingBodyUxNormalizerTests(unittest.TestCase):
         self.assertGreaterEqual(body.count("\n\n") + 1, 2)
         self.assertIn("주인님", body)
 
+    def test_normalize_deep_dive_appends_official_followup_not_original_source(self) -> None:
+        items = [{"korean_title": "Signal A"}, {"korean_title": "Signal B"}]
+        body, _linked = normalize_visible_deep_dive_text("짧은 딥다이브 본문입니다.", items)
+        self.assertNotIn("원문 확인이 필요", body)
+        self.assertIn(
+            "향후 공식 발표를 통해 세부 내용이 보완될 가능성이 있습니다.",
+            body,
+        )
+
     def test_generated_briefing_normalizer_preserves_hype_caution(self) -> None:
         generated = {
             "top_5_news": {

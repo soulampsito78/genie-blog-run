@@ -25,6 +25,7 @@ from keysuri_korea_longform_ux import (
     structure_korea_deep_dive,
 )
 from keysuri_visible_text import (
+    KEYSURI_INSUFFICIENT_BADGE_LABEL,
     PROGRAM_KOREA,
     build_visible_selection_reason,
     coerce_visible_lines,
@@ -438,7 +439,9 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
 
     insuff_badge = ""
     if insufficient:
-        insuff_badge = '<span class="insufficient-badge">추가 확인 필요 · 원문 상세 확인 필요</span>'
+        insuff_badge = (
+            f'<span class="insufficient-badge">{_esc(KEYSURI_INSUFFICIENT_BADGE_LABEL)}</span>'
+        )
     hype_badge = ""
     if hype_caution:
         hype_badge = f'<p class="hype-caution">{_esc(hype_caution)}</p>'

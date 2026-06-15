@@ -201,6 +201,11 @@ class KeysuriCustomerDeliveryHtmlTests(unittest.TestCase):
         self.assertIn('role="presentation"', html)
         self.assertIn("https://blog.google/technology/ai/", html)
         self.assertIn(keysuri_global_service_email_cid_src(run_id), html)
+        self.assertNotIn("원문 확인이 필요", html)
+        self.assertIn(
+            "향후 공식 발표를 통해 세부 내용이 보완될 가능성이 있습니다.",
+            html,
+        )
 
     def test_keysuri_gmail_customer_delivery_sent_archived_box(self) -> None:
         from keysuri_contract_preview_renderer import REVIEW_CONFIRMATION_TEXT, REVIEW_STATE_SENT_ARCHIVED

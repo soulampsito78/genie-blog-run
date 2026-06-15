@@ -652,6 +652,11 @@ class KeysuriGlobalOwnerReviewEmailDesignRestorationTests(unittest.TestCase):
         self.assertIn("운영자 검수 화면 열기", email_html)
         self.assertIn("/admin/runs/test_run", email_html)
         self.assertIn('role="presentation"', email_html)
+        self.assertNotIn("원문 확인이 필요", email_html)
+        self.assertIn(
+            "향후 공식 발표를 통해 세부 내용이 보완될 가능성이 있습니다.",
+            email_html,
+        )
 
         self.assertIn("premium-briefing theme-global", preview_html)
         self.assertIn('<div class="briefing-shell">', preview_html)

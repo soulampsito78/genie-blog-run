@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional, Tuple  # Any used for next_watch l
 
 from keysuri_contract_preview_quality import _sentence_count
 from keysuri_visible_text import (
+    KEYSURI_DEEP_DIVE_UNCERTAINTY,
+    KEYSURI_THIN_SOURCE_WHAT_HAPPENED_SUFFIX,
     build_visible_selection_reason,
     coerce_visible_lines,
     dedupe_repeated_paragraph,
@@ -24,8 +26,8 @@ MIN_SELECTION_REASON = 2
 MIN_SECTION_SENTENCES = 3
 MIN_NEXT_WATCH_ITEMS = 2
 
-_THIN_DETAIL_MARKER = "원문 정보가 제한적이므로 세부 내용은 추가 확인이 필요합니다."
-_UNCERTAINTY_MARKER = "다만 원문 정보가 제한적이므로 세부 내용은 추가 확인이 필요합니다."
+_THIN_DETAIL_MARKER = KEYSURI_THIN_SOURCE_WHAT_HAPPENED_SUFFIX
+_UNCERTAINTY_MARKER = KEYSURI_THIN_SOURCE_WHAT_HAPPENED_SUFFIX
 
 _CATEGORY_KO: Dict[str, str] = {
     "ai_software_platform": "AI·소프트웨어·플랫폼",
@@ -368,10 +370,10 @@ def enrich_deep_dive_content(
     del claims_by_sid, sources_by_sid
     out = dict(deep_dive)
     body = _text(out.get("body"))
-    uncertainty_para = (
-        "다만 공개 요약만으로는 세부 수치·일정이 부족한 부분이 있어, 원문 확인이 필요합니다."
-    )
-    if body and not any(k in body for k in ("불확실", "추가 확인", "원문", "미확정")):
+    uncertainty_para = KEYSURI_DEEP_DIVE_UNCERTAINTY
+    if body and not any(
+        k in body for k in ("불확실", "공식 발표", "보완될 가능성", "미확정")
+    ):
         body = f"{body}\n\n{uncertainty_para}"
     elif not body:
         body = uncertainty_para

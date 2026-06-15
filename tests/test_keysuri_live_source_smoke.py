@@ -61,8 +61,8 @@ def _mock_generated_briefing(prompt_input: dict) -> dict:
         if not isinstance(item, dict):
             continue
         what_happened = (
-            f"항목 {idx}에서 RSS·원문 요약에 따르면 주요 변화가 보고되었습니다. "
-            f"세부 일정·수치는 원문 확인이 필요할 수 있습니다. "
+            f"항목 {idx}에서 RSS·공개 요약에 따르면 주요 변화가 보고되었습니다. "
+            f"세부 일정·수치는 향후 공식 발표를 통해 보완될 가능성이 있습니다. "
             f"키수리는 확인 가능한 범위 안에서만 정리했습니다."
         )
         why_now = (
@@ -480,7 +480,7 @@ class KeysuriLiveSourceSmokeTests(unittest.TestCase):
                         "rank": 1,
                         "news_id": prompt_item["news_id"],
                         "korean_title": "글로벌 AI 신호 — 공급망 압력",
-                        "what_happened": "RSS 요약에 따르면 주요 변화가 보고되었습니다. 세부는 원문 확인이 필요합니다.",
+                        "what_happened": "RSS 요약에 따르면 주요 변화가 보고되었습니다. 세부는 향후 공식 발표로 보완될 수 있습니다.",
                         "why_now": "지금 시장에서 주목받는 신호입니다. 배포 레이어에 영향을 줄 수 있습니다.",
                         "owner_angle": "주인님께서는 제품 로드맵 반영 여부를 점검하시면 됩니다.",
                     }

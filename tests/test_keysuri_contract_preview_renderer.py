@@ -169,8 +169,8 @@ def _contract_top_item(rank: int, *, scope: str) -> dict[str, Any]:
         "korean_title": title,
         "headline": title,
         "what_happened": (
-            f"항목 {rank}에서 RSS·원문 요약에 따르면 주요 변화가 보고되었습니다. "
-            f"세부 일정·수치는 원문 확인이 필요할 수 있습니다. "
+            f"항목 {rank}에서 RSS·공개 요약에 따르면 주요 변화가 보고되었습니다. "
+            f"세부 일정·수치는 향후 공식 발표를 통해 보완될 가능성이 있습니다. "
             f"키수리는 확인 가능한 범위 안에서만 정리했습니다."
         ),
         "why_now": why_now,
@@ -320,7 +320,8 @@ def build_global_contract_fixture(*, review_state: str = "preview_pending") -> d
             "키수리 해석상 플랫폼 통제권은 모델 성능 경쟁에서 워크플로 락인 경쟁으로 이동 중입니다. "
             "한국 운영자·창업자에게는 API 가격·지역 가용성·데이터 주권이 곧바로 비용 구조에 반영될 수 있습니다. "
             "아직 불확실한 점은 각사의 상용 일정과 엔터프라이즈 계약 조건입니다. "
-            "원문 상세 확인이 필요한 항목은 카드에 표시했습니다."
+            "세부 정보가 제한된 항목은 카드에 표시했습니다. "
+            "향후 공식 발표를 통해 세부 내용이 보완될 가능성이 있습니다."
         ),
         "deep_dive_layers": _contract_deep_dive_layers(scope="global"),
         "one_line_checkpoint": "주인님, 오늘 먼저 확인하실 포인트: 워크플로 락인 속도와 API 가격 변동입니다.",

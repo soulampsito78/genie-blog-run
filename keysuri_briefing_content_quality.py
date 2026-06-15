@@ -1072,7 +1072,7 @@ def validate_briefing_content_gate(
                 )
             )
 
-        if "원문 상세 확인 필요" in block or "추가 확인 필요" in block:
+        if "공개 요약 한계" in block or "공식 발표 대기" in block:
             insufficient_marked += 1
         elif what and _sentence_count(what) < min_detail_sentences:
             issues.append(

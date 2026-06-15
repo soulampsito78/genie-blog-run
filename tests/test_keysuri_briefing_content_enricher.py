@@ -53,7 +53,7 @@ class KeysuriBriefingContentEnricherTests(unittest.TestCase):
         item = {"korean_title": "짧은 헤드라인", "what_happened": "한 줄.", "source_ids": ["s1"]}
         meta = self._meta(summary="tiny", primary_category="semiconductor_chip_infra")
         enriched = enrich_top5_item_content(item, meta=meta)
-        self.assertIn("추가 확인", enriched["what_happened"])
+        self.assertIn("향후 공식 발표를 통해 세부 내용이 보완될 가능성이 있습니다.", enriched["what_happened"])
         self.assertTrue(enriched.get("detail_insufficient"))
 
     def test_customer_case_includes_hype_caution(self) -> None:
@@ -107,6 +107,16 @@ class KeysuriBriefingContentEnricherTests(unittest.TestCase):
         self.assertGreaterEqual(body.count("\n\n") + 1, 2)
         linked = out["deep_dive"].get("linked_signal_titles") or []
         self.assertGreaterEqual(len(linked), 2)
+
+    def test_deep_dive_uncertainty_uses_official_followup_wording(self) -> None:
+        items = [{"korean_title": "Signal A"}, {"korean_title": "Signal B"}]
+        enriched = enrich_deep_dive_content({"body": "짧은 딥다이브 본문입니다."}, items)
+        body = enriched["body"]
+        self.assertNotIn("원문 확인이 필요", body)
+        self.assertIn(
+            "향후 공식 발표를 통해 세부 내용이 보완될 가능성이 있습니다.",
+            body,
+        )
 
     def test_enriched_fixture_passes_content_gate(self) -> None:
         fixture = build_global_contract_fixture()

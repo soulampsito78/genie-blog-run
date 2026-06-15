@@ -51,8 +51,8 @@ def _design_top_item(rank: int, *, scope: str) -> dict[str, Any]:
         "headline": f"스테이징 한국어 헤드라인 {rank} — AI·플랫폼 신호 ({scope})",
         "what_happened": (
             f"스테이징 항목 {rank}에서 확인된 사실입니다. "
-            f"원문 RSS 요약을 바탕으로 핵심 변화를 정리했습니다. "
-            f"세부 수치는 원문 확인이 필요할 수 있습니다."
+            f"공개 RSS 요약을 바탕으로 핵심 변화를 정리했습니다. "
+            f"세부 수치는 향후 공식 발표를 통해 보완될 가능성이 있습니다."
         ),
         "why_now": (
             f"스테이징 항목 {rank}는 지금 시장·플랫폼 맥락에서 주목받는 신호입니다. "

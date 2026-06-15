@@ -410,7 +410,7 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
                 "- keysuri_judgment.label: one of 기회 / 관찰 / 경계 / 활용 후보 / 사업 신호 / 리스크 신호 / 추가 확인 필요 / 과장 주의.",
                 "- next_watch: 2+ distinct follow-up checkpoints in Korean (numbered or separated).",
                 "- hype_caution: required string when hype_warning or sponsored_warning — state 과장 주의 / 스폰서·파트너 콘텐츠.",
-                "- If source is thin: say '원문 정보가 제한적이므로 추가 확인이 필요합니다.' and set detail_insufficient=true.",
+                "- If source is thin: say '향후 공식 발표를 통해 세부 내용이 보완될 가능성이 있습니다.' and set detail_insufficient=true.",
                 "- FORBIDDEN generic filler: 'AI 도입이 가속화', '기업들이 AI를 활용', '업무 효율이 높아질 수 있습니다'.",
                 "- Do NOT invent facts beyond provided source_pack and TOP_5_SELECTED metadata.",
             ]

@@ -13,6 +13,8 @@ from keysuri_korea_longform_ux import (
     structure_korea_deep_dive,
 )
 from keysuri_visible_text import (
+    KEYSURI_DEEP_DIVE_UNCERTAINTY,
+    KEYSURI_THIN_SOURCE_WHAT_HAPPENED_SUFFIX,
     build_visible_selection_reason,
     coerce_visible_lines,
     dedupe_adjacent_sentences,
@@ -257,8 +259,8 @@ def normalize_visible_item_fields(item: dict, *, thin_source: bool = False) -> d
     return out
 
 
-_THIN_MARKER = "다만 원문 정보가 제한적이므로 세부 내용은 추가 확인이 필요합니다."
-_THIN_MARKER_ALT = "원문 정보가 제한적이므로 세부 내용은 추가 확인이 필요합니다."
+_THIN_MARKER = KEYSURI_THIN_SOURCE_WHAT_HAPPENED_SUFFIX
+_THIN_MARKER_ALT = KEYSURI_THIN_SOURCE_WHAT_HAPPENED_SUFFIX
 
 
 def _briefing_nested(item: dict) -> dict:
@@ -320,11 +322,10 @@ def normalize_visible_deep_dive_text(
     if "주인님" not in base:
         base = "주인님, 오늘 글로벌 테크 신호를 연결해 보겠습니다.\n\n" + base
 
-    if not any(k in base for k in ("다만", "추가 확인", "원문", "미확정", "불확실")):
-        base = (
-            base
-            + "\n\n다만 공개 요약만으로는 세부 일정·수치가 부족한 부분이 있어, 원문 확인이 필요합니다."
-        )
+    if not any(
+        k in base for k in ("공식 발표", "보완될 가능성", "미확정", "불확실")
+    ):
+        base = f"{base}\n\n{KEYSURI_DEEP_DIVE_UNCERTAINTY}"
 
     base = _dedupe_paragraphs(_trim_deep_dive_length(base.strip()))
     linked = []

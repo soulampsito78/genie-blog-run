@@ -8,6 +8,14 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 PROGRAM_KOREA = "keysuri_korea_tech"
 
+# Customer-facing Kee-Suri contract: never shift responsibility to read originals.
+KEYSURI_PUBLIC_DETAIL_FOLLOWUP = (
+    "향후 공식 발표를 통해 세부 내용이 보완될 가능성이 있습니다."
+)
+KEYSURI_THIN_SOURCE_WHAT_HAPPENED_SUFFIX = KEYSURI_PUBLIC_DETAIL_FOLLOWUP
+KEYSURI_DEEP_DIVE_UNCERTAINTY = KEYSURI_PUBLIC_DETAIL_FOLLOWUP
+KEYSURI_INSUFFICIENT_BADGE_LABEL = "공개 요약 한계 · 공식 발표 대기"
+
 _PYTHON_LIST_RE = re.compile(r"^\s*\[.+]\s*$", re.DOTALL)
 
 _VISIBLE_REPR_MARKERS: tuple[str, ...] = (
