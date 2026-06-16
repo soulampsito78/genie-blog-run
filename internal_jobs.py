@@ -309,6 +309,7 @@ def create_owner_review_endpoint(
         run_id, result, email_sent = execute_orchestrator_run(
             "today_genie",
             trigger_source=trigger,
+            send_owner_email=body.send_owner_email,
         )
     except Exception as exc:
         logger.exception(

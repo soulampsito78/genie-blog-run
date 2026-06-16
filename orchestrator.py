@@ -291,6 +291,7 @@ def build_run_artifact_metadata(
     reissue_reason: str | None = None,
     trigger_source: str | None = None,
     today_image_result: Any = None,
+    send_owner_email: bool = True,
 ) -> Dict[str, Any]:
     payload = result.response_data if isinstance(result.response_data, dict) else {}
     runtime_check = _runtime_check_from_api_payload(payload, reason_summary=result.reason_summary)
@@ -322,6 +323,8 @@ def build_run_artifact_metadata(
         "customer_delivery_status": "not_sent",
         "admin_reissue": bool(parent_run_id),
     }
+    if not send_owner_email:
+        meta["verification_mode"] = "no_send_verification"
     for key in (
         "today_genie_feed_source",
         "today_genie_feed_refresh_attempted",
@@ -361,6 +364,7 @@ def persist_orchestrator_run_artifact(
     trigger_source: str | None = None,
     run_id: str | None = None,
     today_image_result: Any = None,
+    send_owner_email: bool = True,
 ) -> str:
     from admin_store import generate_run_id, save_run_artifact
     from datetime import datetime
@@ -376,6 +380,7 @@ def persist_orchestrator_run_artifact(
         reissue_reason=reissue_reason,
         trigger_source=trigger_source,
         today_image_result=today_image_result,
+        send_owner_email=send_owner_email,
     )
     meta["created_at"] = datetime.now(ZoneInfo("Asia/Seoul")).isoformat()
     email_html = extract_email_html_for_artifact(result, run_id=rid)
@@ -387,11 +392,16 @@ def send_email_if_allowed(
     *,
     run_id: str | None = None,
     today_image_result: Any = None,
+    send_owner_email: bool = True,
 ) -> bool:
     """
     If policy allows sending email and we have payload, send via email_sender.
     No send on suppress_external or when response_data is missing.
+    Pass send_owner_email=False to suppress unconditionally (no-send verification mode).
     """
+    if not send_owner_email:
+        logger.info("send_email_if_allowed: skipped (send_owner_email=False, no_send_verification)")
+        return False
     payload = result.response_data if isinstance(result.response_data, dict) else {}
     runtime_check = _runtime_check_from_api_payload(payload, reason_summary=result.reason_summary)
     send_decision_log = {
@@ -587,10 +597,13 @@ def execute_orchestrator_run(
     reissue_reason: str | None = None,
     admin_reissue: bool = False,
     trigger_source: str | None = None,
+    send_owner_email: bool = True,
 ) -> tuple[str, OrchestrationResult, bool]:
     """
     Run Genie job, attempt owner-review email, persist admin artifact.
     Returns (run_id, result, email_sent).
+    Pass send_owner_email=False for no-send artifact verification (suppresses email
+    unconditionally; artifact still written with verification_mode=no_send_verification).
     """
     prev_flag = os.environ.get("GENIE_ADMIN_REISSUE")
     if admin_reissue:
@@ -626,6 +639,7 @@ def execute_orchestrator_run(
             result,
             run_id=run_id,
             today_image_result=today_image_result,
+            send_owner_email=send_owner_email,
         )
         resolved_trigger = trigger_source
         if not resolved_trigger:
@@ -641,6 +655,7 @@ def execute_orchestrator_run(
             trigger_source=resolved_trigger,
             run_id=run_id,
             today_image_result=today_image_result,
+            send_owner_email=send_owner_email,
         )
         logger.info(
             "execute_orchestrator_run: mode=%s run_id=%s email_sent=%s parent_run_id=%s",
