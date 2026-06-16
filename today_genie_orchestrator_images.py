@@ -67,6 +67,11 @@ def generate_today_genie_orchestrator_images(
         generate_fn=generate_fn,
     )
     if bundle.ok:
+        issue_codes: List[str] = []
+        if not getattr(bundle, "watermark_applied", False):
+            from today_genie_service_full_run import WATERMARK_ISSUE_CODE
+
+            issue_codes.append(WATERMARK_ISSUE_CODE)
         return TodayGenieOrchestratorImageResult(
             bundle=bundle,
             inline_parts=inline_parts_from_today_genie_bundle(bundle),
@@ -78,7 +83,7 @@ def generate_today_genie_orchestrator_images(
                 "bottom": bundle.bottom.generated_image_path,
             },
             fallback_used=False,
-            issue_codes=[],
+            issue_codes=issue_codes,
         )
 
     err = (
@@ -130,4 +135,8 @@ def orchestrator_image_fields_for_artifact(
     if top and bottom:
         fields["generated_image_paths"] = {"top": top, "bottom": bottom}
         fields["generated_image_path"] = top
+    if image_result.bundle is not None and image_result.bundle.ok:
+        from today_genie_service_full_run import today_genie_watermark_meta
+
+        fields.update(today_genie_watermark_meta(image_result.bundle))
     return fields

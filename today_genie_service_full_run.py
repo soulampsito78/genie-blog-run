@@ -24,6 +24,84 @@ _REPO = Path(__file__).resolve().parent
 _REF_IMAGE = _REPO / "static" / "email" / "GENIE_REF_today_genie_master_v1.jpg"
 _OUTPUT_IMAGES = _REPO / "output" / "images" / "today_genie"
 
+# Today_Geenee brand footer/watermark (restores f82dbd1 behavior; see
+# today_genie_run_images.generate_today_genie_run_images orphaned at b843bc4).
+WATERMARK_LABEL = "MirAI:ON"
+WATERMARK_METHOD = "apply_today_genie_brand_footer"
+WATERMARK_ISSUE_CODE = "TODAY_GENIE_IMAGE_WATERMARK_FAILED"
+
+
+def _watermark_marker_path(image_path: Path) -> Path:
+    return image_path.with_name(image_path.name + ".wm")
+
+
+def apply_today_genie_footer_to_bundle(
+    bundle: TodayGenieServiceImageBundle,
+    *,
+    label: str = WATERMARK_LABEL,
+) -> None:
+    """Apply the MirAI:ON brand footer to the generated top/bottom images in place.
+
+    MUST be called only after BOTH images are generated. The bottom image uses the
+    top image as its reference (see ``generate_today_genie_service_images``), so the
+    footer must not be stamped onto the top image before bottom generation, or the
+    model could replicate the footer text. Idempotent via a per-image ``.wm`` marker
+    so re-processing the same path does not double-stamp. Records state on the bundle;
+    never raises.
+    """
+    from genie_image_overlay import apply_today_genie_brand_footer
+
+    applied: List[str] = []
+    errors: List[str] = []
+    for outcome in (bundle.top, bundle.bottom):
+        rel = str(outcome.generated_image_path or "").strip()
+        if not rel:
+            continue
+        path = Path(rel)
+        if not path.is_absolute():
+            path = _REPO / path
+        if not path.is_file():
+            errors.append(f"missing:{rel}")
+            continue
+        marker = _watermark_marker_path(path)
+        if marker.exists():
+            applied.append(rel)
+            continue
+        try:
+            apply_today_genie_brand_footer(path, label=label)
+        except Exception as exc:  # noqa: BLE001 - footer is best-effort post-process
+            logger.warning("today_genie brand footer failed for %s: %s", rel, exc)
+            errors.append(f"{rel}:{type(exc).__name__}")
+            continue
+        try:
+            marker.write_text(label, encoding="utf-8")
+        except OSError:
+            pass
+        applied.append(rel)
+
+    bundle.watermark_label = label
+    bundle.watermark_method = WATERMARK_METHOD
+    bundle.watermark_paths = applied
+    bundle.watermark_applied = bool(applied) and not errors
+    bundle.watermark_error = "; ".join(errors) if errors else None
+
+
+def today_genie_watermark_meta(bundle: TodayGenieServiceImageBundle) -> Dict[str, Any]:
+    """Artifact metadata proving brand footer/watermark application.
+
+    Tolerant of bundle-like objects that predate the watermark fields (defaults).
+    """
+    fields: Dict[str, Any] = {
+        "today_genie_image_watermark_applied": bool(getattr(bundle, "watermark_applied", False)),
+        "today_genie_image_watermark_label": getattr(bundle, "watermark_label", ""),
+        "today_genie_image_watermark_method": getattr(bundle, "watermark_method", ""),
+        "today_genie_image_watermark_paths": list(getattr(bundle, "watermark_paths", []) or []),
+    }
+    error = getattr(bundle, "watermark_error", None)
+    if error:
+        fields["today_genie_image_watermark_error"] = error
+    return fields
+
 
 def _mood_prefix_for_image_prompts(data: Dict[str, Any]) -> str:
     mood = str(data.get("image_briefing_mood_state") or "").strip()
@@ -79,7 +157,13 @@ def generate_today_genie_service_images(
         generate_fn=generate_fn,
     )
     primary = top.generated_image_path if top.ok else None
-    return TodayGenieServiceImageBundle(top=top, bottom=bottom, primary_generated_image_path=primary)
+    bundle = TodayGenieServiceImageBundle(top=top, bottom=bottom, primary_generated_image_path=primary)
+    # Both images are now generated; apply the brand footer in place so the CID
+    # inline parts attach the watermarked rasters. Must run after bottom generation
+    # (which uses the top image as its reference).
+    if bundle.ok:
+        apply_today_genie_footer_to_bundle(bundle)
+    return bundle
 
 
 def inline_parts_from_today_genie_bundle(bundle: TodayGenieServiceImageBundle) -> List[Tuple[str, str, str]]:
@@ -302,6 +386,9 @@ def run_today_genie_service_full_run(
             "top": image_bundle.top.generated_image_path,
             "bottom": image_bundle.bottom.generated_image_path,
         }
+        meta.update(today_genie_watermark_meta(image_bundle))
+        if not getattr(image_bundle, "watermark_applied", False):
+            meta["issue_codes"] = list(meta.get("issue_codes") or []) + [WATERMARK_ISSUE_CODE]
     meta["artifact_status"] = "emailed" if email_sent else "stored"
     save_run_artifact(meta, email_html=email_html)
 

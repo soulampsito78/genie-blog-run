@@ -43,6 +43,12 @@ class TodayGenieServiceImageBundle:
     top: ServiceImageOutcome = field(default_factory=ServiceImageOutcome)
     bottom: ServiceImageOutcome = field(default_factory=ServiceImageOutcome)
     primary_generated_image_path: Optional[str] = None
+    # Today_Geenee post-process brand footer/watermark state (MirAI:ON).
+    watermark_applied: bool = False
+    watermark_label: str = ""
+    watermark_method: str = ""
+    watermark_paths: List[str] = field(default_factory=list)
+    watermark_error: Optional[str] = None
 
     @property
     def ok(self) -> bool:

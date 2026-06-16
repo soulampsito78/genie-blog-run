@@ -1,13 +1,16 @@
-"""Legacy Today_Geenee local TPO proof image footer helper.
+"""Today_Geenee local image brand footer (MirAI:ON) helper.
 
 Local PIL post-processing only. Does not call image APIs, schedulers, or email
-systems. Not part of the Kee-Suri image manifest pipeline (see
+systems. Not part of the Key-Suri image manifest pipeline (see
 ``keysuri_image_overlay`` and ``scripts/apply_keysuri_image_watermark.py``).
 
-Tracked Today_Geenee proof scripts import ``apply_today_genie_brand_footer``:
+``apply_today_genie_brand_footer`` is the production Today_Geenee brand footer:
+it is applied to the generated owner-review CID images via
+``today_genie_service_full_run.apply_today_genie_footer_to_bundle`` (restored
+from the f82dbd1 behavior). Tracked TPO proof scripts also import it:
 ``scripts/run_tpo_proof_once.py``, ``scripts/run_owner_review_full_tpo_v2.py``.
 
-Future convergence should replace this module with
+Future convergence may replace this module with
 ``keysuri_image_overlay.apply_keysuri_mirai_on_watermark(..., position="bottom_left")``.
 """
 from __future__ import annotations
