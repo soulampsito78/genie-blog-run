@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -90,6 +90,13 @@ def _openweather_query_q() -> str:
     return OPENWEATHER_CITY.strip() or "Seoul,KR"
 
 SUPPORTED_MODES = ["today_genie", "tomorrow_genie"]
+TODAY_GENIE_CORE_DATE_FEEDS = (
+    "overnight_us_market",
+    "korea_japan_indices",
+    "macro_indicators",
+)
+TODAY_GENIE_MAX_FEED_STALE_DAYS = 7
+TODAY_GENIE_LIVE_REFRESH_TIMEOUT_SEC = 6
 
 
 class JobRequest(BaseModel):
@@ -173,6 +180,165 @@ def _load_today_genie_feed_bundle(max_rounds: int = 3) -> Dict[str, Any]:
         time.sleep(0.1)
     bundle["feed_json_decode_failed_envs"] = decode_failed
     return bundle
+
+
+def _parse_feed_date(value: Any) -> Optional[date]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _today_feed_staleness(feeds: Dict[str, Any], target_date: str) -> Dict[str, Dict[str, Any]]:
+    target = _parse_feed_date(target_date)
+    out: Dict[str, Dict[str, Any]] = {}
+    for name in TODAY_GENIE_CORE_DATE_FEEDS:
+        source = feeds.get(name)
+        as_of_raw = source.get("as_of") if isinstance(source, dict) else None
+        as_of = _parse_feed_date(as_of_raw)
+        age_days: Optional[int] = None
+        stale = False
+        reason = ""
+        if target is None:
+            reason = "invalid_target_date"
+            stale = True
+        elif as_of is None:
+            reason = "missing_or_invalid_as_of"
+            stale = True
+        else:
+            age_days = (target - as_of).days
+            if age_days > TODAY_GENIE_MAX_FEED_STALE_DAYS:
+                reason = "as_of_older_than_7_days"
+                stale = True
+        out[name] = {
+            "as_of": str(as_of_raw or ""),
+            "age_days": age_days,
+            "stale": stale,
+            "reason": reason,
+        }
+    return out
+
+
+def _today_live_feed_refresh_enabled() -> bool:
+    raw = os.getenv("TODAY_GENIE_LIVE_FEED_REFRESH_ENABLED", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _today_live_feed_refresh_timeout_sec() -> int:
+    raw = os.getenv("TODAY_GENIE_LIVE_FEED_REFRESH_TIMEOUT_SEC", "").strip()
+    if not raw:
+        return TODAY_GENIE_LIVE_REFRESH_TIMEOUT_SEC
+    try:
+        return max(1, min(20, int(raw)))
+    except ValueError:
+        return TODAY_GENIE_LIVE_REFRESH_TIMEOUT_SEC
+
+
+def _probe_today_genie_live_feeds(target_date: str, timeout_sec: int) -> Dict[str, Any]:
+    from ops.probe_today_genie_feeds import probe_all_feeds
+
+    return probe_all_feeds(target_date, timeout_sec=timeout_sec)
+
+
+def _refresh_today_genie_feeds_if_needed(
+    feeds: Dict[str, Any],
+    target_date: str,
+    *,
+    controlled_active: bool,
+) -> Dict[str, Any]:
+    """Refresh stale Today_Geenee feeds once; retain stale fallback with explicit metadata."""
+    current = dict(feeds)
+    staleness = _today_feed_staleness(current, target_date)
+    stale_feeds = [name for name, info in staleness.items() if info.get("stale")]
+    meta: Dict[str, Any] = {
+        "today_genie_feed_source": "env",
+        "today_genie_feed_refresh_attempted": False,
+        "today_genie_feed_refresh_status": "not_needed_fresh",
+        "today_genie_feed_fallback_used": False,
+        "today_genie_feed_fallback_reason": None,
+        "today_genie_feed_staleness": staleness,
+        "today_genie_stale_feeds": stale_feeds,
+    }
+    if not stale_feeds:
+        current.update(meta)
+        return current
+
+    if controlled_active:
+        meta.update(
+            {
+                "today_genie_feed_refresh_status": "controlled_test_refresh_disabled",
+                "today_genie_feed_fallback_used": True,
+                "today_genie_feed_fallback_reason": "controlled_test_refresh_disabled",
+            }
+        )
+        current.update(meta)
+        return current
+
+    if not _today_live_feed_refresh_enabled():
+        meta.update(
+            {
+                "today_genie_feed_refresh_status": "live_refresh_disabled",
+                "today_genie_feed_fallback_used": True,
+                "today_genie_feed_fallback_reason": "live_refresh_disabled",
+            }
+        )
+        current.update(meta)
+        return current
+
+    timeout_sec = _today_live_feed_refresh_timeout_sec()
+    meta["today_genie_feed_refresh_attempted"] = True
+    try:
+        refreshed = _probe_today_genie_live_feeds(target_date, timeout_sec)
+    except Exception as exc:  # noqa: BLE001 - explicit fallback metadata is the contract.
+        logger.warning(
+            "today_genie feed live refresh failed; using fallback env feeds: %s",
+            exc,
+        )
+        meta.update(
+            {
+                "today_genie_feed_refresh_status": "live_refresh_failed_fallback",
+                "today_genie_feed_fallback_used": True,
+                "today_genie_feed_fallback_reason": f"{type(exc).__name__}: {exc}",
+            }
+        )
+        current.update(meta)
+        return current
+
+    refreshed_staleness = _today_feed_staleness(refreshed, target_date)
+    refreshed_stale = [
+        name for name, info in refreshed_staleness.items() if info.get("stale")
+    ]
+    if refreshed_stale:
+        meta.update(
+            {
+                "today_genie_feed_refresh_status": "live_refresh_returned_stale_fallback",
+                "today_genie_feed_fallback_used": True,
+                "today_genie_feed_fallback_reason": "live_refresh_returned_stale_feeds",
+                "today_genie_live_feed_staleness": refreshed_staleness,
+            }
+        )
+        current.update(meta)
+        return current
+
+    refreshed = dict(refreshed)
+    refreshed.update(
+        {
+            "feed_json_decode_failed_envs": [],
+            "today_genie_feed_source": "live_refresh",
+            "today_genie_feed_refresh_attempted": True,
+            "today_genie_feed_refresh_status": "live_refresh_applied",
+            "today_genie_feed_fallback_used": False,
+            "today_genie_feed_fallback_reason": None,
+            "today_genie_feed_staleness": refreshed_staleness,
+            "today_genie_stale_feeds": [],
+        }
+    )
+    return refreshed
 
 
 def fetch_seoul_weather_forecast(forecast_date: str) -> Dict[str, Any]:
@@ -309,7 +475,18 @@ def build_runtime_input(mode: str, controlled_test_target_date: Optional[str] = 
     now_kst = kst_now.isoformat()
 
     if mode == "today_genie":
+        env_controlled_target = _controlled_test_target_date_from_env()
+        today_date = controlled_test_target_date or env_controlled_target or kst_now.date().isoformat()
+        controlled_active = bool(controlled_test_target_date or env_controlled_target)
+        if controlled_active:
+            logger.info("controlled_test_mode active target_date=%s", today_date)
+
         feeds = _load_today_genie_feed_bundle(max_rounds=3)
+        feeds = _refresh_today_genie_feeds_if_needed(
+            feeds,
+            today_date,
+            controlled_active=controlled_active,
+        )
         overnight_us_market = feeds["overnight_us_market"]
         macro_indicators = feeds["macro_indicators"]
         top_market_news = feeds["top_market_news"]
@@ -348,11 +525,6 @@ def build_runtime_input(mode: str, controlled_test_target_date: Optional[str] = 
         else:
             today_genie_feed_gate = "ok"
 
-        env_controlled_target = _controlled_test_target_date_from_env()
-        today_date = controlled_test_target_date or env_controlled_target or kst_now.date().isoformat()
-        controlled_active = bool(controlled_test_target_date or env_controlled_target)
-        if controlled_active:
-            logger.info("controlled_test_mode active target_date=%s", today_date)
         weather_raw = fetch_seoul_weather_forecast(today_date)
         if not isinstance(weather_raw, dict):
             weather_raw = {}
@@ -372,6 +544,24 @@ def build_runtime_input(mode: str, controlled_test_target_date: Optional[str] = 
             "image_weather_context": image_weather_context,
             "feed_json_decode_failed_envs": decode_failed_envs,
             "today_genie_feed_gate": today_genie_feed_gate,
+            "today_genie_feed_source": feeds.get("today_genie_feed_source"),
+            "today_genie_feed_refresh_attempted": bool(
+                feeds.get("today_genie_feed_refresh_attempted")
+            ),
+            "today_genie_feed_refresh_status": feeds.get(
+                "today_genie_feed_refresh_status"
+            ),
+            "today_genie_feed_fallback_used": bool(
+                feeds.get("today_genie_feed_fallback_used")
+            ),
+            "today_genie_feed_fallback_reason": feeds.get(
+                "today_genie_feed_fallback_reason"
+            ),
+            "today_genie_feed_staleness": feeds.get("today_genie_feed_staleness"),
+            "today_genie_live_feed_staleness": feeds.get(
+                "today_genie_live_feed_staleness"
+            ),
+            "today_genie_stale_feeds": list(feeds.get("today_genie_stale_feeds") or []),
             "controlled_test_mode": controlled_active,
         }
 
@@ -620,7 +810,7 @@ def _runtime_validation_check_payload(
     content_quality_warnings: List[Any],
 ) -> Dict[str, Any]:
     issue_details = response_issues(issues)
-    return {
+    payload = {
         "target_date": runtime_input.get("target_date"),
         "controlled_test_mode": bool(runtime_input.get("controlled_test_mode")),
         "controlled_test_target_date": runtime_input.get("target_date")
@@ -632,6 +822,19 @@ def _runtime_validation_check_payload(
         "issue_details": issue_details,
         "content_quality_warnings": list(content_quality_warnings),
     }
+    for key in (
+        "today_genie_feed_source",
+        "today_genie_feed_refresh_attempted",
+        "today_genie_feed_refresh_status",
+        "today_genie_feed_fallback_used",
+        "today_genie_feed_fallback_reason",
+        "today_genie_feed_staleness",
+        "today_genie_live_feed_staleness",
+        "today_genie_stale_feeds",
+    ):
+        if key in runtime_input:
+            payload[key] = runtime_input.get(key)
+    return payload
 
 
 def _fmt_signed_pct(value: Any) -> str:
@@ -1085,6 +1288,36 @@ def generate(job: JobRequest) -> Dict[str, Any]:
         mode == "today_genie"
         and runtime_input.get("today_genie_feed_gate") == "block"
     ):
+        feed_runtime_check = {
+            "target_date": runtime_input.get("target_date"),
+            "controlled_test_mode": bool(runtime_input.get("controlled_test_mode")),
+            "controlled_test_target_date": runtime_input.get("target_date")
+            if runtime_input.get("controlled_test_mode")
+            else None,
+            "validation_result": "block",
+            "workflow_status": "review_required",
+            "issue_codes": ["today_genie_feed_unavailable"],
+            "issue_details": [
+                {
+                    "code": "today_genie_feed_unavailable",
+                    "message": "핵심 시장 피드가 비어 있거나(JSON 미설정) 연속 로드에 실패했습니다.",
+                    "severity": "error",
+                }
+            ],
+            "content_quality_warnings": [],
+        }
+        for key in (
+            "today_genie_feed_source",
+            "today_genie_feed_refresh_attempted",
+            "today_genie_feed_refresh_status",
+            "today_genie_feed_fallback_used",
+            "today_genie_feed_fallback_reason",
+            "today_genie_feed_staleness",
+            "today_genie_live_feed_staleness",
+            "today_genie_stale_feeds",
+        ):
+            if key in runtime_input:
+                feed_runtime_check[key] = runtime_input.get(key)
         detail = {
             "status": "review_required",
             "reason": "today_genie_feed_unavailable",
@@ -1096,6 +1329,7 @@ def generate(job: JobRequest) -> Dict[str, Any]:
                 "feed_json_decode_failed_envs", []
             ),
             "input_feed_status": runtime_input.get("input_feed_status"),
+            "runtime_validation_check": feed_runtime_check,
         }
         raise HTTPException(status_code=422, detail=detail)
 

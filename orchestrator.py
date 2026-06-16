@@ -90,7 +90,7 @@ def _runtime_check_from_api_payload(
     cqw = payload.get("content_quality_warnings")
     if not isinstance(cqw, list):
         cqw = detail.get("content_quality_warnings")
-    return {
+    out = {
         "controlled_test_mode": os.getenv("GENIE_CONTROLLED_TEST_MODE", "").strip().lower()
         in ("1", "true", "yes"),
         "controlled_test_target_date": os.getenv("GENIE_CONTROLLED_TEST_TARGET_DATE", "").strip() or None,
@@ -108,6 +108,23 @@ def _runtime_check_from_api_payload(
         "issue_details": issue_details,
         "content_quality_warnings": _as_list(cqw),
     }
+    for key in (
+        "today_genie_feed_source",
+        "today_genie_feed_refresh_attempted",
+        "today_genie_feed_refresh_status",
+        "today_genie_feed_fallback_used",
+        "today_genie_feed_fallback_reason",
+        "today_genie_feed_staleness",
+        "today_genie_live_feed_staleness",
+        "today_genie_stale_feeds",
+    ):
+        if key in runtime:
+            out[key] = runtime.get(key)
+        elif isinstance(payload.get("runtime_input"), dict) and key in payload["runtime_input"]:
+            out[key] = payload["runtime_input"].get(key)
+        elif isinstance(detail.get("runtime_input"), dict) and key in detail["runtime_input"]:
+            out[key] = detail["runtime_input"].get(key)
+    return out
 
 
 def run_genie_job(mode: str) -> OrchestrationResult:
@@ -305,6 +322,18 @@ def build_run_artifact_metadata(
         "customer_delivery_status": "not_sent",
         "admin_reissue": bool(parent_run_id),
     }
+    for key in (
+        "today_genie_feed_source",
+        "today_genie_feed_refresh_attempted",
+        "today_genie_feed_refresh_status",
+        "today_genie_feed_fallback_used",
+        "today_genie_feed_fallback_reason",
+        "today_genie_feed_staleness",
+        "today_genie_live_feed_staleness",
+        "today_genie_stale_feeds",
+    ):
+        if key in runtime_check:
+            meta[key] = runtime_check.get(key)
     if resolved_trigger:
         meta["trigger_source"] = resolved_trigger
     if today_image_result is not None:

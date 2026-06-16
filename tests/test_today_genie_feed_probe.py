@@ -134,7 +134,11 @@ class TodayGenieFeedProbeTests(unittest.TestCase):
 
     def test_dry_run_does_not_write_files(self) -> None:
         before = (probe.FEEDS_DIR / "overnight_us_market.json").read_text(encoding="utf-8")
-        with mock.patch.object(probe, "default_fetch_url", self._mock_fetch()):
+        with mock.patch.object(
+            probe,
+            "probe_all_feeds",
+            return_value=probe.probe_all_feeds(self.TARGET, self._mock_fetch()),
+        ):
             rc = probe.main(["--dry-run", "--strict", "--target-date", self.TARGET])
         self.assertEqual(rc, 0)
         after = (probe.FEEDS_DIR / "overnight_us_market.json").read_text(encoding="utf-8")
