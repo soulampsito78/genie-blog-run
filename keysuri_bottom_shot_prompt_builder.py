@@ -20,13 +20,28 @@ References:
     output/keysuri_preview/image_canary/keysuri_global_canary_20260605_105936.jpg
   Asset01 (secondary same-person continuity reference — image input, slot 1 if available):
     assets/keysuri/reference/image_keysuri_asset_01_main_briefing.png
+
+041559 baseline locked:
+  - 105936 = slot 0 primary Bottom visual anchor
+  - Asset01 = slot 1 secondary continuity reference
+  - Same Key-Suri face family
+  - Noble sensuality, exclusive owner-facing private mood
+  - Warm wooden executive door setting
+  - Premium handbag signal
+  - Weather-aware wardrobe logic
+  - QA-only isolation
+
+Wardrobe & pose expansion (post-041559):
+  - Each weather key has 3 premium 105936-family closet variants
+  - 9 controlled pose variants; all private, owner-facing, not public
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+import random
+from typing import Any, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
-# Reference constants — v6 anchor hierarchy
+# Reference constants — v6 anchor hierarchy (041559 baseline locked)
 # ---------------------------------------------------------------------------
 
 # Primary Bottom visual anchor — passed as first image input in Bottom QA generation.
@@ -42,7 +57,6 @@ ASSET01_PATH = "assets/keysuri/reference/image_keysuri_asset_01_main_briefing.pn
 ASSET01_ROLE = "secondary_same_person_continuity_reference"
 
 # Deprecated aliases — kept for any external code that imported the old names.
-# Do not use in new code.
 DIRECTION_REF_105936_PATH = BOTTOM_ANCHOR_PATH
 DIRECTION_REF_105936_ROLE = BOTTOM_ANCHOR_ROLE
 DIRECTION_REF_105936_NOTE = (
@@ -126,7 +140,7 @@ EXPRESSION_INVARIANTS = {
 }
 
 # ---------------------------------------------------------------------------
-# Gene E — Prop + Gesture Gene
+# Gene E — Prop + Gesture Gene (base constraint, always present)
 # ---------------------------------------------------------------------------
 
 FIXED_PROP_GESTURE_GENE = (
@@ -142,6 +156,30 @@ PROP_GESTURE_INVARIANTS = {
     "required_gesture": "small restrained private gesture — closing the day for the owner only, not raised, not waving",
     "forbidden": ["tablet", "laptop", "briefing device"],
 }
+
+# ---------------------------------------------------------------------------
+# Pose Variant Pool — controlled private gestures, not public
+# One variant is selected per generation to add pose richness within the
+# 041559 baseline identity band.
+# ---------------------------------------------------------------------------
+
+POSE_VARIANT_POOL: List[str] = [
+    "One hand lightly holding the handbag handle, the other resting with quiet composure.",
+    "One hand resting near the door handle — fingertips barely touching, a private closing gesture.",
+    "Fingertips lightly near the handbag strap, wrist relaxed, posture still and composed.",
+    "Hand lightly touching the coat lapel — a refined self-composed gesture, entirely private.",
+    "A slim watch-adjusting gesture — unhurried, intimate, a closing ritual for the owner only.",
+    "A slight turn from the doorway: one shoulder angled gently toward the owner, gaze steady.",
+    "One shoulder angled softly toward the owner — not a full turn, a quiet acknowledgment.",
+    "Gaze directly and calmly to the owner — composed, private, unattainable.",
+    "A small private closing gesture near the chest — intimate, contained, not raised.",
+]
+
+# Forbidden pose terms — none of these must appear in any POSE_VARIANT_POOL entry.
+POSE_FORBIDDEN_TERMS: List[str] = [
+    "wave", "raised hand", "greeting", "receptionist", "hostess",
+    "pointing", "public", "catalog", "stiff", "lifelessly",
+]
 
 # ---------------------------------------------------------------------------
 # Gene F — Camera/Framing Gene
@@ -174,6 +212,7 @@ CAMERA_INVARIANTS = {
 
 # ---------------------------------------------------------------------------
 # Assembly order (v6: 8 genes)
+# Note: pose_variant is appended within the prop/gesture section, not a new gene.
 # ---------------------------------------------------------------------------
 
 ASSEMBLY_ORDER = (
@@ -195,7 +234,6 @@ SCENE_LOCK = (
 
 # ---------------------------------------------------------------------------
 # Negative Prompt v6 — lean targeted blocklist
-# Anchor image + constrained closet text carry quality; negatives block hard failures only.
 # ---------------------------------------------------------------------------
 
 NEGATIVE_PROMPT_V6 = (
@@ -235,76 +273,161 @@ NEGATIVE_PROMPT_V6 = (
     "public-facing smile, open approachable expression"
 )
 
-# Keep v5 name as alias for backward compat
 NEGATIVE_PROMPT_V5 = NEGATIVE_PROMPT_V6
 
 # ---------------------------------------------------------------------------
-# Weather-Mapped Closet (v6 anchor patch)
-# Replaces A–H taste-cluster catalog.
-# All variants derived from 105936 luxury private-secretary register.
+# Weather-Mapped Closet Catalog — 105936-family premium closet
+# Each weather key has 3 variants.
 # Palette: ivory, cream, champagne, camel, charcoal, muted taupe.
-# Silhouette: fitted/elegant, premium handbag always present.
+# All variants: premium handbag always present, fitted/elegant silhouette.
 # ---------------------------------------------------------------------------
 
-_WEATHER_CLOSET: Dict[str, Dict[str, str]] = {
+WEATHER_CLOSET_CATALOG: Dict[str, Dict[str, Any]] = {
     "clear_cool": {
         "label": "Clear / Cool (≤18°C)",
         "conditions": "clear or partly cloudy, ≤18°C",
-        "outfit": (
-            "A luxury ivory or cream silk-knit top with clean refined structure, "
-            "paired with an elegant fitted skirt in warm champagne or soft ivory. "
-            "Premium structured handbag. Delicate pearl or simple gold earrings. Slim watch. "
-            "Private-owner luxury register — never casual, never public-facing."
-        ),
+        "variants": [
+            (
+                "A luxury ivory silk-knit top with clean refined structure, "
+                "paired with a satin pencil skirt in warm ivory. "
+                "Beige premium structured handbag. Pearl stud earrings. "
+                "Private-owner luxury register — never casual, never public-facing."
+            ),
+            (
+                "A champagne fine-knit blouse with subtle sheen and refined silhouette, "
+                "paired with a cream fitted skirt in silk-blend. "
+                "Structured premium handbag. Slim watch. "
+                "Understated luxury — the exact private-owner register of the reference image."
+            ),
+            (
+                "A cream boat-neck knit top, fitted and elegant with clean lines, "
+                "paired with a silk-blend fitted skirt in soft champagne. "
+                "Small luxury handbag. Simple gold stud earrings. "
+                "Cool and composed — 105936-family premium closet."
+            ),
+        ],
     },
     "cold": {
         "label": "Cold (≤10°C)",
         "conditions": "any, ≤10°C",
-        "outfit": (
-            "A premium camel or ivory cashmere overcoat — clean structured silhouette, "
-            "worn over a fine-knit top in ivory or cream. "
-            "Fitted luxury skirt in warm charcoal or ivory. Premium structured handbag. Slim watch. "
-            "Seasonal warmth at luxury register — overcoat quality, not knitwear bulk."
-        ),
+        "variants": [
+            (
+                "A premium camel cashmere overcoat — clean structured silhouette, "
+                "worn over an ivory fine-knit top. "
+                "Refined skirt in warm taupe or ivory. Premium structured handbag. Slim watch. "
+                "Seasonal warmth at luxury register — overcoat quality, not knitwear bulk."
+            ),
+            (
+                "An ivory wool coat with elegant clean lines, "
+                "worn over a champagne fine-knit layer. "
+                "Taupe fitted luxury skirt. Premium structured handbag. "
+                "Refined cold-weather register — same private-owner mood."
+            ),
+            (
+                "A charcoal fine-wool coat over a cream fine-knit inner layer — "
+                "clean, structured, impeccably proportioned. "
+                "Muted luxury fitted skirt in ivory or taupe. Premium structured handbag. "
+                "Cool intelligent register — 105936-family closet in cold weather."
+            ),
+        ],
     },
     "rainy": {
         "label": "Rainy",
         "conditions": "rainy, any temperature",
-        "outfit": (
-            "A refined ivory or camel luxury trench coat or structured luxury coat, "
-            "belted with clean lines. Fine-knit top underneath in ivory. "
-            "Fitted skirt in muted champagne or warm taupe. Premium structured handbag. "
-            "Rain does not lower the register — same owner-facing private luxury mood."
-        ),
+        "variants": [
+            (
+                "An ivory luxury trench coat, belted with clean structure, "
+                "over a silk-knit inner in cream. "
+                "Refined fitted skirt in champagne. Premium structured handbag. "
+                "Rain does not lower the register — same owner-facing private luxury mood."
+            ),
+            (
+                "A camel luxury trench coat with refined lapels and tailored belt, "
+                "over a champagne silk blouse. "
+                "Taupe fitted skirt. Premium structured handbag. "
+                "Polished and private — the rain is outside, not in her register."
+            ),
+            (
+                "A charcoal luxury coat — structured, not sporty, not casual — "
+                "over an ivory fine-knit layer. "
+                "Refined fitted skirt in muted champagne. Premium handbag. "
+                "Quiet authority without exposure — 105936-family rainy register."
+            ),
+        ],
     },
     "warm": {
         "label": "Warm (19–26°C)",
         "conditions": "any, 19–26°C",
-        "outfit": (
-            "A light ivory silk-knit blouse with refined silhouette and subtle sheen, "
-            "paired with an elegant fitted skirt in champagne or cream satin-blend. "
-            "Premium luxury handbag. Slim watch. "
-            "Breathable but never casual — same owner-facing private exclusivity at warm temperature."
-        ),
+        "variants": [
+            (
+                "A light ivory silk-knit blouse with refined silhouette and subtle sheen, "
+                "paired with an elegant fitted skirt in champagne. "
+                "Premium luxury handbag. Slim watch. "
+                "Breathable but never casual — owner-facing private exclusivity at warm temperature."
+            ),
+            (
+                "A champagne short-sleeve silk-blend top — elegant silhouette, "
+                "never revealing, fitted at the waist — "
+                "paired with a refined ivory fitted skirt. "
+                "Premium structured handbag. "
+                "Warm-weather luxury register — same private closing mood."
+            ),
+            (
+                "A cream lightweight knit top with clean refined structure, "
+                "paired with a satin-blend fitted skirt in soft champagne. "
+                "Small luxury handbag. Simple stud earrings. "
+                "Cool and composed even in warm air — 105936-family warm register."
+            ),
+        ],
     },
     "hot": {
         "label": "Hot (≥27°C)",
         "conditions": "any, ≥27°C",
-        "outfit": (
-            "A breathable premium ivory silk-blend top with clean structure and elegant silhouette, "
-            "paired with a refined fitted skirt in champagne or cream. Premium handbag. "
-            "No casual summer styling — hot weather does not change the luxury register."
-        ),
+        "variants": [
+            (
+                "A breathable premium ivory silk-blend top with clean structure "
+                "and an elegant silhouette, "
+                "paired with a refined fitted skirt in champagne or cream. "
+                "Premium handbag. No casual summer styling — luxury register unchanged."
+            ),
+            (
+                "A cream sleeveless high-neck luxury top — "
+                "no exposure, no casual summer cut — "
+                "with a refined champagne fitted skirt. "
+                "Small premium handbag. Slim watch. "
+                "Hot weather does not change the private-owner exclusivity."
+            ),
+            (
+                "A champagne lightweight blouse in fine silk-blend with refined drape, "
+                "paired with a fitted satin skirt in soft ivory. "
+                "Premium structured handbag. "
+                "The same 105936-family luxury register — just in finer, lighter fabric."
+            ),
+        ],
     },
     "snowy": {
         "label": "Snowy / Freezing (≤0°C)",
         "conditions": "snow or freezing, ≤0°C",
-        "outfit": (
-            "A premium cashmere overcoat in camel or ivory — impeccably structured, no bulk. "
-            "Fine-knit top underneath in ivory or cream. Luxury fitted skirt. "
-            "Premium structured handbag. "
-            "Seasonal but never domestic — always at luxury register."
-        ),
+        "variants": [
+            (
+                "A premium ivory cashmere coat — impeccably structured, no bulk — "
+                "with an elegant refined scarf in ivory silk or cashmere. "
+                "Premium structured handbag. "
+                "Seasonal but never domestic — always at luxury register."
+            ),
+            (
+                "A camel wool-cashmere coat with clean tailored lines, "
+                "over a cream fine-knit inner layer. "
+                "Refined fitted skirt in ivory. Premium structured handbag. "
+                "Cold-weather luxury — not aunt-styling, not bulk-layer office wear."
+            ),
+            (
+                "A charcoal premium structured coat — fine wool-cashmere blend, "
+                "impeccably proportioned, never heavy or shapeless — "
+                "with an ivory refined scarf. Premium handbag. "
+                "Same 105936-family private-owner register, even in freezing weather."
+            ),
+        ],
     },
 }
 
@@ -316,11 +439,10 @@ def _weather_to_closet_key(
     temperature_c: Optional[float],
     season: Optional[str],
 ) -> str:
-    """Map weather inputs to a _WEATHER_CLOSET key."""
+    """Map weather inputs to a WEATHER_CLOSET_CATALOG key."""
     cond = (weather_condition or "").strip().lower()
     season_lower = (season or "").strip().lower()
 
-    # Temperature takes priority when available
     if temperature_c is not None:
         if temperature_c <= 0:
             return "snowy"
@@ -330,9 +452,7 @@ def _weather_to_closet_key(
             return "hot"
         if temperature_c >= 19:
             return "warm"
-        # 11–18°C falls through to condition check below
 
-    # Condition-based fallback
     if cond == "snow" or "winter" in season_lower:
         return "snowy"
     if cond == "cold":
@@ -350,37 +470,54 @@ def _resolve_wardrobe(
     temperature_c: Optional[float],
     season: Optional[str],
     taste_cluster: Optional[str] = None,
+    wardrobe_variant: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Resolve weather inputs to a 105936-family wardrobe entry.
 
-    taste_cluster: legacy override — if it matches a valid closet key it is
-    honoured; old A–H cluster names are silently ignored and weather takes over.
+    wardrobe_variant: index into the variant list. If None, random selection.
+    taste_cluster: legacy override — accepted only if it matches a valid closet key.
     """
-    # taste_cluster override: accept only if it's a valid closet key
-    if taste_cluster and taste_cluster.lower() in _WEATHER_CLOSET:
+    if taste_cluster and taste_cluster.lower() in WEATHER_CLOSET_CATALOG:
         closet_key = taste_cluster.lower()
     else:
         closet_key = _weather_to_closet_key(weather_condition, temperature_c, season)
 
-    entry = _WEATHER_CLOSET[closet_key]
+    entry = WEATHER_CLOSET_CATALOG[closet_key]
+    variants = entry["variants"]
 
-    # weather_outfit_source metadata (unchanged contract)
+    if wardrobe_variant is not None:
+        idx = wardrobe_variant % len(variants)
+    else:
+        idx = random.randrange(len(variants))
+
+    outfit_text = variants[idx]
+
     if temperature_c is None:
         weather_outfit_source = "limited_condition_string"
     else:
         weather_outfit_source = "condition_plus_temperature"
 
     return {
-        "outfit_descriptor": entry["outfit"],
+        "outfit_descriptor": outfit_text,
+        "outfit_variant_index": idx,
         "weather_case": entry["label"],
         "outfit_map_key": closet_key,
         "weather_closet_key": closet_key,
         "weather_closet_label": entry["label"],
-        # Keep taste_cluster key for backward compat in report consumers
         "taste_cluster": closet_key,
         "taste_cluster_label": entry["label"],
         "weather_outfit_source": weather_outfit_source,
     }
+
+
+def _select_pose_variant(pose_variant: Optional[int] = None) -> str:
+    """Select a pose variant from POSE_VARIANT_POOL.
+
+    pose_variant: index into the pool. If None, random selection.
+    """
+    if pose_variant is not None:
+        return POSE_VARIANT_POOL[pose_variant % len(POSE_VARIANT_POOL)]
+    return random.choice(POSE_VARIANT_POOL)
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +542,8 @@ def build_bottom_shot_prompt(
     taste_cluster: Optional[str] = None,
     emotional_temperature: str = "medium",
     gesture_variant: Optional[str] = None,
+    wardrobe_variant: Optional[int] = None,
+    pose_variant: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Build Contract v6 bottom-shot prompt from weather/context inputs.
 
@@ -413,14 +552,23 @@ def build_bottom_shot_prompt(
       - fixed_identity_gene, fixed_role_scene_gene, fixed_camera_gene,
       - fixed_expression_gene, fixed_prop_gesture_gene,
       - assembly_order, reference_assets, builder_status, weather_input_metadata
+
+    wardrobe_variant: int index to select a specific wardrobe variant (for testing/determinism).
+    pose_variant: int index to select a specific pose variant (for testing/determinism).
     """
     if family_id not in SUPPORTED_FAMILIES:
         raise ValueError(
             f"Unsupported family_id: {family_id!r}. Must be one of {SUPPORTED_FAMILIES}"
         )
 
-    wardrobe_result = _resolve_wardrobe(weather_condition, temperature_c, season, taste_cluster)
+    wardrobe_result = _resolve_wardrobe(
+        weather_condition, temperature_c, season, taste_cluster, wardrobe_variant
+    )
     outfit_text = wardrobe_result["outfit_descriptor"]
+    pose_text = _select_pose_variant(pose_variant)
+
+    # Prop/gesture section: base constraint + selected pose variant
+    prop_gesture_section = f"{FIXED_PROP_GESTURE_GENE}\n{pose_text}"
 
     prompt_parts = [
         SCENE_LOCK,
@@ -428,7 +576,7 @@ def build_bottom_shot_prompt(
         FIXED_ROLE_SCENE_GENE,
         FIXED_EXPRESSION_GENE,
         outfit_text,
-        FIXED_PROP_GESTURE_GENE,
+        prop_gesture_section,
         FIXED_CAMERA_GENE,
     ]
     prompt_text = "\n\n".join(p.strip() for p in prompt_parts if p.strip())
@@ -450,6 +598,7 @@ def build_bottom_shot_prompt(
         "negative_prompt": NEGATIVE_PROMPT_V6,
         "weather_outfit_shell": {
             "outfit_descriptor": outfit_text,
+            "outfit_variant_index": wardrobe_result["outfit_variant_index"],
             "weather_case": wardrobe_result["weather_case"],
             "outfit_map_key": wardrobe_result["outfit_map_key"],
             "weather_condition": weather_condition,
@@ -459,6 +608,7 @@ def build_bottom_shot_prompt(
             "taste_cluster": wardrobe_result["taste_cluster"],
             "taste_cluster_label": wardrobe_result["taste_cluster_label"],
         },
+        "pose_variant_text": pose_text,
         "fixed_identity_gene": {
             "text": FIXED_IDENTITY_GENE,
             "gene": "A_fixed_identity",
