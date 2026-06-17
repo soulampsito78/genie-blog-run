@@ -47,16 +47,17 @@ DIRECTION_REF_105936_NOTE = (
 
 FIXED_IDENTITY_GENE = (
     "A Korean woman in her mid-to-late thirties with a naturally refined face, "
-    "slightly angular jaw, almond-shaped eyes with a fresh and perceptive gaze, "
-    "a clean side-parted short bob with natural volume, "
+    "slightly angular jaw, almond-shaped eyes with a calm and perceptive gaze, "
+    "a sleek side-parted short bob — hair lying close to the jaw line, "
+    "naturally smooth and straight, no curl at the ends, no volume at the tips, "
     "and thin metal-framed rectangular glasses resting naturally on her face. "
-    "Her look is attractive, modern, and quietly magnetic — "
-    "the kind of person whose taste you notice without her trying."
+    "Her look is quietly attractive and controlled — "
+    "premium presence without effort, the kind of person you remember without knowing why."
 )
 
 IDENTITY_INVARIANTS = {
     "age": "mid-to-late 30s",
-    "hair": "side-parted short bob, natural volume, no inward C-curl, no bangs, no updos, no ponytails",
+    "hair": "sleek side-parted short bob, hair close to jaw, smooth and straight, no curl at ends, no C-curl, no bangs, no updos, no ponytails",
     "glasses": "thin metal rectangular frames — always present",
     "expression": "fresh, attractive, modern off-duty",
     "ethnicity": "Korean woman",
@@ -97,10 +98,11 @@ ROLE_SCENE_INVARIANTS = {
 # ---------------------------------------------------------------------------
 
 FIXED_EXPRESSION_GENE = (
-    "Her expression is a fresh composed smile — refreshing and lively, "
-    "like someone genuinely glad the day went well. "
-    "Modern and attractive, not motherly or guardian-like. "
-    "Gentle fresh eye contact with the viewer."
+    "Her expression is a restrained composed slight smile — controlled warmth, "
+    "lips barely curved at the corners. "
+    "The quiet private pleasure of a day well finished. "
+    "Modern and attractive. Not broad. Not lively. Not performative. "
+    "Steady, direct eye contact with the viewer — private, not public."
 )
 
 EXPRESSION_INVARIANTS = {
@@ -119,14 +121,17 @@ EXPRESSION_INVARIANTS = {
 
 FIXED_PROP_GESTURE_GENE = (
     "She holds a small premium handbag at her side with one hand. "
-    "Her other hand is raised in a gentle farewell gesture — "
-    "a soft, natural wave or small greeting, not an active exaggerated wave. "
-    "No tablet. No laptop. No notebook."
+    "Her free hand rests naturally close to her body — "
+    "fingertips lightly touching the handbag strap, or a barely perceptible "
+    "parting gesture near her side. "
+    "The gesture is private and contained: not raised, not waving. "
+    "Small scale. Interior scale. The farewell of someone who does not need "
+    "to perform goodbye. No tablet. No laptop. No notebook."
 )
 
 PROP_GESTURE_INVARIANTS = {
     "required_prop": "small premium handbag",
-    "required_gesture": "gentle farewell hand gesture",
+    "required_gesture": "private contained farewell — hand near body, not raised, not waving",
     "forbidden": ["tablet", "laptop", "briefing device"],
 }
 
@@ -178,7 +183,8 @@ ASSEMBLY_ORDER = (
 
 SCENE_LOCK = (
     "Knee-up portrait, eye-level, 85mm lens, shallow depth of field, "
-    "closed premium wooden office door in background, warm executive-floor interior lighting."
+    "closed premium wooden office door in background, warm executive-floor interior lighting. "
+    "High-end commercial portrait quality. Luxury editorial realism."
 )
 
 # ---------------------------------------------------------------------------
@@ -210,11 +216,19 @@ NEGATIVE_PROMPT_V6 = (
     "briefing posture, briefing host, senior analyst at desk, "
     # expression/style failures
     "warm motherly smile, guardian-like smile, matronly expression, "
+    "broad open smile, lively smile, wide smile, big smile, "
     "hands-clasped polite-matron pose, "
+    # gesture failures
+    "raised hand wave, open palm wave, waving pose, large hand gesture, "
+    "event greeter pose, hotel receptionist pose, customer service pose, "
+    # persona drift
+    "event greeter, hotel receptionist, office receptionist, friendly counselor, "
+    "cardigan office lady, lifestyle blogger, friendly middle-aged office worker, "
     "overly warm lighting, golden hour, harsh shadows, overexposed face, "
     "excessive makeup, heavy contouring, dramatic eye makeup, "
     "motion blur, film grain, painterly style, illustration, anime, cartoon, "
-    "C-curl cute bob, inward-curled bob, young office worker, glamour model"
+    "C-curl cute bob, inward-curled bob, curled ends bob, volume at tips, "
+    "young office worker, glamour model"
 )
 
 # Keep v5 name as alias for backward compat in any external references
@@ -228,9 +242,10 @@ _TASTE_CLUSTER_CATALOG: Dict[str, Dict[str, str]] = {
     "A": {
         "label": "Soft Classic",
         "outfit": (
-            "An ivory silk cardigan draped over a refined silk blouse in soft champagne, "
+            "A refined ivory silk-knit draped layer over a silk blouse in soft champagne, "
             "paired with a slim structured skirt in warm beige. "
-            "Small structured premium handbag. Pearl stud earrings."
+            "Small structured premium handbag. Pearl stud earrings. "
+            "Quiet luxury — elevated, never casual."
         ),
     },
     "B": {
@@ -244,9 +259,10 @@ _TASTE_CLUSTER_CATALOG: Dict[str, Dict[str, str]] = {
     "C": {
         "label": "Cool Executive Off-Duty",
         "outfit": (
-            "A smoky blue silk blouse with subtle sheen under an ivory fine-knit cardigan, "
+            "A smoky blue silk blouse with subtle sheen under a refined ivory structured fine-knit layer, "
             "paired with a dark charcoal pencil skirt. "
-            "Slim watch only. Clean, intelligent, premium."
+            "Slim watch only. Clean, intelligent, premium. "
+            "Luxury private-secretary off-duty — understated and high-end."
         ),
     },
     "D": {
@@ -277,10 +293,10 @@ _TASTE_CLUSTER_CATALOG: Dict[str, Dict[str, str]] = {
     "G": {
         "label": "Fall/Winter Warm",
         "outfit": (
-            "A camel cashmere cardigan over a charcoal fine-knit top, "
+            "A structured premium camel cashmere overcoat draped over a charcoal fine-knit top, "
             "paired with a dark structured skirt. "
-            "Small premium handbag. Warm indoor evening light. "
-            "Cozy seasonal warmth without lounge intimacy."
+            "Small premium leather handbag. Warm indoor evening light. "
+            "Seasonal warmth at luxury register — overcoat quality, not knitwear casual."
         ),
     },
     "H": {

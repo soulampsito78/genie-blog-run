@@ -46,8 +46,8 @@ ASSET01_ABS = REPO / ASSET01_PATH
 WEATHER_CASES = [
     {"weather_condition": "clear", "temperature_c": 12.0, "season": None,
      "taste_cluster": "B", "label": "cluster_B_clear_cool"},
-    {"weather_condition": "cloudy", "temperature_c": 18.0, "season": "autumn_evening",
-     "taste_cluster": "G", "label": "cluster_G_autumn"},
+    {"weather_condition": "cold", "temperature_c": 8.0, "season": None,
+     "taste_cluster": "E", "label": "cluster_E_cold"},
 ]
 
 MAX_IMAGES = 2

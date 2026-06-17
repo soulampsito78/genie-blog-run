@@ -62,10 +62,15 @@ class FixedIdentityGeneTests(unittest.TestCase):
         self.assertIn("glasses", text)
         self.assertIn("side-parted short bob", text)
 
-    def test_identity_contains_fresh_attractive(self):
+    def test_identity_contains_attractive_premium(self):
         text = _build()["fixed_identity_gene"]["text"]
         self.assertIn("attractive", text)
-        self.assertIn("magnetic", text)
+        self.assertIn("premium", text)
+
+    def test_identity_hair_is_sleek_no_curl(self):
+        text = _build()["fixed_identity_gene"]["text"]
+        self.assertIn("sleek", text)
+        self.assertIn("no curl at the ends", text)
 
     def test_identity_no_quiet_authority(self):
         text = _build()["fixed_identity_gene"]["text"]
@@ -75,7 +80,7 @@ class FixedIdentityGeneTests(unittest.TestCase):
 
     def test_identity_no_c_curl(self):
         inv = _build()["fixed_identity_gene"]["invariants"]
-        self.assertIn("no inward C-curl", inv["hair"])
+        self.assertIn("no C-curl", inv["hair"])
 
 
 # ===================================================================
@@ -124,13 +129,18 @@ class FixedExpressionGeneTests(unittest.TestCase):
     def test_expression_gene_in_prompt(self):
         self.assertIn(FIXED_EXPRESSION_GENE, _build()["prompt_text"])
 
-    def test_expression_contains_fresh_composed_smile(self):
+    def test_expression_contains_restrained_composed_smile(self):
         text = _build()["fixed_expression_gene"]["text"]
-        self.assertIn("fresh composed smile", text)
+        self.assertIn("restrained composed slight smile", text)
 
-    def test_expression_blocks_motherly(self):
+    def test_expression_is_not_broad_or_lively(self):
         text = _build()["fixed_expression_gene"]["text"]
-        self.assertIn("not motherly", text)
+        self.assertIn("Not broad", text)
+        self.assertIn("Not lively", text)
+
+    def test_expression_blocks_performative(self):
+        text = _build()["fixed_expression_gene"]["text"]
+        self.assertIn("Not performative", text)
 
     def test_expression_invariants_forbid_warm_motherly(self):
         forbidden = _build()["fixed_expression_gene"]["invariants"]["forbidden"]
@@ -150,9 +160,13 @@ class FixedPropGestureGeneTests(unittest.TestCase):
         text = _build()["fixed_prop_gesture_gene"]["text"]
         self.assertIn("handbag", text)
 
-    def test_prop_contains_farewell_gesture(self):
+    def test_prop_gesture_is_private_not_raised(self):
         text = _build()["fixed_prop_gesture_gene"]["text"]
-        self.assertIn("farewell gesture", text)
+        self.assertIn("not raised, not waving", text)
+
+    def test_prop_gesture_is_contained(self):
+        text = _build()["fixed_prop_gesture_gene"]["text"]
+        self.assertIn("private and contained", text)
 
     def test_prop_blocks_tablet(self):
         text = _build()["fixed_prop_gesture_gene"]["text"]
@@ -197,7 +211,7 @@ class WardrobeTests(unittest.TestCase):
     def test_cluster_A_selection(self):
         r = _build(taste_cluster="A")
         self.assertEqual(r["weather_outfit_shell"]["taste_cluster"], "A")
-        self.assertIn("cardigan", r["weather_outfit_shell"]["outfit_descriptor"])
+        self.assertIn("silk-knit", r["weather_outfit_shell"]["outfit_descriptor"])
 
     def test_cluster_G_selection(self):
         r = _build(taste_cluster="G")
@@ -219,6 +233,13 @@ class WardrobeTests(unittest.TestCase):
             outfit = _build(taste_cluster=cluster)["weather_outfit_shell"]["outfit_descriptor"]
             self.assertNotIn("mock-neck", outfit.lower(),
                              f"Cluster {cluster} must not contain mock-neck")
+
+    def test_no_bare_cardigan_in_luxury_clusters(self):
+        # Clusters A, C, G had lifestyle/cardigan drift in v6 QA run 031005
+        for cluster in ["A", "C", "G"]:
+            outfit = _build(taste_cluster=cluster)["weather_outfit_shell"]["outfit_descriptor"]
+            self.assertNotIn(" cardigan", outfit,
+                             f"Cluster {cluster} must not use bare 'cardigan' — use structured layer language")
 
     def test_weather_modifies_fabric_not_structure(self):
         r_warm = _build(weather_condition="clear", temperature_c=30.0)
@@ -284,6 +305,25 @@ class NegativePromptTests(unittest.TestCase):
 
     def test_does_not_block_active_wave(self):
         self.assertNotIn("active wave", self.neg)
+
+    def test_blocks_broad_open_smile(self):
+        self.assertIn("broad open smile", self.neg)
+
+    def test_blocks_lively_smile(self):
+        self.assertIn("lively smile", self.neg)
+
+    def test_blocks_raised_hand_wave(self):
+        self.assertIn("raised hand wave", self.neg)
+
+    def test_blocks_event_greeter(self):
+        self.assertIn("event greeter", self.neg)
+
+    def test_blocks_hotel_receptionist(self):
+        self.assertIn("hotel receptionist", self.neg)
+
+    def test_blocks_inward_curled_bob_variants(self):
+        self.assertIn("curled ends bob", self.neg)
+        self.assertIn("volume at tips", self.neg)
 
     def test_still_blocks_environment_failures(self):
         for term in ["tablet", "lobby", "desk", "monitor wall"]:
@@ -516,8 +556,8 @@ class V5DriftBanTests(unittest.TestCase):
     def test_farewell_gesture_in_prompt(self):
         self.assertIn("farewell", _build()["prompt_text"])
 
-    def test_fresh_smile_in_prompt(self):
-        self.assertIn("fresh composed smile", _build()["prompt_text"])
+    def test_restrained_composed_smile_in_prompt(self):
+        self.assertIn("restrained composed slight smile", _build()["prompt_text"])
 
     def test_secretary_in_prompt(self):
         self.assertIn("secretary", _build()["prompt_text"])
