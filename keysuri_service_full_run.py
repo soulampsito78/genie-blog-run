@@ -260,10 +260,14 @@ def resolve_korea_bottom_email_image_path(run_id: str) -> Tuple[Optional[Path], 
         "bottom_shot_watermark_status": "applied" if path is not None else "unavailable",
     }
     if variation_enabled:
+        from keysuri_bottom_shot_prompt_builder import build_bottom_shot_prompt_metadata_only
+
+        prompt_meta = build_bottom_shot_prompt_metadata_only(weather_condition="cloudy")
         metadata.update(
             {
                 "bottom_shot_source": "fixed_105936_fallback_variation_not_implemented",
                 "bottom_shot_variation_status": "not_implemented",
+                **prompt_meta,
             }
         )
     else:
