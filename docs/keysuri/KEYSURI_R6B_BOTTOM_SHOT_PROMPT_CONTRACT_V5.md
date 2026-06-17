@@ -55,22 +55,28 @@ processed the room.
 ### B. Fixed Role/Scene Gene (never vary)
 
 ```
-She is a senior financial technology analyst and trusted briefing host —
-the kind of professional whose office exists at the intersection of
-precision and warmth. She is between moments: not presenting, not reacting,
-simply inhabiting the space with full presence. The environment is upscale
-urban professional — a premium office, lobby, or curated interior space
-with clean lines, neutral tones, and controlled natural or studio lighting.
-No outdoor scenes. No open doors. No full-body framing.
+She is pausing at the threshold of the chairman's office —
+the briefing is finished, the day's work is done.
+A large closed premium wooden door with brass hardware fills the background,
+set into warm wood-paneled walls. She is facing the viewer —
+the reader is the owner, the one she is leaving.
+Her posture carries the quiet warmth of a closing ritual:
+everything is handled, and she is saying goodbye.
+Off-duty, composed, unhurried.
+No tablet. No laptop. No tech screen. No monitor.
+No outdoor scenes. No open door leading to another room. No full-body framing.
 ```
 
 **Invariants:**
-- Role: senior FinTech analyst / briefing host
-- Emotional register: between moments — not performing, not reacting
-- Environment: upscale urban interior only
+- Role: off-duty private AI secretary — briefing finished, leaving-work farewell
+- Emotional register: closing ritual — calm farewell, everything handled
+- Scene: chairman/CEO office threshold — closed wooden door, wood-paneled wall
+- Viewer relationship: reader is the owner (대표님) she is leaving toward
 - No outdoor scenes
-- No open doors or door frames in background
-- No full-body shots
+- No open door leading to another room (the closed door IS the background)
+- No lobby, atrium, open corridor
+- No tablet, tech screen, monitor wall, desk
+- No briefing posture or briefing host framing
 
 ---
 
@@ -89,12 +95,14 @@ The outfit descriptor changes based on live weather data.
 ### D. Camera/Framing Gene (never vary)
 
 ```
-Framing: upper-body shot, from approximately mid-chest to just above the crown,
-centered composition with slight negative space at the top.
+Framing: knee-up portrait — from approximately the knee to just above the crown,
+showing 3 to 4 units of body. Face-first composition: the face is the primary subject,
+the outfit reads naturally below.
 Camera angle: eye level or 2–3 degrees above, never below chin level.
 Lens: 85mm portrait equivalent, minimal depth of field, subject sharp,
 background softly defocused.
-No full-body. No waist-down. No wide establishing shots.
+No full-body shot. No visible feet. No wide establishing shot.
+No tight mid-chest-to-crown crop.
 ```
 
 ---
@@ -104,19 +112,28 @@ No full-body. No waist-down. No wide establishing shots.
 ```
 deformed hands, extra fingers, fused fingers, blurry face, asymmetric eyes,
 double chin, thick-framed glasses, no glasses, sunglasses, colored glasses,
+round glasses, oval glasses,
 heavy jewelry, statement necklace, flashy accessories,
 casual clothing, streetwear, athletic wear, hoodie, t-shirt, crop top,
 low-cut neckline, V-neck wrap dress, open-front dress, satin wrap dress,
 silk blouse with plunging neckline,
-full body shot, visible legs, visible feet, wide shot, establishing shot,
-outdoor scene, open door, door frame visible, window with outdoor view,
+full body shot, visible feet, wide shot, establishing shot,
+outdoor scene, open door, open doorway, window with outdoor view,
+tablet, briefing tablet, tech screen, monitor wall, monitor,
+desk, keyboard, multiple monitors, large screen background, reading device,
+lobby, atrium, open corridor, open hotel-like room,
+briefing posture, briefing host, senior analyst at desk,
 overly warm lighting, golden hour, harsh shadows, overexposed face,
 performative expression, smile with teeth, surprised expression,
 excessive makeup, heavy contouring, dramatic eye makeup,
-motion blur, film grain, painterly style, illustration, anime, cartoon
+motion blur, film grain, painterly style, illustration, anime, cartoon,
+C-curl cute bob, young office worker, glamour model, décolleté,
+outfit-first composition, active wave, full-body lookbook
 ```
 
-**Family A Failure Root (for reference):** V-neck wrap dress + open door + full-body framing were never corrected through v1→v4. These are the top three negative entries and must remain.
+**Family A Failure Root (for reference):** V-neck wrap dress + open door + full-body framing were never corrected through v1→v4. These remain.
+
+**Bottom-Shot Additions (v5 patch):** tablet, tech screen, monitor wall, lobby, atrium, open corridor, briefing posture, round glasses, oval glasses. These were absent in the original v5 and caused Image 01 to render with monitor wall and tablet.
 
 ---
 
@@ -145,8 +162,8 @@ motion blur, film grain, painterly style, illustration, anime, cartoon
 ### Full assembled prompt:
 
 ```
-Upper-body portrait, eye-level, 85mm lens, shallow depth of field,
-upscale interior office environment with neutral tones and controlled lighting.
+Knee-up portrait, eye-level, 85mm lens, shallow depth of field,
+closed premium wooden office door in background, warm executive-floor interior lighting.
 
 A Korean woman in her mid-to-late thirties, with a naturally composed face,
 slightly angular jaw, almond-shaped eyes with a calm and perceptive gaze,
@@ -156,21 +173,29 @@ Her expression carries quiet authority — emotionally present but never
 performative, warm but contained, the look of someone who has already
 processed the room.
 
-She is a senior financial technology analyst and trusted briefing host —
-the kind of professional whose office exists at the intersection of
-precision and warmth. She is between moments: not presenting, not reacting,
-simply inhabiting the space with full presence. The environment is upscale
-urban professional — a premium office interior with clean lines, neutral tones,
-and warm studio lighting. No outdoor scene. No open doors. No full-body framing.
+She is pausing at the threshold of the chairman's office —
+the briefing is finished, the day's work is done.
+A large closed premium wooden door with brass hardware fills the background,
+set into warm wood-paneled walls. She is facing the viewer —
+the reader is the owner, the one she is leaving.
+Her posture carries the quiet warmth of a closing ritual:
+everything is handled, and she is saying goodbye.
+Off-duty, composed, unhurried.
+No tablet. No laptop. No tech screen. No monitor.
+No outdoor scenes. No open door leading to another room. No full-body framing.
 
-She wears a tailored charcoal blazer over a fine-knit ivory mock-neck sweater.
+Framing: knee-up portrait — from approximately the knee to just above the crown,
+showing 3 to 4 units of body. Face-first composition: the face is the primary subject,
+the outfit reads naturally below.
+Camera angle: eye level or 2–3 degrees above, never below chin level.
+Lens: 85mm portrait equivalent, minimal depth of field, subject sharp,
+background softly defocused.
+No full-body shot. No visible feet. No wide establishing shot.
+No tight mid-chest-to-crown crop.
+
+A tailored charcoal blazer over a fine-knit ivory mock-neck sweater.
 The blazer sits cleanly on her shoulders. Small gold stud earrings, nothing else.
 The autumn evening light falls evenly on her face from slightly above frame left.
-
-Framing: upper-body shot, from approximately mid-chest to just above the crown,
-centered composition with slight negative space at the top.
-Camera angle: eye level, lens at 85mm portrait equivalent, subject sharp,
-background softly defocused.
 ```
 
 ### Negative prompt:
@@ -232,18 +257,21 @@ After each generated image, verify all 5 gates before any approval:
 
 ### Gate 2 — Role/Scene
 
-- [ ] Environment: upscale urban interior — premium office, lobby, or curated space
+- [ ] Background: large closed premium wooden door visible, warm wood-paneled wall
 - [ ] No outdoor scene visible
-- [ ] No open door or door frame in background
-- [ ] Emotional register: between moments, not presenting, not reacting
-- [ ] No full-body framing (no visible waist, legs, feet)
+- [ ] No open door leading to another room
+- [ ] No lobby, atrium, open corridor, or open hotel-like room in background
+- [ ] Emotional register: off-duty farewell, closing ritual — not briefing, not presenting
+- [ ] No tablet, tech screen, monitor, or briefing device visible
+- [ ] No full-body framing (no visible feet)
 
 ### Gate 3 — Camera
 
-- [ ] Framing: upper-body, mid-chest to just above crown
+- [ ] Framing: knee-up portrait — 3 to 4 body units, face-first
+- [ ] Outfit readable below waist (not a top-shot mid-chest crop)
 - [ ] Camera angle: eye level or 2–3 degrees above (not below chin)
 - [ ] Background: softly defocused (not sharp, not flat)
-- [ ] No wide shot, no establishing shot
+- [ ] No wide shot, no establishing shot, no tight portrait crop
 
 ### Gate 4 — Weather Shell
 
@@ -256,9 +284,12 @@ After each generated image, verify all 5 gates before any approval:
 
 - [ ] None of the negative prompt terms are visible in the image
 - [ ] No deformed hands (check if hands are in frame)
-- [ ] No thick-framed or missing glasses
+- [ ] No thick-framed, round, or missing glasses
 - [ ] No heavy jewelry or statement accessories
 - [ ] No performative expression
+- [ ] No tablet, briefing tablet, tech screen, or monitor
+- [ ] No lobby, atrium, or open corridor background
+- [ ] No briefing posture or hosting stance
 
 ---
 

@@ -68,23 +68,29 @@ IDENTITY_INVARIANTS = {
 # ---------------------------------------------------------------------------
 
 FIXED_ROLE_SCENE_GENE = (
-    "She is a senior financial technology analyst and trusted briefing host — "
-    "the kind of professional whose office exists at the intersection of "
-    "precision and warmth. She is between moments: not presenting, not reacting, "
-    "simply inhabiting the space with full presence. The environment is upscale "
-    "urban professional — a premium office, lobby, or curated interior space "
-    "with clean lines, neutral tones, and controlled natural or studio lighting. "
-    "No outdoor scenes. No open doors. No full-body framing."
+    "She is pausing at the threshold of the chairman's office — "
+    "the briefing is finished, the day's work is done. "
+    "A large closed premium wooden door with brass hardware fills the background, "
+    "set into warm wood-paneled walls. She is facing the viewer — "
+    "the reader is the owner, the one she is leaving. "
+    "Her posture carries the quiet warmth of a closing ritual: "
+    "everything is handled, and she is saying goodbye. "
+    "Off-duty, composed, unhurried. "
+    "No tablet. No laptop. No tech screen. No monitor. "
+    "No outdoor scenes. No open door leading to another room. No full-body framing."
 )
 
 ROLE_SCENE_INVARIANTS = {
-    "role": "senior FinTech analyst / briefing host",
-    "emotional_register": "between moments — not performing, not reacting",
-    "environment": "upscale urban interior only",
+    "role": "off-duty private AI secretary — briefing finished, leaving-work farewell",
+    "emotional_register": "closing ritual — calm farewell, everything handled",
+    "scene": "chairman/CEO office threshold — closed wooden door, wood-paneled wall",
+    "viewer_relationship": "reader is the owner (대표님) she is leaving toward",
     "forbidden_environment": [
         "outdoor scenes",
-        "open doors or door frames in background",
-        "full-body shots",
+        "open door leading to another room",
+        "lobby, atrium, open corridor",
+        "tablet, tech screen, monitor wall, desk",
+        "briefing posture, briefing host framing",
     ],
 }
 
@@ -93,24 +99,27 @@ ROLE_SCENE_INVARIANTS = {
 # ---------------------------------------------------------------------------
 
 FIXED_CAMERA_GENE = (
-    "Framing: upper-body shot, from approximately mid-chest to just above the crown, "
-    "centered composition with slight negative space at the top. "
+    "Framing: knee-up portrait — from approximately the knee to just above the crown, "
+    "showing 3 to 4 units of body. Face-first composition: the face is the primary subject, "
+    "the outfit reads naturally below. "
     "Camera angle: eye level or 2–3 degrees above, never below chin level. "
     "Lens: 85mm portrait equivalent, minimal depth of field, subject sharp, "
     "background softly defocused. "
-    "No full-body. No waist-down. No wide establishing shots."
+    "No full-body shot. No visible feet. No wide establishing shot. "
+    "No tight mid-chest-to-crown crop."
 )
 
 CAMERA_INVARIANTS = {
-    "framing": "upper-body, mid-chest to just above crown",
+    "framing": "knee-up / 3-4 body — face-first, outfit visible below",
     "angle": "eye level or 2-3 degrees above — never below chin",
     "lens": "85mm portrait equivalent",
     "depth_of_field": "subject sharp, background softly defocused",
     "forbidden": [
         "full body shot",
-        "visible legs or feet",
+        "visible feet",
         "wide shot",
         "establishing shot",
+        "tight mid-chest-to-crown portrait crop",
     ],
 }
 
@@ -131,8 +140,8 @@ ASSEMBLY_ORDER = (
 )
 
 SCENE_LOCK = (
-    "Upper-body portrait, eye-level, 85mm lens, shallow depth of field, "
-    "upscale interior office environment with neutral tones and controlled lighting."
+    "Knee-up portrait, eye-level, 85mm lens, shallow depth of field, "
+    "closed premium wooden office door in background, warm executive-floor interior lighting."
 )
 
 # ---------------------------------------------------------------------------
@@ -142,18 +151,23 @@ SCENE_LOCK = (
 NEGATIVE_PROMPT_V5 = (
     "deformed hands, extra fingers, fused fingers, blurry face, asymmetric eyes, "
     "double chin, thick-framed glasses, no glasses, sunglasses, colored glasses, "
+    "round glasses, oval glasses, "
     "heavy jewelry, statement necklace, flashy accessories, "
     "casual clothing, streetwear, athletic wear, hoodie, t-shirt, crop top, "
     "low-cut neckline, V-neck wrap dress, open-front dress, satin wrap dress, "
     "silk blouse with plunging neckline, "
-    "full body shot, visible legs, visible feet, wide shot, establishing shot, "
-    "outdoor scene, open door, door frame visible, window with outdoor view, "
+    "full body shot, visible feet, wide shot, establishing shot, "
+    "outdoor scene, open door, open doorway, window with outdoor view, "
+    "tablet, briefing tablet, tech screen, monitor wall, monitor, "
+    "desk, keyboard, multiple monitors, large screen background, reading device, "
+    "lobby, atrium, open corridor, open hotel-like room, "
+    "briefing posture, briefing host, senior analyst at desk, "
     "overly warm lighting, golden hour, harsh shadows, overexposed face, "
     "performative expression, smile with teeth, surprised expression, "
     "excessive makeup, heavy contouring, dramatic eye makeup, "
     "motion blur, film grain, painterly style, illustration, anime, cartoon, "
     "C-curl cute bob, young office worker, glamour model, décolleté, "
-    "outfit-first composition, active wave, open hotel-like room, full-body lookbook"
+    "outfit-first composition, active wave, full-body lookbook"
 )
 
 # ---------------------------------------------------------------------------

@@ -100,7 +100,7 @@ class FixedRoleSceneGeneTests(unittest.TestCase):
 
     def test_no_open_doors_in_role(self):
         text = _build()["fixed_role_scene_gene"]["text"]
-        self.assertIn("No open doors", text)
+        self.assertIn("No open door", text)
 
 
 class FixedCameraGeneTests(unittest.TestCase):
@@ -124,10 +124,14 @@ class FixedCameraGeneTests(unittest.TestCase):
     def test_camera_gene_label(self):
         self.assertEqual(_build()["fixed_camera_gene"]["gene"], "D_fixed_camera_framing")
 
-    def test_camera_upper_body_framing(self):
+    def test_camera_knee_up_framing(self):
         text = _build()["fixed_camera_gene"]["text"]
-        self.assertIn("upper-body shot", text)
+        self.assertIn("knee-up", text)
         self.assertIn("85mm", text)
+
+    def test_camera_no_mid_chest_to_crown_crop(self):
+        text = _build()["fixed_camera_gene"]["text"]
+        self.assertNotIn("mid-chest to just above the crown", text)
 
 
 class NegativePromptBlocklistTests(unittest.TestCase):
@@ -415,6 +419,115 @@ class AssemblyOrderTests(unittest.TestCase):
         role_pos = prompt.find(FIXED_ROLE_SCENE_GENE[:30])
         camera_pos = prompt.find(FIXED_CAMERA_GENE[:30])
         self.assertGreater(camera_pos, role_pos)
+
+
+class BottomShotSceneContextTests(unittest.TestCase):
+    """Gene B must encode bottom-shot farewell scene — no top-shot briefing context."""
+
+    def setUp(self):
+        self.role_text = _build()["fixed_role_scene_gene"]["text"]
+        self.prompt = _build()["prompt_text"]
+
+    # --- Positive assertions: bottom-shot scene must be present ---
+
+    def test_closed_ceo_door_in_role_gene(self):
+        self.assertIn("wooden door", self.role_text)
+
+    def test_wood_paneled_walls_in_role_gene(self):
+        self.assertIn("wood-paneled", self.role_text)
+
+    def test_farewell_ritual_in_role_gene(self):
+        self.assertIn("closing ritual", self.role_text)
+
+    def test_viewer_is_owner_in_role_gene(self):
+        self.assertIn("owner", self.role_text)
+
+    def test_briefing_finished_context_in_role_gene(self):
+        self.assertIn("briefing is finished", self.role_text)
+
+    def test_off_duty_state_in_role_gene(self):
+        self.assertIn("Off-duty", self.role_text)
+
+    # --- Negative assertions: top-shot briefing phrases must be absent ---
+
+    def test_no_briefing_host_phrase_in_role_gene(self):
+        self.assertNotIn("briefing host", self.role_text)
+
+    def test_no_senior_financial_analyst_in_role_gene(self):
+        self.assertNotIn("senior financial technology analyst", self.role_text)
+
+    def test_no_lobby_in_role_gene(self):
+        self.assertNotIn("lobby", self.role_text)
+
+    def test_no_curated_interior_in_role_gene(self):
+        self.assertNotIn("curated interior", self.role_text)
+
+    def test_no_between_moments_phrase_in_role_gene(self):
+        # "between moments" is the top-shot neutrality phrase
+        self.assertNotIn("between moments", self.role_text)
+
+    def test_no_trusted_briefing_in_prompt(self):
+        self.assertNotIn("trusted briefing", self.prompt)
+
+
+class BottomShotNegativePromptBlocklistExtendedTests(unittest.TestCase):
+    """Negative prompt must block all top-shot contamination and environment leaks."""
+
+    def setUp(self):
+        self.neg = _build()["negative_prompt"]
+
+    def test_tablet_blocked(self):
+        self.assertIn("tablet", self.neg)
+
+    def test_tech_screen_blocked(self):
+        self.assertIn("tech screen", self.neg)
+
+    def test_monitor_wall_blocked(self):
+        self.assertIn("monitor wall", self.neg)
+
+    def test_monitor_blocked(self):
+        self.assertIn("monitor", self.neg)
+
+    def test_lobby_blocked(self):
+        self.assertIn("lobby", self.neg)
+
+    def test_atrium_blocked(self):
+        self.assertIn("atrium", self.neg)
+
+    def test_open_corridor_blocked(self):
+        self.assertIn("open corridor", self.neg)
+
+    def test_desk_blocked(self):
+        self.assertIn("desk", self.neg)
+
+    def test_keyboard_blocked(self):
+        self.assertIn("keyboard", self.neg)
+
+    def test_multiple_monitors_blocked(self):
+        self.assertIn("multiple monitors", self.neg)
+
+    def test_large_screen_background_blocked(self):
+        self.assertIn("large screen background", self.neg)
+
+    def test_reading_device_blocked(self):
+        self.assertIn("reading device", self.neg)
+
+    def test_round_glasses_blocked(self):
+        self.assertIn("round glasses", self.neg)
+
+    def test_oval_glasses_blocked(self):
+        self.assertIn("oval glasses", self.neg)
+
+    def test_briefing_posture_blocked(self):
+        self.assertIn("briefing posture", self.neg)
+
+    def test_visible_feet_blocked(self):
+        # knee-up framing: feet must still be blocked
+        self.assertIn("visible feet", self.neg)
+
+    def test_visible_legs_not_in_negative(self):
+        # knee-up framing: legs ARE shown — "visible legs" removed from blocklist
+        self.assertNotIn("visible legs", self.neg)
 
 
 if __name__ == "__main__":
