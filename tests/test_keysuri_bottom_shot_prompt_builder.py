@@ -1,16 +1,10 @@
-"""Tests for Key-Suri bottom-shot prompt builder (Contract v5).
+"""Tests for Key-Suri bottom-shot prompt builder (Contract v6).
 
 Verifies:
-- Fixed Identity Gene A is always present and unmodified by weather
-- Fixed Role/Scene Gene B is always present and unmodified by weather
-- Fixed Camera Gene D is always present and unmodified by weather
-- Negative prompt blocks all Contract v5 failure modes
-- Weather changes outfit shell only (Gene C) — identity/role/camera unchanged
-- 105936 is marked direction_reference_only, not image input
-- Asset01 is primary identity reference
-- variation gate false still uses fixed 105936 fallback (service_full_run)
-- No image generation call is introduced
-- builder_status flags: generation_allowed=False, image_api_called=False
+- v6 persona: private AI secretary, fresh smile, luxury off-duty, handbag, farewell
+- v5 authority/blazer/mock-neck/C-curl/headshot drift is banned
+- Asset01/105936 roles and gate status preserved
+- Backward-compatible metadata_only return keys for service_full_run
 """
 from __future__ import annotations
 
@@ -24,239 +18,288 @@ from keysuri_bottom_shot_prompt_builder import (
     DIRECTION_REF_105936_PATH,
     DIRECTION_REF_105936_ROLE,
     FIXED_CAMERA_GENE,
+    FIXED_EXPRESSION_GENE,
     FIXED_IDENTITY_GENE,
+    FIXED_PROP_GESTURE_GENE,
     FIXED_ROLE_SCENE_GENE,
-    NEGATIVE_PROMPT_V5,
+    NEGATIVE_PROMPT_V6,
     build_bottom_shot_prompt,
     build_bottom_shot_prompt_metadata_only,
 )
 
 
-def _build(weather_condition="cloudy", temperature_c=None, season=None, program_id="keysuri_korea_tech"):
+def _build(weather_condition="cloudy", temperature_c=None, season=None,
+           program_id="keysuri_korea_tech", taste_cluster=None):
     return build_bottom_shot_prompt(
         weather_condition=weather_condition,
         temperature_c=temperature_c,
         season=season,
         program_id=program_id,
+        taste_cluster=taste_cluster,
     )
 
 
+# ===================================================================
+# Identity Gene — v6 persona (fresh/attractive, not authority)
+# ===================================================================
+
 class FixedIdentityGeneTests(unittest.TestCase):
-    """Gene A — Fixed Identity Gene must be present in every prompt, unmodified."""
 
-    def test_identity_gene_text_in_prompt(self):
-        result = _build()
-        self.assertIn(FIXED_IDENTITY_GENE, result["prompt_text"])
+    def test_identity_gene_in_prompt(self):
+        self.assertIn(FIXED_IDENTITY_GENE, _build()["prompt_text"])
 
-    def test_identity_gene_unchanged_across_all_weather_conditions(self):
-        conditions = ["clear", "cloudy", "overcast", "rainy", "snow", "cold", "fine_dust", "haze"]
-        identity_texts = set()
-        for cond in conditions:
-            r = _build(weather_condition=cond)
-            identity_texts.add(r["fixed_identity_gene"]["text"])
-        self.assertEqual(len(identity_texts), 1, "Identity gene text must not change with weather")
+    def test_identity_unchanged_across_weather(self):
+        texts = {_build(weather_condition=c)["fixed_identity_gene"]["text"]
+                 for c in ["clear", "cloudy", "rainy", "snow"]}
+        self.assertEqual(len(texts), 1)
 
-    def test_identity_gene_metadata_gene_label(self):
-        result = _build()
-        self.assertEqual(result["fixed_identity_gene"]["gene"], "A_fixed_identity")
-
-    def test_identity_invariants_present(self):
-        inv = _build()["fixed_identity_gene"]["invariants"]
-        self.assertIn("age", inv)
-        self.assertIn("glasses", inv)
-        self.assertIn("hair", inv)
-        self.assertIn("expression", inv)
+    def test_identity_gene_label(self):
+        self.assertEqual(_build()["fixed_identity_gene"]["gene"], "A_fixed_identity")
 
     def test_identity_contains_key_features(self):
         text = _build()["fixed_identity_gene"]["text"]
         self.assertIn("mid-to-late thirties", text)
-        self.assertIn("bob", text)
         self.assertIn("glasses", text)
-        self.assertIn("quiet authority", text)
+        self.assertIn("side-parted short bob", text)
 
+    def test_identity_contains_fresh_attractive(self):
+        text = _build()["fixed_identity_gene"]["text"]
+        self.assertIn("attractive", text)
+        self.assertIn("magnetic", text)
+
+    def test_identity_no_quiet_authority(self):
+        text = _build()["fixed_identity_gene"]["text"]
+        self.assertNotIn("quiet authority", text)
+        self.assertNotIn("processed the room", text)
+        self.assertNotIn("never performative", text)
+
+    def test_identity_no_c_curl(self):
+        inv = _build()["fixed_identity_gene"]["invariants"]
+        self.assertIn("no inward C-curl", inv["hair"])
+
+
+# ===================================================================
+# Role + Relationship Gene — secretary, owner, farewell
+# ===================================================================
 
 class FixedRoleSceneGeneTests(unittest.TestCase):
-    """Gene B — Fixed Role/Scene Gene must be present and unmodified by weather."""
 
-    def test_role_scene_gene_in_prompt(self):
-        result = _build()
-        self.assertIn(FIXED_ROLE_SCENE_GENE, result["prompt_text"])
+    def test_role_gene_in_prompt(self):
+        self.assertIn(FIXED_ROLE_SCENE_GENE, _build()["prompt_text"])
 
-    def test_role_scene_unchanged_across_weather(self):
-        conditions = ["cloudy", "rainy", "snow", "fine_dust"]
-        texts = {_build(weather_condition=c)["fixed_role_scene_gene"]["text"] for c in conditions}
+    def test_role_contains_secretary(self):
+        text = _build()["fixed_role_scene_gene"]["text"]
+        self.assertIn("private AI secretary", text)
+
+    def test_role_contains_owner_farewell(self):
+        text = _build()["fixed_role_scene_gene"]["text"]
+        self.assertIn("대표님", text)
+        self.assertIn("farewell", text)
+
+    def test_role_contains_wooden_door(self):
+        text = _build()["fixed_role_scene_gene"]["text"]
+        self.assertIn("wooden door", text)
+        self.assertIn("wood-paneled", text)
+
+    def test_role_unchanged_across_weather(self):
+        texts = {_build(weather_condition=c)["fixed_role_scene_gene"]["text"]
+                 for c in ["cloudy", "rainy", "snow"]}
         self.assertEqual(len(texts), 1)
 
-    def test_role_scene_gene_label(self):
-        self.assertEqual(_build()["fixed_role_scene_gene"]["gene"], "B_fixed_role_scene")
-
-    def test_no_outdoor_scene_in_role(self):
+    def test_no_briefing_host_in_role(self):
         text = _build()["fixed_role_scene_gene"]["text"]
-        self.assertIn("No outdoor scenes", text)
+        self.assertNotIn("briefing host", text)
 
-    def test_no_full_body_in_role(self):
+    def test_no_lobby_in_role(self):
         text = _build()["fixed_role_scene_gene"]["text"]
-        self.assertIn("No full-body framing", text)
+        self.assertNotIn("lobby", text)
 
-    def test_no_open_doors_in_role(self):
-        text = _build()["fixed_role_scene_gene"]["text"]
-        self.assertIn("No open door", text)
 
+# ===================================================================
+# Expression Gene — fresh composed smile
+# ===================================================================
+
+class FixedExpressionGeneTests(unittest.TestCase):
+
+    def test_expression_gene_in_prompt(self):
+        self.assertIn(FIXED_EXPRESSION_GENE, _build()["prompt_text"])
+
+    def test_expression_contains_fresh_composed_smile(self):
+        text = _build()["fixed_expression_gene"]["text"]
+        self.assertIn("fresh composed smile", text)
+
+    def test_expression_blocks_motherly(self):
+        text = _build()["fixed_expression_gene"]["text"]
+        self.assertIn("not motherly", text)
+
+    def test_expression_invariants_forbid_warm_motherly(self):
+        forbidden = _build()["fixed_expression_gene"]["invariants"]["forbidden"]
+        self.assertIn("warm motherly smile", forbidden)
+
+
+# ===================================================================
+# Prop + Gesture Gene — handbag, hand farewell
+# ===================================================================
+
+class FixedPropGestureGeneTests(unittest.TestCase):
+
+    def test_prop_gesture_gene_in_prompt(self):
+        self.assertIn(FIXED_PROP_GESTURE_GENE, _build()["prompt_text"])
+
+    def test_prop_contains_handbag(self):
+        text = _build()["fixed_prop_gesture_gene"]["text"]
+        self.assertIn("handbag", text)
+
+    def test_prop_contains_farewell_gesture(self):
+        text = _build()["fixed_prop_gesture_gene"]["text"]
+        self.assertIn("farewell gesture", text)
+
+    def test_prop_blocks_tablet(self):
+        text = _build()["fixed_prop_gesture_gene"]["text"]
+        self.assertIn("No tablet", text)
+
+
+# ===================================================================
+# Camera Gene — single knee-up, no anti-body stack
+# ===================================================================
 
 class FixedCameraGeneTests(unittest.TestCase):
-    """Gene D — Camera/Framing Gene must be present and unmodified by weather."""
 
     def test_camera_gene_in_prompt(self):
-        result = _build()
-        self.assertIn(FIXED_CAMERA_GENE, result["prompt_text"])
+        self.assertIn(FIXED_CAMERA_GENE, _build()["prompt_text"])
 
-    def test_camera_gene_unchanged_across_weather(self):
-        conditions = ["cloudy", "rainy", "snow", "autumn_evening"]
-        texts = set()
-        for c in conditions:
-            if c == "autumn_evening":
-                r = _build(season="autumn_evening")
-            else:
-                r = _build(weather_condition=c)
-            texts.add(r["fixed_camera_gene"]["text"])
-        self.assertEqual(len(texts), 1)
-
-    def test_camera_gene_label(self):
-        self.assertEqual(_build()["fixed_camera_gene"]["gene"], "D_fixed_camera_framing")
-
-    def test_camera_knee_up_framing(self):
+    def test_camera_knee_up(self):
         text = _build()["fixed_camera_gene"]["text"]
-        self.assertIn("knee-up", text)
+        self.assertIn("Knee-up", text)
         self.assertIn("85mm", text)
 
-    def test_camera_no_mid_chest_to_crown_crop(self):
+    def test_camera_no_anti_body_stack(self):
         text = _build()["fixed_camera_gene"]["text"]
-        self.assertNotIn("mid-chest to just above the crown", text)
+        count_no = text.lower().count("no ")
+        self.assertLessEqual(count_no, 1, "Camera gene should not stack multiple anti-body negatives")
+
+    def test_camera_unchanged_across_weather(self):
+        texts = {_build(weather_condition=c)["fixed_camera_gene"]["text"]
+                 for c in ["cloudy", "rainy", "snow"]}
+        self.assertEqual(len(texts), 1)
 
 
-class NegativePromptBlocklistTests(unittest.TestCase):
-    """Negative prompt must block all Contract v5 failure modes."""
+# ===================================================================
+# Wardrobe — taste cluster catalog, no blazer/mock-neck
+# ===================================================================
+
+class WardrobeTests(unittest.TestCase):
+
+    def test_default_cluster_B(self):
+        r = _build()
+        self.assertEqual(r["weather_outfit_shell"]["taste_cluster"], "B")
+
+    def test_cluster_A_selection(self):
+        r = _build(taste_cluster="A")
+        self.assertEqual(r["weather_outfit_shell"]["taste_cluster"], "A")
+        self.assertIn("cardigan", r["weather_outfit_shell"]["outfit_descriptor"])
+
+    def test_cluster_G_selection(self):
+        r = _build(taste_cluster="G")
+        self.assertEqual(r["weather_outfit_shell"]["taste_cluster"], "G")
+        self.assertIn("camel", r["weather_outfit_shell"]["outfit_descriptor"].lower())
+
+    def test_outfit_in_prompt_text(self):
+        r = _build(taste_cluster="C")
+        self.assertIn("smoky blue", r["prompt_text"].lower())
+
+    def test_no_blazer_in_any_cluster(self):
+        for cluster in "ABCDEFGH":
+            outfit = _build(taste_cluster=cluster)["weather_outfit_shell"]["outfit_descriptor"]
+            self.assertNotIn("blazer", outfit.lower(),
+                             f"Cluster {cluster} must not contain blazer")
+
+    def test_no_mock_neck_in_any_cluster(self):
+        for cluster in "ABCDEFGH":
+            outfit = _build(taste_cluster=cluster)["weather_outfit_shell"]["outfit_descriptor"]
+            self.assertNotIn("mock-neck", outfit.lower(),
+                             f"Cluster {cluster} must not contain mock-neck")
+
+    def test_weather_modifies_fabric_not_structure(self):
+        r_warm = _build(weather_condition="clear", temperature_c=30.0)
+        r_cold = _build(weather_condition="snow", temperature_c=-5.0)
+        self.assertNotEqual(
+            r_warm["weather_outfit_shell"]["outfit_descriptor"],
+            r_cold["weather_outfit_shell"]["outfit_descriptor"],
+        )
+
+    def test_identity_unchanged_when_cluster_changes(self):
+        r_a = _build(taste_cluster="A")
+        r_e = _build(taste_cluster="E")
+        self.assertEqual(r_a["fixed_identity_gene"]["text"], r_e["fixed_identity_gene"]["text"])
+
+    def test_outfit_after_camera_not_required(self):
+        """v6: wardrobe appears before camera in assembly to prevent outfit-first."""
+        from keysuri_bottom_shot_prompt_builder import ASSEMBLY_ORDER
+        self.assertGreater(
+            ASSEMBLY_ORDER.index("camera_gene"),
+            ASSEMBLY_ORDER.index("wardrobe_gene"),
+        )
+
+
+# ===================================================================
+# Negative Prompt — retargeted for v6
+# ===================================================================
+
+class NegativePromptTests(unittest.TestCase):
 
     def setUp(self):
         self.neg = _build()["negative_prompt"]
 
-    def test_vneck_wrap_dress_blocked(self):
-        self.assertIn("V-neck wrap dress", self.neg)
+    def test_blocks_executive_portrait(self):
+        self.assertIn("executive portrait", self.neg)
 
-    def test_open_front_dress_blocked(self):
-        self.assertIn("open-front dress", self.neg)
+    def test_blocks_consultant_headshot(self):
+        self.assertIn("consultant headshot", self.neg)
 
-    def test_satin_wrap_blocked(self):
-        self.assertIn("satin wrap dress", self.neg)
+    def test_blocks_blazer(self):
+        self.assertIn("blazer", self.neg)
 
-    def test_full_body_blocked(self):
-        self.assertIn("full body shot", self.neg)
+    def test_blocks_mock_neck(self):
+        self.assertIn("mock-neck sweater", self.neg)
 
-    def test_outdoor_scene_blocked(self):
-        self.assertIn("outdoor scene", self.neg)
-
-    def test_open_door_blocked(self):
-        self.assertIn("open door", self.neg)
-
-    def test_toothy_smile_blocked(self):
-        self.assertIn("smile with teeth", self.neg)
-
-    def test_c_curl_cute_bob_blocked(self):
+    def test_blocks_c_curl(self):
         self.assertIn("C-curl cute bob", self.neg)
+        self.assertIn("inward-curled bob", self.neg)
 
-    def test_young_office_worker_blocked(self):
-        self.assertIn("young office worker", self.neg)
+    def test_blocks_headshot_crop(self):
+        self.assertIn("tight headshot", self.neg)
 
-    def test_glamour_model_blocked(self):
-        self.assertIn("glamour model", self.neg)
+    def test_blocks_motherly_smile(self):
+        self.assertIn("warm motherly smile", self.neg)
 
-    def test_decollete_blocked(self):
-        self.assertIn("décolleté", self.neg)
+    def test_blocks_matronly(self):
+        self.assertIn("matronly expression", self.neg)
 
-    def test_outfit_first_blocked(self):
-        self.assertIn("outfit-first composition", self.neg)
+    def test_does_not_block_satin_outfit(self):
+        self.assertNotIn("satin wrap dress", self.neg)
 
-    def test_active_wave_blocked(self):
-        self.assertIn("active wave", self.neg)
+    def test_does_not_block_smile_with_teeth(self):
+        self.assertNotIn("smile with teeth", self.neg)
 
-    def test_open_hotel_room_blocked(self):
-        self.assertIn("open hotel-like room", self.neg)
+    def test_does_not_block_active_wave(self):
+        self.assertNotIn("active wave", self.neg)
 
-    def test_full_body_lookbook_blocked(self):
-        self.assertIn("full-body lookbook", self.neg)
+    def test_still_blocks_environment_failures(self):
+        for term in ["tablet", "lobby", "desk", "monitor wall"]:
+            self.assertIn(term, self.neg)
 
     def test_negative_same_across_weather(self):
         negs = {_build(weather_condition=c)["negative_prompt"]
-                for c in ["rainy", "snow", "cloudy", "fine_dust"]}
-        self.assertEqual(len(negs), 1, "Negative prompt must not change with weather")
-
-    def test_negative_prompt_constant_matches(self):
-        self.assertEqual(_build()["negative_prompt"], NEGATIVE_PROMPT_V5)
+                for c in ["rainy", "snow", "cloudy"]}
+        self.assertEqual(len(negs), 1)
 
 
-class WeatherOutfitShellTests(unittest.TestCase):
-    """Gene C — Weather/Outfit Shell: changes with weather, identity/role/camera do not."""
-
-    def _outfit(self, **kwargs):
-        return _build(**kwargs)["weather_outfit_shell"]["outfit_descriptor"]
-
-    def test_rainy_outfit_differs_from_sunny(self):
-        self.assertNotEqual(self._outfit(weather_condition="rainy"), self._outfit(weather_condition="sunny"))
-
-    def test_snow_outfit_differs_from_rainy(self):
-        self.assertNotEqual(self._outfit(weather_condition="snow"), self._outfit(weather_condition="rainy"))
-
-    def test_fine_dust_outfit_is_indoor_professional(self):
-        outfit = self._outfit(weather_condition="fine_dust")
-        self.assertIn("Clean", outfit)
-
-    def test_outfit_in_prompt_text(self):
-        r = _build(weather_condition="rainy")
-        self.assertIn(r["weather_outfit_shell"]["outfit_descriptor"], r["prompt_text"])
-
-    def test_outfit_appears_last_in_assembly(self):
-        r = _build(weather_condition="snow")
-        prompt = r["prompt_text"]
-        camera_pos = prompt.find(FIXED_CAMERA_GENE[:30])
-        outfit_pos = prompt.find(r["weather_outfit_shell"]["outfit_descriptor"][:30])
-        self.assertGreater(outfit_pos, camera_pos, "Outfit must appear after Camera Gene in prompt")
-
-    def test_clear_warm_with_temperature(self):
-        r = _build(weather_condition="clear", temperature_c=22.0)
-        self.assertEqual(r["weather_outfit_shell"]["outfit_map_key"], "clear_warm")
-
-    def test_clear_cool_with_temperature(self):
-        r = _build(weather_condition="clear", temperature_c=10.0)
-        self.assertEqual(r["weather_outfit_shell"]["outfit_map_key"], "clear_cool")
-
-    def test_autumn_evening_season_override(self):
-        r = _build(weather_condition="cloudy", season="autumn_evening")
-        self.assertEqual(r["weather_outfit_shell"]["outfit_map_key"], "autumn_evening")
-
-    def test_winter_evening_season_override(self):
-        r = _build(weather_condition="clear", season="winter_evening")
-        self.assertEqual(r["weather_outfit_shell"]["outfit_map_key"], "winter_evening")
-
-    def test_humid_hot_by_temperature(self):
-        r = _build(weather_condition="clear", temperature_c=30.0)
-        self.assertEqual(r["weather_outfit_shell"]["outfit_map_key"], "humid_hot")
-
-    def test_identity_unchanged_when_outfit_changes(self):
-        r_rainy = _build(weather_condition="rainy")
-        r_snow = _build(weather_condition="snow")
-        self.assertEqual(r_rainy["fixed_identity_gene"]["text"], r_snow["fixed_identity_gene"]["text"])
-
-    def test_camera_unchanged_when_outfit_changes(self):
-        r_rainy = _build(weather_condition="rainy")
-        r_snow = _build(weather_condition="snow")
-        self.assertEqual(r_rainy["fixed_camera_gene"]["text"], r_snow["fixed_camera_gene"]["text"])
-
-    def test_weather_outfit_shell_gene_label(self):
-        self.assertEqual(_build()["weather_outfit_shell"]["gene"], "C_variable_weather_outfit_shell")
-
+# ===================================================================
+# Reference Assets — unchanged from v5
+# ===================================================================
 
 class ReferenceAssetTests(unittest.TestCase):
-    """Asset01 = primary identity reference; 105936 = direction reference only."""
 
     def setUp(self):
         self.refs = _build()["reference_assets"]
@@ -271,20 +314,20 @@ class ReferenceAssetTests(unittest.TestCase):
         self.assertEqual(ref["path"], DIRECTION_REF_105936_PATH)
 
     def test_105936_not_flagged_as_image_input(self):
-        note = self.refs["direction_reference"]["note"]
-        self.assertIn("NOT image input", note)
+        self.assertIn("NOT image input", self.refs["direction_reference"]["note"])
 
     def test_105936_not_flagged_as_fixed_final_asset(self):
-        note = self.refs["direction_reference"]["note"]
-        self.assertIn("NOT fixed final asset", note)
+        self.assertIn("NOT fixed final asset", self.refs["direction_reference"]["note"])
 
     def test_105936_note_warns_against_silk_satin(self):
-        note = self.refs["direction_reference"]["note"]
-        self.assertIn("silk-knit/satin", note)
+        self.assertIn("silk-knit/satin", self.refs["direction_reference"]["note"])
 
+
+# ===================================================================
+# Builder Status — generation disabled
+# ===================================================================
 
 class BuilderStatusTests(unittest.TestCase):
-    """builder_status flags: generation disabled, image API not called."""
 
     def setUp(self):
         self.status = _build()["builder_status"]
@@ -301,23 +344,25 @@ class BuilderStatusTests(unittest.TestCase):
     def test_image_api_not_called(self):
         self.assertFalse(self.status["image_api_called"])
 
-    def test_contract_version_v5(self):
-        self.assertEqual(self.status["contract_version"], "v5")
+    def test_contract_version_v6(self):
+        self.assertEqual(self.status["contract_version"], "v6")
 
     def test_family_id_default_family_a(self):
         self.assertEqual(self.status["family_id"], "family_a")
 
     def test_program_id_recorded(self):
-        r = _build(program_id="keysuri_korea_tech")
-        self.assertEqual(r["builder_status"]["program_id"], "keysuri_korea_tech")
+        self.assertEqual(_build()["builder_status"]["program_id"], "keysuri_korea_tech")
 
     def test_unsupported_family_raises(self):
         with self.assertRaises(ValueError):
             build_bottom_shot_prompt(weather_condition="cloudy", family_id="family_z")
 
 
+# ===================================================================
+# Weather Input Metadata — unchanged
+# ===================================================================
+
 class WeatherInputMetadataTests(unittest.TestCase):
-    """Records whether temperature_c and fine_dust are available."""
 
     def test_temperature_unavailable_when_not_supplied(self):
         r = _build(weather_condition="cloudy")
@@ -345,27 +390,24 @@ class WeatherInputMetadataTests(unittest.TestCase):
         self.assertTrue(r["weather_input_metadata"]["fine_dust_unavailable"])
 
 
+# ===================================================================
+# Variation Gate Fallback — unchanged
+# ===================================================================
+
 class VariationGateFallbackTests(unittest.TestCase):
-    """Variation gate False → fixed 105936 fallback; no image generation."""
 
     def test_variation_gate_false_uses_fixed_fallback(self):
         from keysuri_service_full_run import korea_bottom_variation_enabled
         self.assertFalse(korea_bottom_variation_enabled())
 
     def test_variation_gate_false_no_image_api_call(self):
-        """Calling build_bottom_shot_prompt must never invoke image generation."""
-        with patch("keysuri_bottom_shot_prompt_builder.build_bottom_shot_prompt",
-                   wraps=build_bottom_shot_prompt) as mock_builder:
-            result = build_bottom_shot_prompt(weather_condition="cloudy")
-        # assert no image API was called (builder has no image API import)
+        result = build_bottom_shot_prompt(weather_condition="cloudy")
         self.assertFalse(result["builder_status"]["image_api_called"])
 
     def test_resolve_korea_bottom_returns_fixed_path_when_gate_off(self):
-        """resolve_korea_bottom_email_image_path falls back to 105936 when gate is off."""
         from keysuri_service_full_run import resolve_korea_bottom_email_image_path
         from pathlib import Path
 
-        # Patch gate to False (default) and asset resolution to return a fake path
         fake_path = Path("/tmp/fake_105936.jpg")
         with patch("keysuri_service_full_run.korea_bottom_variation_enabled", return_value=False):
             with patch("keysuri_service_full_run.resolve_korea_bottom_email_asset_path",
@@ -379,155 +421,106 @@ class VariationGateFallbackTests(unittest.TestCase):
         meta = build_bottom_shot_prompt_metadata_only(weather_condition="rainy")
         self.assertFalse(meta["bottom_shot_generation_allowed"])
         self.assertFalse(meta["bottom_shot_image_api_called"])
-        self.assertEqual(meta["bottom_shot_prompt_contract_version"], "v5")
 
     def test_metadata_only_records_weather_case(self):
         meta = build_bottom_shot_prompt_metadata_only(weather_condition="snow")
         self.assertTrue(len(meta["bottom_shot_weather_case"]) > 0)
 
 
-class AssemblyOrderTests(unittest.TestCase):
-    """Assembly order: Scene → Identity → Role → Camera → Outfit → Negative."""
+# ===================================================================
+# Assembly Order — v6: 8 genes
+# ===================================================================
 
-    def test_assembly_order_tuple(self):
+class AssemblyOrderTests(unittest.TestCase):
+
+    def test_assembly_order_8_genes(self):
         from keysuri_bottom_shot_prompt_builder import ASSEMBLY_ORDER
+        self.assertEqual(len(ASSEMBLY_ORDER), 8)
         self.assertEqual(ASSEMBLY_ORDER[0], "scene_lock")
         self.assertEqual(ASSEMBLY_ORDER[-1], "negative_prompt")
-        self.assertIn("identity_gene", ASSEMBLY_ORDER)
-        self.assertIn("weather_outfit_shell", ASSEMBLY_ORDER)
-        # Outfit must come after camera
-        self.assertGreater(
-            ASSEMBLY_ORDER.index("weather_outfit_shell"),
-            ASSEMBLY_ORDER.index("camera_gene"),
-        )
+        self.assertIn("expression_gene", ASSEMBLY_ORDER)
+        self.assertIn("prop_gesture_gene", ASSEMBLY_ORDER)
 
-    def test_scene_lock_first_in_prompt_text(self):
+    def test_scene_lock_first_in_prompt(self):
         from keysuri_bottom_shot_prompt_builder import SCENE_LOCK
-        r = _build()
-        self.assertTrue(r["prompt_text"].startswith(SCENE_LOCK.strip()[:30]))
+        self.assertTrue(_build()["prompt_text"].startswith(SCENE_LOCK.strip()[:30]))
 
     def test_identity_before_role_in_prompt(self):
-        r = _build()
-        prompt = r["prompt_text"]
-        identity_pos = prompt.find(FIXED_IDENTITY_GENE[:30])
-        role_pos = prompt.find(FIXED_ROLE_SCENE_GENE[:30])
-        self.assertGreater(role_pos, identity_pos)
+        prompt = _build()["prompt_text"]
+        self.assertGreater(
+            prompt.find(FIXED_ROLE_SCENE_GENE[:30]),
+            prompt.find(FIXED_IDENTITY_GENE[:30]),
+        )
 
-    def test_role_before_camera_in_prompt(self):
-        r = _build()
-        prompt = r["prompt_text"]
-        role_pos = prompt.find(FIXED_ROLE_SCENE_GENE[:30])
-        camera_pos = prompt.find(FIXED_CAMERA_GENE[:30])
-        self.assertGreater(camera_pos, role_pos)
-
-
-class BottomShotSceneContextTests(unittest.TestCase):
-    """Gene B must encode bottom-shot farewell scene — no top-shot briefing context."""
-
-    def setUp(self):
-        self.role_text = _build()["fixed_role_scene_gene"]["text"]
-        self.prompt = _build()["prompt_text"]
-
-    # --- Positive assertions: bottom-shot scene must be present ---
-
-    def test_closed_ceo_door_in_role_gene(self):
-        self.assertIn("wooden door", self.role_text)
-
-    def test_wood_paneled_walls_in_role_gene(self):
-        self.assertIn("wood-paneled", self.role_text)
-
-    def test_farewell_ritual_in_role_gene(self):
-        self.assertIn("closing ritual", self.role_text)
-
-    def test_viewer_is_owner_in_role_gene(self):
-        self.assertIn("owner", self.role_text)
-
-    def test_briefing_finished_context_in_role_gene(self):
-        self.assertIn("briefing is finished", self.role_text)
-
-    def test_off_duty_state_in_role_gene(self):
-        self.assertIn("Off-duty", self.role_text)
-
-    # --- Negative assertions: top-shot briefing phrases must be absent ---
-
-    def test_no_briefing_host_phrase_in_role_gene(self):
-        self.assertNotIn("briefing host", self.role_text)
-
-    def test_no_senior_financial_analyst_in_role_gene(self):
-        self.assertNotIn("senior financial technology analyst", self.role_text)
-
-    def test_no_lobby_in_role_gene(self):
-        self.assertNotIn("lobby", self.role_text)
-
-    def test_no_curated_interior_in_role_gene(self):
-        self.assertNotIn("curated interior", self.role_text)
-
-    def test_no_between_moments_phrase_in_role_gene(self):
-        # "between moments" is the top-shot neutrality phrase
-        self.assertNotIn("between moments", self.role_text)
-
-    def test_no_trusted_briefing_in_prompt(self):
-        self.assertNotIn("trusted briefing", self.prompt)
+    def test_expression_before_wardrobe_in_prompt(self):
+        prompt = _build()["prompt_text"]
+        self.assertGreater(
+            prompt.find(_build()["weather_outfit_shell"]["outfit_descriptor"][:30]),
+            prompt.find(FIXED_EXPRESSION_GENE[:30]),
+        )
 
 
-class BottomShotNegativePromptBlocklistExtendedTests(unittest.TestCase):
-    """Negative prompt must block all top-shot contamination and environment leaks."""
+# ===================================================================
+# Backward Compat — metadata_only returns required keys
+# ===================================================================
 
-    def setUp(self):
-        self.neg = _build()["negative_prompt"]
+class MetadataOnlyBackwardCompatTests(unittest.TestCase):
 
-    def test_tablet_blocked(self):
-        self.assertIn("tablet", self.neg)
+    def test_metadata_only_returns_required_keys(self):
+        meta = build_bottom_shot_prompt_metadata_only(weather_condition="cloudy")
+        required = [
+            "bottom_shot_weather_case",
+            "bottom_shot_outfit_map_key",
+            "bottom_shot_weather_outfit_source",
+            "bottom_shot_prompt_preview",
+        ]
+        for key in required:
+            self.assertIn(key, meta, f"Missing key: {key}")
 
-    def test_tech_screen_blocked(self):
-        self.assertIn("tech screen", self.neg)
+    def test_metadata_only_prompt_preview_under_200(self):
+        meta = build_bottom_shot_prompt_metadata_only(weather_condition="cloudy")
+        self.assertLessEqual(len(meta["bottom_shot_prompt_preview"]), 200)
 
-    def test_monitor_wall_blocked(self):
-        self.assertIn("monitor wall", self.neg)
+    def test_metadata_only_contract_version_v6(self):
+        meta = build_bottom_shot_prompt_metadata_only(weather_condition="cloudy")
+        self.assertEqual(meta["bottom_shot_prompt_contract_version"], "v6")
 
-    def test_monitor_blocked(self):
-        self.assertIn("monitor", self.neg)
 
-    def test_lobby_blocked(self):
-        self.assertIn("lobby", self.neg)
+# ===================================================================
+# V5 Drift Ban — authority/blazer/headshot must be absent
+# ===================================================================
 
-    def test_atrium_blocked(self):
-        self.assertIn("atrium", self.neg)
+class V5DriftBanTests(unittest.TestCase):
 
-    def test_open_corridor_blocked(self):
-        self.assertIn("open corridor", self.neg)
+    def test_no_quiet_authority_in_prompt(self):
+        self.assertNotIn("quiet authority", _build()["prompt_text"])
 
-    def test_desk_blocked(self):
-        self.assertIn("desk", self.neg)
+    def test_no_processed_the_room_in_prompt(self):
+        self.assertNotIn("processed the room", _build()["prompt_text"])
 
-    def test_keyboard_blocked(self):
-        self.assertIn("keyboard", self.neg)
+    def test_no_blazer_in_prompt(self):
+        prompt = _build()["prompt_text"]
+        self.assertNotIn("blazer", prompt.lower())
 
-    def test_multiple_monitors_blocked(self):
-        self.assertIn("multiple monitors", self.neg)
+    def test_no_mock_neck_in_prompt(self):
+        prompt = _build()["prompt_text"]
+        self.assertNotIn("mock-neck", prompt.lower())
 
-    def test_large_screen_background_blocked(self):
-        self.assertIn("large screen background", self.neg)
+    def test_no_headshot_crop_direction_in_prompt(self):
+        prompt = _build()["prompt_text"]
+        self.assertNotIn("mid-chest-to-crown", prompt)
 
-    def test_reading_device_blocked(self):
-        self.assertIn("reading device", self.neg)
+    def test_handbag_required_in_prompt(self):
+        self.assertIn("handbag", _build()["prompt_text"])
 
-    def test_round_glasses_blocked(self):
-        self.assertIn("round glasses", self.neg)
+    def test_farewell_gesture_in_prompt(self):
+        self.assertIn("farewell", _build()["prompt_text"])
 
-    def test_oval_glasses_blocked(self):
-        self.assertIn("oval glasses", self.neg)
+    def test_fresh_smile_in_prompt(self):
+        self.assertIn("fresh composed smile", _build()["prompt_text"])
 
-    def test_briefing_posture_blocked(self):
-        self.assertIn("briefing posture", self.neg)
-
-    def test_visible_feet_blocked(self):
-        # knee-up framing: feet must still be blocked
-        self.assertIn("visible feet", self.neg)
-
-    def test_visible_legs_not_in_negative(self):
-        # knee-up framing: legs ARE shown — "visible legs" removed from blocklist
-        self.assertNotIn("visible legs", self.neg)
+    def test_secretary_in_prompt(self):
+        self.assertIn("secretary", _build()["prompt_text"])
 
 
 if __name__ == "__main__":
