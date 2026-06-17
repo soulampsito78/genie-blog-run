@@ -1,4 +1,4 @@
-"""Kee-Suri customer delivery tests (Global enabled; Korea blocked)."""
+"""Kee-Suri customer delivery tests (Global enabled; Korea gated by bottom QA baseline)."""
 from __future__ import annotations
 
 import os
@@ -68,6 +68,9 @@ def _keysuri_global_legacy_owner_review_email_html(
     )
 
 
+_KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID = "keysuri_korea_bottom_20260605_105936"
+
+
 def _keysuri_global_artifact_meta(run_id: str) -> dict:
     return {
         "run_id": run_id,
@@ -86,6 +89,24 @@ def _keysuri_global_artifact_meta(run_id: str) -> dict:
     }
 
 
+def _keysuri_korea_artifact_meta_with_baseline(run_id: str) -> dict:
+    """Korea artifact meta with 041559 bottom QA baseline confirmed (bc78424)."""
+    return {
+        "run_id": run_id,
+        "mode": PROGRAM_KOREA,
+        "program_id": PROGRAM_KOREA,
+        "service_full_run": True,
+        "validation_result": "pass",
+        "owner_review_status": "pending_review",
+        "customer_delivery_status": "not_sent",
+        "artifact_status": "emailed",
+        "bottom_shot_asset_id": _KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID,
+        "korea_bottom_shot_asset_id": _KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID,
+        "bottom_shot_source": "fixed_105936_fallback",
+        "bottom_shot_watermark_status": "applied",
+    }
+
+
 class KeysuriApproveRunGateTests(unittest.TestCase):
     def setUp(self) -> None:
         os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
@@ -93,7 +114,8 @@ class KeysuriApproveRunGateTests(unittest.TestCase):
         os.environ["SMTP_USER"] = "user@example.com"
         os.environ["SMTP_PASSWORD"] = "secret"
 
-    def test_keysuri_korea_can_approve_returns_not_ready(self) -> None:
+    def test_keysuri_korea_can_approve_blocked_without_bottom_baseline(self) -> None:
+        # Korea without bottom QA baseline metadata → blocked (asset_id missing)
         run_id = "20260612_120000_keysuri_korea_tech_aabbccdd"
         meta = {
             "run_id": run_id,
@@ -105,7 +127,41 @@ class KeysuriApproveRunGateTests(unittest.TestCase):
         }
         ok, err = can_approve_customer_send(meta, has_email_html=True)
         self.assertFalse(ok)
-        self.assertEqual(err, "keysuri_customer_delivery_not_ready")
+        self.assertEqual(err, "korea_bottom_baseline_asset_id_missing")
+
+    def test_keysuri_korea_can_approve_blocked_wrong_source(self) -> None:
+        # Korea with asset_id correct but wrong bottom_shot_source → blocked
+        run_id = "20260612_120000_keysuri_korea_tech_aabbccdd"
+        meta = {
+            "run_id": run_id,
+            "mode": PROGRAM_KOREA,
+            "program_id": PROGRAM_KOREA,
+            "validation_result": "pass",
+            "owner_review_status": "pending_review",
+            "customer_delivery_status": "not_sent",
+            "bottom_shot_asset_id": _KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID,
+            "bottom_shot_source": "generated_variation",  # not in approved set
+        }
+        ok, err = can_approve_customer_send(meta, has_email_html=True)
+        self.assertFalse(ok)
+        self.assertEqual(err, "korea_bottom_baseline_source_unconfirmed")
+
+    def test_keysuri_korea_can_approve_when_baseline_confirmed(self) -> None:
+        # Korea with 041559 baseline confirmed → allowed (owner PASS gate next)
+        run_id = "20260612_120000_keysuri_korea_tech_aabbccdd"
+        meta = _keysuri_korea_artifact_meta_with_baseline(run_id)
+        ok, err = can_approve_customer_send(meta, has_email_html=True)
+        self.assertTrue(ok, f"expected approvable with baseline, got err={err!r}")
+        self.assertEqual(err, "ok")
+
+    def test_keysuri_korea_can_approve_blocked_when_already_approved(self) -> None:
+        # Korea with baseline confirmed but already approved → blocked (not double-send)
+        run_id = "20260612_120000_keysuri_korea_tech_aabbccdd"
+        meta = _keysuri_korea_artifact_meta_with_baseline(run_id)
+        meta["owner_review_status"] = "approved"
+        ok, err = can_approve_customer_send(meta, has_email_html=True)
+        self.assertFalse(ok)
+        self.assertEqual(err, "already_approved")
 
     def test_keysuri_global_can_approve_when_ready(self) -> None:
         run_id = "20260612_120000_keysuri_global_tech_aabbccdd"
@@ -146,7 +202,8 @@ class KeysuriApproveRunBlockedTests(unittest.TestCase):
         os.environ["SMTP_USER"] = "user@example.com"
         os.environ["SMTP_PASSWORD"] = "secret"
 
-    def test_keysuri_korea_approve_run_does_not_send(self) -> None:
+    def test_keysuri_korea_approve_run_blocked_without_bottom_baseline(self) -> None:
+        # Korea without bottom baseline metadata → approve_run blocked, no email sent
         run_id = "20260612_120000_keysuri_korea_tech_aabbccdd"
         save_run_artifact(
             {
@@ -158,6 +215,7 @@ class KeysuriApproveRunBlockedTests(unittest.TestCase):
                 "owner_review_status": "pending_review",
                 "customer_delivery_status": "not_sent",
                 "artifact_status": "emailed",
+                # no bottom_shot_asset_id / bottom_shot_source
             },
             email_html="<p>brief</p>",
         )
@@ -167,11 +225,30 @@ class KeysuriApproveRunBlockedTests(unittest.TestCase):
         ) as mock_send:
             updated, status = approve_run(run_id)
         self.assertIsNone(updated)
-        self.assertEqual(status, "keysuri_customer_delivery_not_ready")
+        self.assertEqual(status, "korea_bottom_baseline_asset_id_missing")
         mock_send.assert_not_called()
         meta = load_run_artifact(run_id) or {}
         self.assertEqual(meta.get("owner_review_status"), "pending_review")
         self.assertEqual(meta.get("customer_delivery_status"), "not_sent")
+
+    def test_keysuri_korea_approve_run_sends_when_baseline_confirmed(self) -> None:
+        # Korea with 041559 baseline confirmed → approve_run sends customer email
+        run_id = "20260612_120001_keysuri_korea_tech_aabbccdd"
+        save_run_artifact(
+            _keysuri_korea_artifact_meta_with_baseline(run_id),
+            email_html="<p>키수리 코리아 브리핑</p>",
+        )
+        with patch(
+            "keysuri_customer_delivery.send_keysuri_customer_final_email",
+            return_value=True,
+        ) as mock_send:
+            updated, status = approve_run(run_id)
+        self.assertEqual(status, "ok")
+        self.assertIsNotNone(updated)
+        mock_send.assert_called_once()
+        meta = load_run_artifact(run_id) or {}
+        self.assertEqual(meta.get("owner_review_status"), "approved")
+        self.assertEqual(meta.get("customer_delivery_status"), "smtp_accepted")
 
 
 class KeysuriCustomerDeliveryHtmlTests(unittest.TestCase):
@@ -306,7 +383,8 @@ class KeysuriAdminApproveButtonTests(unittest.TestCase):
         resp = self.client.get(f"/admin/runs/{run_id}")
         self.assertEqual(resp.status_code, 200)
         self.assertNotIn("승인 검토 페이지 열기", resp.text)
-        self.assertIn("Kee-Suri 고객 발송은 아직 안전 검증 전입니다", resp.text)
+        # Korea without bottom baseline → admin UI shows the gate error code
+        self.assertIn("korea_bottom_baseline_asset_id_missing", resp.text)
 
 
 class KeysuriApproveRouteTests(unittest.TestCase):
@@ -386,7 +464,8 @@ class KeysuriApproveRouteTests(unittest.TestCase):
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
         resp = self.client.get(f"/admin/runs/{run_id}/approve-confirm")
         self.assertEqual(resp.status_code, 400)
-        self.assertIn("안전 검증 전", resp.text)
+        # Korea without bottom baseline → gate error code in response
+        self.assertIn("korea_bottom_baseline_asset_id_missing", resp.text)
         mock_send.assert_not_called()
         meta = load_run_artifact(run_id) or {}
         self.assertEqual(meta.get("owner_review_status"), "pending_review")
@@ -474,8 +553,9 @@ class ServiceFullRunRegistryApprovalTests(unittest.TestCase):
             ok, err = can_approve_customer_send(meta, has_email_html=True)
             with self.subTest(program_id=spec.program_id, mode=mode):
                 if mode == PROGRAM_KOREA:
+                    # Korea blocked without bottom baseline metadata in artifact
                     self.assertFalse(ok)
-                    self.assertEqual(err, "keysuri_customer_delivery_not_ready")
+                    self.assertEqual(err, "korea_bottom_baseline_asset_id_missing")
                 elif mode == PROGRAM_GLOBAL:
                     self.assertTrue(ok, f"expected approvable, got {err!r}")
                     self.assertEqual(err, "ok")

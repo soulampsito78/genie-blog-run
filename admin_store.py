@@ -52,8 +52,18 @@ _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED = frozenset(
     }
 )
 LEGACY_CUSTOMER_DELIVERY_STATUSES = frozenset({"sent_after_timeout"})
-APPROVABLE_MODES = frozenset({"today_genie", "tomorrow_genie", "keysuri_global_tech"})
-_KEYSURI_CUSTOMER_DELIVERY_BLOCKED_MODES = frozenset({"keysuri_korea_tech"})
+APPROVABLE_MODES = frozenset({"today_genie", "tomorrow_genie", "keysuri_global_tech", "keysuri_korea_tech"})
+# keysuri_korea_tech delivery is gated by bottom QA baseline metadata, not a blanket block.
+# Unlock requires: bottom_shot_asset_id == _KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID
+# AND bottom_shot_source in _KEYSURI_KOREA_BOTTOM_APPROVED_SOURCES.
+_KEYSURI_CUSTOMER_DELIVERY_BLOCKED_MODES: frozenset = frozenset()  # retired: all modes now use per-mode gates
+
+# Korea Bottom QA baseline lock (041559, commit bc78424)
+_KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID = "keysuri_korea_bottom_20260605_105936"
+_KEYSURI_KOREA_BOTTOM_APPROVED_SOURCES = frozenset({
+    "fixed_105936_fallback",
+    "fixed_105936_fallback_variation_not_implemented",
+})
 
 _CUSTOMER_DELIVERY_STATUS_LABELS_KO = {
     "not_sent": "미발송",
@@ -499,12 +509,40 @@ def _is_legacy_timeout_artifact(meta: Dict[str, Any]) -> bool:
     )
 
 
+def _keysuri_korea_bottom_baseline_confirmed(meta: Dict[str, Any]) -> tuple[bool, str]:
+    """Check that Korea Bottom image metadata confirms the 041559 QA baseline.
+
+    Requires:
+      bottom_shot_asset_id == _KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID (105936)
+      bottom_shot_source in _KEYSURI_KOREA_BOTTOM_APPROVED_SOURCES
+    If either is missing or wrong, delivery stays blocked.
+    """
+    asset_id = str(
+        meta.get("bottom_shot_asset_id") or meta.get("korea_bottom_shot_asset_id") or ""
+    )
+    source = str(meta.get("bottom_shot_source") or "")
+    if asset_id != _KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID:
+        return False, "korea_bottom_baseline_asset_id_missing"
+    if source not in _KEYSURI_KOREA_BOTTOM_APPROVED_SOURCES:
+        return False, "korea_bottom_baseline_source_unconfirmed"
+    return True, "ok"
+
+
 def can_approve_customer_send(meta: Dict[str, Any], *, has_email_html: bool) -> tuple[bool, str]:
     mode = str(meta.get("mode") or "")
-    if mode in _KEYSURI_CUSTOMER_DELIVERY_BLOCKED_MODES:
-        return False, "keysuri_customer_delivery_not_ready"
     if mode not in APPROVABLE_MODES:
         return False, "unsupported_mode"
+    if mode == "keysuri_korea_tech":
+        # Korea delivery requires 041559 bottom QA baseline metadata confirmed.
+        # If bottom image metadata is absent or wrong, delivery is blocked.
+        baseline_ok, baseline_err = _keysuri_korea_bottom_baseline_confirmed(meta)
+        if not baseline_ok:
+            return False, baseline_err
+        from keysuri_customer_delivery import customer_delivery_config_ready
+
+        ready, err = customer_delivery_config_ready()
+        if not ready:
+            return False, err
     if mode == "keysuri_global_tech":
         from keysuri_customer_delivery import customer_delivery_config_ready
 
@@ -616,7 +654,7 @@ def approve_run(
 
         send_ok = send_today_geenee_customer_final_email(saved_html, meta)
         diag_source = last_send_diagnostic
-    elif mode == "keysuri_global_tech":
+    elif mode in ("keysuri_global_tech", "keysuri_korea_tech"):
         from email_sender import last_send_diagnostic
         from keysuri_customer_delivery import send_keysuri_customer_final_email
 
