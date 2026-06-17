@@ -1,6 +1,15 @@
 """Key-Suri Bottom Shot QA Pilot v6 — manual-only, max 2 images.
 
-Contract v6: luxury off-duty farewell, taste-cluster wardrobe, fresh composed smile.
+Contract v6 anchor patch: 105936 is the primary fixed Bottom visual anchor.
+Asset01 is secondary same-person continuity reference.
+Weather drives wardrobe selection within the 105936-family premium closet.
+
+Image generation: calls Vertex AI directly with multi-ref content_parts.
+  Slot 0: 105936 (primary Bottom visual anchor)
+  Slot 1: Asset01 (secondary continuity reference, if file exists)
+  Slot 2: prompt text
+Does NOT call image_generator.generate_image_file().
+image_generator.py is untouched.
 
 Does NOT:
   - call service_full_run
@@ -10,10 +19,7 @@ Does NOT:
   - copy to email/static
   - enable variation gate in Cloud Run
   - touch production delivery paths
-
-Reference:
-  Asset01: assets/keysuri/reference/image_keysuri_asset_01_main_briefing.png
-  105936:  direction reference only — NOT image input
+  - touch top assets, scheduler, admin_store, secrets
 
 Output folder:
   output/keysuri_preview/korea_bottom_rotation/qa_pilot_v6/family_a/
@@ -26,6 +32,7 @@ import json
 import os
 import sys
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -35,19 +42,23 @@ sys.path.insert(0, str(REPO))
 
 from keysuri_bottom_shot_prompt_builder import (  # noqa: E402
     ASSET01_PATH,
+    BOTTOM_ANCHOR_PATH,
+    BOTTOM_ANCHOR_ROLE,
+    ASSET01_ROLE,
     build_bottom_shot_prompt,
 )
 
 PROGRAM_ID = "keysuri_korea_tech"
 FAMILY_ID = "family_a"
 QA_OUTPUT_DIR = REPO / "output/keysuri_preview/korea_bottom_rotation/qa_pilot_v6/family_a"
-ASSET01_ABS = REPO / ASSET01_PATH
+BOTTOM_ANCHOR_ABS = REPO / BOTTOM_ANCHOR_PATH   # 105936 — slot 0 primary anchor
+ASSET01_ABS = REPO / ASSET01_PATH               # Asset01 — slot 1 secondary
 
 WEATHER_CASES = [
     {"weather_condition": "clear", "temperature_c": 12.0, "season": None,
-     "taste_cluster": "B", "label": "cluster_B_clear_cool"},
+     "label": "clear_cool_12c"},
     {"weather_condition": "cold", "temperature_c": 8.0, "season": None,
-     "taste_cluster": "E", "label": "cluster_E_cold"},
+     "label": "cold_8c"},
 ]
 
 MAX_IMAGES = 2
@@ -67,7 +78,6 @@ def _build_and_save_prompt(case: dict, out_dir: Path, stamp: str) -> Dict[str, A
         season=case.get("season"),
         program_id=PROGRAM_ID,
         family_id=FAMILY_ID,
-        taste_cluster=case.get("taste_cluster"),
     )
     label = case["label"]
     prompt_path = out_dir / f"bottom_shot_prompt_{label}_{stamp}.txt"
@@ -85,25 +95,80 @@ def _build_and_save_prompt(case: dict, out_dir: Path, stamp: str) -> Dict[str, A
     return {"result": result, "prompt_path": prompt_path, "meta_path": meta_path, "label": label}
 
 
-def _generate_image(prompt_result: Dict[str, Any], out_dir: Path, stamp: str, image_index: int) -> Dict[str, Any]:
-    from image_generator import generate_image_file
+def _generate_image_bottom_anchor(
+    prompt_result: Dict[str, Any],
+    out_dir: Path,
+    stamp: str,
+    image_index: int,
+) -> Dict[str, Any]:
+    """Generate a Bottom image using multi-ref Vertex AI call.
+
+    Content parts order:
+      [0] 105936     — primary Bottom visual anchor (BOTTOM_ANCHOR_ABS)
+      [1] Asset01    — secondary same-person continuity (ASSET01_ABS, if available)
+      [2] prompt     — positive + negative prompt text
+
+    Calls Vertex AI directly. Does NOT call image_generator.generate_image_file().
+    image_generator.py is untouched.
+    """
+    import vertexai
+    from vertexai.generative_models import GenerationConfig, GenerativeModel
+    from vertexai.generative_models import Image as VxImage, Part
+    from PIL import Image as PILImage
+
+    vertexai.init(project=PROJECT_ID, location=LOCATION)
+    model = GenerativeModel(MODEL_NAME)
+
+    content_parts: list = []
+
+    # Slot 0 — 105936 primary Bottom visual anchor
+    if BOTTOM_ANCHOR_ABS.is_file():
+        content_parts.append(Part.from_image(VxImage.load_from_file(str(BOTTOM_ANCHOR_ABS))))
+        print(f"  [anchor slot 0] {BOTTOM_ANCHOR_ROLE}: {BOTTOM_ANCHOR_PATH}")
+    else:
+        print(f"  [WARNING] Bottom anchor not found: {BOTTOM_ANCHOR_ABS}")
+
+    # Slot 1 — Asset01 secondary continuity reference
+    if ASSET01_ABS.is_file():
+        content_parts.append(Part.from_image(VxImage.load_from_file(str(ASSET01_ABS))))
+        print(f"  [anchor slot 1] {ASSET01_ROLE}: {ASSET01_PATH}")
+
+    # Slot 2 — prompt text
+    positive = prompt_result["result"]["prompt_text"]
+    negative = prompt_result["result"]["negative_prompt"]
+    content_parts.append(f"{positive}\n\nNEGATIVE:\n{negative}")
 
     label = prompt_result["label"]
     out_path = out_dir / f"bottom_shot_qa_{label}_{stamp}_{image_index:02d}.jpg"
-    positive = prompt_result["result"]["prompt_text"]
-    negative = prompt_result["result"]["negative_prompt"]
-    full_prompt = f"{positive}\n\nNEGATIVE:\n{negative}"
-
     print(f"  [generating] image {image_index} ({label}) → {out_path.relative_to(REPO)}")
 
-    generate_image_file(
-        prompt=full_prompt,
-        output_path=out_path,
-        model_name=MODEL_NAME,
-        reference_image_path=ASSET01_ABS if ASSET01_ABS.is_file() else None,
-        project_id=PROJECT_ID or None,
-        location=LOCATION,
+    response = model.generate_content(
+        content_parts,
+        generation_config=GenerationConfig(response_modalities=["IMAGE"]),
     )
+
+    # Extract image bytes
+    raw: Optional[bytes] = None
+    for cand in (getattr(response, "candidates", None) or []):
+        content = getattr(cand, "content", None)
+        for p in (getattr(content, "parts", None) or []):
+            inline = getattr(p, "inline_data", None)
+            if inline and getattr(inline, "data", None):
+                raw = inline.data
+                break
+        if raw:
+            break
+
+    if not raw:
+        raise RuntimeError(
+            f"No image bytes in model response for {label}. "
+            f"finish_reason={getattr((getattr(response, 'candidates', [None]) or [None])[0], 'finish_reason', 'unknown')}"
+        )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with PILImage.open(BytesIO(raw)) as im:
+        im.convert("RGB").save(out_path, format="JPEG", quality=92, optimize=True)
+
     print(f"  [saved]      {out_path.relative_to(REPO)}")
     return {"image_path": out_path, "label": label, "index": image_index}
 
@@ -128,31 +193,32 @@ def _make_contact_sheet(image_paths: List[Path], out_dir: Path, stamp: str) -> O
         return None
 
 
-# v6 QA checklist — persona-first ordered gates (Lock-in Plan §18)
+# v6 QA checklist — persona-first ordered gates
 CHECKLIST_V6 = {
     "gate_1_persona": [
         "private AI secretary — NOT executive, NOT consultant, NOT professor",
-        "off-duty farewell — NOT on-duty briefing",
-        "fresh composed smile — NOT warm motherly, NOT guardian-like",
-        "attractive modern presence — NOT corporate authority portrait",
+        "exclusive owner-facing closing moment — NOT public farewell",
+        "restrained composed slight smile — NOT warm motherly, NOT guardian-like",
+        "noble sensuality and premium presence — NOT corporate authority portrait",
+        "same identity as 105936 reference anchor",
     ],
     "gate_2_identity": [
-        "same face family as Asset01",
+        "same face/presence family as 105936 anchor",
         "thin metal rectangular glasses visible",
         "side-parted short bob — NO inward C-curl, NO updos, NO bangs",
-        "mid-to-late thirties Korean woman",
+        "Korean woman, premium register",
     ],
     "gate_3_scene": [
         "closed CEO/chairman wooden door in background",
         "warm wood-paneled wall",
-        "farewell moment at office threshold",
-        "viewer is the owner (대표님)",
+        "private closing moment at office threshold",
+        "viewer is the owner (대표님) — not public",
     ],
     "gate_4_wardrobe_prop": [
-        "luxury off-duty outfit — NOT blazer, NOT mock-neck, NOT corporate uniform",
+        "luxury outfit inside 105936 premium closet family — NOT blazer, NOT casual",
         "premium handbag visible",
-        "farewell hand gesture visible",
-        "outfit reads premium, not plain market clothes",
+        "small restrained private gesture — NOT raised, NOT waving",
+        "ivory/cream/champagne/camel/charcoal palette — NOT random office casual",
     ],
     "gate_5_framing": [
         "knee-up or 3/4 body — NOT headshot, NOT full-body",
@@ -178,12 +244,14 @@ HARD_FAIL_TERMS_V6 = [
     "inward-curled bob",
     "C-curl cute bob",
     "no handbag visible",
-    "no hand gesture",
     "tablet",
     "briefing posture",
     "lobby",
     "full-body lookbook",
     "tight headshot",
+    "cardigan",
+    "ordinary office",
+    "lifestyle blogger",
 ]
 
 
@@ -199,8 +267,11 @@ def _write_review_report(
         "program_id": PROGRAM_ID,
         "family_id": FAMILY_ID,
         "model": MODEL_NAME,
+        "bottom_anchor_105936": BOTTOM_ANCHOR_PATH,
+        "bottom_anchor_role": BOTTOM_ANCHOR_ROLE,
         "asset01_reference": ASSET01_PATH,
-        "direction_ref_105936": "direction_reference_only — NOT image input",
+        "asset01_role": ASSET01_ROLE,
+        "image_generation_method": "direct_vertex_ai_multi_ref — image_generator.py NOT called",
         "generation_allowed_flag": False,
         "runtime_enabled_flag": False,
         "image_api_called": True,
@@ -209,6 +280,7 @@ def _write_review_report(
         "email_sent": False,
         "service_full_run_called": False,
         "scheduler_triggered": False,
+        "image_generator_py_touched": False,
         "contract_version": "v6",
         "review_checklist_v6": CHECKLIST_V6,
         "hard_fail_terms_v6": HARD_FAIL_TERMS_V6,
@@ -221,21 +293,22 @@ def _write_review_report(
     for img_res, prompt_info in zip(image_results, prompt_infos):
         img_path = img_res["image_path"]
         label = img_res["label"]
+        shell = prompt_info["result"]["weather_outfit_shell"]
         entry: Dict[str, Any] = {
             "image_index": img_res["index"],
             "label": label,
             "image_path": str(img_path.relative_to(REPO)) if img_path.is_file() else "MISSING",
             "prompt_path": str(prompt_info["prompt_path"].relative_to(REPO)),
             "meta_path": str(prompt_info["meta_path"].relative_to(REPO)),
-            "weather_case": prompt_info["result"]["weather_outfit_shell"]["weather_case"],
-            "taste_cluster": prompt_info["result"]["weather_outfit_shell"]["taste_cluster"],
+            "weather_case": shell["weather_case"],
+            "outfit_map_key": shell["outfit_map_key"],
             "review_checklist_v6": {gate: "REQUIRES_VISUAL_INSPECTION" for gate in CHECKLIST_V6},
             "hard_fail_detected": False,
             "overall_status": "REQUIRES_VISUAL_INSPECTION",
             "notes": (
-                "Owner must inspect against v6 Gates 1-5 (persona-first). "
-                "PASS or FAIL only — no CONDITIONAL_PASS. "
-                "Gate 1 (persona) must pass before evaluating Gates 2-5."
+                "Owner must inspect against v6 Gates 1-5 (anchor-first). "
+                "Gate 1: does this match the 105936 identity/register? "
+                "PASS or FAIL only — no CONDITIONAL_PASS."
             ),
         }
         report["images"].append(entry)
@@ -248,18 +321,20 @@ def _write_review_report(
 
 
 def run_qa_pilot() -> None:
-    print("\n=== Key-Suri Bottom Shot QA Pilot v6 ===")
-    print(f"program_id:  {PROGRAM_ID}")
-    print(f"family_id:   {FAMILY_ID}")
-    print(f"max_images:  {MAX_IMAGES}")
-    print(f"model:       {MODEL_NAME}")
-    print(f"asset01:     {ASSET01_PATH}")
-    print(f"output_dir:  output/keysuri_preview/korea_bottom_rotation/qa_pilot_v6/family_a/")
-    print(f"verdict:     PASS / FAIL only (no CONDITIONAL_PASS)")
+    print("\n=== Key-Suri Bottom Shot QA Pilot v6 (105936 anchor patch) ===")
+    print(f"program_id:      {PROGRAM_ID}")
+    print(f"family_id:       {FAMILY_ID}")
+    print(f"max_images:      {MAX_IMAGES}")
+    print(f"model:           {MODEL_NAME}")
+    print(f"anchor slot 0:   {BOTTOM_ANCHOR_PATH}  [{BOTTOM_ANCHOR_ROLE}]")
+    print(f"anchor slot 1:   {ASSET01_PATH}  [{ASSET01_ROLE}]")
+    print(f"output_dir:      output/keysuri_preview/korea_bottom_rotation/qa_pilot_v6/family_a/")
+    print(f"image_generator: NOT called — direct Vertex AI multi-ref")
+    print(f"verdict:         PASS / FAIL only (no CONDITIONAL_PASS)")
     print()
 
-    if not ASSET01_ABS.is_file():
-        print(f"[ERROR] Asset01 not found at {ASSET01_ABS}")
+    if not BOTTOM_ANCHOR_ABS.is_file():
+        print(f"[ERROR] Bottom anchor (105936) not found at {BOTTOM_ANCHOR_ABS}")
         sys.exit(1)
 
     if not PROJECT_ID:
@@ -278,7 +353,7 @@ def run_qa_pilot() -> None:
     image_results = []
     for i, prompt_info in enumerate(prompt_infos, start=1):
         print(f"\n[Generating image {i}/{MAX_IMAGES}: {prompt_info['label']}]")
-        img_result = _generate_image(prompt_info, QA_OUTPUT_DIR, stamp, i)
+        img_result = _generate_image_bottom_anchor(prompt_info, QA_OUTPUT_DIR, stamp, i)
         image_results.append(img_result)
 
     print("\n[Building contact sheet]")
@@ -297,9 +372,11 @@ def run_qa_pilot() -> None:
     print("Confirmations:")
     print("  no watermark, no registry, no email, no service_full_run")
     print("  no Scheduler, no customer delivery, no secrets changed")
+    print("  no image_generator.py called")
     print("  variation gate unchanged (KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED not set)")
     print()
     print("Next step: owner visual inspection — PASS or FAIL only.")
+    print("Gate 1 check: does output match 105936 identity/register?")
 
 
 if __name__ == "__main__":

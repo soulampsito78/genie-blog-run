@@ -1,9 +1,12 @@
-"""Tests for Key-Suri bottom-shot prompt builder (Contract v6).
+"""Tests for Key-Suri bottom-shot prompt builder (Contract v6 — 105936 anchor patch).
 
 Verifies:
-- v6 persona: private AI secretary, fresh smile, luxury off-duty, handbag, farewell
-- v5 authority/blazer/mock-neck/C-curl/headshot drift is banned
-- Asset01/105936 roles and gate status preserved
+- 105936 is primary Bottom visual anchor (not direction reference)
+- Asset01 is secondary same-person continuity reference
+- Weather still drives wardrobe selection across 6 closet variants
+- All wardrobe variants stay inside 105936 premium closet family
+- v6 persona: private AI secretary, composed smile, handbag, owner-facing exclusivity
+- Noble sensuality framing preserved; age-risk text removed from identity gene
 - Backward-compatible metadata_only return keys for service_full_run
 """
 from __future__ import annotations
@@ -14,9 +17,8 @@ from unittest.mock import patch
 from keysuri_bottom_shot_prompt_builder import (
     ASSET01_PATH,
     ASSET01_ROLE,
-    DIRECTION_REF_105936_NOTE,
-    DIRECTION_REF_105936_PATH,
-    DIRECTION_REF_105936_ROLE,
+    BOTTOM_ANCHOR_PATH,
+    BOTTOM_ANCHOR_ROLE,
     FIXED_CAMERA_GENE,
     FIXED_EXPRESSION_GENE,
     FIXED_IDENTITY_GENE,
@@ -40,7 +42,50 @@ def _build(weather_condition="cloudy", temperature_c=None, season=None,
 
 
 # ===================================================================
-# Identity Gene — v6 persona (fresh/attractive, not authority)
+# Anchor Role — 105936 is primary Bottom anchor, Asset01 is secondary
+# ===================================================================
+
+class AnchorRoleTests(unittest.TestCase):
+
+    def test_bottom_anchor_path_contains_105936(self):
+        self.assertIn("105936", BOTTOM_ANCHOR_PATH)
+
+    def test_bottom_anchor_role_is_primary(self):
+        self.assertEqual(BOTTOM_ANCHOR_ROLE, "primary_bottom_visual_anchor")
+
+    def test_asset01_role_is_secondary(self):
+        self.assertEqual(ASSET01_ROLE, "secondary_same_person_continuity_reference")
+
+    def test_reference_assets_has_primary_bottom_anchor(self):
+        refs = _build()["reference_assets"]
+        self.assertIn("primary_bottom_anchor", refs)
+        self.assertEqual(refs["primary_bottom_anchor"]["role"], BOTTOM_ANCHOR_ROLE)
+        self.assertEqual(refs["primary_bottom_anchor"]["path"], BOTTOM_ANCHOR_PATH)
+
+    def test_reference_assets_has_secondary_continuity(self):
+        refs = _build()["reference_assets"]
+        self.assertIn("secondary_continuity_reference", refs)
+        self.assertEqual(refs["secondary_continuity_reference"]["role"], ASSET01_ROLE)
+        self.assertEqual(refs["secondary_continuity_reference"]["path"], ASSET01_PATH)
+
+    def test_105936_is_not_direction_reference_only(self):
+        # Old "direction reference only" designation is retired
+        refs = _build()["reference_assets"]
+        roles = [v.get("role", "") for v in refs.values()]
+        self.assertNotIn("direction_reference_only", roles)
+
+    def test_105936_note_is_not_not_image_input(self):
+        # 105936 is now an image input — old "NOT image input" note must not appear in anchor
+        note = _build()["reference_assets"]["primary_bottom_anchor"].get("note", "")
+        self.assertNotIn("NOT image input", note)
+
+    def test_asset01_not_primary(self):
+        refs = _build()["reference_assets"]
+        self.assertNotIn("primary_identity_reference", [v.get("role") for v in refs.values()])
+
+
+# ===================================================================
+# Identity Gene — anchor-aware, age language removed
 # ===================================================================
 
 class FixedIdentityGeneTests(unittest.TestCase):
@@ -58,13 +103,21 @@ class FixedIdentityGeneTests(unittest.TestCase):
 
     def test_identity_contains_key_features(self):
         text = _build()["fixed_identity_gene"]["text"]
-        self.assertIn("mid-to-late thirties", text)
         self.assertIn("glasses", text)
         self.assertIn("side-parted short bob", text)
 
-    def test_identity_contains_noble_sensuality_premium(self):
+    def test_identity_no_age_wording(self):
+        # Age impression carried by 105936 anchor image — text must not state age
         text = _build()["fixed_identity_gene"]["text"]
-        self.assertIn("noble sensuality", text)
+        self.assertNotIn("mid-to-late thirties", text)
+        self.assertNotIn("thirties", text)
+
+    def test_identity_contains_noble_sensuality(self):
+        text = _build()["fixed_identity_gene"]["text"]
+        self.assertIn("Noble sensuality", text)
+
+    def test_identity_contains_premium_presence(self):
+        text = _build()["fixed_identity_gene"]["text"]
         self.assertIn("Premium presence", text)
 
     def test_identity_hair_is_sleek_no_curl(self):
@@ -78,10 +131,6 @@ class FixedIdentityGeneTests(unittest.TestCase):
         self.assertNotIn("processed the room", text)
         self.assertNotIn("never performative", text)
 
-    def test_identity_no_c_curl(self):
-        inv = _build()["fixed_identity_gene"]["invariants"]
-        self.assertIn("no C-curl", inv["hair"])
-
     def test_identity_no_attractive_keyword(self):
         text = _build()["fixed_identity_gene"]["text"]
         self.assertNotIn("quietly attractive", text)
@@ -90,9 +139,21 @@ class FixedIdentityGeneTests(unittest.TestCase):
         text = _build()["fixed_identity_gene"]["text"]
         self.assertIn("never through exposure", text)
 
+    def test_identity_invariant_anchor_is_105936(self):
+        inv = _build()["fixed_identity_gene"]["invariants"]
+        self.assertIn("105936", inv.get("anchor", ""))
+
+    def test_identity_no_c_curl_in_invariants(self):
+        inv = _build()["fixed_identity_gene"]["invariants"]
+        self.assertIn("no C-curl", inv["hair"])
+
+    def test_identity_maintains_reference_image(self):
+        text = _build()["fixed_identity_gene"]["text"]
+        self.assertIn("reference image", text)
+
 
 # ===================================================================
-# Role + Relationship Gene — secretary, owner, farewell
+# Role + Relationship Gene — exclusive owner-facing
 # ===================================================================
 
 class FixedRoleSceneGeneTests(unittest.TestCase):
@@ -146,7 +207,7 @@ class FixedRoleSceneGeneTests(unittest.TestCase):
 
 
 # ===================================================================
-# Expression Gene — fresh composed smile
+# Expression Gene — cool reserved, not broad/lively
 # ===================================================================
 
 class FixedExpressionGeneTests(unittest.TestCase):
@@ -173,7 +234,7 @@ class FixedExpressionGeneTests(unittest.TestCase):
 
 
 # ===================================================================
-# Prop + Gesture Gene — handbag, hand farewell
+# Prop + Gesture Gene — private contained gesture
 # ===================================================================
 
 class FixedPropGestureGeneTests(unittest.TestCase):
@@ -215,7 +276,7 @@ class FixedCameraGeneTests(unittest.TestCase):
     def test_camera_no_anti_body_stack(self):
         text = _build()["fixed_camera_gene"]["text"]
         count_no = text.lower().count("no ")
-        self.assertLessEqual(count_no, 1, "Camera gene should not stack multiple anti-body negatives")
+        self.assertLessEqual(count_no, 1)
 
     def test_camera_unchanged_across_weather(self):
         texts = {_build(weather_condition=c)["fixed_camera_gene"]["text"]
@@ -224,63 +285,149 @@ class FixedCameraGeneTests(unittest.TestCase):
 
 
 # ===================================================================
-# Wardrobe — taste cluster catalog, no blazer/mock-neck
+# Weather Wardrobe — 105936-family closet, 6 weather variants
 # ===================================================================
 
-class WardrobeTests(unittest.TestCase):
+class WeatherWardrobeTests(unittest.TestCase):
 
-    def test_default_cluster_B(self):
-        r = _build()
-        self.assertEqual(r["weather_outfit_shell"]["taste_cluster"], "B")
+    def _outfit(self, weather_condition, temperature_c=None, season=None):
+        return _build(
+            weather_condition=weather_condition,
+            temperature_c=temperature_c,
+            season=season,
+        )["weather_outfit_shell"]["outfit_descriptor"]
 
-    def test_cluster_A_selection(self):
-        r = _build(taste_cluster="A")
-        self.assertEqual(r["weather_outfit_shell"]["taste_cluster"], "A")
-        self.assertIn("silk-knit", r["weather_outfit_shell"]["outfit_descriptor"])
-
-    def test_cluster_G_selection(self):
-        r = _build(taste_cluster="G")
-        self.assertEqual(r["weather_outfit_shell"]["taste_cluster"], "G")
-        self.assertIn("camel", r["weather_outfit_shell"]["outfit_descriptor"].lower())
-
-    def test_outfit_in_prompt_text(self):
-        r = _build(taste_cluster="C")
-        self.assertIn("smoky blue", r["prompt_text"].lower())
-
-    def test_no_blazer_in_any_cluster(self):
-        for cluster in "ABCDEFGH":
-            outfit = _build(taste_cluster=cluster)["weather_outfit_shell"]["outfit_descriptor"]
-            self.assertNotIn("blazer", outfit.lower(),
-                             f"Cluster {cluster} must not contain blazer")
-
-    def test_no_mock_neck_in_any_cluster(self):
-        for cluster in "ABCDEFGH":
-            outfit = _build(taste_cluster=cluster)["weather_outfit_shell"]["outfit_descriptor"]
-            self.assertNotIn("mock-neck", outfit.lower(),
-                             f"Cluster {cluster} must not contain mock-neck")
-
-    def test_no_bare_cardigan_in_luxury_clusters(self):
-        # Clusters A, C, G had lifestyle/cardigan drift in v6 QA run 031005
-        for cluster in ["A", "C", "G"]:
-            outfit = _build(taste_cluster=cluster)["weather_outfit_shell"]["outfit_descriptor"]
-            self.assertNotIn(" cardigan", outfit,
-                             f"Cluster {cluster} must not use bare 'cardigan' — use structured layer language")
-
-    def test_weather_modifies_fabric_not_structure(self):
-        r_warm = _build(weather_condition="clear", temperature_c=30.0)
-        r_cold = _build(weather_condition="snow", temperature_c=-5.0)
-        self.assertNotEqual(
-            r_warm["weather_outfit_shell"]["outfit_descriptor"],
-            r_cold["weather_outfit_shell"]["outfit_descriptor"],
+    def test_clear_cool_yields_ivory_or_cream(self):
+        outfit = self._outfit("clear", temperature_c=12.0)
+        self.assertTrue(
+            "ivory" in outfit.lower() or "cream" in outfit.lower(),
+            f"clear_cool must include ivory or cream: {outfit}"
         )
 
-    def test_identity_unchanged_when_cluster_changes(self):
-        r_a = _build(taste_cluster="A")
-        r_e = _build(taste_cluster="E")
-        self.assertEqual(r_a["fixed_identity_gene"]["text"], r_e["fixed_identity_gene"]["text"])
+    def test_cold_yields_cashmere_coat(self):
+        outfit = self._outfit("cold", temperature_c=8.0)
+        self.assertIn("cashmere", outfit.lower())
+        self.assertIn("coat", outfit.lower())
 
-    def test_outfit_after_camera_not_required(self):
-        """v6: wardrobe appears before camera in assembly to prevent outfit-first."""
+    def test_cold_temp_yields_cashmere_coat(self):
+        outfit = self._outfit("cloudy", temperature_c=5.0)
+        self.assertIn("cashmere", outfit.lower())
+
+    def test_rainy_yields_trench_or_coat(self):
+        outfit = self._outfit("rainy")
+        self.assertTrue(
+            "trench" in outfit.lower() or "coat" in outfit.lower(),
+            f"rainy must include trench or coat: {outfit}"
+        )
+
+    def test_warm_yields_silk_knit(self):
+        outfit = self._outfit("clear", temperature_c=22.0)
+        self.assertIn("silk-knit", outfit.lower())
+
+    def test_hot_has_no_coat(self):
+        outfit = self._outfit("clear", temperature_c=30.0)
+        self.assertNotIn("overcoat", outfit.lower())
+        self.assertNotIn("cashmere coat", outfit.lower())
+
+    def test_snowy_yields_cashmere_overcoat(self):
+        outfit = self._outfit("snow", temperature_c=-3.0)
+        self.assertIn("cashmere", outfit.lower())
+        self.assertIn("overcoat", outfit.lower())
+
+    def test_freezing_temp_yields_snowy_variant(self):
+        outfit = self._outfit("cloudy", temperature_c=0.0)
+        self.assertIn("cashmere", outfit.lower())
+
+    def test_handbag_in_all_weather_variants(self):
+        cases = [
+            ("clear", 12.0), ("cold", 8.0), ("rainy", None),
+            ("clear", 22.0), ("clear", 30.0), ("snow", -3.0),
+        ]
+        for cond, temp in cases:
+            outfit = self._outfit(cond, temperature_c=temp)
+            self.assertIn("handbag", outfit.lower(),
+                          f"handbag must be present for {cond}/{temp}: {outfit}")
+
+    def test_no_cardigan_in_any_weather(self):
+        cases = [
+            ("clear", 12.0), ("cold", 8.0), ("rainy", None),
+            ("clear", 22.0), ("clear", 30.0), ("snow", -3.0), ("cloudy", None),
+        ]
+        for cond, temp in cases:
+            outfit = self._outfit(cond, temperature_c=temp)
+            self.assertNotIn(" cardigan", outfit,
+                             f"cardigan must not appear for {cond}/{temp}: {outfit}")
+
+    def test_no_black_skirt_default(self):
+        cases = [
+            ("clear", 12.0), ("cold", 8.0), ("rainy", None), ("clear", 22.0),
+        ]
+        for cond, temp in cases:
+            outfit = self._outfit(cond, temperature_c=temp)
+            self.assertNotIn("black skirt", outfit.lower(),
+                             f"black skirt default not allowed for {cond}/{temp}")
+
+    def test_weather_varies_outfit(self):
+        clear_cool = self._outfit("clear", temperature_c=12.0)
+        cold = self._outfit("cold", temperature_c=8.0)
+        hot = self._outfit("clear", temperature_c=30.0)
+        self.assertNotEqual(clear_cool, cold)
+        self.assertNotEqual(clear_cool, hot)
+        self.assertNotEqual(cold, hot)
+
+    def test_outfit_in_prompt_text(self):
+        r = _build(weather_condition="clear", temperature_c=12.0)
+        # clear_cool has "silk-knit" in outfit
+        self.assertIn("silk-knit", r["prompt_text"].lower())
+
+    def test_no_blazer_in_any_weather(self):
+        cases = [
+            ("clear", 12.0), ("cold", 8.0), ("rainy", None),
+            ("clear", 22.0), ("clear", 30.0), ("snow", -3.0),
+        ]
+        for cond, temp in cases:
+            outfit = self._outfit(cond, temperature_c=temp)
+            self.assertNotIn("blazer", outfit.lower(),
+                             f"blazer not allowed for {cond}/{temp}")
+
+    def test_no_mock_neck_in_any_weather(self):
+        cases = [
+            ("clear", 12.0), ("cold", 8.0), ("rainy", None),
+        ]
+        for cond, temp in cases:
+            outfit = self._outfit(cond, temperature_c=temp)
+            self.assertNotIn("mock-neck", outfit.lower(),
+                             f"mock-neck not allowed for {cond}/{temp}")
+
+    def test_palette_within_allowed(self):
+        allowed = {"ivory", "cream", "champagne", "camel", "charcoal", "taupe"}
+        cases = [
+            ("clear", 12.0), ("cold", 8.0), ("rainy", None),
+            ("clear", 22.0), ("clear", 30.0), ("snow", -3.0),
+        ]
+        for cond, temp in cases:
+            outfit = self._outfit(cond, temperature_c=temp).lower()
+            found = [w for w in allowed if w in outfit]
+            self.assertGreater(len(found), 0,
+                               f"No allowed palette color in outfit for {cond}/{temp}: {outfit}")
+
+    def test_weather_closet_key_in_outfit_map(self):
+        r = _build(weather_condition="clear", temperature_c=12.0)
+        self.assertEqual(r["weather_outfit_shell"]["outfit_map_key"], "clear_cool")
+
+    def test_cold_closet_key(self):
+        r = _build(weather_condition="cold", temperature_c=8.0)
+        self.assertEqual(r["weather_outfit_shell"]["outfit_map_key"], "cold")
+
+    def test_identity_unchanged_across_weather_variants(self):
+        r_cool = _build(weather_condition="clear", temperature_c=12.0)
+        r_hot = _build(weather_condition="clear", temperature_c=30.0)
+        self.assertEqual(
+            r_cool["fixed_identity_gene"]["text"],
+            r_hot["fixed_identity_gene"]["text"],
+        )
+
+    def test_wardrobe_before_camera_in_assembly(self):
         from keysuri_bottom_shot_prompt_builder import ASSEMBLY_ORDER
         self.assertGreater(
             ASSEMBLY_ORDER.index("camera_gene"),
@@ -289,7 +436,7 @@ class WardrobeTests(unittest.TestCase):
 
 
 # ===================================================================
-# Negative Prompt — retargeted for v6
+# Negative Prompt — lean targeted blocklist
 # ===================================================================
 
 class NegativePromptTests(unittest.TestCase):
@@ -354,6 +501,11 @@ class NegativePromptTests(unittest.TestCase):
         for term in ["tablet", "lobby", "desk", "monitor wall"]:
             self.assertIn(term, self.neg)
 
+    def test_negative_same_across_weather(self):
+        negs = {_build(weather_condition=c)["negative_prompt"]
+                for c in ["rainy", "snow", "cloudy"]}
+        self.assertEqual(len(negs), 1)
+
     def test_blocks_approachable_warmth(self):
         self.assertIn("approachable warmth", self.neg)
 
@@ -371,14 +523,9 @@ class NegativePromptTests(unittest.TestCase):
         self.assertIn("bar mood", self.neg)
         self.assertIn("lounge mood", self.neg)
 
-    def test_negative_same_across_weather(self):
-        negs = {_build(weather_condition=c)["negative_prompt"]
-                for c in ["rainy", "snow", "cloudy"]}
-        self.assertEqual(len(negs), 1)
-
 
 # ===================================================================
-# Reference Assets — unchanged from v5
+# Reference Assets — updated anchor hierarchy
 # ===================================================================
 
 class ReferenceAssetTests(unittest.TestCase):
@@ -386,23 +533,28 @@ class ReferenceAssetTests(unittest.TestCase):
     def setUp(self):
         self.refs = _build()["reference_assets"]
 
-    def test_asset01_is_primary_identity_reference(self):
-        self.assertEqual(self.refs["primary_identity_reference"]["role"], ASSET01_ROLE)
-        self.assertEqual(self.refs["primary_identity_reference"]["path"], ASSET01_PATH)
+    def test_primary_bottom_anchor_is_105936(self):
+        anchor = self.refs["primary_bottom_anchor"]
+        self.assertEqual(anchor["role"], BOTTOM_ANCHOR_ROLE)
+        self.assertEqual(anchor["path"], BOTTOM_ANCHOR_PATH)
+        self.assertIn("105936", anchor["path"])
 
-    def test_105936_is_direction_reference_only(self):
-        ref = self.refs["direction_reference"]
-        self.assertEqual(ref["role"], DIRECTION_REF_105936_ROLE)
-        self.assertEqual(ref["path"], DIRECTION_REF_105936_PATH)
+    def test_secondary_continuity_is_asset01(self):
+        sec = self.refs["secondary_continuity_reference"]
+        self.assertEqual(sec["role"], ASSET01_ROLE)
+        self.assertEqual(sec["path"], ASSET01_PATH)
 
-    def test_105936_not_flagged_as_image_input(self):
-        self.assertIn("NOT image input", self.refs["direction_reference"]["note"])
+    def test_105936_note_mentions_slot_0(self):
+        note = self.refs["primary_bottom_anchor"]["note"]
+        self.assertIn("slot 0", note)
 
-    def test_105936_not_flagged_as_fixed_final_asset(self):
-        self.assertIn("NOT fixed final asset", self.refs["direction_reference"]["note"])
+    def test_asset01_note_mentions_slot_1(self):
+        note = self.refs["secondary_continuity_reference"]["note"]
+        self.assertIn("slot 1", note)
 
-    def test_105936_note_warns_against_silk_satin(self):
-        self.assertIn("silk-knit/satin", self.refs["direction_reference"]["note"])
+    def test_no_direction_reference_only_role(self):
+        roles = [v.get("role", "") for v in self.refs.values()]
+        self.assertNotIn("direction_reference_only", roles)
 
 
 # ===================================================================
@@ -441,7 +593,7 @@ class BuilderStatusTests(unittest.TestCase):
 
 
 # ===================================================================
-# Weather Input Metadata — unchanged
+# Weather Input Metadata — unchanged contract
 # ===================================================================
 
 class WeatherInputMetadataTests(unittest.TestCase):
@@ -535,9 +687,11 @@ class AssemblyOrderTests(unittest.TestCase):
         )
 
     def test_expression_before_wardrobe_in_prompt(self):
-        prompt = _build()["prompt_text"]
+        prompt = _build(weather_condition="clear", temperature_c=12.0)["prompt_text"]
+        wardrobe_snippet = _build(weather_condition="clear", temperature_c=12.0)[
+            "weather_outfit_shell"]["outfit_descriptor"][:30]
         self.assertGreater(
-            prompt.find(_build()["weather_outfit_shell"]["outfit_descriptor"][:30]),
+            prompt.find(wardrobe_snippet),
             prompt.find(FIXED_EXPRESSION_GENE[:30]),
         )
 
@@ -567,9 +721,15 @@ class MetadataOnlyBackwardCompatTests(unittest.TestCase):
         meta = build_bottom_shot_prompt_metadata_only(weather_condition="cloudy")
         self.assertEqual(meta["bottom_shot_prompt_contract_version"], "v6")
 
+    def test_metadata_only_outfit_map_key_present(self):
+        meta = build_bottom_shot_prompt_metadata_only(
+            weather_condition="clear", temperature_c=12.0
+        )
+        self.assertEqual(meta["bottom_shot_outfit_map_key"], "clear_cool")
+
 
 # ===================================================================
-# V5 Drift Ban — authority/blazer/headshot must be absent
+# V5 Drift Ban — authority/blazer/headshot absent from prompt
 # ===================================================================
 
 class V5DriftBanTests(unittest.TestCase):
@@ -595,7 +755,7 @@ class V5DriftBanTests(unittest.TestCase):
     def test_handbag_required_in_prompt(self):
         self.assertIn("handbag", _build()["prompt_text"])
 
-    def test_farewell_gesture_in_prompt(self):
+    def test_farewell_in_prompt(self):
         self.assertIn("farewell", _build()["prompt_text"])
 
     def test_restrained_composed_smile_in_prompt(self):
@@ -603,6 +763,32 @@ class V5DriftBanTests(unittest.TestCase):
 
     def test_secretary_in_prompt(self):
         self.assertIn("secretary", _build()["prompt_text"])
+
+
+# ===================================================================
+# QA Runner Anchor — 105936 path and role exported for runner
+# ===================================================================
+
+class QARunnerAnchorTests(unittest.TestCase):
+
+    def test_bottom_anchor_path_importable(self):
+        from keysuri_bottom_shot_prompt_builder import BOTTOM_ANCHOR_PATH
+        self.assertIn("105936", BOTTOM_ANCHOR_PATH)
+
+    def test_bottom_anchor_role_importable(self):
+        from keysuri_bottom_shot_prompt_builder import BOTTOM_ANCHOR_ROLE
+        self.assertEqual(BOTTOM_ANCHOR_ROLE, "primary_bottom_visual_anchor")
+
+    def test_asset01_role_importable(self):
+        from keysuri_bottom_shot_prompt_builder import ASSET01_ROLE
+        self.assertEqual(ASSET01_ROLE, "secondary_same_person_continuity_reference")
+
+    def test_deprecated_direction_ref_path_alias_matches_anchor(self):
+        from keysuri_bottom_shot_prompt_builder import (
+            BOTTOM_ANCHOR_PATH,
+            DIRECTION_REF_105936_PATH,
+        )
+        self.assertEqual(DIRECTION_REF_105936_PATH, BOTTOM_ANCHOR_PATH)
 
 
 if __name__ == "__main__":

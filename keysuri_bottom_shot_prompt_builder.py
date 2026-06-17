@@ -16,48 +16,57 @@ Wire-in point: the disabled ``if variation_enabled:`` branch in
 ``keysuri_service_full_run.resolve_korea_bottom_email_image_path()``.
 
 References:
-  Asset01 (primary identity reference):
-    assets/keysuri/reference/image_keysuri_asset_01_main_briefing.png
-  105936 (direction reference only — NOT image input, NOT fixed final asset):
+  105936 (primary Bottom visual anchor — image input, slot 0):
     output/keysuri_preview/image_canary/keysuri_global_canary_20260605_105936.jpg
+  Asset01 (secondary same-person continuity reference — image input, slot 1 if available):
+    assets/keysuri/reference/image_keysuri_asset_01_main_briefing.png
 """
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
 # ---------------------------------------------------------------------------
-# Reference constants
+# Reference constants — v6 anchor hierarchy
 # ---------------------------------------------------------------------------
 
-ASSET01_PATH = "assets/keysuri/reference/image_keysuri_asset_01_main_briefing.png"
-ASSET01_ROLE = "primary_identity_reference"
-
-DIRECTION_REF_105936_PATH = (
+# Primary Bottom visual anchor — passed as first image input in Bottom QA generation.
+# All Bottom wardrobe variations must stay inside this image's quality/identity band.
+BOTTOM_ANCHOR_PATH = (
     "output/keysuri_preview/image_canary/keysuri_global_canary_20260605_105936.jpg"
 )
-DIRECTION_REF_105936_ROLE = "direction_reference_only"
+BOTTOM_ANCHOR_ROLE = "primary_bottom_visual_anchor"
+
+# Secondary same-person / on-duty continuity reference.
+# Passed as second image input to reinforce Key-Suri identity across on-duty/off-duty registers.
+ASSET01_PATH = "assets/keysuri/reference/image_keysuri_asset_01_main_briefing.png"
+ASSET01_ROLE = "secondary_same_person_continuity_reference"
+
+# Deprecated aliases — kept for any external code that imported the old names.
+# Do not use in new code.
+DIRECTION_REF_105936_PATH = BOTTOM_ANCHOR_PATH
+DIRECTION_REF_105936_ROLE = BOTTOM_ANCHOR_ROLE
 DIRECTION_REF_105936_NOTE = (
-    "NOT image input. NOT fixed final asset. "
-    "Do not replicate silk-knit/satin outfit from 105936."
+    "Now primary_bottom_visual_anchor — passed as first image input for Bottom generation. "
+    "Previously 'direction reference only'; that designation is retired."
 )
 
 # ---------------------------------------------------------------------------
-# Gene A — Fixed Identity Gene (v6: fresh/attractive, strip authority)
+# Gene A — Fixed Identity Gene
+# Appearance and identity are anchored by the 105936 reference image.
+# Text gene reinforces hair/glasses invariants and register only.
+# Age language removed — visual anchor carries age impression.
 # ---------------------------------------------------------------------------
 
 FIXED_IDENTITY_GENE = (
-    "A Korean woman in her mid-to-late thirties with a naturally refined face, "
-    "slightly angular jaw, almond-shaped eyes with a calm and perceptive gaze, "
-    "a sleek side-parted short bob — hair lying close to the jaw line, "
-    "naturally smooth and straight, no curl at the ends, no volume at the tips, "
-    "and thin metal-framed rectangular glasses resting naturally on her face. "
-    "Her look carries noble sensuality and controlled feminine magnetism, "
-    "expressed through posture, silhouette, gaze, and luxury styling — never through exposure. "
-    "Premium presence without effort, the kind of person you remember without knowing why."
+    "She is Key-Suri. Maintain her exact identity from the reference image. "
+    "Her sleek side-parted short bob lies close to the jaw — smooth and straight, no curl at the ends. "
+    "Thin metal rectangular glasses rest naturally on her face. "
+    "Noble sensuality and controlled feminine magnetism expressed through posture, silhouette, and gaze — "
+    "never through exposure. Premium presence without effort."
 )
 
 IDENTITY_INVARIANTS = {
-    "age": "mid-to-late 30s",
+    "anchor": "105936 reference image — primary visual identity source",
     "hair": "sleek side-parted short bob, hair close to jaw, smooth and straight, no curl at ends, no C-curl, no bangs, no updos, no ponytails",
     "glasses": "thin metal rectangular frames — always present",
     "expression": "noble sensuality, controlled feminine magnetism, cool intelligence softened only for the owner",
@@ -65,7 +74,7 @@ IDENTITY_INVARIANTS = {
 }
 
 # ---------------------------------------------------------------------------
-# Gene B — Fixed Role + Relationship Gene (v6: secretary, owner farewell)
+# Gene B — Fixed Role + Relationship Gene
 # ---------------------------------------------------------------------------
 
 FIXED_ROLE_SCENE_GENE = (
@@ -95,12 +104,12 @@ ROLE_SCENE_INVARIANTS = {
 }
 
 # ---------------------------------------------------------------------------
-# Gene C — Expression Gene (v6: fresh composed smile)
+# Gene C — Expression Gene
 # ---------------------------------------------------------------------------
 
 FIXED_EXPRESSION_GENE = (
     "Her expression is a restrained composed slight smile — cool reserved intelligence, barely softened for the owner. "
-    "lips barely curved at the corners. "
+    "Lips barely curved at the corners. "
     "The quiet private pleasure of a day well finished — shared only with the owner. "
     "Modern. Not broad. Not lively. Not performative. "
     "Steady, direct eye contact with the viewer — private, not public."
@@ -117,7 +126,7 @@ EXPRESSION_INVARIANTS = {
 }
 
 # ---------------------------------------------------------------------------
-# Gene E — Prop + Gesture Gene (v6: handbag, hand farewell)
+# Gene E — Prop + Gesture Gene
 # ---------------------------------------------------------------------------
 
 FIXED_PROP_GESTURE_GENE = (
@@ -135,7 +144,7 @@ PROP_GESTURE_INVARIANTS = {
 }
 
 # ---------------------------------------------------------------------------
-# Gene F — Camera/Framing Gene (v6: single consistent knee-up signal)
+# Gene F — Camera/Framing Gene
 # ---------------------------------------------------------------------------
 
 FIXED_CAMERA_GENE = (
@@ -166,8 +175,6 @@ CAMERA_INVARIANTS = {
 # ---------------------------------------------------------------------------
 # Assembly order (v6: 8 genes)
 # ---------------------------------------------------------------------------
-# [Scene lock] → [Identity] → [Role/Relationship] → [Expression]
-#   → [Wardrobe] → [Prop/Gesture] → [Camera] → [Negative]
 
 ASSEMBLY_ORDER = (
     "scene_lock",
@@ -187,7 +194,8 @@ SCENE_LOCK = (
 )
 
 # ---------------------------------------------------------------------------
-# Negative Prompt v6 — retargeted blocklist
+# Negative Prompt v6 — lean targeted blocklist
+# Anchor image + constrained closet text carry quality; negatives block hard failures only.
 # ---------------------------------------------------------------------------
 
 NEGATIVE_PROMPT_V6 = (
@@ -195,32 +203,25 @@ NEGATIVE_PROMPT_V6 = (
     "double chin, thick-framed glasses, no glasses, sunglasses, colored glasses, "
     "round glasses, oval glasses, "
     "heavy jewelry, statement necklace, flashy accessories, "
-    # persona drift blocks
     "CEO portrait, executive portrait, consultant headshot, company profile photo, "
     "professor portrait, manager portrait, corporate uniform, "
     "blazer, mock-neck sweater, business suit, formal office attire, "
-    # wardrobe failures
     "casual clothing, streetwear, athletic wear, hoodie, t-shirt, crop top, "
     "low-cut neckline, V-neck wrap dress, open-front dress, décolleté, "
     "plain market clothes, cheap mall fashion, basic office-worker casual, "
-    # framing failures
     "full body shot, visible feet, wide shot, establishing shot, "
     "tight headshot, bust-only crop, mid-chest-to-crown crop, "
     "outfit-first composition, full-body lookbook, "
-    # environment failures
     "outdoor scene, open door, open doorway, window with outdoor view, "
     "tablet, briefing tablet, tech screen, monitor wall, monitor, "
     "desk, keyboard, multiple monitors, large screen background, reading device, "
     "lobby, atrium, open corridor, open hotel-like room, "
     "briefing posture, briefing host, senior analyst at desk, "
-    # expression/style failures
     "warm motherly smile, guardian-like smile, matronly expression, "
     "broad open smile, lively smile, wide smile, big smile, "
     "hands-clasped polite-matron pose, "
-    # gesture failures
     "raised hand wave, open palm wave, waving pose, large hand gesture, "
     "event greeter pose, hotel receptionist pose, customer service pose, "
-    # persona drift
     "event greeter, hotel receptionist, office receptionist, friendly counselor, "
     "cardigan office lady, lifestyle blogger, friendly middle-aged office worker, "
     "overly warm lighting, golden hour, harsh shadows, overexposed face, "
@@ -228,154 +229,120 @@ NEGATIVE_PROMPT_V6 = (
     "motion blur, film grain, painterly style, illustration, anime, cartoon, "
     "C-curl cute bob, inward-curled bob, curled ends bob, volume at tips, "
     "young office worker, glamour model, "
-    # approachability/public-facing drift blocks
     "friendly smile, welcoming expression, approachable warmth, "
     "ordinary office lady, lifestyle model, cheap sexiness, "
     "hostess, bar mood, lounge mood, lounge hostess, "
     "public-facing smile, open approachable expression"
 )
 
-# Keep v5 name as alias for backward compat in any external references
+# Keep v5 name as alias for backward compat
 NEGATIVE_PROMPT_V5 = NEGATIVE_PROMPT_V6
 
 # ---------------------------------------------------------------------------
-# Taste Cluster Wardrobe Catalog (v6 — replaces weather→blazer map)
+# Weather-Mapped Closet (v6 anchor patch)
+# Replaces A–H taste-cluster catalog.
+# All variants derived from 105936 luxury private-secretary register.
+# Palette: ivory, cream, champagne, camel, charcoal, muted taupe.
+# Silhouette: fitted/elegant, premium handbag always present.
 # ---------------------------------------------------------------------------
 
-_TASTE_CLUSTER_CATALOG: Dict[str, Dict[str, str]] = {
-    "A": {
-        "label": "Soft Classic",
+_WEATHER_CLOSET: Dict[str, Dict[str, str]] = {
+    "clear_cool": {
+        "label": "Clear / Cool (≤18°C)",
+        "conditions": "clear or partly cloudy, ≤18°C",
         "outfit": (
-            "A refined ivory silk-knit draped layer over a silk blouse in soft champagne, "
-            "paired with a slim structured skirt in warm beige. "
-            "Small structured premium handbag. Pearl stud earrings. "
-            "Quiet luxury — elevated, never casual."
+            "A luxury ivory or cream silk-knit top with clean refined structure, "
+            "paired with an elegant fitted skirt in warm champagne or soft ivory. "
+            "Premium structured handbag. Delicate pearl or simple gold earrings. Slim watch. "
+            "Private-owner luxury register — never casual, never public-facing."
         ),
     },
-    "B": {
-        "label": "Elegant Office Casual",
+    "cold": {
+        "label": "Cold (≤10°C)",
+        "conditions": "any, ≤10°C",
         "outfit": (
-            "A luxury fitted silk-knit boat-neck top in warm ivory, "
-            "paired with a satin-finish high-waisted structured skirt in champagne. "
-            "Premium mini handbag. Slim watch and delicate pearl earrings."
+            "A premium camel or ivory cashmere overcoat — clean structured silhouette, "
+            "worn over a fine-knit top in ivory or cream. "
+            "Fitted luxury skirt in warm charcoal or ivory. Premium structured handbag. Slim watch. "
+            "Seasonal warmth at luxury register — overcoat quality, not knitwear bulk."
         ),
     },
-    "C": {
-        "label": "Cool Executive Off-Duty",
+    "rainy": {
+        "label": "Rainy",
+        "conditions": "rainy, any temperature",
         "outfit": (
-            "A smoky blue silk blouse with subtle sheen under a refined ivory structured fine-knit layer, "
-            "paired with a dark charcoal pencil skirt. "
-            "Slim watch only. Clean, intelligent, premium. "
-            "Luxury private-secretary off-duty — understated and high-end."
+            "A refined ivory or camel luxury trench coat or structured luxury coat, "
+            "belted with clean lines. Fine-knit top underneath in ivory. "
+            "Fitted skirt in muted champagne or warm taupe. Premium structured handbag. "
+            "Rain does not lower the register — same owner-facing private luxury mood."
         ),
     },
-    "D": {
-        "label": "Feminine Minimal",
+    "warm": {
+        "label": "Warm (19–26°C)",
+        "conditions": "any, 19–26°C",
         "outfit": (
-            "A refined neutral shirt dress with a thin leather belt at the waist. "
-            "Small gold earrings and a slim watch. "
-            "Clean silhouette, approachable elegance."
+            "A light ivory silk-knit blouse with refined silhouette and subtle sheen, "
+            "paired with an elegant fitted skirt in champagne or cream satin-blend. "
+            "Premium luxury handbag. Slim watch. "
+            "Breathable but never casual — same owner-facing private exclusivity at warm temperature."
         ),
     },
-    "E": {
-        "label": "Luxury Quiet",
+    "hot": {
+        "label": "Hot (≥27°C)",
+        "conditions": "any, ≥27°C",
         "outfit": (
-            "A premium cashmere knit top in oatmeal or cream, "
-            "paired with a dark pencil skirt in fine wool. "
-            "Small leather handbag. Restrained, high-end, mature elegance."
+            "A breathable premium ivory silk-blend top with clean structure and elegant silhouette, "
+            "paired with a refined fitted skirt in champagne or cream. Premium handbag. "
+            "No casual summer styling — hot weather does not change the luxury register."
         ),
     },
-    "F": {
-        "label": "Summer Light",
+    "snowy": {
+        "label": "Snowy / Freezing (≤0°C)",
+        "conditions": "snow or freezing, ≤0°C",
         "outfit": (
-            "A short-sleeve office-appropriate silk blouse in pale ivory "
-            "under a lightweight linen-blend cardigan in soft ecru, "
-            "paired with a beige structured skirt. "
-            "Airy and fresh, sleeves always covered under cardigan."
-        ),
-    },
-    "G": {
-        "label": "Fall/Winter Warm",
-        "outfit": (
-            "A structured premium camel cashmere overcoat draped over a charcoal fine-knit top, "
-            "paired with a dark structured skirt. "
-            "Small premium leather handbag. Warm indoor evening light. "
-            "Seasonal warmth at luxury register — overcoat quality, not knitwear casual."
-        ),
-    },
-    "H": {
-        "label": "Personal but Premium",
-        "outfit": (
-            "A refined knit dress in warm beige with a light trench coat draped over one arm. "
+            "A premium cashmere overcoat in camel or ivory — impeccably structured, no bulk. "
+            "Fine-knit top underneath in ivory or cream. Luxury fitted skirt. "
             "Premium structured handbag. "
-            "Slightly more private off-duty moment, still office-exit appropriate."
+            "Seasonal but never domestic — always at luxury register."
         ),
     },
 }
 
-_DEFAULT_TASTE_CLUSTER = "B"
-
-# ---------------------------------------------------------------------------
-# Weather → fabric/layer modifier (v6: weather adjusts fabric, never blazer)
-# ---------------------------------------------------------------------------
-
-_TEMP_THRESHOLD_WARM_C = 18.0
-_TEMP_THRESHOLD_HOT_C = 28.0
+_DEFAULT_CLOSET_KEY = "clear_cool"
 
 
-def _weather_fabric_modifier(
+def _weather_to_closet_key(
     weather_condition: str,
     temperature_c: Optional[float],
     season: Optional[str],
 ) -> str:
+    """Map weather inputs to a _WEATHER_CLOSET key."""
     cond = (weather_condition or "").strip().lower()
     season_lower = (season or "").strip().lower()
 
-    if "winter" in season_lower or cond in ("snow", "cold"):
-        return "Heavy knit layers, cashmere or wool textures for cold weather."
-    if temperature_c is not None and temperature_c < 10.0:
-        return "Warm layering with fine-knit textures for cold conditions."
-    if "autumn" in season_lower:
-        return "Autumn-weight fabrics with warm tonal palette."
-    if temperature_c is not None and temperature_c >= _TEMP_THRESHOLD_HOT_C:
-        return "Lightweight breathable fabrics for warm weather."
-    if "humid" in season_lower:
-        return "Lightweight breathable fabrics for humid conditions."
-    if cond in ("rainy",):
-        return "Weather-appropriate fabrics with clean lines."
-    if cond in ("fine_dust", "haze"):
-        return "Indoor-appropriate clean fabrics."
-    return ""
+    # Temperature takes priority when available
+    if temperature_c is not None:
+        if temperature_c <= 0:
+            return "snowy"
+        if temperature_c <= 10:
+            return "cold"
+        if temperature_c >= 27:
+            return "hot"
+        if temperature_c >= 19:
+            return "warm"
+        # 11–18°C falls through to condition check below
 
+    # Condition-based fallback
+    if cond == "snow" or "winter" in season_lower:
+        return "snowy"
+    if cond == "cold":
+        return "cold"
+    if cond == "rainy":
+        return "rainy"
+    if "humid" in season_lower or cond in ("humid_hot",):
+        return "hot"
 
-def _resolve_weather_outfit_key(
-    weather_condition: str,
-    temperature_c: Optional[float],
-    season: Optional[str],
-) -> str:
-    cond = (weather_condition or "").strip().lower()
-    season_lower = (season or "").strip().lower()
-
-    if "autumn" in season_lower and "evening" in season_lower:
-        return "autumn_evening"
-    if "winter" in season_lower and "evening" in season_lower:
-        return "winter_evening"
-    if "humid" in season_lower or (
-        temperature_c is not None and temperature_c >= _TEMP_THRESHOLD_HOT_C
-    ):
-        return "humid_hot"
-
-    if cond in ("clear", "sunny"):
-        if temperature_c is None:
-            return cond
-        if temperature_c >= _TEMP_THRESHOLD_WARM_C:
-            return "clear_warm"
-        return "clear_cool"
-
-    if cond in ("cloudy", "overcast", "rainy", "snow", "cold", "fine_dust", "haze"):
-        return cond
-
-    return "cloudy"
+    return _DEFAULT_CLOSET_KEY
 
 
 def _resolve_wardrobe(
@@ -384,42 +351,35 @@ def _resolve_wardrobe(
     season: Optional[str],
     taste_cluster: Optional[str] = None,
 ) -> Dict[str, Any]:
-    cluster_key = (taste_cluster or _DEFAULT_TASTE_CLUSTER).upper()
-    if cluster_key not in _TASTE_CLUSTER_CATALOG:
-        cluster_key = _DEFAULT_TASTE_CLUSTER
+    """Resolve weather inputs to a 105936-family wardrobe entry.
 
-    entry = _TASTE_CLUSTER_CATALOG[cluster_key]
-    outfit_text = entry["outfit"]
+    taste_cluster: legacy override — if it matches a valid closet key it is
+    honoured; old A–H cluster names are silently ignored and weather takes over.
+    """
+    # taste_cluster override: accept only if it's a valid closet key
+    if taste_cluster and taste_cluster.lower() in _WEATHER_CLOSET:
+        closet_key = taste_cluster.lower()
+    else:
+        closet_key = _weather_to_closet_key(weather_condition, temperature_c, season)
 
-    fabric_mod = _weather_fabric_modifier(weather_condition, temperature_c, season)
-    if fabric_mod:
-        outfit_text = f"{outfit_text} {fabric_mod}"
+    entry = _WEATHER_CLOSET[closet_key]
 
-    weather_key = _resolve_weather_outfit_key(weather_condition, temperature_c, season)
-
-    weather_case_labels = {
-        "clear_warm": "Clear / Sunny (warm, 18°C+)",
-        "clear_cool": "Clear / Sunny (cool, below 18°C)",
-        "clear": "Clear (temperature unspecified)",
-        "sunny": "Clear / Sunny (temperature unspecified)",
-        "cloudy": "Partly Cloudy",
-        "overcast": "Overcast / Grey",
-        "rainy": "Light Rain / Drizzle",
-        "snow": "Snow / Cold (below 2°C)",
-        "cold": "Cold",
-        "fine_dust": "Fine Dust / Haze",
-        "haze": "Fine Dust / Haze",
-        "autumn_evening": "Autumn Evening",
-        "winter_evening": "Winter Evening",
-        "humid_hot": "Humid / Hot (above 28°C)",
-    }
+    # weather_outfit_source metadata (unchanged contract)
+    if temperature_c is None:
+        weather_outfit_source = "limited_condition_string"
+    else:
+        weather_outfit_source = "condition_plus_temperature"
 
     return {
-        "outfit_descriptor": outfit_text,
-        "weather_case": weather_case_labels.get(weather_key, "Partly Cloudy"),
-        "outfit_map_key": weather_key,
-        "taste_cluster": cluster_key,
+        "outfit_descriptor": entry["outfit"],
+        "weather_case": entry["label"],
+        "outfit_map_key": closet_key,
+        "weather_closet_key": closet_key,
+        "weather_closet_label": entry["label"],
+        # Keep taste_cluster key for backward compat in report consumers
+        "taste_cluster": closet_key,
         "taste_cluster_label": entry["label"],
+        "weather_outfit_source": weather_outfit_source,
     }
 
 
@@ -455,7 +415,9 @@ def build_bottom_shot_prompt(
       - assembly_order, reference_assets, builder_status, weather_input_metadata
     """
     if family_id not in SUPPORTED_FAMILIES:
-        raise ValueError(f"Unsupported family_id: {family_id!r}. Must be one of {SUPPORTED_FAMILIES}")
+        raise ValueError(
+            f"Unsupported family_id: {family_id!r}. Must be one of {SUPPORTED_FAMILIES}"
+        )
 
     wardrobe_result = _resolve_wardrobe(weather_condition, temperature_c, season, taste_cluster)
     outfit_text = wardrobe_result["outfit_descriptor"]
@@ -476,15 +438,12 @@ def build_bottom_shot_prompt(
         "temperature_c_unavailable": temperature_c is None,
         "fine_dust_unavailable": weather_condition not in ("fine_dust", "haze"),
         "season_input": season,
+        "weather_outfit_source": wardrobe_result["weather_outfit_source"],
     }
     if temperature_c is not None:
         weather_input_metadata["temperature_c"] = temperature_c
     if weather_condition in ("fine_dust", "haze"):
         weather_input_metadata["fine_dust_unavailable"] = False
-    if temperature_c is None:
-        weather_input_metadata["weather_outfit_source"] = "limited_condition_string"
-    else:
-        weather_input_metadata["weather_outfit_source"] = "condition_plus_temperature"
 
     return {
         "prompt_text": prompt_text,
@@ -527,14 +486,15 @@ def build_bottom_shot_prompt(
         },
         "assembly_order": ASSEMBLY_ORDER,
         "reference_assets": {
-            "primary_identity_reference": {
+            "primary_bottom_anchor": {
+                "path": BOTTOM_ANCHOR_PATH,
+                "role": BOTTOM_ANCHOR_ROLE,
+                "note": "Primary visual anchor — passed as first image input (slot 0) in Bottom generation.",
+            },
+            "secondary_continuity_reference": {
                 "path": ASSET01_PATH,
                 "role": ASSET01_ROLE,
-            },
-            "direction_reference": {
-                "path": DIRECTION_REF_105936_PATH,
-                "role": DIRECTION_REF_105936_ROLE,
-                "note": DIRECTION_REF_105936_NOTE,
+                "note": "Secondary same-person continuity reference — passed as second image input (slot 1) if available.",
             },
         },
         "builder_status": {
