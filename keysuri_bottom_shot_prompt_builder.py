@@ -51,15 +51,16 @@ FIXED_IDENTITY_GENE = (
     "a sleek side-parted short bob — hair lying close to the jaw line, "
     "naturally smooth and straight, no curl at the ends, no volume at the tips, "
     "and thin metal-framed rectangular glasses resting naturally on her face. "
-    "Her look is quietly attractive and controlled — "
-    "premium presence without effort, the kind of person you remember without knowing why."
+    "Her look carries noble sensuality and controlled feminine magnetism, "
+    "expressed through posture, silhouette, gaze, and luxury styling — never through exposure. "
+    "Premium presence without effort, the kind of person you remember without knowing why."
 )
 
 IDENTITY_INVARIANTS = {
     "age": "mid-to-late 30s",
     "hair": "sleek side-parted short bob, hair close to jaw, smooth and straight, no curl at ends, no C-curl, no bangs, no updos, no ponytails",
     "glasses": "thin metal rectangular frames — always present",
-    "expression": "fresh, attractive, modern off-duty",
+    "expression": "noble sensuality, controlled feminine magnetism, cool intelligence softened only for the owner",
     "ethnicity": "Korean woman",
 }
 
@@ -74,14 +75,14 @@ FIXED_ROLE_SCENE_GENE = (
     "A large closed premium wooden door with brass hardware fills the background, "
     "set into warm wood-paneled walls. She faces the viewer directly — "
     "the reader is the owner she is leaving toward. "
-    "Her posture carries the warmth of a closing ritual: "
-    "everything is handled, the day is done, and she is saying goodbye with genuine care. "
-    "Off-duty, personal, unhurried."
+    "This is an exclusive owner-facing private closing moment, reserved only for 대표님. "
+    "Unattainable, not approachable. Cool intelligence softened only for the owner. "
+    "Private secretary intimacy with strict dignity."
 )
 
 ROLE_SCENE_INVARIANTS = {
     "role": "premium private AI secretary — briefing finished, personal farewell to owner",
-    "emotional_register": "closing ritual — warm personal farewell, genuine care",
+    "emotional_register": "exclusive owner-facing private closing moment — unattainable, noble sensuality, reserved for 대표님 only",
     "scene": "CEO office threshold — closed wooden door, wood-paneled wall",
     "viewer_relationship": "reader is the owner (대표님) she is leaving toward",
     "forbidden_environment": [
@@ -98,10 +99,10 @@ ROLE_SCENE_INVARIANTS = {
 # ---------------------------------------------------------------------------
 
 FIXED_EXPRESSION_GENE = (
-    "Her expression is a restrained composed slight smile — controlled warmth, "
+    "Her expression is a restrained composed slight smile — cool reserved intelligence, barely softened for the owner. "
     "lips barely curved at the corners. "
-    "The quiet private pleasure of a day well finished. "
-    "Modern and attractive. Not broad. Not lively. Not performative. "
+    "The quiet private pleasure of a day well finished — shared only with the owner. "
+    "Modern. Not broad. Not lively. Not performative. "
     "Steady, direct eye contact with the viewer — private, not public."
 )
 
@@ -122,16 +123,14 @@ EXPRESSION_INVARIANTS = {
 FIXED_PROP_GESTURE_GENE = (
     "She holds a small premium handbag at her side with one hand. "
     "Her free hand rests naturally close to her body — "
-    "fingertips lightly touching the handbag strap, or a barely perceptible "
-    "parting gesture near her side. "
+    "a small restrained private gesture, as if closing the day for the owner only. "
     "The gesture is private and contained: not raised, not waving. "
-    "Small scale. Interior scale. The farewell of someone who does not need "
-    "to perform goodbye. No tablet. No laptop. No notebook."
+    "Small scale. Interior scale. No tablet. No laptop. No notebook."
 )
 
 PROP_GESTURE_INVARIANTS = {
     "required_prop": "small premium handbag",
-    "required_gesture": "private contained farewell — hand near body, not raised, not waving",
+    "required_gesture": "small restrained private gesture — closing the day for the owner only, not raised, not waving",
     "forbidden": ["tablet", "laptop", "briefing device"],
 }
 
@@ -228,7 +227,12 @@ NEGATIVE_PROMPT_V6 = (
     "excessive makeup, heavy contouring, dramatic eye makeup, "
     "motion blur, film grain, painterly style, illustration, anime, cartoon, "
     "C-curl cute bob, inward-curled bob, curled ends bob, volume at tips, "
-    "young office worker, glamour model"
+    "young office worker, glamour model, "
+    # approachability/public-facing drift blocks
+    "friendly smile, welcoming expression, approachable warmth, "
+    "ordinary office lady, lifestyle model, cheap sexiness, "
+    "hostess, bar mood, lounge mood, lounge hostess, "
+    "public-facing smile, open approachable expression"
 )
 
 # Keep v5 name as alias for backward compat in any external references

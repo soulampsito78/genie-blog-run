@@ -62,10 +62,10 @@ class FixedIdentityGeneTests(unittest.TestCase):
         self.assertIn("glasses", text)
         self.assertIn("side-parted short bob", text)
 
-    def test_identity_contains_attractive_premium(self):
+    def test_identity_contains_noble_sensuality_premium(self):
         text = _build()["fixed_identity_gene"]["text"]
-        self.assertIn("attractive", text)
-        self.assertIn("premium", text)
+        self.assertIn("noble sensuality", text)
+        self.assertIn("Premium presence", text)
 
     def test_identity_hair_is_sleek_no_curl(self):
         text = _build()["fixed_identity_gene"]["text"]
@@ -81,6 +81,14 @@ class FixedIdentityGeneTests(unittest.TestCase):
     def test_identity_no_c_curl(self):
         inv = _build()["fixed_identity_gene"]["invariants"]
         self.assertIn("no C-curl", inv["hair"])
+
+    def test_identity_no_attractive_keyword(self):
+        text = _build()["fixed_identity_gene"]["text"]
+        self.assertNotIn("quietly attractive", text)
+
+    def test_identity_noble_sensuality_not_exposure(self):
+        text = _build()["fixed_identity_gene"]["text"]
+        self.assertIn("never through exposure", text)
 
 
 # ===================================================================
@@ -118,6 +126,23 @@ class FixedRoleSceneGeneTests(unittest.TestCase):
     def test_no_lobby_in_role(self):
         text = _build()["fixed_role_scene_gene"]["text"]
         self.assertNotIn("lobby", text)
+
+    def test_role_exclusive_owner_facing(self):
+        text = _build()["fixed_role_scene_gene"]["text"]
+        self.assertIn("exclusive owner-facing private closing moment", text)
+
+    def test_role_reserved_for_owner(self):
+        text = _build()["fixed_role_scene_gene"]["text"]
+        self.assertIn("reserved only for 대표님", text)
+
+    def test_role_unattainable_not_approachable(self):
+        text = _build()["fixed_role_scene_gene"]["text"]
+        self.assertIn("Unattainable, not approachable", text)
+
+    def test_role_no_warmth_framing(self):
+        text = _build()["fixed_role_scene_gene"]["text"]
+        self.assertNotIn("warmth of a closing ritual", text)
+        self.assertNotIn("genuine care", text)
 
 
 # ===================================================================
@@ -328,6 +353,23 @@ class NegativePromptTests(unittest.TestCase):
     def test_still_blocks_environment_failures(self):
         for term in ["tablet", "lobby", "desk", "monitor wall"]:
             self.assertIn(term, self.neg)
+
+    def test_blocks_approachable_warmth(self):
+        self.assertIn("approachable warmth", self.neg)
+
+    def test_blocks_ordinary_office_lady(self):
+        self.assertIn("ordinary office lady", self.neg)
+
+    def test_blocks_lifestyle_model(self):
+        self.assertIn("lifestyle model", self.neg)
+
+    def test_blocks_cheap_sexiness(self):
+        self.assertIn("cheap sexiness", self.neg)
+
+    def test_blocks_hostess_bar_lounge(self):
+        self.assertIn("hostess", self.neg)
+        self.assertIn("bar mood", self.neg)
+        self.assertIn("lounge mood", self.neg)
 
     def test_negative_same_across_weather(self):
         negs = {_build(weather_condition=c)["negative_prompt"]
