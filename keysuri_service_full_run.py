@@ -442,6 +442,7 @@ def _build_service_contract_fixture(
     generated_image_path: Path,
     run_id: str,
     image_mode: str = IMAGE_MODE_PREVIEW,
+    bottom_shot_image_path: Optional[Path] = None,
 ) -> dict:
     contract_fixture = build_contract_preview_fixture_from_generated(
         program_id=program_id,
@@ -451,6 +452,8 @@ def _build_service_contract_fixture(
         top_shot_image_path=generated_image_path,
     )
     contract_fixture["fixture_mode"] = "service_full_run_generated"
+    if bottom_shot_image_path is not None:
+        contract_fixture["bottom_shot_image_path"] = str(bottom_shot_image_path)
     prepare_contract_preview_fixture(
         contract_fixture,
         repo_root=_REPO,
@@ -682,29 +685,9 @@ def run_keysuri_service_full_run(
         }
     watermarked_generated_image_path = _repo_rel(gen_image_abs)
     image_outcome.generated_image_path = watermarked_generated_image_path
-    contract_fixture_preview = _build_service_contract_fixture(
-        pid,
-        prompt_input=prompt_input,
-        generated_briefing=generated_briefing,
-        generated_image_path=gen_image_abs,
-        run_id=run_id,
-        image_mode=IMAGE_MODE_PREVIEW,
-    )
-    html = render_keysuri_contract_preview_html(
-        contract_fixture_preview,
-        repo_root=_REPO,
-        image_mode=IMAGE_MODE_PREVIEW,
-        auto_prepare=False,
-    )
-    out_dir = _REPO / "output" / "admin_runs" / "keysuri_service"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    html_path = out_dir / f"{run_id}.html"
-    html_path.write_text(html, encoding="utf-8")
-    try:
-        html_rel = html_path.resolve().relative_to(_REPO.resolve()).as_posix()
-    except ValueError:
-        html_rel = str(html_path.resolve())
-    html_body = html
+
+    # Resolve Korea bottom shot BEFORE building preview so the preview HTML
+    # can embed the actual bottom image (data-URI) instead of the placeholder.
     owner_review_url = build_owner_review_admin_url(run_id) or ""
     storage_durable = _service_artifact_storage_durable()
     bottom_image_path: Optional[Path] = None
@@ -724,6 +707,31 @@ def run_keysuri_service_full_run(
         else:
             bottom_image_status = "placeholder"
             issue_codes.extend(bottom_issues)
+
+    contract_fixture_preview = _build_service_contract_fixture(
+        pid,
+        prompt_input=prompt_input,
+        generated_briefing=generated_briefing,
+        generated_image_path=gen_image_abs,
+        run_id=run_id,
+        image_mode=IMAGE_MODE_PREVIEW,
+        bottom_shot_image_path=bottom_image_path,
+    )
+    html = render_keysuri_contract_preview_html(
+        contract_fixture_preview,
+        repo_root=_REPO,
+        image_mode=IMAGE_MODE_PREVIEW,
+        auto_prepare=False,
+    )
+    out_dir = _REPO / "output" / "admin_runs" / "keysuri_service"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_path = out_dir / f"{run_id}.html"
+    html_path.write_text(html, encoding="utf-8")
+    try:
+        html_rel = html_path.resolve().relative_to(_REPO.resolve()).as_posix()
+    except ValueError:
+        html_rel = str(html_path.resolve())
+    html_body = html
 
     if pid == PROGRAM_GLOBAL:
         contract_fixture_email = dict(contract_fixture_preview)
@@ -827,6 +835,16 @@ def run_keysuri_service_full_run(
     meta["generated_image_path_watermarked"] = watermarked_generated_image_path
     meta["top_shot_watermark_status"] = "applied"
     meta["top_shot_watermark_text"] = "MirAI:ON"
+    # Image CID tracking for owner/customer email alignment validation.
+    # NOTE: CIDs are date-scoped (keysuri_{top,bottom}shot_korea_YYYYMMDD).
+    # TODO: migrate to run_id-scoped CIDs to eliminate same-day cache collision risk.
+    top_cid = (
+        keysuri_global_service_email_cid_token(run_id)
+        if pid == PROGRAM_GLOBAL
+        else keysuri_korea_service_email_cid_token(run_id)
+    )
+    meta["top_image_cid"] = top_cid
+    meta["owner_email_image_cids"] = [top_cid]
     if pid == PROGRAM_KOREA:
         meta.update(bottom_image_meta)
         meta.setdefault("bottom_shot_variation_enabled", korea_bottom_variation_enabled())
@@ -844,8 +862,12 @@ def run_keysuri_service_full_run(
                 meta["korea_bottom_shot_path"] = bottom_image_path.resolve().relative_to(_REPO.resolve()).as_posix()
             except ValueError:
                 meta["korea_bottom_shot_path"] = str(bottom_image_path.resolve())
-            meta["korea_bottom_shot_cid"] = keysuri_korea_bottom_service_email_cid_token(run_id)
+            bottom_cid = keysuri_korea_bottom_service_email_cid_token(run_id)
+            meta["korea_bottom_shot_cid"] = bottom_cid
+            meta["bottom_image_cid"] = bottom_cid
             meta.setdefault("bottom_shot_image_path", meta["korea_bottom_shot_path"])
+            meta["owner_email_image_cids"] = [top_cid, bottom_cid]
+            meta["customer_email_image_cids"] = [top_cid, bottom_cid]
     save_run_artifact(meta, email_html=email_html)
 
     ok = image_outcome.ok and (not send_owner_email or email_sent)

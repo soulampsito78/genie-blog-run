@@ -1167,6 +1167,131 @@ class KeysuriKoreaOwnerReviewEmailDesignTests(unittest.TestCase):
         )
 
 
+class KeysuriKoreaContractPreviewBottomOrderingTests(unittest.TestCase):
+    """Contract preview must be rendered after Bottom decision so it shows actual Bottom."""
+
+    def setUp(self) -> None:
+        self._env = patch.dict(
+            os.environ,
+            {
+                "GENIE_ADMIN_PUBLIC_BASE_URL": "https://example.com",
+                "GENIE_OWNER_REVIEW_SEND": "0",
+            },
+            clear=False,
+        )
+        self._env.start()
+
+    def tearDown(self) -> None:
+        self._env.stop()
+
+    @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
+    @patch("keysuri_service_full_run.resolve_korea_bottom_email_asset_path")
+    @patch("keysuri_service_full_run.build_keysuri_prompt_input")
+    @patch("keysuri_service_full_run.save_run_artifact")
+    @patch("keysuri_service_full_run._generate_keysuri_service_image")
+    @patch("keysuri_service_full_run.generate_run_id")
+    def test_korea_contract_preview_shows_bottom_image_not_placeholder(
+        self,
+        mock_run_id: MagicMock,
+        mock_image: MagicMock,
+        mock_save: MagicMock,
+        mock_prompt_input: MagicMock,
+        mock_bottom_asset: MagicMock,
+        mock_watermark: MagicMock,
+    ) -> None:
+        """After bottom resolution is moved before preview build, preview HTML should
+        contain bottom image (data-URI) not the placeholder div."""
+        from keysuri_service_full_run import run_keysuri_service_full_run
+
+        repo = Path(__file__).resolve().parents[1]
+        run_id = "20260619_120000_keysuri_korea_tech_ab120001"
+        mock_run_id.return_value = run_id
+        pack_path = repo / "output" / "keysuri_preview" / "test_pack_korea_preview_order.json"
+        pack_path.parent.mkdir(parents=True, exist_ok=True)
+        pack_path.write_text(json.dumps({"sources": [], "program_id": PROGRAM_KOREA}), encoding="utf-8")
+        raw_path = repo / "output" / "keysuri_preview" / "raw_korea_preview_order.txt"
+        raw_path.write_text("{}", encoding="utf-8")
+
+        top_image = repo / "output" / "images" / "keysuri_korea_preview_order_top.jpg"
+        top_image.parent.mkdir(parents=True, exist_ok=True)
+        top_image.write_bytes(b"\xff\xd8\xff" + b"\x00" * 128)
+        anchor_image = repo / "output" / "images" / "keysuri_korea_preview_order_anchor.jpg"
+        anchor_image.write_bytes(b"\xff\xd8\xff" + b"\x11" * 128)
+        mock_bottom_asset.return_value = (anchor_image, [])
+        bottom_raw = repo / "output/admin_runs/keysuri_service_assets" / f"{run_id}_korea_bottom_v6.jpg"
+        bottom_image = bottom_raw.with_name(f"{bottom_raw.stem}_mirai_on_watermarked.jpg")
+        mock_watermark.side_effect = _mock_keysuri_watermark
+
+        def _mock_bottom_generate(**kwargs):
+            kwargs["output_path"].parent.mkdir(parents=True, exist_ok=True)
+            kwargs["output_path"].write_bytes(b"\xff\xd8\xff" + b"\x22" * 128)
+            return kwargs["output_path"]
+
+        mock_image.return_value = ServiceImageOutcome(
+            called_image_api=True,
+            image_generation_status="generated",
+            image_source=IMAGE_SOURCE_GENERATED,
+            generated_image_path=str(top_image.relative_to(repo)),
+        )
+        mock_prompt_input.return_value = {
+            "program_id": PROGRAM_KOREA,
+            "prompt_status": "ready_for_generation",
+            "source_pack": {"sources": []},
+        }
+
+        smoke = LiveSourceSmokeResult(
+            ok=True,
+            program_id=PROGRAM_KOREA,
+            source_pack_path=str(pack_path),
+            html_path=str(pack_path.parent / "ko.html"),
+            fetched_item_count=5,
+            feed_urls_used=["https://example.com/feed"],
+            sample_marker_pass=True,
+            called_gemini=True,
+            use_gemini=True,
+            contract_preview=False,
+            parse_status="parsed_valid",
+            raw_response_path=str(raw_path),
+            preview_overall_status="PASS_OWNER_REVIEW_READY",
+            validation_status="PASS",
+            generated_briefing={"title": "국내 브리핑", "summary": "요약", "top_5_news": []},
+            side_effects={"called_gemini": True, "called_image_api": False},
+        )
+
+        with patch.dict(os.environ, {"KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED": "true"}, clear=False):
+            payload = run_keysuri_service_full_run(
+                PROGRAM_KOREA,
+                smoke_runner=lambda **_kw: smoke,
+                bottom_generate_fn=_mock_bottom_generate,
+                bottom_watermark_fn=_mock_keysuri_watermark,
+            )
+
+        self.assertEqual(payload.get("program_id"), PROGRAM_KOREA)
+        self.assertEqual(payload.get("korea_bottom_shot_status"), "available")
+
+        # T8: contract preview HTML must NOT contain bottom-shot-placeholder
+        html_rel = payload.get("html_path") or ""
+        if html_rel:
+            preview_html = (repo / html_rel).read_text(encoding="utf-8")
+            self.assertNotIn(
+                'id="bottom-shot-placeholder"',
+                preview_html,
+                "preview HTML still shows placeholder — bottom resolution order not fixed",
+            )
+            # T9: preview HTML contains bottom data-URI image
+            self.assertIn('id="bottom-shot-image"', preview_html)
+
+        saved_meta = mock_save.call_args.args[0]
+        self.assertIn("top_image_cid", saved_meta)
+        self.assertIn("bottom_image_cid", saved_meta)
+        self.assertIn("owner_email_image_cids", saved_meta)
+        self.assertIn("customer_email_image_cids", saved_meta)
+        owner_cids = saved_meta["owner_email_image_cids"]
+        customer_cids = saved_meta["customer_email_image_cids"]
+        self.assertEqual(len(owner_cids), 2)
+        self.assertEqual(owner_cids, customer_cids)
+
+
 class ServiceFullRunInternalEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(app)

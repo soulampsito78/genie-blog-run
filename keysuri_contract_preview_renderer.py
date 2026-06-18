@@ -262,6 +262,17 @@ def prepare_contract_preview_fixture(
         fixture["evening_memo_body"] = memo_plain_text(memo)
         fixture["evening_memo_heading"] = KOREA_EVENING_MEMO_HEADING
 
+    # Korea preview: embed bottom shot as data-URI when bottom_shot_image_path is set.
+    # Email mode skips this — bottom CID is injected separately by service_full_run.
+    if _is_korea_program(program_id) and image_mode == IMAGE_MODE_PREVIEW:
+        existing_bottom = str(fixture.get("bottom_shot_image_src") or "").strip()
+        if not (existing_bottom.startswith("data:image/") or existing_bottom.startswith("cid:")):
+            bottom_path_str = str(fixture.get("bottom_shot_image_path") or "").strip()
+            if bottom_path_str:
+                bp = Path(bottom_path_str)
+                if bp.is_file():
+                    fixture["bottom_shot_image_src"] = _data_uri_from_path(bp)
+
     existing_src = str(fixture.get("top_shot_image_src") or "").strip()
     if existing_src.startswith("data:image/") or existing_src.startswith("cid:"):
         return fixture

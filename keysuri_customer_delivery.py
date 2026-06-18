@@ -23,6 +23,7 @@ from keysuri_contract_preview_renderer import (
 from keysuri_live_source_smoke import PROGRAM_GLOBAL, PROGRAM_KOREA
 from keysuri_service_full_run import (
     inline_jpeg_parts_for_global_service_email,
+    inline_jpeg_parts_for_korea_service_email,
     keysuri_global_service_email_cid_token,
 )
 
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 _KEYSURI_MODES = frozenset({PROGRAM_GLOBAL, PROGRAM_KOREA})
 _KOREA_CID_PREFIX = "keysuri_topshot_korea"
+_KOREA_BOTTOM_MISSING_REASON = "korea_bottom_image_missing_for_customer_email"
 
 _OWNER_ADMIN_ENTRY_RE = re.compile(
     r'<div[^>]*\bid=["\']owner-review-admin-entry["\'][^>]*>.*?</div>',
@@ -235,6 +237,18 @@ def _resolve_generated_image_path(meta: Dict[str, Any]) -> Optional[Path]:
     return path if path.is_file() else None
 
 
+def _resolve_korea_bottom_image_path(meta: Dict[str, Any]) -> Optional[Path]:
+    """Resolve Korea bottom shot path from artifact metadata."""
+    repo = _repo_root()
+    for key in ("korea_bottom_shot_path", "bottom_shot_image_path"):
+        rel = str(meta.get(key) or "").strip()
+        if rel:
+            path = (repo / rel).resolve() if not Path(rel).is_absolute() else Path(rel).resolve()
+            if path.is_file():
+                return path
+    return None
+
+
 def _cid_tokens_from_html(saved_html: str) -> List[str]:
     return [m.group(1).strip() for m in _CID_SRC_RE.finditer(saved_html or "") if m.group(1).strip()]
 
@@ -255,9 +269,13 @@ def resolve_keysuri_inline_jpeg_parts(
     run_id = str(meta.get("run_id") or "").strip()
     if mode == PROGRAM_GLOBAL:
         return inline_jpeg_parts_for_global_service_email(image_path, run_id)
-    cid_token = keysuri_korea_service_email_cid_token(run_id)
-    fname = image_path.name if image_path.name else "keysuri_korea_service.jpg"
-    return [(str(image_path), cid_token, fname)]
+    # Korea: customer email must include both Top and Bottom inline parts.
+    # If Bottom is missing the HTML will have a broken cid:keysuri_bottomshot_korea_*
+    # reference, so we block rather than silently omit.
+    bottom_path = _resolve_korea_bottom_image_path(meta)
+    if bottom_path is None:
+        return None
+    return inline_jpeg_parts_for_korea_service_email(image_path, run_id, bottom_image_path=bottom_path)
 
 
 def send_keysuri_customer_final_email(
@@ -302,13 +320,18 @@ def send_keysuri_customer_final_email(
 
     inline_parts = resolve_keysuri_inline_jpeg_parts(saved_html, meta)
     if not inline_parts:
+        # Distinguish Korea-bottom-missing from top-image-missing for clear diagnostics.
+        if mode == PROGRAM_KOREA and _resolve_generated_image_path(meta) is not None:
+            reason = _KOREA_BOTTOM_MISSING_REASON
+        else:
+            reason = "missing_generated_inline_image"
         _last_delivery_result = KeysuriCustomerDeliveryResult(
             sent=False,
-            reason="missing_generated_inline_image",
+            reason=reason,
             customer_delivery_status="not_sent",
             customer_email_subject=subject,
         )
-        logger.warning("send_keysuri_customer_final_email: missing generated inline JPEG")
+        logger.warning("send_keysuri_customer_final_email: %s", reason)
         return False
 
     cid_tokens = [row[1] for row in inline_parts] or _cid_tokens_from_html(saved_html)

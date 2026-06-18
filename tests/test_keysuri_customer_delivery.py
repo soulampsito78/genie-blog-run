@@ -612,5 +612,254 @@ class ServiceFullRunRegistryApprovalTests(unittest.TestCase):
             self.assertEqual(resolved, spec.program_id)
 
 
+class KeysuriKoreaCustomerEmailBottomCidTests(unittest.TestCase):
+    """Korea customer email must carry both Top and Bottom MIME inline parts."""
+
+    def setUp(self) -> None:
+        os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
+        os.environ["SMTP_HOST"] = "smtp.example.com"
+        os.environ["SMTP_USER"] = "user@example.com"
+        os.environ["SMTP_PASSWORD"] = "secret"
+
+    def _korea_owner_email_html(self, run_id: str, *, with_bottom_cid: bool = True) -> str:
+        from keysuri_contract_preview_renderer import build_keysuri_korea_gmail_owner_email_html
+        from keysuri_service_full_run import (
+            keysuri_korea_bottom_service_email_cid_src,
+            keysuri_korea_service_email_cid_src,
+        )
+        from tests.test_keysuri_contract_preview_renderer import build_korea_contract_fixture
+
+        fixture = build_korea_contract_fixture()
+        fixture["top_shot_image_src"] = keysuri_korea_service_email_cid_src(run_id)
+        if with_bottom_cid:
+            fixture["bottom_shot_image_src"] = keysuri_korea_bottom_service_email_cid_src(run_id)
+        return build_keysuri_korea_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Korea Tech",
+            admin_url=f"https://example.com/admin/runs/{run_id}",
+            run_id=run_id,
+        )
+
+    def _meta_with_baseline_and_paths(
+        self,
+        run_id: str,
+        top_path: str,
+        bottom_path: str,
+        bottom_source: str = "fixed_105936_fallback",
+    ) -> dict:
+        return {
+            "run_id": run_id,
+            "mode": PROGRAM_KOREA,
+            "program_id": PROGRAM_KOREA,
+            "service_full_run": True,
+            "validation_result": "pass",
+            "owner_review_status": "pending_review",
+            "customer_delivery_status": "not_sent",
+            "artifact_status": "emailed",
+            "generated_image_path": top_path,
+            "bottom_shot_asset_id": _KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID,
+            "korea_bottom_shot_asset_id": _KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID,
+            "bottom_shot_source": bottom_source,
+            "korea_bottom_shot_path": bottom_path,
+            "bottom_shot_image_path": bottom_path,
+            "bottom_shot_watermark_status": "applied",
+        }
+
+    # T1: Korea customer HTML references both Top and Bottom CIDs
+    def test_korea_owner_html_contains_top_and_bottom_cids(self) -> None:
+        from keysuri_service_full_run import (
+            keysuri_korea_bottom_service_email_cid_src,
+            keysuri_korea_service_email_cid_src,
+        )
+
+        run_id = "20260619_120000_keysuri_korea_tech_cidtest1"
+        html = self._korea_owner_email_html(run_id, with_bottom_cid=True)
+        self.assertIn(keysuri_korea_service_email_cid_src(run_id), html)
+        self.assertIn(keysuri_korea_bottom_service_email_cid_src(run_id), html)
+        self.assertIn('id="bottom-shot-image"', html)
+        self.assertNotIn('id="bottom-shot-placeholder"', html)
+
+    # T2: Korea customer MIME inline parts includes Top and Bottom
+    def test_korea_resolve_inline_parts_returns_top_and_bottom(self) -> None:
+        import tempfile
+
+        from keysuri_customer_delivery import resolve_keysuri_inline_jpeg_parts
+        from keysuri_service_full_run import (
+            keysuri_korea_bottom_service_email_cid_token,
+            keysuri_korea_service_email_cid_token,
+        )
+
+        run_id = "20260619_120000_keysuri_korea_tech_cidtest2"
+        repo = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            top = Path(tmp) / "top.jpg"
+            bottom = Path(tmp) / "bottom.jpg"
+            top.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+            bottom.write_bytes(b"\xff\xd8\xff" + b"\x11" * 64)
+            top_rel = str(top)
+            bottom_rel = str(bottom)
+            meta = self._meta_with_baseline_and_paths(run_id, top_rel, bottom_rel)
+            html = self._korea_owner_email_html(run_id, with_bottom_cid=True)
+            parts = resolve_keysuri_inline_jpeg_parts(html, meta)
+        self.assertIsNotNone(parts)
+        self.assertEqual(len(parts), 2)
+        cid_tokens = [row[1] for row in parts]
+        self.assertIn(keysuri_korea_service_email_cid_token(run_id), cid_tokens)
+        self.assertIn(keysuri_korea_bottom_service_email_cid_token(run_id), cid_tokens)
+
+    # T3: All cid: references in HTML have corresponding MIME inline parts
+    def test_all_html_cids_covered_by_inline_parts(self) -> None:
+        import re
+        import tempfile
+
+        from keysuri_customer_delivery import resolve_keysuri_inline_jpeg_parts
+
+        run_id = "20260619_120000_keysuri_korea_tech_cidtest3"
+        with tempfile.TemporaryDirectory() as tmp:
+            top = Path(tmp) / "top.jpg"
+            bottom = Path(tmp) / "bottom.jpg"
+            top.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+            bottom.write_bytes(b"\xff\xd8\xff" + b"\x11" * 64)
+            meta = self._meta_with_baseline_and_paths(run_id, str(top), str(bottom))
+            html = self._korea_owner_email_html(run_id, with_bottom_cid=True)
+            parts = resolve_keysuri_inline_jpeg_parts(html, meta)
+        self.assertIsNotNone(parts)
+        html_cids = set(re.findall(r"cid:([^\s\"'<>]+)", html))
+        mime_cids = {row[1] for row in parts}
+        missing = html_cids - mime_cids
+        self.assertEqual(missing, set(), f"CIDs in HTML but not in MIME parts: {missing}")
+
+    # T4: Bottom CID missing → customer email blocked with specific reason code
+    def test_bottom_missing_blocks_customer_email_with_reason_code(self) -> None:
+        import tempfile
+
+        from keysuri_customer_delivery import (
+            last_keysuri_delivery_result,
+            send_keysuri_customer_final_email,
+        )
+
+        run_id = "20260619_120000_keysuri_korea_tech_cidtest4"
+        with tempfile.TemporaryDirectory() as tmp:
+            top = Path(tmp) / "top.jpg"
+            top.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+            # meta has top path but NO bottom path
+            meta = {
+                "run_id": run_id,
+                "mode": PROGRAM_KOREA,
+                "program_id": PROGRAM_KOREA,
+                "service_full_run": True,
+                "validation_result": "pass",
+                "owner_review_status": "pending_review",
+                "customer_delivery_status": "not_sent",
+                "generated_image_path": str(top),
+                "bottom_shot_asset_id": _KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID,
+                "bottom_shot_source": "fixed_105936_fallback",
+                "bottom_shot_watermark_status": "applied",
+                # No korea_bottom_shot_path / bottom_shot_image_path
+            }
+            html = self._korea_owner_email_html(run_id, with_bottom_cid=True)
+            with patch("keysuri_customer_delivery.send_genie_email") as mock_send:
+                result = send_keysuri_customer_final_email(html, meta)
+        self.assertFalse(result)
+        mock_send.assert_not_called()
+        dr = last_keysuri_delivery_result()
+        self.assertIsNotNone(dr)
+        self.assertFalse(dr.sent)
+        self.assertEqual(dr.reason, "korea_bottom_image_missing_for_customer_email")
+
+    # T5: generated_v6_multi_ref Bottom path → customer email inline part
+    def test_generated_v6_bottom_path_used_in_customer_inline_part(self) -> None:
+        import tempfile
+
+        from keysuri_customer_delivery import resolve_keysuri_inline_jpeg_parts
+        from keysuri_service_full_run import keysuri_korea_bottom_service_email_cid_token
+
+        run_id = "20260619_120000_keysuri_korea_tech_cidtest5"
+        with tempfile.TemporaryDirectory() as tmp:
+            top = Path(tmp) / "top.jpg"
+            bottom = Path(tmp) / "bottom_v6.jpg"
+            top.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+            bottom.write_bytes(b"\xff\xd8\xff" + b"\x22" * 64)
+            meta = self._meta_with_baseline_and_paths(
+                run_id,
+                str(top),
+                str(bottom),
+                bottom_source="generated_v6_multi_ref",
+            )
+            meta["bottom_shot_generated"] = True
+            html = self._korea_owner_email_html(run_id, with_bottom_cid=True)
+            parts = resolve_keysuri_inline_jpeg_parts(html, meta)
+        self.assertIsNotNone(parts)
+        self.assertEqual(len(parts), 2)
+        bottom_part = next(
+            (row for row in parts if row[1] == keysuri_korea_bottom_service_email_cid_token(run_id)),
+            None,
+        )
+        self.assertIsNotNone(bottom_part, "Bottom inline part not found")
+        self.assertEqual(Path(bottom_part[0]).resolve(), bottom.resolve())
+
+    # T6: fixed_105936_fallback Bottom path → customer email inline part
+    def test_fixed_105936_fallback_bottom_path_used_in_customer_inline_part(self) -> None:
+        import tempfile
+
+        from keysuri_customer_delivery import resolve_keysuri_inline_jpeg_parts
+        from keysuri_service_full_run import keysuri_korea_bottom_service_email_cid_token
+
+        run_id = "20260619_120000_keysuri_korea_tech_cidtest6"
+        with tempfile.TemporaryDirectory() as tmp:
+            top = Path(tmp) / "top.jpg"
+            bottom = Path(tmp) / "bottom_105936.jpg"
+            top.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+            bottom.write_bytes(b"\xff\xd8\xff" + b"\x33" * 64)
+            meta = self._meta_with_baseline_and_paths(
+                run_id,
+                str(top),
+                str(bottom),
+                bottom_source="fixed_105936_fallback",
+            )
+            html = self._korea_owner_email_html(run_id, with_bottom_cid=True)
+            parts = resolve_keysuri_inline_jpeg_parts(html, meta)
+        self.assertIsNotNone(parts)
+        self.assertEqual(len(parts), 2)
+        bottom_part = next(
+            (row for row in parts if row[1] == keysuri_korea_bottom_service_email_cid_token(run_id)),
+            None,
+        )
+        self.assertIsNotNone(bottom_part)
+        self.assertEqual(Path(bottom_part[0]).resolve(), bottom.resolve())
+
+    # T7: Owner and customer use the same artifact fields for image CIDs
+    def test_owner_and_customer_cids_sourced_from_same_artifact_fields(self) -> None:
+        import tempfile
+
+        from keysuri_customer_delivery import resolve_keysuri_inline_jpeg_parts
+        from keysuri_service_full_run import (
+            keysuri_korea_bottom_service_email_cid_token,
+            keysuri_korea_service_email_cid_token,
+        )
+
+        run_id = "20260619_120000_keysuri_korea_tech_cidtest7"
+        with tempfile.TemporaryDirectory() as tmp:
+            top = Path(tmp) / "top.jpg"
+            bottom = Path(tmp) / "bottom.jpg"
+            top.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+            bottom.write_bytes(b"\xff\xd8\xff" + b"\x44" * 64)
+            meta = self._meta_with_baseline_and_paths(run_id, str(top), str(bottom))
+            # Simulate service_full_run artifact metadata with CID tracking fields
+            meta["top_image_cid"] = keysuri_korea_service_email_cid_token(run_id)
+            meta["bottom_image_cid"] = keysuri_korea_bottom_service_email_cid_token(run_id)
+            meta["owner_email_image_cids"] = [
+                keysuri_korea_service_email_cid_token(run_id),
+                keysuri_korea_bottom_service_email_cid_token(run_id),
+            ]
+            meta["customer_email_image_cids"] = meta["owner_email_image_cids"]
+            html = self._korea_owner_email_html(run_id, with_bottom_cid=True)
+            parts = resolve_keysuri_inline_jpeg_parts(html, meta)
+        self.assertIsNotNone(parts)
+        customer_cids = {row[1] for row in parts}
+        owner_cids = set(meta["owner_email_image_cids"])
+        self.assertEqual(customer_cids, owner_cids)
+
+
 if __name__ == "__main__":
     unittest.main()
