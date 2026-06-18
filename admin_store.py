@@ -53,9 +53,7 @@ _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED = frozenset(
 )
 LEGACY_CUSTOMER_DELIVERY_STATUSES = frozenset({"sent_after_timeout"})
 APPROVABLE_MODES = frozenset({"today_genie", "tomorrow_genie", "keysuri_global_tech", "keysuri_korea_tech"})
-# keysuri_korea_tech delivery is gated by bottom QA baseline metadata, not a blanket block.
-# Unlock requires: bottom_shot_asset_id == _KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID
-# AND bottom_shot_source in _KEYSURI_KOREA_BOTTOM_APPROVED_SOURCES.
+# keysuri_korea_tech delivery accepts the fixed baseline or generated-v6 anchor contract.
 _KEYSURI_CUSTOMER_DELIVERY_BLOCKED_MODES: frozenset = frozenset()  # retired: all modes now use per-mode gates
 
 # Korea Bottom QA baseline lock (041559, commit bc78424)
@@ -64,6 +62,7 @@ _KEYSURI_KOREA_BOTTOM_APPROVED_SOURCES = frozenset({
     "fixed_105936_fallback",
     "fixed_105936_fallback_variation_not_implemented",
 })
+_KEYSURI_KOREA_BOTTOM_GENERATED_SOURCE = "generated_v6_multi_ref"
 
 _CUSTOMER_DELIVERY_STATUS_LABELS_KO = {
     "not_sent": "미발송",
@@ -510,17 +509,33 @@ def _is_legacy_timeout_artifact(meta: Dict[str, Any]) -> bool:
 
 
 def _keysuri_korea_bottom_baseline_confirmed(meta: Dict[str, Any]) -> tuple[bool, str]:
-    """Check that Korea Bottom image metadata confirms the 041559 QA baseline.
+    """Check fixed baseline or generated-v6 anchor metadata for Korea Bottom.
 
-    Requires:
-      bottom_shot_asset_id == _KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID (105936)
-      bottom_shot_source in _KEYSURI_KOREA_BOTTOM_APPROVED_SOURCES
-    If either is missing or wrong, delivery stays blocked.
+    Fixed fallback requires the legacy asset/source pair. Generated v6 requires
+    the 105936 slot-0 anchor and Asset01 slot-1 continuity contract.
     """
+    source = str(meta.get("bottom_shot_source") or "")
+    if source == _KEYSURI_KOREA_BOTTOM_GENERATED_SOURCE:
+        anchor_id = str(
+            meta.get("bottom_anchor_asset_id")
+            or meta.get("korea_bottom_anchor_asset_id")
+            or ""
+        )
+        if anchor_id != _KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID:
+            return False, "korea_bottom_generated_anchor_id_invalid"
+        if meta.get("bottom_anchor_slot") != 0:
+            return False, "korea_bottom_generated_anchor_slot_invalid"
+        if str(meta.get("secondary_reference_asset_id") or "") != "Asset01":
+            return False, "korea_bottom_generated_secondary_reference_invalid"
+        if meta.get("secondary_reference_slot") != 1:
+            return False, "korea_bottom_generated_secondary_slot_invalid"
+        if not bool(meta.get("bottom_shot_generated")):
+            return False, "korea_bottom_generated_status_unconfirmed"
+        return True, "ok"
+
     asset_id = str(
         meta.get("bottom_shot_asset_id") or meta.get("korea_bottom_shot_asset_id") or ""
     )
-    source = str(meta.get("bottom_shot_source") or "")
     if asset_id != _KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID:
         return False, "korea_bottom_baseline_asset_id_missing"
     if source not in _KEYSURI_KOREA_BOTTOM_APPROVED_SOURCES:

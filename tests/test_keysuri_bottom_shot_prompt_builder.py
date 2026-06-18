@@ -14,6 +14,7 @@ Verifies:
 """
 from __future__ import annotations
 
+import os
 import unittest
 from unittest.mock import patch
 
@@ -1205,7 +1206,7 @@ class ReferenceAssetTests(unittest.TestCase):
 
 
 # ===================================================================
-# Builder Status — generation disabled
+# Builder Status — prompt-only builder connected to Korea beta runtime
 # ===================================================================
 
 class BuilderStatusTests(unittest.TestCase):
@@ -1216,8 +1217,8 @@ class BuilderStatusTests(unittest.TestCase):
     def test_generation_not_allowed(self):
         self.assertFalse(self.status["generation_allowed"])
 
-    def test_runtime_not_enabled(self):
-        self.assertFalse(self.status["runtime_enabled"])
+    def test_runtime_enabled_through_shared_generator(self):
+        self.assertTrue(self.status["runtime_enabled"])
 
     def test_owner_approval_required(self):
         self.assertTrue(self.status["owner_approval_required"])
@@ -1277,9 +1278,11 @@ class WeatherInputMetadataTests(unittest.TestCase):
 
 class VariationGateFallbackTests(unittest.TestCase):
 
-    def test_variation_gate_false_uses_fixed_fallback(self):
+    def test_variation_gate_defaults_on_for_korea_beta(self):
         from keysuri_service_full_run import korea_bottom_variation_enabled
-        self.assertFalse(korea_bottom_variation_enabled())
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED", None)
+            self.assertTrue(korea_bottom_variation_enabled())
 
     def test_variation_gate_false_no_image_api_call(self):
         result = build_bottom_shot_prompt(weather_condition="cloudy")

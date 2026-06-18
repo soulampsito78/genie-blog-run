@@ -4,15 +4,14 @@ Contract: docs/keysuri/KEYSURI_R6B_BOTTOM_SHOT_EMOTIONAL_LOCKIN_PLAN.md
 
 Status:
   generation_allowed:      false
-  runtime_enabled:         false
+  runtime_enabled:         true (through keysuri_bottom_shot_generation)
   owner_approval_required: true
 
 This module builds prompt text from Contract v6 but does NOT:
   - call any image API
-  - attach to active runtime generation
   - set KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED
 
-Wire-in point: the disabled ``if variation_enabled:`` branch in
+Wire-in point: the Korea beta ``if variation_enabled:`` branch in
 ``keysuri_service_full_run.resolve_korea_bottom_email_image_path()``.
 
 References:
@@ -649,7 +648,7 @@ def build_bottom_shot_prompt(
         },
         "builder_status": {
             "generation_allowed": False,
-            "runtime_enabled": False,
+            "runtime_enabled": True,
             "owner_approval_required": True,
             "image_api_called": False,
             "contract_version": "v6",
@@ -667,12 +666,7 @@ def build_bottom_shot_prompt_metadata_only(
     season: Optional[str] = None,
     program_id: str = "keysuri_korea_tech",
 ) -> Dict[str, Any]:
-    """Build prompt metadata for the disabled variation branch — no image call.
-
-    Used in ``keysuri_service_full_run.resolve_korea_bottom_email_image_path()``
-    when ``korea_bottom_variation_enabled()`` is True but generation is not yet
-    implemented. Records what the prompt *would be* without calling anything.
-    """
+    """Build prompt metadata without making an image call."""
     result = build_bottom_shot_prompt(
         weather_condition=weather_condition,
         temperature_c=temperature_c,

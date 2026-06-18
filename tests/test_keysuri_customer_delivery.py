@@ -107,6 +107,29 @@ def _keysuri_korea_artifact_meta_with_baseline(run_id: str) -> dict:
     }
 
 
+def _keysuri_korea_artifact_meta_with_generated_bottom(run_id: str) -> dict:
+    return {
+        "run_id": run_id,
+        "mode": PROGRAM_KOREA,
+        "program_id": PROGRAM_KOREA,
+        "service_full_run": True,
+        "validation_result": "pass",
+        "owner_review_status": "pending_review",
+        "customer_delivery_status": "not_sent",
+        "artifact_status": "emailed",
+        "bottom_shot_asset_id": f"keysuri_korea_bottom_generated_{run_id}",
+        "bottom_shot_source": "generated_v6_multi_ref",
+        "bottom_shot_generated": True,
+        "bottom_anchor_asset_id": _KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID,
+        "bottom_anchor_role": "primary_bottom_visual_anchor",
+        "bottom_anchor_slot": 0,
+        "secondary_reference_asset_id": "Asset01",
+        "secondary_reference_role": "secondary_same_person_continuity_reference",
+        "secondary_reference_slot": 1,
+        "bottom_shot_watermark_status": "applied",
+    }
+
+
 class KeysuriApproveRunGateTests(unittest.TestCase):
     def setUp(self) -> None:
         os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
@@ -153,6 +176,29 @@ class KeysuriApproveRunGateTests(unittest.TestCase):
         ok, err = can_approve_customer_send(meta, has_email_html=True)
         self.assertTrue(ok, f"expected approvable with baseline, got err={err!r}")
         self.assertEqual(err, "ok")
+
+    def test_keysuri_korea_can_approve_generated_v6_with_valid_anchor_contract(self) -> None:
+        run_id = "20260618_183000_keysuri_korea_tech_generated"
+        meta = _keysuri_korea_artifact_meta_with_generated_bottom(run_id)
+        ok, err = can_approve_customer_send(meta, has_email_html=True)
+        self.assertTrue(ok, f"expected generated Bottom to be approvable, got err={err!r}")
+        self.assertEqual(err, "ok")
+
+    def test_keysuri_korea_generated_v6_blocks_wrong_anchor_metadata(self) -> None:
+        run_id = "20260618_183000_keysuri_korea_tech_bad_anchor"
+        meta = _keysuri_korea_artifact_meta_with_generated_bottom(run_id)
+        meta["bottom_anchor_asset_id"] = "wrong-anchor"
+        ok, err = can_approve_customer_send(meta, has_email_html=True)
+        self.assertFalse(ok)
+        self.assertEqual(err, "korea_bottom_generated_anchor_id_invalid")
+
+    def test_keysuri_korea_generated_v6_blocks_wrong_secondary_slot(self) -> None:
+        run_id = "20260618_183000_keysuri_korea_tech_bad_slot"
+        meta = _keysuri_korea_artifact_meta_with_generated_bottom(run_id)
+        meta["secondary_reference_slot"] = 0
+        ok, err = can_approve_customer_send(meta, has_email_html=True)
+        self.assertFalse(ok)
+        self.assertEqual(err, "korea_bottom_generated_secondary_slot_invalid")
 
     def test_keysuri_korea_can_approve_blocked_when_already_approved(self) -> None:
         # Korea with baseline confirmed but already approved → blocked (not double-send)

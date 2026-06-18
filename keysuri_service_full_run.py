@@ -24,6 +24,7 @@ from keysuri_contract_preview_renderer import (
     render_keysuri_contract_preview_html,
 )
 from keysuri_briefing_content_enricher import enrich_generated_briefing_content
+from keysuri_bottom_shot_generation import generate_keysuri_korea_bottom_v6
 from keysuri_generation_prompt import parse_keysuri_generated_response
 from keysuri_live_source_smoke import (
     PROGRAM_GLOBAL,
@@ -110,13 +111,11 @@ def keysuri_korea_bottom_service_email_cid_src(run_id: str) -> str:
 
 
 def korea_bottom_variation_enabled() -> bool:
-    """Future Korea bottom-shot variation gate; default is fixed 105936 fallback."""
-    return os.getenv(KEYSURI_KOREA_BOTTOM_VARIATION_ENV, "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
+    """Korea beta path defaults on; explicit false/off disables generation."""
+    raw = os.getenv(KEYSURI_KOREA_BOTTOM_VARIATION_ENV)
+    if raw is None or not raw.strip():
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
 def inline_jpeg_parts_for_global_service_email(
@@ -243,38 +242,103 @@ def resolve_korea_bottom_email_asset_path(run_id: str) -> Tuple[Optional[Path], 
     return dest, []
 
 
-def resolve_korea_bottom_email_image_path(run_id: str) -> Tuple[Optional[Path], List[str], Dict[str, Any]]:
-    """
-    Resolve Korea bottom-shot email image through the disabled-by-default variation gate.
-
-    Generation is intentionally not implemented in this patch. When the gate is enabled,
-    the runtime still falls back to fixed watermarked 105936 and records not_implemented
-    metadata instead of calling any bottom image API.
-    """
+def resolve_korea_bottom_email_image_path(
+    run_id: str,
+    *,
+    weather_condition: str = "cloudy",
+    temperature_c: Optional[float] = None,
+    season: Optional[str] = None,
+    generate_fn: Optional[Callable[..., Path]] = None,
+    watermark_fn: Optional[Callable[[Path, Path], Path]] = None,
+) -> Tuple[Optional[Path], List[str], Dict[str, Any]]:
+    """Generate Korea Bottom v6 first and use fixed 105936 only as fallback."""
     variation_enabled = korea_bottom_variation_enabled()
-    path, issues = resolve_korea_bottom_email_asset_path(run_id)
-    metadata: Dict[str, Any] = {
+    generation_error = ""
+    anchor_path, anchor_issues = resolve_korea_bottom_email_asset_path(run_id)
+    if variation_enabled and anchor_path is not None:
+        seed = int(hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:8], 16)
+        raw_output = (
+            _REPO
+            / "output"
+            / "admin_runs"
+            / "keysuri_service_assets"
+            / f"{run_id}_korea_bottom_v6.jpg"
+        )
+        generated = generate_keysuri_korea_bottom_v6(
+            repo_root=_REPO,
+            output_path=raw_output,
+            weather_condition=weather_condition,
+            primary_reference_path=anchor_path,
+            temperature_c=temperature_c,
+            season=season,
+            wardrobe_variant=seed,
+            pose_variant=seed >> 8,
+            apply_watermark=True,
+            watermark_fn=watermark_fn,
+            generate_fn=generate_fn,
+        )
+        if generated.ok and generated.image_path is not None:
+            metadata = dict(generated.metadata)
+            metadata.update(
+                {
+                    "bottom_shot_variation_enabled": True,
+                    "bottom_shot_reference_direction": KEYSURI_KOREA_BOTTOM_REFERENCE_DIRECTION,
+                    "bottom_shot_asset_id": f"keysuri_korea_bottom_generated_{run_id}",
+                    "bottom_shot_image_path": _repo_rel(generated.image_path),
+                    "bottom_shot_raw_image_path": _repo_rel(generated.raw_image_path or generated.image_path),
+                }
+            )
+            return generated.image_path, [], metadata
+        generation_error = generated.error_code or "bottom_v6_generation_failed"
+        if generated.error_message:
+            generation_error = f"{generation_error}: {generated.error_message}"
+    elif variation_enabled:
+        generation_error = "bottom_anchor_unavailable"
+    else:
+        generation_error = "variation_explicitly_disabled"
+
+    path, issues = anchor_path, anchor_issues
+    metadata = {
         "bottom_shot_variation_enabled": variation_enabled,
         "bottom_shot_reference_direction": KEYSURI_KOREA_BOTTOM_REFERENCE_DIRECTION,
         "bottom_shot_asset_id": KEYSURI_KOREA_BOTTOM_ASSET_ID,
+        "bottom_shot_source": "fixed_105936_fallback",
+        "bottom_shot_generated": False,
+        "bottom_shot_generation_attempted": variation_enabled,
+        "bottom_shot_generation_status": "failed" if variation_enabled else "disabled",
+        "bottom_shot_fallback_reason": generation_error,
         "bottom_shot_watermark_status": "applied" if path is not None else "unavailable",
+        "bottom_anchor_asset_id": KEYSURI_KOREA_BOTTOM_ASSET_ID,
+        "korea_bottom_anchor_asset_id": KEYSURI_KOREA_BOTTOM_ASSET_ID,
+        "bottom_anchor_role": "primary_bottom_visual_anchor",
+        "bottom_anchor_slot": 0,
+        "secondary_reference_asset_id": "Asset01",
+        "secondary_reference_role": "secondary_same_person_continuity_reference",
+        "secondary_reference_slot": 1,
     }
-    if variation_enabled:
-        from keysuri_bottom_shot_prompt_builder import build_bottom_shot_prompt_metadata_only
-
-        prompt_meta = build_bottom_shot_prompt_metadata_only(weather_condition="cloudy")
-        metadata.update(
-            {
-                "bottom_shot_source": "fixed_105936_fallback_variation_not_implemented",
-                "bottom_shot_variation_status": "not_implemented",
-                **prompt_meta,
-            }
-        )
-    else:
-        metadata["bottom_shot_source"] = "fixed_105936_fallback"
     if path is not None:
         metadata["bottom_shot_image_path"] = _repo_rel(path)
     return path, issues, metadata
+
+
+def _korea_bottom_weather_inputs(prompt_input: Dict[str, Any]) -> Dict[str, Any]:
+    """Read normalized weather when present, retaining a conservative beta default."""
+    source_pack = prompt_input.get("source_pack") if isinstance(prompt_input.get("source_pack"), dict) else {}
+    candidates = (
+        prompt_input.get("weather_context"),
+        prompt_input.get("normalized_weather_context"),
+        source_pack.get("weather_context"),
+        source_pack.get("normalized_weather_context"),
+    )
+    weather = next((item for item in candidates if isinstance(item, dict)), {})
+    temperature = weather.get("temperature_c")
+    if not isinstance(temperature, (int, float)):
+        temperature = None
+    return {
+        "weather_condition": str(weather.get("weather_condition") or "cloudy").strip().lower(),
+        "temperature_c": temperature,
+        "season": str(weather.get("season") or "").strip() or None,
+    }
 
 
 def _service_artifact_storage_durable() -> bool:
@@ -465,6 +529,8 @@ def run_keysuri_service_full_run(
     dry_run: bool = False,
     smoke_runner=None,
     image_canary_runner=None,
+    bottom_generate_fn: Optional[Callable[..., Path]] = None,
+    bottom_watermark_fn: Optional[Callable[[Path, Path], Path]] = None,
     send_fn: Optional[Callable[..., bool]] = None,
 ) -> Dict[str, Any]:
     """Service-level Kee-Suri full run for keysuri_global_tech or keysuri_korea_tech."""
@@ -646,7 +712,12 @@ def run_keysuri_service_full_run(
     bottom_image_source = ""
     bottom_image_meta: Dict[str, Any] = {}
     if pid == PROGRAM_KOREA:
-        bottom_image_path, bottom_issues, bottom_image_meta = resolve_korea_bottom_email_image_path(run_id)
+        bottom_image_path, bottom_issues, bottom_image_meta = resolve_korea_bottom_email_image_path(
+            run_id,
+            **_korea_bottom_weather_inputs(prompt_input),
+            generate_fn=bottom_generate_fn,
+            watermark_fn=bottom_watermark_fn,
+        )
         if bottom_image_path is not None:
             bottom_image_status = "available"
             bottom_image_source = str(bottom_image_meta.get("bottom_shot_source") or "fixed_105936_fallback")
@@ -762,7 +833,9 @@ def run_keysuri_service_full_run(
         meta.setdefault("bottom_shot_source", bottom_image_source or "fixed_105936_fallback_unavailable")
         meta.setdefault("bottom_shot_asset_id", KEYSURI_KOREA_BOTTOM_ASSET_ID)
         meta.setdefault("bottom_shot_watermark_status", "applied" if bottom_image_path is not None else "unavailable")
-        meta["korea_bottom_shot_asset_id"] = KEYSURI_KOREA_BOTTOM_ASSET_ID
+        meta["korea_bottom_shot_asset_id"] = str(
+            meta.get("bottom_shot_asset_id") or KEYSURI_KOREA_BOTTOM_ASSET_ID
+        )
         meta["korea_bottom_shot_status"] = bottom_image_status
         if bottom_image_source:
             meta["korea_bottom_shot_source"] = bottom_image_source

@@ -32,7 +32,6 @@ import json
 import os
 import sys
 from datetime import datetime
-from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -47,6 +46,7 @@ from keysuri_bottom_shot_prompt_builder import (  # noqa: E402
     ASSET01_ROLE,
     build_bottom_shot_prompt,
 )
+from keysuri_bottom_shot_generation import generate_keysuri_korea_bottom_v6  # noqa: E402
 
 PROGRAM_ID = "keysuri_korea_tech"
 FAMILY_ID = "family_a"
@@ -101,76 +101,30 @@ def _generate_image_bottom_anchor(
     stamp: str,
     image_index: int,
 ) -> Dict[str, Any]:
-    """Generate a Bottom image using multi-ref Vertex AI call.
-
-    Content parts order:
-      [0] 105936     — primary Bottom visual anchor (BOTTOM_ANCHOR_ABS)
-      [1] Asset01    — secondary same-person continuity (ASSET01_ABS, if available)
-      [2] prompt     — positive + negative prompt text
-
-    Calls Vertex AI directly. Does NOT call image_generator.generate_image_file().
-    image_generator.py is untouched.
-    """
-    import vertexai
-    from vertexai.generative_models import GenerationConfig, GenerativeModel
-    from vertexai.generative_models import Image as VxImage, Part
-    from PIL import Image as PILImage
-
-    vertexai.init(project=PROJECT_ID, location=LOCATION)
-    model = GenerativeModel(MODEL_NAME)
-
-    content_parts: list = []
-
-    # Slot 0 — 105936 primary Bottom visual anchor
-    if BOTTOM_ANCHOR_ABS.is_file():
-        content_parts.append(Part.from_image(VxImage.load_from_file(str(BOTTOM_ANCHOR_ABS))))
-        print(f"  [anchor slot 0] {BOTTOM_ANCHOR_ROLE}: {BOTTOM_ANCHOR_PATH}")
-    else:
-        print(f"  [WARNING] Bottom anchor not found: {BOTTOM_ANCHOR_ABS}")
-
-    # Slot 1 — Asset01 secondary continuity reference
-    if ASSET01_ABS.is_file():
-        content_parts.append(Part.from_image(VxImage.load_from_file(str(ASSET01_ABS))))
-        print(f"  [anchor slot 1] {ASSET01_ROLE}: {ASSET01_PATH}")
-
-    # Slot 2 — prompt text
-    positive = prompt_result["result"]["prompt_text"]
-    negative = prompt_result["result"]["negative_prompt"]
-    content_parts.append(f"{positive}\n\nNEGATIVE:\n{negative}")
-
+    """Generate a Bottom image through the shared production/QA v6 path."""
     label = prompt_result["label"]
     out_path = out_dir / f"bottom_shot_qa_{label}_{stamp}_{image_index:02d}.jpg"
     print(f"  [generating] image {image_index} ({label}) → {out_path.relative_to(REPO)}")
+    print(f"  [anchor slot 0] {BOTTOM_ANCHOR_ROLE}: {BOTTOM_ANCHOR_PATH}")
+    print(f"  [anchor slot 1] {ASSET01_ROLE}: {ASSET01_PATH}")
 
-    response = model.generate_content(
-        content_parts,
-        generation_config=GenerationConfig(response_modalities=["IMAGE"]),
+    result = generate_keysuri_korea_bottom_v6(
+        repo_root=REPO,
+        output_path=out_path,
+        weather_condition=str(prompt_result["result"]["weather_outfit_shell"]["weather_condition"]),
+        temperature_c=prompt_result["result"]["weather_outfit_shell"].get("temperature_c"),
+        season=prompt_result["result"]["weather_outfit_shell"].get("season"),
+        prompt_result=prompt_result["result"],
+        model_name=MODEL_NAME,
+        project_id=PROJECT_ID,
+        location=LOCATION,
+        apply_watermark=False,
     )
-
-    # Extract image bytes
-    raw: Optional[bytes] = None
-    for cand in (getattr(response, "candidates", None) or []):
-        content = getattr(cand, "content", None)
-        for p in (getattr(content, "parts", None) or []):
-            inline = getattr(p, "inline_data", None)
-            if inline and getattr(inline, "data", None):
-                raw = inline.data
-                break
-        if raw:
-            break
-
-    if not raw:
-        raise RuntimeError(
-            f"No image bytes in model response for {label}. "
-            f"finish_reason={getattr((getattr(response, 'candidates', [None]) or [None])[0], 'finish_reason', 'unknown')}"
-        )
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with PILImage.open(BytesIO(raw)) as im:
-        im.convert("RGB").save(out_path, format="JPEG", quality=92, optimize=True)
+    if not result.ok or result.image_path is None:
+        raise RuntimeError(f"{result.error_code}: {result.error_message}")
 
     print(f"  [saved]      {out_path.relative_to(REPO)}")
-    return {"image_path": out_path, "label": label, "index": image_index}
+    return {"image_path": result.image_path, "label": label, "index": image_index}
 
 
 def _make_contact_sheet(image_paths: List[Path], out_dir: Path, stamp: str) -> Optional[Path]:
