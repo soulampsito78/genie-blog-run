@@ -383,6 +383,10 @@ def persist_orchestrator_run_artifact(
         send_owner_email=send_owner_email,
     )
     meta["created_at"] = datetime.now(ZoneInfo("Asia/Seoul")).isoformat()
+    if mode == "today_genie" and today_image_result is not None:
+        from today_genie_orchestrator_images import persist_today_genie_customer_images
+
+        meta.update(persist_today_genie_customer_images(rid, today_image_result))
     email_html = extract_email_html_for_artifact(result, run_id=rid)
     return save_run_artifact(meta, email_html=email_html)
 

@@ -4,8 +4,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from email_sender import parse_customer_to_addrs, send_genie_email
 from renderers import today_genie_email_inline_cid_pair
@@ -33,6 +34,27 @@ _NAVER_MARKER_FRAGMENTS = (
     "naver_ready_article.html",
     "genie-customer-naver-paste-body",
 )
+
+TODAY_IMAGE_REASON_GENERATED = "today_generated_images_resolved"
+TODAY_IMAGE_REASON_STATIC_FALLBACK = "today_static_fallback"
+TODAY_IMAGE_REASON_GENERATED_PATHS_MISSING = "today_generated_paths_missing"
+TODAY_IMAGE_REASON_GENERATED_TOP_MISSING = "today_generated_top_path_missing"
+TODAY_IMAGE_REASON_GENERATED_BOTTOM_MISSING = "today_generated_bottom_path_missing"
+TODAY_IMAGE_REASON_GENERATED_STATUS_INVALID = "today_generated_status_invalid"
+TODAY_IMAGE_REASON_GENERATED_FALLBACK_CONFLICT = "today_generated_fallback_conflict"
+TODAY_IMAGE_REASON_GENERATED_FILES_UNAVAILABLE = "today_generated_files_unavailable"
+_LAST_CUSTOMER_IMAGE_RESOLUTION_REASON = ""
+
+
+@dataclass(frozen=True)
+class TodayGenieCustomerImageResolution:
+    inline_parts: Optional[List[Tuple[str, str, str]]]
+    source: str
+    reason_code: str
+
+
+def last_customer_image_resolution_reason() -> str:
+    return _LAST_CUSTOMER_IMAGE_RESOLUTION_REASON
 
 
 def strip_owner_operational_handoff(html_body: str) -> str:
@@ -62,43 +84,129 @@ def _resolve_path_under_repo(path_value: str) -> Path:
     repo = Path(__file__).resolve().parent
     raw = Path(str(path_value or "").strip())
     if raw.is_absolute():
-        return raw.resolve()
+        return raw
     return (repo / raw).resolve()
+
+
+def _download_gcs_customer_image(bucket_name: str, object_name: str, target: Path) -> None:
+    from google.cloud import storage
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    storage.Client().bucket(bucket_name).blob(object_name).download_to_filename(str(target))
+
+
+def _generated_provenance_present(meta: Dict[str, Any]) -> bool:
+    return any(
+        (
+            meta.get("image_source") == "generated",
+            meta.get("image_generation_status") == "generated",
+            bool(meta.get("generated_image_paths")),
+            meta.get("customer_image_source") == "generated_run_images",
+            meta.get("run_specific_images") is True,
+        )
+    )
+
+
+def _inline_parts_for_paths(top_path: Path, bottom_path: Path) -> List[Tuple[str, str, str]]:
+    cid_top, cid_bottom = today_genie_email_inline_cid_pair()
+    return [
+        (str(top_path), cid_top, top_path.name or "GENIE_EMAIL_today_genie_top.jpg"),
+        (str(bottom_path), cid_bottom, bottom_path.name or "GENIE_EMAIL_today_genie_bottom.jpg"),
+    ]
+
+
+def _resolve_today_genie_customer_image_result(
+    meta: Dict[str, Any],
+    *,
+    download_fn: Optional[Callable[[str, str, Path], None]] = None,
+) -> TodayGenieCustomerImageResolution:
+    generated_intent = _generated_provenance_present(meta)
+    if generated_intent:
+        if meta.get("fallback_used") is True:
+            return TodayGenieCustomerImageResolution(
+                None, "blocked", TODAY_IMAGE_REASON_GENERATED_FALLBACK_CONFLICT
+            )
+        if (
+            meta.get("image_source") != "generated"
+            or meta.get("image_generation_status") != "generated"
+        ):
+            return TodayGenieCustomerImageResolution(
+                None, "blocked", TODAY_IMAGE_REASON_GENERATED_STATUS_INVALID
+            )
+        paths = meta.get("generated_image_paths")
+        if not isinstance(paths, dict):
+            return TodayGenieCustomerImageResolution(
+                None, "blocked", TODAY_IMAGE_REASON_GENERATED_PATHS_MISSING
+            )
+        raw_top = str(paths.get("top") or "").strip()
+        raw_bottom = str(paths.get("bottom") or "").strip()
+        if not raw_top:
+            return TodayGenieCustomerImageResolution(
+                None, "blocked", TODAY_IMAGE_REASON_GENERATED_TOP_MISSING
+            )
+        if not raw_bottom:
+            return TodayGenieCustomerImageResolution(
+                None, "blocked", TODAY_IMAGE_REASON_GENERATED_BOTTOM_MISSING
+            )
+        top_path = _resolve_path_under_repo(raw_top)
+        bottom_path = _resolve_path_under_repo(raw_bottom)
+        if top_path.is_file() and bottom_path.is_file():
+            return TodayGenieCustomerImageResolution(
+                _inline_parts_for_paths(top_path, bottom_path),
+                "generated_run_images",
+                TODAY_IMAGE_REASON_GENERATED,
+            )
+
+        bucket = str(meta.get("customer_image_gcs_bucket") or "").strip()
+        objects = meta.get("customer_image_gcs_objects")
+        if bucket and isinstance(objects, dict):
+            top_object = str(objects.get("top") or "").strip()
+            bottom_object = str(objects.get("bottom") or "").strip()
+            if top_object and bottom_object:
+                downloader = download_fn or _download_gcs_customer_image
+                try:
+                    downloader(bucket, top_object, top_path)
+                    downloader(bucket, bottom_object, bottom_path)
+                except Exception:
+                    logger.exception("today_genie customer image GCS restore failed")
+                if top_path.is_file() and bottom_path.is_file():
+                    return TodayGenieCustomerImageResolution(
+                        _inline_parts_for_paths(top_path, bottom_path),
+                        "generated_run_images",
+                        TODAY_IMAGE_REASON_GENERATED,
+                    )
+        return TodayGenieCustomerImageResolution(
+            None, "blocked", TODAY_IMAGE_REASON_GENERATED_FILES_UNAVAILABLE
+        )
+
+    repo = Path(__file__).resolve().parent
+    top_latest = repo / "static" / "email" / "GENIE_EMAIL_today_genie_top_latest.jpg"
+    bottom_latest = repo / "static" / "email" / "GENIE_EMAIL_today_genie_bottom_latest.jpg"
+    if not top_latest.is_file() or not bottom_latest.is_file():
+        return TodayGenieCustomerImageResolution(
+            None, "blocked", TODAY_IMAGE_REASON_GENERATED_FILES_UNAVAILABLE
+        )
+    return TodayGenieCustomerImageResolution(
+        _inline_parts_for_paths(top_latest, bottom_latest),
+        "static_latest_fallback",
+        TODAY_IMAGE_REASON_STATIC_FALLBACK,
+    )
 
 
 def _resolve_today_genie_inline_jpeg_parts_from_meta(
     meta: Dict[str, Any],
 ) -> Optional[List[Tuple[str, str, str]]]:
-    paths = meta.get("generated_image_paths")
-    if meta.get("service_full_run") and isinstance(paths, dict):
-        top_path = _resolve_path_under_repo(str(paths.get("top") or ""))
-        bot_path = _resolve_path_under_repo(str(paths.get("bottom") or ""))
-        if top_path.is_file() and bot_path.is_file():
-            cid_top, cid_bottom = today_genie_email_inline_cid_pair()
-            return [
-                (str(top_path), cid_top, top_path.name or "GENIE_EMAIL_today_genie_top.jpg"),
-                (str(bot_path), cid_bottom, bot_path.name or "GENIE_EMAIL_today_genie_bottom.jpg"),
-            ]
-    return None
+    return _resolve_today_genie_customer_image_result(meta).inline_parts
 
 
 def _resolve_today_genie_inline_jpeg_parts(
     meta: Optional[Dict[str, Any]] = None,
 ) -> Optional[List[Tuple[str, str, str]]]:
-    if meta:
-        generated = _resolve_today_genie_inline_jpeg_parts_from_meta(meta)
-        if generated is not None:
-            return generated
-    repo = Path(__file__).resolve().parent
-    top_latest = repo / "static" / "email" / "GENIE_EMAIL_today_genie_top_latest.jpg"
-    bottom_latest = repo / "static" / "email" / "GENIE_EMAIL_today_genie_bottom_latest.jpg"
-    if not top_latest.is_file() or not bottom_latest.is_file():
-        return None
-    cid_top, cid_bottom = today_genie_email_inline_cid_pair()
-    return [
-        (str(top_latest), cid_top, "GENIE_EMAIL_today_genie_top.jpg"),
-        (str(bottom_latest), cid_bottom, "GENIE_EMAIL_today_genie_bottom.jpg"),
-    ]
+    global _LAST_CUSTOMER_IMAGE_RESOLUTION_REASON
+
+    resolution = _resolve_today_genie_customer_image_result(meta or {})
+    _LAST_CUSTOMER_IMAGE_RESOLUTION_REASON = resolution.reason_code
+    return resolution.inline_parts
 
 
 def build_customer_final_subject(meta: Dict[str, Any], saved_html: str) -> str:
@@ -178,9 +286,14 @@ def send_today_geenee_customer_final_email(
         logger.warning("send_today_geenee_customer_final_email: %s", exc)
         return False
 
+    global _LAST_CUSTOMER_IMAGE_RESOLUTION_REASON
+    _LAST_CUSTOMER_IMAGE_RESOLUTION_REASON = ""
     inline_parts = _resolve_today_genie_inline_jpeg_parts(meta)
     if inline_parts is None:
-        logger.warning("send_today_geenee_customer_final_email: missing latest inline JPEG assets")
+        logger.warning(
+            "send_today_geenee_customer_final_email: image resolution blocked (%s)",
+            _LAST_CUSTOMER_IMAGE_RESOLUTION_REASON or "today_image_resolution_failed",
+        )
         return False
 
     subject = build_customer_final_subject(meta, saved_html)

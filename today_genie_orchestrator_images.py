@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from renderers import today_genie_email_inline_cid_pair
 from service_full_run_contract import (
@@ -20,6 +20,7 @@ from today_genie_service_full_run import (
 
 IMAGE_SOURCE_STATIC_FALLBACK = "static_fallback"
 STATIC_FALLBACK_ISSUE_CODE = "TODAY_GENIE_STATIC_IMAGE_FALLBACK"
+CUSTOMER_IMAGE_PERSISTENCE_FAILED = "today_generated_image_persistence_failed"
 
 
 @dataclass
@@ -139,4 +140,98 @@ def orchestrator_image_fields_for_artifact(
         from today_genie_service_full_run import today_genie_watermark_meta
 
         fields.update(today_genie_watermark_meta(image_result.bundle))
+    return fields
+
+
+def _upload_customer_image(
+    bucket_name: str,
+    object_name: str,
+    source_path: Path,
+) -> None:
+    from google.cloud import storage
+
+    bucket = storage.Client().bucket(bucket_name)
+    bucket.blob(object_name).upload_from_filename(
+        str(source_path),
+        content_type="image/jpeg",
+    )
+
+
+def persist_today_genie_customer_images(
+    run_id: str,
+    image_result: Optional[TodayGenieOrchestratorImageResult],
+    *,
+    upload_fn: Optional[Callable[[str, str, Path], None]] = None,
+) -> Dict[str, Any]:
+    """Persist generated run images beside the artifact for delayed approval sends."""
+    if not image_result:
+        return {}
+    if (
+        image_result.image_source != IMAGE_SOURCE_GENERATED
+        or image_result.image_generation_status != IMAGE_GEN_GENERATED
+        or image_result.fallback_used
+    ):
+        return {
+            "run_specific_images": False,
+            "customer_image_source": IMAGE_SOURCE_STATIC_FALLBACK,
+        }
+
+    raw_top = str(image_result.generated_image_paths.get("top") or "").strip()
+    raw_bottom = str(image_result.generated_image_paths.get("bottom") or "").strip()
+    fields: Dict[str, Any] = {
+        "run_specific_images": True,
+        "customer_image_source": "generated_run_images",
+        "customer_top_image_path": raw_top,
+        "customer_bottom_image_path": raw_bottom,
+    }
+    top = (
+        (_repo_root() / raw_top).resolve()
+        if raw_top and not Path(raw_top).is_absolute()
+        else Path(raw_top)
+    )
+    bottom = (
+        (_repo_root() / raw_bottom).resolve()
+        if raw_bottom and not Path(raw_bottom).is_absolute()
+        else Path(raw_bottom)
+    )
+    if not raw_top or not raw_bottom or not top.is_file() or not bottom.is_file():
+        fields.update(
+            customer_image_persistence_status="failed",
+            customer_image_persistence_reason=CUSTOMER_IMAGE_PERSISTENCE_FAILED,
+        )
+        return fields
+
+    from admin_store import admin_artifact_bucket_name, admin_artifact_gcs_prefix
+
+    bucket_name = admin_artifact_bucket_name()
+    if not bucket_name:
+        fields.update(
+            customer_image_persistence_status="local_only",
+            customer_image_persistence_reason="artifact_bucket_not_configured",
+        )
+        return fields
+
+    prefix = admin_artifact_gcs_prefix()
+    objects = {
+        "top": f"{prefix}/{run_id}.images/top.jpg",
+        "bottom": f"{prefix}/{run_id}.images/bottom.jpg",
+    }
+    uploader = upload_fn or _upload_customer_image
+    try:
+        uploader(bucket_name, objects["top"], top)
+        uploader(bucket_name, objects["bottom"], bottom)
+    except Exception as exc:
+        fields.update(
+            customer_image_persistence_status="failed",
+            customer_image_persistence_reason=CUSTOMER_IMAGE_PERSISTENCE_FAILED,
+            customer_image_persistence_error=type(exc).__name__,
+        )
+        return fields
+
+    fields.update(
+        customer_image_persistence_status="persisted",
+        customer_image_storage_backend="gcs",
+        customer_image_gcs_bucket=bucket_name,
+        customer_image_gcs_objects=objects,
+    )
     return fields
