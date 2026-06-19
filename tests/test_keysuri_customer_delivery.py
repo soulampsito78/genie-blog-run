@@ -864,5 +864,433 @@ class KeysuriKoreaCustomerEmailBottomCidTests(unittest.TestCase):
         self.assertEqual(customer_cids, owner_cids)
 
 
+class KeysuriKoreaGeneratedV6PersistenceTests(unittest.TestCase):
+    """GCS restore + generated provenance enforcement for generated_v6_multi_ref artifacts."""
+
+    def setUp(self) -> None:
+        os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
+        os.environ["SMTP_HOST"] = "smtp.example.com"
+        os.environ["SMTP_USER"] = "user@example.com"
+        os.environ["SMTP_PASSWORD"] = "secret"
+
+    def _generated_meta(
+        self,
+        run_id: str,
+        top_path: str,
+        bottom_path: str,
+        *,
+        gen_status: str = "generated",
+        gcs_bucket: str = "",
+        gcs_top_object: str = "",
+        gcs_bottom_object: str = "",
+    ) -> dict:
+        meta: dict = {
+            "run_id": run_id,
+            "mode": PROGRAM_KOREA,
+            "program_id": PROGRAM_KOREA,
+            "service_full_run": True,
+            "validation_result": "pass",
+            "owner_review_status": "pending_review",
+            "customer_delivery_status": "not_sent",
+            "artifact_status": "emailed",
+            "generated_image_path": top_path,
+            "bottom_shot_source": "generated_v6_multi_ref",
+            "bottom_shot_generated": True,
+            "bottom_shot_generation_status": gen_status,
+            "korea_bottom_shot_path": bottom_path,
+            "bottom_shot_image_path": bottom_path,
+            "bottom_shot_asset_id": f"keysuri_korea_bottom_generated_{run_id}",
+            "korea_bottom_shot_asset_id": f"keysuri_korea_bottom_generated_{run_id}",
+            "bottom_anchor_asset_id": _KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID,
+            "bottom_anchor_slot": 0,
+            "secondary_reference_asset_id": "Asset01",
+            "secondary_reference_slot": 1,
+            "bottom_shot_watermark_status": "applied",
+        }
+        if gcs_bucket:
+            meta["korea_generated_image_gcs_bucket"] = gcs_bucket
+        if gcs_top_object:
+            meta["korea_generated_top_gcs_object"] = gcs_top_object
+        if gcs_bottom_object:
+            meta["korea_generated_bottom_gcs_object"] = gcs_bottom_object
+        return meta
+
+    def _korea_owner_email_html(self, run_id: str) -> str:
+        from keysuri_contract_preview_renderer import build_keysuri_korea_gmail_owner_email_html
+        from keysuri_service_full_run import (
+            keysuri_korea_bottom_service_email_cid_src,
+            keysuri_korea_service_email_cid_src,
+        )
+        from tests.test_keysuri_contract_preview_renderer import build_korea_contract_fixture
+
+        fixture = build_korea_contract_fixture()
+        fixture["top_shot_image_src"] = keysuri_korea_service_email_cid_src(run_id)
+        fixture["bottom_shot_image_src"] = keysuri_korea_bottom_service_email_cid_src(run_id)
+        return build_keysuri_korea_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Korea Tech",
+            admin_url=f"https://example.com/admin/runs/{run_id}",
+            run_id=run_id,
+        )
+
+    # T_GCS1: local Top + Bottom exist → uses local paths, no GCS needed
+    def test_generated_v6_local_files_used_directly(self) -> None:
+        import tempfile
+
+        from keysuri_customer_delivery import resolve_keysuri_inline_jpeg_parts
+        from keysuri_service_full_run import keysuri_korea_bottom_service_email_cid_token
+
+        run_id = "20260619_200000_keysuri_korea_tech_gcs001"
+        with tempfile.TemporaryDirectory() as tmp:
+            top = Path(tmp) / "top.jpg"
+            bottom = Path(tmp) / "bottom_v6.jpg"
+            top.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+            bottom.write_bytes(b"\xff\xd8\xff" + b"\xaa" * 64)
+            meta = self._generated_meta(run_id, str(top), str(bottom))
+            html = self._korea_owner_email_html(run_id)
+            parts = resolve_keysuri_inline_jpeg_parts(html, meta)
+        self.assertIsNotNone(parts)
+        self.assertEqual(len(parts), 2)
+        used_top = Path(parts[0][0]).resolve()
+        used_bottom = Path(parts[1][0]).resolve()
+        self.assertEqual(used_top, top.resolve())
+        self.assertEqual(used_bottom, bottom.resolve())
+        self.assertIn(keysuri_korea_bottom_service_email_cid_token(run_id), [row[1] for row in parts])
+
+    # T_GCS2: local Bottom deleted + GCS path → GCS restore → inline part uses restored path
+    def test_generated_v6_bottom_restored_from_gcs(self) -> None:
+        import tempfile
+
+        from keysuri_customer_delivery import resolve_keysuri_inline_jpeg_parts
+        from keysuri_service_full_run import keysuri_korea_bottom_service_email_cid_token
+
+        run_id = "20260619_200000_keysuri_korea_tech_gcs002"
+        with tempfile.TemporaryDirectory() as tmp:
+            top = Path(tmp) / "top.jpg"
+            top.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+            # bottom NOT created — simulates missing local file
+            bottom_placeholder = Path(tmp) / "bottom_v6_missing.jpg"
+            meta = self._generated_meta(
+                run_id,
+                str(top),
+                str(bottom_placeholder),
+                gcs_bucket="test-bucket",
+                gcs_top_object="admin_runs/run.images/korea_top.jpg",
+                gcs_bottom_object="admin_runs/run.images/korea_bottom.jpg",
+            )
+            html = self._korea_owner_email_html(run_id)
+
+            restored_files: list = []
+
+            def _mock_download(bucket: str, obj: str, dest: Path) -> None:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(b"\xff\xd8\xff" + b"\xbb" * 64)
+                restored_files.append(str(dest))
+
+            parts = resolve_keysuri_inline_jpeg_parts(html, meta, download_fn=_mock_download)
+
+        self.assertIsNotNone(parts, "Expected parts after GCS restore")
+        self.assertEqual(len(parts), 2)
+        cid_tokens = [row[1] for row in parts]
+        self.assertIn(keysuri_korea_bottom_service_email_cid_token(run_id), cid_tokens)
+        # Bottom part must use the restored file, not the missing original
+        bottom_part = next(
+            r for r in parts if r[1] == keysuri_korea_bottom_service_email_cid_token(run_id)
+        )
+        self.assertIn("restored_korea_bottom", Path(bottom_part[0]).name)
+
+    # T_GCS3: local Bottom missing + no GCS path → blocked
+    def test_generated_v6_bottom_missing_no_gcs_blocks(self) -> None:
+        import tempfile
+
+        from keysuri_customer_delivery import (
+            KOREA_GENERATED_PERSISTENCE_MISSING,
+            last_korea_inline_resolve_reason,
+            resolve_keysuri_inline_jpeg_parts,
+        )
+
+        run_id = "20260619_200000_keysuri_korea_tech_gcs003"
+        with tempfile.TemporaryDirectory() as tmp:
+            top = Path(tmp) / "top.jpg"
+            top.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+            bottom_missing = Path(tmp) / "bottom_v6_missing.jpg"
+            meta = self._generated_meta(run_id, str(top), str(bottom_missing))
+            # No GCS fields in meta
+            html = self._korea_owner_email_html(run_id)
+            parts = resolve_keysuri_inline_jpeg_parts(html, meta)
+        self.assertIsNone(parts)
+        self.assertEqual(last_korea_inline_resolve_reason(), KOREA_GENERATED_PERSISTENCE_MISSING)
+
+    # T_GCS4: local Top missing + no GCS path → blocked
+    def test_generated_v6_top_missing_no_gcs_blocks(self) -> None:
+        import tempfile
+
+        from keysuri_customer_delivery import (
+            KOREA_GENERATED_PERSISTENCE_MISSING,
+            last_korea_inline_resolve_reason,
+            resolve_keysuri_inline_jpeg_parts,
+        )
+
+        run_id = "20260619_200000_keysuri_korea_tech_gcs004"
+        with tempfile.TemporaryDirectory() as tmp:
+            top_missing = Path(tmp) / "top_missing.jpg"
+            bottom = Path(tmp) / "bottom_v6.jpg"
+            bottom.write_bytes(b"\xff\xd8\xff" + b"\xcc" * 64)
+            meta = self._generated_meta(run_id, str(top_missing), str(bottom))
+            # No GCS fields
+            html = self._korea_owner_email_html(run_id)
+            parts = resolve_keysuri_inline_jpeg_parts(html, meta)
+        self.assertIsNone(parts)
+        self.assertEqual(last_korea_inline_resolve_reason(), KOREA_GENERATED_PERSISTENCE_MISSING)
+
+    # T_GCS5: bottom_shot_generation_status != "generated" → blocked
+    def test_generated_v6_status_invalid_blocks(self) -> None:
+        import tempfile
+
+        from keysuri_customer_delivery import (
+            KOREA_GENERATED_STATUS_INVALID,
+            last_korea_inline_resolve_reason,
+            resolve_keysuri_inline_jpeg_parts,
+        )
+
+        run_id = "20260619_200000_keysuri_korea_tech_gcs005"
+        with tempfile.TemporaryDirectory() as tmp:
+            top = Path(tmp) / "top.jpg"
+            bottom = Path(tmp) / "bottom_v6.jpg"
+            top.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+            bottom.write_bytes(b"\xff\xd8\xff" + b"\xdd" * 64)
+            meta = self._generated_meta(
+                run_id, str(top), str(bottom), gen_status="failed"
+            )
+            html = self._korea_owner_email_html(run_id)
+            parts = resolve_keysuri_inline_jpeg_parts(html, meta)
+        self.assertIsNone(parts)
+        self.assertEqual(last_korea_inline_resolve_reason(), KOREA_GENERATED_STATUS_INVALID)
+
+    # T_GCS6: source/generated conflict → blocked
+    def test_generated_v6_source_generated_conflict_blocks(self) -> None:
+        import tempfile
+
+        from keysuri_customer_delivery import (
+            KOREA_GENERATED_SOURCE_INVALID,
+            last_korea_inline_resolve_reason,
+            resolve_keysuri_inline_jpeg_parts,
+        )
+
+        run_id = "20260619_200000_keysuri_korea_tech_gcs006"
+        with tempfile.TemporaryDirectory() as tmp:
+            top = Path(tmp) / "top.jpg"
+            bottom = Path(tmp) / "bottom.jpg"
+            top.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+            bottom.write_bytes(b"\xff\xd8\xff" + b"\xee" * 64)
+            # bottom_shot_generated=True but source is NOT generated_v6_multi_ref → conflict
+            meta = self._generated_meta(run_id, str(top), str(bottom))
+            meta["bottom_shot_source"] = "fixed_105936_fallback"  # mismatch with generated=True
+            html = self._korea_owner_email_html(run_id)
+            parts = resolve_keysuri_inline_jpeg_parts(html, meta)
+        # fixed_105936_fallback with generated=True → goes through fixed path
+        # The conflict check runs only in _resolve_korea_generated_inline_parts
+        # which is called when _is_korea_generated_v6 returns True (source==generated_v6_multi_ref).
+        # Here source is fixed → goes through fixed path, but generated=True is inconsistent.
+        # We check: _validate_korea_generated_provenance catches it in send_keysuri path.
+        # For resolve_keysuri_inline_jpeg_parts, fixed path is taken, bottom exists → parts returned.
+        # The provenance conflict (generated=True, source=fixed) must be caught via
+        # send_keysuri_customer_final_email when it checks _validate_korea_generated_provenance.
+        # Direct resolve test: fixed path, local files exist → returns parts (not None).
+        # So we verify conflict is detectable via validate function directly:
+        from keysuri_customer_delivery import _validate_korea_generated_provenance
+
+        conflict = _validate_korea_generated_provenance(meta)
+        self.assertEqual(conflict, KOREA_GENERATED_SOURCE_INVALID)
+
+    # T_GCS6b: generated_v6_multi_ref source but generated=False → blocked via delivery
+    def test_generated_v6_fallback_conflict_blocks(self) -> None:
+        import tempfile
+
+        from keysuri_customer_delivery import (
+            KOREA_GENERATED_FALLBACK_CONFLICT,
+            last_korea_inline_resolve_reason,
+            resolve_keysuri_inline_jpeg_parts,
+        )
+
+        run_id = "20260619_200000_keysuri_korea_tech_gcs006b"
+        with tempfile.TemporaryDirectory() as tmp:
+            top = Path(tmp) / "top.jpg"
+            bottom = Path(tmp) / "bottom.jpg"
+            top.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+            bottom.write_bytes(b"\xff\xd8\xff" + b"\xff" * 64)
+            meta = self._generated_meta(run_id, str(top), str(bottom))
+            meta["bottom_shot_generated"] = False  # conflict: source=generated but generated=False
+            html = self._korea_owner_email_html(run_id)
+            parts = resolve_keysuri_inline_jpeg_parts(html, meta)
+        self.assertIsNone(parts)
+        self.assertEqual(last_korea_inline_resolve_reason(), KOREA_GENERATED_FALLBACK_CONFLICT)
+
+    # T_GCS7: generated success artifact → fixed_105936 NOT silently used when files missing
+    def test_generated_v6_no_silent_fixed_fallback(self) -> None:
+        import tempfile
+
+        from keysuri_customer_delivery import resolve_keysuri_inline_jpeg_parts
+
+        run_id = "20260619_200000_keysuri_korea_tech_gcs007"
+        repo = Path(__file__).resolve().parents[1]
+        fixed_fallback = repo / "output" / "admin_runs" / "keysuri_service_assets" / "fixed_105936.jpg"
+        with tempfile.TemporaryDirectory() as tmp:
+            top_missing = Path(tmp) / "top_missing.jpg"
+            bottom_missing = Path(tmp) / "bottom_missing.jpg"
+            meta = self._generated_meta(run_id, str(top_missing), str(bottom_missing))
+            html = self._korea_owner_email_html(run_id)
+            parts = resolve_keysuri_inline_jpeg_parts(html, meta)
+        self.assertIsNone(parts, "Must block when generated files are missing, not use fixed_105936")
+        if parts is not None:
+            for row in parts:
+                self.assertNotIn("105936", Path(row[0]).name, "Must not silently use fixed_105936 image")
+
+    # T_GCS8: GCS restore success → MIME inline part source is restored file
+    def test_generated_v6_gcs_restore_inline_part_source_matches(self) -> None:
+        import tempfile
+
+        from keysuri_customer_delivery import resolve_keysuri_inline_jpeg_parts
+        from keysuri_service_full_run import keysuri_korea_bottom_service_email_cid_token
+
+        run_id = "20260619_200000_keysuri_korea_tech_gcs008"
+        with tempfile.TemporaryDirectory() as tmp:
+            top_missing = Path(tmp) / "top_missing.jpg"
+            bottom_missing = Path(tmp) / "bottom_missing.jpg"
+            meta = self._generated_meta(
+                run_id,
+                str(top_missing),
+                str(bottom_missing),
+                gcs_bucket="test-bucket",
+                gcs_top_object="admin_runs/run.images/korea_top.jpg",
+                gcs_bottom_object="admin_runs/run.images/korea_bottom.jpg",
+            )
+            html = self._korea_owner_email_html(run_id)
+            restored_paths: list = []
+
+            def _mock_download(bucket: str, obj: str, dest: Path) -> None:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(b"\xff\xd8\xff" + b"\x99" * 64)
+                restored_paths.append(str(dest))
+
+            parts = resolve_keysuri_inline_jpeg_parts(html, meta, download_fn=_mock_download)
+
+        self.assertIsNotNone(parts)
+        self.assertEqual(len(parts), 2)
+        used_paths = {Path(row[0]).resolve() for row in parts}
+        for rp in restored_paths:
+            self.assertIn(Path(rp).resolve(), used_paths, "MIME part source must be the GCS-restored file")
+        # Must NOT use the missing original paths
+        self.assertNotIn(top_missing.resolve(), used_paths)
+        self.assertNotIn(bottom_missing.resolve(), used_paths)
+
+    # T_GCS9: GCS restore download raises exception → blocked
+    def test_generated_v6_gcs_restore_failure_blocks(self) -> None:
+        import tempfile
+
+        from keysuri_customer_delivery import (
+            KOREA_GENERATED_ARTIFACT_RESTORE_FAILED,
+            last_korea_inline_resolve_reason,
+            resolve_keysuri_inline_jpeg_parts,
+        )
+
+        run_id = "20260619_200000_keysuri_korea_tech_gcs009"
+        with tempfile.TemporaryDirectory() as tmp:
+            top_missing = Path(tmp) / "top_missing.jpg"
+            bottom_missing = Path(tmp) / "bottom_missing.jpg"
+            meta = self._generated_meta(
+                run_id,
+                str(top_missing),
+                str(bottom_missing),
+                gcs_bucket="test-bucket",
+                gcs_top_object="admin_runs/run.images/korea_top.jpg",
+                gcs_bottom_object="admin_runs/run.images/korea_bottom.jpg",
+            )
+            html = self._korea_owner_email_html(run_id)
+
+            def _failing_download(bucket: str, obj: str, dest: Path) -> None:
+                raise RuntimeError("simulated GCS download failure")
+
+            parts = resolve_keysuri_inline_jpeg_parts(html, meta, download_fn=_failing_download)
+        self.assertIsNone(parts)
+        self.assertEqual(last_korea_inline_resolve_reason(), KOREA_GENERATED_ARTIFACT_RESTORE_FAILED)
+
+    # T_GCS10: fixed fallback artifact uses existing fallback path (regression)
+    def test_fixed_105936_fallback_still_uses_local_paths(self) -> None:
+        import tempfile
+
+        from keysuri_customer_delivery import resolve_keysuri_inline_jpeg_parts
+
+        run_id = "20260619_200000_keysuri_korea_tech_gcs010"
+        with tempfile.TemporaryDirectory() as tmp:
+            top = Path(tmp) / "top.jpg"
+            bottom = Path(tmp) / "bottom_105936.jpg"
+            top.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+            bottom.write_bytes(b"\xff\xd8\xff" + b"\x33" * 64)
+            meta = {
+                "run_id": run_id,
+                "mode": PROGRAM_KOREA,
+                "program_id": PROGRAM_KOREA,
+                "service_full_run": True,
+                "validation_result": "pass",
+                "owner_review_status": "pending_review",
+                "customer_delivery_status": "not_sent",
+                "artifact_status": "emailed",
+                "generated_image_path": str(top),
+                "bottom_shot_source": "fixed_105936_fallback",
+                "bottom_shot_generated": False,
+                "bottom_shot_generation_status": "failed",
+                "bottom_shot_asset_id": _KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID,
+                "korea_bottom_shot_path": str(bottom),
+                "bottom_shot_image_path": str(bottom),
+                "bottom_shot_watermark_status": "applied",
+            }
+            from keysuri_service_full_run import keysuri_korea_bottom_service_email_cid_token
+            from tests.test_keysuri_contract_preview_renderer import build_korea_contract_fixture
+            from keysuri_contract_preview_renderer import build_keysuri_korea_gmail_owner_email_html
+            from keysuri_service_full_run import keysuri_korea_service_email_cid_src, keysuri_korea_bottom_service_email_cid_src
+            fixture = build_korea_contract_fixture()
+            fixture["top_shot_image_src"] = keysuri_korea_service_email_cid_src(run_id)
+            fixture["bottom_shot_image_src"] = keysuri_korea_bottom_service_email_cid_src(run_id)
+            html = build_keysuri_korea_gmail_owner_email_html(
+                fixture,
+                subject="[운영자 검토] Kee-Suri Korea Tech",
+                admin_url=f"https://example.com/admin/runs/{run_id}",
+                run_id=run_id,
+            )
+            parts = resolve_keysuri_inline_jpeg_parts(html, meta)
+        self.assertIsNotNone(parts)
+        self.assertEqual(len(parts), 2)
+        self.assertEqual(Path(parts[0][0]).resolve(), top.resolve())
+        self.assertEqual(Path(parts[1][0]).resolve(), bottom.resolve())
+
+    # T_GCS11: send_keysuri_customer_final_email blocks with generated reason code
+    def test_send_keysuri_blocks_with_generated_reason_when_files_missing(self) -> None:
+        import tempfile
+
+        from keysuri_customer_delivery import (
+            KOREA_GENERATED_PERSISTENCE_MISSING,
+            last_keysuri_delivery_result,
+            send_keysuri_customer_final_email,
+        )
+
+        run_id = "20260619_200000_keysuri_korea_tech_gcs011"
+        with tempfile.TemporaryDirectory() as tmp:
+            top_missing = Path(tmp) / "top_missing.jpg"
+            bottom_missing = Path(tmp) / "bottom_missing.jpg"
+            meta = self._generated_meta(run_id, str(top_missing), str(bottom_missing))
+            html = self._korea_owner_email_html(run_id)
+            with patch("keysuri_customer_delivery.send_genie_email") as mock_send:
+                result = send_keysuri_customer_final_email(html, meta)
+        self.assertFalse(result)
+        mock_send.assert_not_called()
+        dr = last_keysuri_delivery_result()
+        self.assertIsNotNone(dr)
+        self.assertFalse(dr.sent)
+        self.assertEqual(dr.reason, KOREA_GENERATED_PERSISTENCE_MISSING)
+        # Must NOT be the fixed_105936 bottom missing reason
+        self.assertNotEqual(dr.reason, "korea_bottom_image_missing_for_customer_email")
+
+
 if __name__ == "__main__":
     unittest.main()

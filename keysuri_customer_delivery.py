@@ -32,6 +32,19 @@ logger = logging.getLogger(__name__)
 _KEYSURI_MODES = frozenset({PROGRAM_GLOBAL, PROGRAM_KOREA})
 _KOREA_CID_PREFIX = "keysuri_topshot_korea"
 _KOREA_BOTTOM_MISSING_REASON = "korea_bottom_image_missing_for_customer_email"
+_GENERATED_V6_MULTI_REF_SOURCE = "generated_v6_multi_ref"
+
+# Reason codes for generated provenance failures.
+KOREA_GENERATED_TOP_PATH_MISSING = "korea_generated_top_path_missing"
+KOREA_GENERATED_BOTTOM_PATH_MISSING = "korea_generated_bottom_path_missing"
+KOREA_GENERATED_STATUS_INVALID = "korea_generated_status_invalid"
+KOREA_GENERATED_SOURCE_INVALID = "korea_generated_source_invalid"
+KOREA_GENERATED_FILES_UNAVAILABLE = "korea_generated_files_unavailable"
+KOREA_GENERATED_ARTIFACT_RESTORE_FAILED = "korea_generated_artifact_restore_failed"
+KOREA_GENERATED_PERSISTENCE_MISSING = "korea_generated_persistence_missing"
+KOREA_GENERATED_FALLBACK_CONFLICT = "korea_generated_fallback_conflict"
+
+_last_korea_inline_resolve_reason: str = ""
 
 _OWNER_ADMIN_ENTRY_RE = re.compile(
     r'<div[^>]*\bid=["\']owner-review-admin-entry["\'][^>]*>.*?</div>',
@@ -57,6 +70,10 @@ _INTERNAL_BLOCK_RE = re.compile(
 _CID_SRC_RE = re.compile(r'src=["\']cid:([^"\']+)["\']', re.IGNORECASE)
 
 _last_delivery_result: Optional["KeysuriCustomerDeliveryResult"] = None
+
+
+def last_korea_inline_resolve_reason() -> str:
+    return _last_korea_inline_resolve_reason
 
 
 @dataclass
@@ -228,6 +245,115 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _download_keysuri_gcs_image(bucket_name: str, object_name: str, dest: Path) -> None:
+    from google.cloud import storage
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    storage.Client().bucket(bucket_name).blob(object_name).download_to_filename(str(dest))
+
+
+def _is_korea_generated_v6(meta: Dict[str, Any]) -> bool:
+    return str(meta.get("bottom_shot_source") or "") == _GENERATED_V6_MULTI_REF_SOURCE
+
+
+def _validate_korea_generated_provenance(meta: Dict[str, Any]) -> Optional[str]:
+    """Return reason code if generated provenance fields are inconsistent, else None."""
+    source = str(meta.get("bottom_shot_source") or "")
+    generated = meta.get("bottom_shot_generated")
+    gen_status = str(meta.get("bottom_shot_generation_status") or "")
+    is_generated_source = source == _GENERATED_V6_MULTI_REF_SOURCE
+
+    if is_generated_source and generated is not True:
+        return KOREA_GENERATED_FALLBACK_CONFLICT
+    if is_generated_source and gen_status and gen_status != "generated":
+        return KOREA_GENERATED_STATUS_INVALID
+    if generated is True and not is_generated_source:
+        return KOREA_GENERATED_SOURCE_INVALID
+    return None
+
+
+def _try_restore_keysuri_from_gcs(
+    bucket: str,
+    gcs_object: str,
+    dest: Path,
+    *,
+    download_fn=None,
+) -> bool:
+    """Try to download a single image from GCS. Returns True on success."""
+    downloader = download_fn or _download_keysuri_gcs_image
+    try:
+        downloader(bucket, gcs_object, dest)
+    except Exception:
+        logger.exception("keysuri GCS image restore failed: gs://%s/%s", bucket, gcs_object)
+        return False
+    return dest.is_file()
+
+
+def _resolve_korea_generated_inline_parts(
+    meta: Dict[str, Any],
+    run_id: str,
+    *,
+    download_fn=None,
+) -> Tuple[Optional[List[Tuple[str, str, str]]], str]:
+    """Resolve Korea generated Top+Bottom inline parts with GCS restore fallback.
+
+    Never falls back to fixed_105936. Returns (parts, reason_code) where
+    reason_code is empty string on success.
+    """
+    global _last_korea_inline_resolve_reason
+
+    conflict = _validate_korea_generated_provenance(meta)
+    if conflict:
+        _last_korea_inline_resolve_reason = conflict
+        return None, conflict
+
+    bucket = str(meta.get("korea_generated_image_gcs_bucket") or "").strip()
+    repo = _repo_root()
+    safe_run_id = run_id or "unknown_run"
+
+    top_path = _resolve_generated_image_path(meta)
+    if top_path is None:
+        top_gcs = str(meta.get("korea_generated_top_gcs_object") or "").strip()
+        if not bucket or not top_gcs:
+            reason = KOREA_GENERATED_PERSISTENCE_MISSING
+            _last_korea_inline_resolve_reason = reason
+            return None, reason
+        restore_top = (
+            repo / "output" / "admin_runs" / "keysuri_service_assets"
+            / f"{safe_run_id}_restored_korea_top.jpg"
+        )
+        if not _try_restore_keysuri_from_gcs(bucket, top_gcs, restore_top, download_fn=download_fn):
+            reason = KOREA_GENERATED_ARTIFACT_RESTORE_FAILED
+            _last_korea_inline_resolve_reason = reason
+            return None, reason
+        top_path = restore_top
+
+    bottom_path = _resolve_korea_bottom_image_path(meta)
+    if bottom_path is None:
+        bottom_gcs = str(meta.get("korea_generated_bottom_gcs_object") or "").strip()
+        if not bucket or not bottom_gcs:
+            reason = KOREA_GENERATED_PERSISTENCE_MISSING
+            _last_korea_inline_resolve_reason = reason
+            return None, reason
+        restore_bottom = (
+            repo / "output" / "admin_runs" / "keysuri_service_assets"
+            / f"{safe_run_id}_restored_korea_bottom.jpg"
+        )
+        if not _try_restore_keysuri_from_gcs(
+            bucket, bottom_gcs, restore_bottom, download_fn=download_fn
+        ):
+            reason = KOREA_GENERATED_ARTIFACT_RESTORE_FAILED
+            _last_korea_inline_resolve_reason = reason
+            return None, reason
+        bottom_path = restore_bottom
+
+    parts = inline_jpeg_parts_for_korea_service_email(
+        top_path, run_id, bottom_image_path=bottom_path
+    )
+    _last_korea_inline_resolve_reason = "korea_generated_images_resolved"
+    return parts, ""
+
+
 def _resolve_generated_image_path(meta: Dict[str, Any]) -> Optional[Path]:
     repo = _repo_root()
     rel = str(meta.get("generated_image_path") or "").strip()
@@ -256,20 +382,31 @@ def _cid_tokens_from_html(saved_html: str) -> List[str]:
 def resolve_keysuri_inline_jpeg_parts(
     saved_html: str,
     meta: Dict[str, Any],
+    *,
+    download_fn=None,
 ) -> Optional[List[Tuple[str, str, str]]]:
-    """Resolve inline JPEG parts from generated service_full_run artifact metadata."""
+    """Resolve inline JPEG parts from generated service_full_run artifact metadata.
+
+    For Korea generated_v6_multi_ref artifacts, uses strict provenance validation and
+    GCS restore fallback. Never silently falls back to fixed_105936 for generated artifacts.
+    """
     mode = str(meta.get("mode") or meta.get("program_id") or "")
     if mode not in _KEYSURI_MODES:
         return None
     if not meta.get("service_full_run"):
         return None
+    run_id = str(meta.get("run_id") or "").strip()
+
+    if mode == PROGRAM_KOREA and _is_korea_generated_v6(meta):
+        parts, _ = _resolve_korea_generated_inline_parts(meta, run_id, download_fn=download_fn)
+        return parts
+
     image_path = _resolve_generated_image_path(meta)
     if image_path is None:
         return None
-    run_id = str(meta.get("run_id") or "").strip()
     if mode == PROGRAM_GLOBAL:
         return inline_jpeg_parts_for_global_service_email(image_path, run_id)
-    # Korea: customer email must include both Top and Bottom inline parts.
+    # Korea fixed_105936_fallback: both Top and Bottom must be present locally.
     # If Bottom is missing the HTML will have a broken cid:keysuri_bottomshot_korea_*
     # reference, so we block rather than silently omit.
     bottom_path = _resolve_korea_bottom_image_path(meta)
@@ -320,8 +457,10 @@ def send_keysuri_customer_final_email(
 
     inline_parts = resolve_keysuri_inline_jpeg_parts(saved_html, meta)
     if not inline_parts:
-        # Distinguish Korea-bottom-missing from top-image-missing for clear diagnostics.
-        if mode == PROGRAM_KOREA and _resolve_generated_image_path(meta) is not None:
+        if mode == PROGRAM_KOREA and _is_korea_generated_v6(meta):
+            # generated_v6_multi_ref: use the specific reason set during resolution.
+            reason = _last_korea_inline_resolve_reason or KOREA_GENERATED_FILES_UNAVAILABLE
+        elif mode == PROGRAM_KOREA and _resolve_generated_image_path(meta) is not None:
             reason = _KOREA_BOTTOM_MISSING_REASON
         else:
             reason = "missing_generated_inline_image"

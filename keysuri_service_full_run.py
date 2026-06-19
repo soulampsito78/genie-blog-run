@@ -8,7 +8,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from admin_store import admin_artifact_bucket_name, artifact_email_path, artifact_json_path, generate_run_id, save_run_artifact
+from admin_store import admin_artifact_bucket_name, admin_artifact_gcs_prefix, artifact_email_path, artifact_json_path, generate_run_id, save_run_artifact
 from admin_urls import build_owner_review_admin_url
 from email_sender import send_genie_email
 from keysuri_approved_image_assets import KOREA_BOTTOM_ROLE, list_approved_assets
@@ -143,6 +143,74 @@ def inline_jpeg_parts_for_korea_service_email(
         bottom_name = bottom_image_path.name if bottom_image_path.name else "keysuri_korea_bottom_105936.jpg"
         parts.append((str(bottom_image_path.resolve()), bottom_cid, bottom_name))
     return parts
+
+
+def _upload_keysuri_image(bucket_name: str, object_name: str, source_path: Path) -> None:
+    from google.cloud import storage
+
+    storage.Client().bucket(bucket_name).blob(object_name).upload_from_filename(
+        str(source_path), content_type="image/jpeg"
+    )
+
+
+def _persist_korea_generated_images(
+    run_id: str,
+    top_path: Path,
+    bottom_path: Optional[Path],
+    *,
+    upload_fn=None,
+) -> Dict[str, Any]:
+    """Upload Korea generated Top + Bottom v6 images to GCS for cross-instance restore.
+
+    Called only when bottom_shot_source == 'generated_v6_multi_ref'.
+    Returns metadata fields to merge into the run artifact.
+    """
+    fields: Dict[str, Any] = {}
+    bucket_name = admin_artifact_bucket_name()
+    if not bucket_name:
+        fields.update(
+            top_image_persistence_status="local_only",
+            top_image_persistence_reason="artifact_bucket_not_configured",
+            bottom_shot_persistence_status="local_only",
+            bottom_shot_persistence_reason="artifact_bucket_not_configured",
+        )
+        return fields
+
+    prefix = admin_artifact_gcs_prefix()
+    uploader = upload_fn or _upload_keysuri_image
+
+    top_object = f"{prefix}/{run_id}.images/korea_top.jpg"
+    try:
+        uploader(bucket_name, top_object, top_path)
+        fields.update(
+            top_image_persistence_status="persisted",
+            korea_generated_top_gcs_object=top_object,
+            korea_generated_image_gcs_bucket=bucket_name,
+        )
+    except Exception as exc:
+        logger.warning("keysuri Korea Top GCS upload failed: %s", type(exc).__name__)
+        fields.update(
+            top_image_persistence_status="failed",
+            top_image_persistence_reason="gcs_upload_failed",
+        )
+
+    if bottom_path is not None:
+        bottom_object = f"{prefix}/{run_id}.images/korea_bottom.jpg"
+        try:
+            uploader(bucket_name, bottom_object, bottom_path)
+            fields.update(
+                bottom_shot_persistence_status="persisted",
+                korea_generated_bottom_gcs_object=bottom_object,
+            )
+            fields.setdefault("korea_generated_image_gcs_bucket", bucket_name)
+        except Exception as exc:
+            logger.warning("keysuri Korea Bottom v6 GCS upload failed: %s", type(exc).__name__)
+            fields.update(
+                bottom_shot_persistence_status="failed",
+                bottom_shot_persistence_reason="gcs_upload_failed",
+            )
+
+    return fields
 
 
 def _sha256_file(path: Path) -> str:
@@ -535,6 +603,7 @@ def run_keysuri_service_full_run(
     bottom_generate_fn: Optional[Callable[..., Path]] = None,
     bottom_watermark_fn: Optional[Callable[[Path, Path], Path]] = None,
     send_fn: Optional[Callable[..., bool]] = None,
+    image_upload_fn=None,
 ) -> Dict[str, Any]:
     """Service-level Kee-Suri full run for keysuri_global_tech or keysuri_korea_tech."""
     pid = str(program_id or "").strip()
@@ -704,6 +773,14 @@ def run_keysuri_service_full_run(
         if bottom_image_path is not None:
             bottom_image_status = "available"
             bottom_image_source = str(bottom_image_meta.get("bottom_shot_source") or "fixed_105936_fallback")
+            if bottom_image_source == "generated_v6_multi_ref":
+                persist_fields = _persist_korea_generated_images(
+                    run_id,
+                    gen_image_abs,
+                    bottom_image_path,
+                    upload_fn=image_upload_fn,
+                )
+                bottom_image_meta.update(persist_fields)
         else:
             bottom_image_status = "placeholder"
             issue_codes.extend(bottom_issues)
