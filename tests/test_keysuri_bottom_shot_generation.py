@@ -52,6 +52,15 @@ class KeysuriBottomShotGenerationTests(unittest.TestCase):
             self.assertEqual(result.metadata["bottom_shot_weather_key"], "clear_cool")
             self.assertEqual(result.metadata["bottom_shot_wardrobe_variant"], 1)
             self.assertTrue(result.metadata["bottom_shot_pose_variant"])
+            self.assertTrue(result.metadata["bottom_shot_wardrobe_family"])
+            self.assertTrue(result.metadata["bottom_shot_wardrobe_descriptor"])
+            self.assertTrue(result.metadata["bottom_shot_color_palette"])
+            self.assertTrue(result.metadata["bottom_shot_silhouette"])
+            self.assertTrue(result.metadata["bottom_shot_prop"])
+            self.assertTrue(result.metadata["bottom_shot_scene"])
+            self.assertTrue(result.metadata["bottom_shot_anti_copy_instruction_applied"])
+            self.assertIn("Selected wardrobe:", result.metadata["bottom_shot_prompt_preview"])
+            self.assertIn("wardrobe", result.metadata["bottom_shot_prompt_metadata"])
 
     def test_generation_error_returns_failed_result_without_api_retry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

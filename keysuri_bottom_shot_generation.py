@@ -162,9 +162,31 @@ def generate_keysuri_korea_bottom_v6(
                 "bottom_shot_weather_key": wardrobe["outfit_map_key"],
                 "bottom_shot_weather_case": wardrobe["weather_case"],
                 "bottom_shot_wardrobe_variant": wardrobe["outfit_variant_index"],
+                "bottom_shot_wardrobe_family": wardrobe["wardrobe_family"],
+                "bottom_shot_wardrobe_descriptor": wardrobe["outfit_descriptor"],
+                "bottom_shot_color_palette": wardrobe["color_palette"],
+                "bottom_shot_silhouette": wardrobe["silhouette"],
+                "bottom_shot_prop": wardrobe["prop"],
+                "bottom_shot_scene": wardrobe["scene"],
                 "bottom_shot_pose_variant": built["pose_variant_text"],
                 "bottom_shot_weather_outfit_source": built["weather_input_metadata"]["weather_outfit_source"],
-                "bottom_shot_prompt_preview": built["prompt_text"][:200],
+                "bottom_shot_anti_copy_instruction_applied": bool(
+                    built.get("anchor_anti_copy_instruction_applied")
+                ),
+                "bottom_shot_prompt_preview": (
+                    f"Selected wardrobe: {wardrobe['outfit_descriptor']}\n"
+                    f"Selected scene: {wardrobe['scene']}\n"
+                    f"Selected prop: {wardrobe['prop']}\n"
+                    f"{built['prompt_text']}"
+                )[:2000],
+                "bottom_shot_prompt_metadata": {
+                    "wardrobe": dict(wardrobe),
+                    "pose_variant": built["pose_variant_text"],
+                    "anti_copy_instruction_applied": bool(
+                        built.get("anchor_anti_copy_instruction_applied")
+                    ),
+                    "weather_input": dict(built["weather_input_metadata"]),
+                },
             }
         )
         full_prompt = f"{built['prompt_text']}\n\nNEGATIVE:\n{built['negative_prompt']}"

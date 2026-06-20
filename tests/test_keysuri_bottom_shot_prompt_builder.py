@@ -3,11 +3,10 @@
 Verifies:
 - 105936 is primary Bottom visual anchor (not direction reference)
 - Asset01 is secondary same-person continuity reference
-- Weather still drives wardrobe selection across 6 closet variants
-- Each weather key has ≥3 premium 105936-family wardrobe variants
-- All wardrobe variants include handbag signal and stay in allowed palette
+- Weather drives six known-weather closets plus a broad unknown-weather pool
+- Wardrobe variants span trousers, dresses, skirts, coats, and optional props
 - 9-item pose variant pool: private, owner-facing, no forbidden terms
-- v6 persona: private AI secretary, composed smile, handbag, owner-facing exclusivity
+- v6 persona: private AI secretary, composed smile, varied premium props, owner-facing exclusivity
 - Noble sensuality framing preserved; age-risk text removed from identity gene
 - Backward-compatible metadata_only return keys for service_full_run
 - 041559 baseline anchor structure unchanged
@@ -124,11 +123,11 @@ class BaselineAnchorStructureTests(unittest.TestCase):
     def test_noble_sensuality_in_prompt(self):
         self.assertIn("Noble sensuality", _build()["prompt_text"])
 
-    def test_handbag_in_prompt(self):
-        self.assertIn("handbag", _build()["prompt_text"])
+    def test_selected_prop_in_prompt(self):
+        self.assertIn("Selected prop:", _build()["prompt_text"])
 
-    def test_wooden_door_in_prompt(self):
-        self.assertIn("wooden door", _build()["prompt_text"])
+    def test_selected_scene_in_prompt(self):
+        self.assertIn("Selected scene:", _build()["prompt_text"])
 
     def test_building_six_weather_keys(self):
         for key, temp, cond in [
@@ -266,11 +265,11 @@ class WardrobeVariantPoolTests(unittest.TestCase):
 
     def test_variant_index_wraps_modulo(self):
         r0 = _build(weather_condition="clear", temperature_c=12.0, wardrobe_variant=0)
-        r3 = _build(weather_condition="clear", temperature_c=12.0, wardrobe_variant=3)
+        r4 = _build(weather_condition="clear", temperature_c=12.0, wardrobe_variant=4)
         self.assertEqual(
             r0["weather_outfit_shell"]["outfit_descriptor"],
-            r3["weather_outfit_shell"]["outfit_descriptor"],
-            "variant index 3 should wrap to 0 for a 3-item list",
+            r4["weather_outfit_shell"]["outfit_descriptor"],
+            "variant index 4 should wrap to 0 for a 4-item list",
         )
 
     def test_variant_index_stored_in_outfit_shell(self):
@@ -283,11 +282,12 @@ class WardrobeVariantPoolTests(unittest.TestCase):
         self.assertIn("cashmere", outfit)
         self.assertIn("camel", outfit)
 
-    def test_cold_variant_1_has_ivory_wool_coat(self):
+    def test_cold_variant_1_has_navy_wool_and_trousers(self):
         r = _build(weather_condition="cold", temperature_c=8.0, wardrobe_variant=1)
         outfit = r["weather_outfit_shell"]["outfit_descriptor"].lower()
-        self.assertIn("ivory", outfit)
+        self.assertIn("ink-navy", outfit)
         self.assertIn("coat", outfit)
+        self.assertIn("wide-leg trousers", outfit)
 
     def test_cold_variant_2_has_charcoal(self):
         r = _build(weather_condition="cold", temperature_c=8.0, wardrobe_variant=2)
@@ -316,13 +316,29 @@ class WardrobeVariantPoolTests(unittest.TestCase):
             self.assertNotIn("overcoat", outfit, f"hot variant {i} must not have overcoat")
             self.assertNotIn("cashmere coat", outfit, f"hot variant {i} must not have cashmere coat")
 
+    def test_each_weather_key_has_three_garment_families(self):
+        for key, entry in WEATHER_CLOSET_CATALOG.items():
+            families = {variant.family for variant in entry["variants"]}
+            self.assertGreaterEqual(len(families), 3, f"{key} lacks garment-family breadth")
+
+    def test_catalog_contains_trousers_dresses_and_non_fitted_skirts(self):
+        families = {variant.family for entry in WEATHER_CLOSET_CATALOG.values() for variant in entry["variants"]}
+        self.assertTrue(any("trousers" in family for family in families))
+        self.assertTrue(any("dress" in family for family in families))
+        self.assertTrue(any("a_line" in family or "pleated" in family for family in families))
+
+    def test_not_all_looks_are_fitted_or_pencil_skirts(self):
+        variants = [variant for entry in WEATHER_CLOSET_CATALOG.values() for variant in entry["variants"]]
+        non_fitted = [v for v in variants if "fitted skirt" not in v.lower() and "pencil skirt" not in v.lower()]
+        self.assertEqual(len(non_fitted), len(variants))
+
 
 # ===================================================================
-# Cat 5 — All Variants Include Handbag or Luxury Bag Signal
+# Cat 5 — Props vary and are not handbag-locked
 # ===================================================================
 
-class WardrobeVariantHandbagTests(unittest.TestCase):
-    """Test 5: All wardrobe variants include handbag or luxury bag signal."""
+class WardrobeVariantPropTests(unittest.TestCase):
+    """Props include handbag, alternatives, and no-prop looks."""
 
     WEATHER_TEMP_PAIRS = [
         ("clear", 12.0),
@@ -333,36 +349,40 @@ class WardrobeVariantHandbagTests(unittest.TestCase):
         ("snow", -3.0),
     ]
 
-    def test_all_catalog_variants_include_handbag(self):
-        for key, entry in WEATHER_CLOSET_CATALOG.items():
-            for i, variant in enumerate(entry["variants"]):
-                self.assertIn("handbag", variant.lower(),
-                              f"WEATHER_CLOSET_CATALOG[{key!r}][{i}] missing handbag: {variant[:80]}")
+    def test_catalog_has_non_handbag_props(self):
+        props = {variant.prop for entry in WEATHER_CLOSET_CATALOG.values() for variant in entry["variants"]}
+        self.assertIn("no visible prop", props)
+        self.assertIn("smartphone", props)
+        self.assertTrue(any("umbrella" in prop for prop in props))
 
-    def test_handbag_in_prompt_for_each_weather(self):
+    def test_selected_prop_in_prompt_for_each_weather(self):
         for cond, temp in self.WEATHER_TEMP_PAIRS:
             for vi in range(3):
                 r = _build(weather_condition=cond, temperature_c=temp, wardrobe_variant=vi)
-                self.assertIn("handbag", r["prompt_text"].lower(),
-                              f"handbag missing from prompt for {cond}/{temp}/variant{vi}")
+                prop = r["weather_outfit_shell"]["prop"]
+                self.assertIn(f"Selected prop: {prop}", r["prompt_text"])
 
-    def test_fixed_prop_gesture_reinforces_handbag(self):
-        self.assertIn("handbag", FIXED_PROP_GESTURE_GENE.lower())
+    def test_fixed_prop_gene_allows_no_visible_prop(self):
+        self.assertIn("visible prop is optional", FIXED_PROP_GESTURE_GENE.lower())
 
 
 # ===================================================================
-# Cat 6 — Variants Stay Within Allowed Palette
+# Cat 6 — Expanded muted premium palette
 # ===================================================================
 
 class WardrobeVariantPaletteTests(unittest.TestCase):
-    """Test 6: All wardrobe variants use ivory/cream/champagne/camel/charcoal/taupe palette."""
+    """Every look stays muted, while the catalog is not neutral-only."""
 
-    ALLOWED_PALETTE = {"ivory", "cream", "champagne", "camel", "charcoal", "taupe"}
+    ALLOWED_PALETTE = {
+        "ink navy", "deep forest", "muted wine", "pearl gray", "espresso brown",
+        "dusty rose", "muted teal", "slate blue", "soft charcoal", "camel",
+    }
 
     def test_all_catalog_variants_in_allowed_palette(self):
         for key, entry in WEATHER_CLOSET_CATALOG.items():
             for i, variant in enumerate(entry["variants"]):
-                found = [c for c in self.ALLOWED_PALETTE if c in variant.lower()]
+                normalized = variant.palette.replace("-", " ").lower()
+                found = [c for c in self.ALLOWED_PALETTE if c in normalized]
                 self.assertGreater(
                     len(found), 0,
                     f"WEATHER_CLOSET_CATALOG[{key!r}][{i}] has no allowed palette color: {variant[:100]}"
@@ -374,17 +394,14 @@ class WardrobeVariantPaletteTests(unittest.TestCase):
                 self.assertNotIn("black skirt", variant.lower(),
                                  f"[{key}][{i}] has forbidden 'black skirt'")
 
-    def test_no_cardigan_in_any_catalog_variant(self):
-        for key, entry in WEATHER_CLOSET_CATALOG.items():
-            for i, variant in enumerate(entry["variants"]):
-                self.assertNotIn("cardigan", variant.lower(),
-                                 f"[{key}][{i}] has forbidden 'cardigan'")
+    def test_refined_cardigan_family_exists(self):
+        families = {v.family for e in WEATHER_CLOSET_CATALOG.values() for v in e["variants"]}
+        self.assertTrue(any("cardigan" in family for family in families))
 
-    def test_no_blazer_in_any_catalog_variant(self):
-        for key, entry in WEATHER_CLOSET_CATALOG.items():
-            for i, variant in enumerate(entry["variants"]):
-                self.assertNotIn("blazer", variant.lower(),
-                                 f"[{key}][{i}] has forbidden 'blazer'")
+    def test_soft_blazer_is_explicitly_non_corporate(self):
+        looks = [v.lower() for e in WEATHER_CLOSET_CATALOG.values() for v in e["variants"] if "blazer" in v.lower()]
+        self.assertTrue(looks)
+        self.assertTrue(all("soft blazer" in look and "rather than corporate" in look for look in looks))
 
     def test_no_mock_neck_in_any_catalog_variant(self):
         for key, entry in WEATHER_CLOSET_CATALOG.items():
@@ -585,8 +602,14 @@ class WeatherControlsWardrobeTests(unittest.TestCase):
     def test_cold_cond_no_temp_gives_cold(self):
         self.assertEqual(self._key("cold"), "cold")
 
-    def test_default_fallback_is_clear_cool(self):
-        self.assertEqual(self._key("cloudy"), "clear_cool")
+    def test_default_fallback_uses_broad_unknown_pool(self):
+        self.assertEqual(self._key("cloudy"), "unknown")
+        self.assertGreaterEqual(len(WEATHER_CLOSET_CATALOG["unknown"]["variants"]), 6)
+
+    def test_unknown_weather_rotates_broad_families_by_variant_index(self):
+        results = [_build(weather_condition="cloudy", wardrobe_variant=i) for i in range(8)]
+        families = {result["weather_outfit_shell"]["wardrobe_family"] for result in results}
+        self.assertGreaterEqual(len(families), 6)
 
     def test_taste_cluster_override_uses_closet_key(self):
         r = _build(weather_condition="clear", temperature_c=30.0, taste_cluster="cold")
@@ -716,6 +739,32 @@ class AnchorRoleTests(unittest.TestCase):
         self.assertEqual(refs["secondary_continuity_reference"]["role"], ASSET01_ROLE)
         self.assertEqual(refs["secondary_continuity_reference"]["path"], ASSET01_PATH)
 
+    def test_prompt_preserves_identity_only_and_replaces_anchor_outfit(self):
+        prompt = _build(wardrobe_variant=0)["prompt_text"].lower()
+        self.assertIn("preserve identity only", prompt)
+        self.assertIn("do not copy the reference outfit", prompt)
+        self.assertIn("selected wardrobe must visibly differ", prompt)
+
+    def test_prompt_has_no_outfit_preservation_language(self):
+        prompt = _build(wardrobe_variant=0)["prompt_text"].lower()
+        for forbidden in ("same outfit", "same clothing", "preserve outfit"):
+            self.assertNotIn(forbidden, prompt)
+
+    def test_prompt_records_structured_wardrobe_metadata(self):
+        result = _build(wardrobe_variant=2, pose_variant=1)
+        shell = result["weather_outfit_shell"]
+        for key in ("wardrobe_family", "color_palette", "silhouette", "prop", "scene"):
+            self.assertTrue(shell.get(key), key)
+        self.assertTrue(result["anchor_anti_copy_instruction_applied"])
+
+    def test_qa_runner_and_service_use_shared_generator(self):
+        from keysuri_bottom_shot_generation import generate_keysuri_korea_bottom_v6
+        from keysuri_service_full_run import generate_keysuri_korea_bottom_v6 as service_generator
+        from scripts.run_keysuri_bottom_shot_qa_pilot_v6 import generate_keysuri_korea_bottom_v6 as qa_generator
+
+        self.assertIs(service_generator, generate_keysuri_korea_bottom_v6)
+        self.assertIs(qa_generator, generate_keysuri_korea_bottom_v6)
+
     def test_105936_is_not_direction_reference_only(self):
         refs = _build()["reference_assets"]
         roles = [v.get("role", "") for v in refs.values()]
@@ -815,10 +864,10 @@ class FixedRoleSceneGeneTests(unittest.TestCase):
         self.assertIn("대표님", text)
         self.assertIn("farewell", text)
 
-    def test_role_contains_wooden_door(self):
+    def test_role_allows_selected_private_transition_space(self):
         text = _build()["fixed_role_scene_gene"]["text"]
-        self.assertIn("wooden door", text)
-        self.assertIn("wood-paneled", text)
+        self.assertIn("private transition space", text)
+        self.assertIn("owner", text)
 
     def test_role_unchanged_across_weather(self):
         texts = {_build(weather_condition=c)["fixed_role_scene_gene"]["text"]
@@ -887,9 +936,10 @@ class FixedPropGestureGeneTests(unittest.TestCase):
     def test_prop_gesture_gene_in_prompt(self):
         self.assertIn(FIXED_PROP_GESTURE_GENE, _build()["prompt_text"])
 
-    def test_prop_contains_handbag(self):
+    def test_prop_allows_selected_optional_prop(self):
         text = _build()["fixed_prop_gesture_gene"]["text"]
-        self.assertIn("handbag", text)
+        self.assertIn("selected prop", text.lower())
+        self.assertIn("optional", text.lower())
 
     def test_prop_gesture_is_private_not_raised(self):
         text = _build()["fixed_prop_gesture_gene"]["text"]
@@ -943,12 +993,9 @@ class WeatherWardrobeTests(unittest.TestCase):
             wardrobe_variant=wardrobe_variant,
         )["weather_outfit_shell"]["outfit_descriptor"]
 
-    def test_clear_cool_yields_ivory_or_cream(self):
+    def test_clear_cool_yields_expanded_palette(self):
         outfit = self._outfit("clear", temperature_c=12.0)
-        self.assertTrue(
-            "ivory" in outfit.lower() or "cream" in outfit.lower(),
-            f"clear_cool must include ivory or cream: {outfit}"
-        )
+        self.assertIn("ink-navy", outfit.lower())
 
     def test_cold_yields_cashmere_coat(self):
         outfit = self._outfit("cold", temperature_c=8.0)
@@ -984,15 +1031,14 @@ class WeatherWardrobeTests(unittest.TestCase):
         outfit = self._outfit("cloudy", temperature_c=0.0)
         self.assertIn("cashmere", outfit.lower())
 
-    def test_handbag_in_all_weather_variants(self):
+    def test_selected_prop_is_recorded_for_all_weather_variants(self):
         cases = [
             ("clear", 12.0), ("cold", 8.0), ("rainy", None),
             ("clear", 22.0), ("clear", 30.0), ("snow", -3.0),
         ]
         for cond, temp in cases:
-            outfit = self._outfit(cond, temperature_c=temp)
-            self.assertIn("handbag", outfit.lower(),
-                          f"handbag must be present for {cond}/{temp}: {outfit}")
+            result = _build(weather_condition=cond, temperature_c=temp, wardrobe_variant=0)
+            self.assertTrue(result["weather_outfit_shell"]["prop"])
 
     def test_no_cardigan_in_any_weather(self):
         cases = [
@@ -1023,10 +1069,7 @@ class WeatherWardrobeTests(unittest.TestCase):
 
     def test_outfit_in_prompt_text(self):
         r = _build(weather_condition="clear", temperature_c=12.0, wardrobe_variant=0)
-        # clear_cool variant 0 has "silk-knit" and "satin"
-        self.assertTrue(
-            "silk-knit" in r["prompt_text"].lower() or "satin" in r["prompt_text"].lower()
-        )
+        self.assertIn(r["weather_outfit_shell"]["outfit_descriptor"], r["prompt_text"])
 
     def test_no_blazer_in_any_weather(self):
         cases = [
@@ -1048,13 +1091,13 @@ class WeatherWardrobeTests(unittest.TestCase):
                              f"mock-neck not allowed for {cond}/{temp}")
 
     def test_palette_within_allowed(self):
-        allowed = {"ivory", "cream", "champagne", "camel", "charcoal", "taupe"}
+        allowed = {"navy", "forest", "wine", "gray", "brown", "rose", "teal", "blue", "charcoal", "camel"}
         cases = [
             ("clear", 12.0), ("cold", 8.0), ("rainy", None),
             ("clear", 22.0), ("clear", 30.0), ("snow", -3.0),
         ]
         for cond, temp in cases:
-            outfit = self._outfit(cond, temperature_c=temp).lower()
+            outfit = _build(weather_condition=cond, temperature_c=temp, wardrobe_variant=0)["weather_outfit_shell"]["color_palette"].lower()
             found = [w for w in allowed if w in outfit]
             self.assertGreater(len(found), 0,
                                f"No allowed palette color in outfit for {cond}/{temp}: {outfit}")
@@ -1363,9 +1406,10 @@ class MetadataOnlyBackwardCompatTests(unittest.TestCase):
         for key in required:
             self.assertIn(key, meta, f"Missing key: {key}")
 
-    def test_metadata_only_prompt_preview_under_200(self):
+    def test_metadata_only_prompt_preview_contains_wardrobe(self):
         meta = build_bottom_shot_prompt_metadata_only(weather_condition="cloudy")
-        self.assertLessEqual(len(meta["bottom_shot_prompt_preview"]), 200)
+        self.assertLessEqual(len(meta["bottom_shot_prompt_preview"]), 1200)
+        self.assertIn(meta["bottom_shot_wardrobe_descriptor"], meta["bottom_shot_prompt_preview"])
 
     def test_metadata_only_contract_version_v6(self):
         meta = build_bottom_shot_prompt_metadata_only(weather_condition="cloudy")
@@ -1390,9 +1434,9 @@ class V5DriftBanTests(unittest.TestCase):
     def test_no_processed_the_room_in_prompt(self):
         self.assertNotIn("processed the room", _build()["prompt_text"])
 
-    def test_no_blazer_in_prompt(self):
+    def test_no_stiff_corporate_blazer_in_positive_prompt(self):
         prompt = _build()["prompt_text"]
-        self.assertNotIn("blazer", prompt.lower())
+        self.assertNotIn("stiff corporate blazer", prompt.lower())
 
     def test_no_mock_neck_in_prompt(self):
         prompt = _build()["prompt_text"]
@@ -1402,8 +1446,8 @@ class V5DriftBanTests(unittest.TestCase):
         prompt = _build()["prompt_text"]
         self.assertNotIn("mid-chest-to-crown", prompt)
 
-    def test_handbag_required_in_prompt(self):
-        self.assertIn("handbag", _build()["prompt_text"])
+    def test_selected_prop_contract_in_prompt(self):
+        self.assertIn("Selected prop:", _build()["prompt_text"])
 
     def test_farewell_in_prompt(self):
         self.assertIn("farewell", _build()["prompt_text"])

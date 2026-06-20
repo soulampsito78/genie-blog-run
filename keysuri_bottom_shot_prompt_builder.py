@@ -31,7 +31,7 @@ References:
   - QA-only isolation
 
 Wardrobe & pose expansion (post-041559):
-  - Each weather key has 3 premium 105936-family closet variants
+  - Weather and limited-input keys rotate semantically distinct premium looks
   - 9 controlled pose variants; all private, owner-facing, not public
 """
 from __future__ import annotations
@@ -78,6 +78,14 @@ FIXED_IDENTITY_GENE = (
     "never through exposure. Premium presence without effort."
 )
 
+ANCHOR_ANTI_COPY_INSTRUCTION = (
+    "Preserve identity only from the reference images: face, short bob, thin glasses, "
+    "body proportions, and refined private-owner presence. Do not copy the reference outfit, "
+    "reference colors, handbag, or door composition. Replace the wardrobe and setting with "
+    "the selected wardrobe, prop, and scene descriptors below. The selected wardrobe must "
+    "visibly differ from the anchor outfit while preserving the same person."
+)
+
 IDENTITY_INVARIANTS = {
     "anchor": "105936 reference image — primary visual identity source",
     "hair": "sleek side-parted short bob, hair close to jaw, smooth and straight, no curl at ends, no C-curl, no bangs, no updos, no ponytails",
@@ -92,10 +100,8 @@ IDENTITY_INVARIANTS = {
 
 FIXED_ROLE_SCENE_GENE = (
     "She is Key-Suri, a premium private AI secretary. "
-    "The briefing is finished and she is pausing at the threshold of the CEO's office "
-    "to say a personal farewell to the owner — 대표님. "
-    "A large closed premium wooden door with brass hardware fills the background, "
-    "set into warm wood-paneled walls. She faces the viewer directly — "
+    "The briefing is finished and she is pausing in a quiet private transition space "
+    "to say a personal farewell to the owner — 대표님. She faces the viewer directly — "
     "the reader is the owner she is leaving toward. "
     "This is an exclusive owner-facing private closing moment, reserved only for 대표님. "
     "Unattainable, not approachable. Cool intelligence softened only for the owner. "
@@ -105,12 +111,10 @@ FIXED_ROLE_SCENE_GENE = (
 ROLE_SCENE_INVARIANTS = {
     "role": "premium private AI secretary — briefing finished, personal farewell to owner",
     "emotional_register": "exclusive owner-facing private closing moment — unattainable, noble sensuality, reserved for 대표님 only",
-    "scene": "CEO office threshold — closed wooden door, wood-paneled wall",
+    "scene": "selected quiet premium transition space, private and owner-facing",
     "viewer_relationship": "reader is the owner (대표님) she is leaving toward",
     "forbidden_environment": [
-        "outdoor scenes",
-        "open door leading to another room",
-        "lobby, atrium, open corridor",
+        "busy public lobby, crowded corridor, public event space",
         "tablet, tech screen, monitor wall, desk",
         "briefing posture, briefing host framing",
     ],
@@ -143,15 +147,15 @@ EXPRESSION_INVARIANTS = {
 # ---------------------------------------------------------------------------
 
 FIXED_PROP_GESTURE_GENE = (
-    "She holds a small premium handbag at her side with one hand. "
-    "Her free hand rests naturally close to her body — "
-    "a small restrained private gesture, as if closing the day for the owner only. "
+    "Use only the selected prop descriptor below; a visible prop is optional. "
+    "If no prop is selected, keep both hands naturally composed. "
+    "Her gesture remains small and restrained, as if closing the day for the owner only. "
     "The gesture is private and contained: not raised, not waving. "
     "Small scale. Interior scale. No tablet. No laptop. No notebook."
 )
 
 PROP_GESTURE_INVARIANTS = {
-    "required_prop": "small premium handbag",
+    "required_prop": "selected premium prop or no visible prop",
     "required_gesture": "small restrained private gesture — closing the day for the owner only, not raised, not waving",
     "forbidden": ["tablet", "laptop", "briefing device"],
 }
@@ -163,10 +167,10 @@ PROP_GESTURE_INVARIANTS = {
 # ---------------------------------------------------------------------------
 
 POSE_VARIANT_POOL: List[str] = [
-    "One hand lightly holding the handbag handle, the other resting with quiet composure.",
-    "One hand resting near the door handle — fingertips barely touching, a private closing gesture.",
-    "Fingertips lightly near the handbag strap, wrist relaxed, posture still and composed.",
-    "Hand lightly touching the coat lapel — a refined self-composed gesture, entirely private.",
+    "One hand resting naturally at her side, the other held with quiet composure.",
+    "Fingertips barely touching a nearby architectural detail, a private closing gesture.",
+    "Wrist relaxed near the waist, posture still and composed.",
+    "Hand lightly touching the neckline or outer layer, a refined self-composed gesture.",
     "A slim watch-adjusting gesture — unhurried, intimate, a closing ritual for the owner only.",
     "A slight turn from the doorway: one shoulder angled gently toward the owner, gaze steady.",
     "One shoulder angled softly toward the owner — not a full turn, a quiet acknowledgment.",
@@ -188,14 +192,14 @@ FIXED_CAMERA_GENE = (
     "Knee-up portrait showing approximately three-quarters of her body — "
     "from the knee to just above the crown. "
     "Face-first composition: the face is the primary subject, "
-    "the outfit and handbag read naturally below. "
+    "the selected outfit and optional prop read naturally below. "
     "Camera angle: eye level or 2–3 degrees above, never below chin level. "
     "Lens: 85mm portrait equivalent, shallow depth of field, "
     "subject sharp, background softly defocused."
 )
 
 CAMERA_INVARIANTS = {
-    "framing": "knee-up / 3/4 body — face-first, outfit and handbag visible below",
+        "framing": "knee-up / 3/4 body — face-first, selected outfit and optional prop visible below",
     "angle": "eye level or 2-3 degrees above — never below chin",
     "lens": "85mm portrait equivalent",
     "depth_of_field": "subject sharp, background softly defocused",
@@ -227,7 +231,7 @@ ASSEMBLY_ORDER = (
 
 SCENE_LOCK = (
     "Knee-up portrait, eye-level, 85mm lens, shallow depth of field, "
-    "closed premium wooden office door in background, warm executive-floor interior lighting. "
+    "selected private premium interior in background, restrained executive-floor lighting. "
     "High-end commercial portrait quality. Luxury editorial realism."
 )
 
@@ -242,17 +246,17 @@ NEGATIVE_PROMPT_V6 = (
     "heavy jewelry, statement necklace, flashy accessories, "
     "CEO portrait, executive portrait, consultant headshot, company profile photo, "
     "professor portrait, manager portrait, corporate uniform, "
-    "blazer, mock-neck sweater, business suit, formal office attire, "
+    "stiff corporate blazer, uniform navy blazer, mock-neck sweater, business suit, "
     "casual clothing, streetwear, athletic wear, hoodie, t-shirt, crop top, "
-    "low-cut neckline, V-neck wrap dress, open-front dress, décolleté, "
+    "revealing low-cut neckline, open-front dress, décolleté, "
     "plain market clothes, cheap mall fashion, basic office-worker casual, "
     "full body shot, visible feet, wide shot, establishing shot, "
     "tight headshot, bust-only crop, mid-chest-to-crown crop, "
     "outfit-first composition, full-body lookbook, "
-    "outdoor scene, open door, open doorway, window with outdoor view, "
+    "outdoor street scene, open doorway into a busy room, "
     "tablet, briefing tablet, tech screen, monitor wall, monitor, "
     "desk, keyboard, multiple monitors, large screen background, reading device, "
-    "lobby, atrium, open corridor, open hotel-like room, "
+    "busy public lobby, crowded atrium, public open corridor, open hotel-like room, "
     "briefing posture, briefing host, senior analyst at desk, "
     "warm motherly smile, guardian-like smile, matronly expression, "
     "broad open smile, lively smile, wide smile, big smile, "
@@ -260,7 +264,7 @@ NEGATIVE_PROMPT_V6 = (
     "raised hand wave, open palm wave, waving pose, large hand gesture, "
     "event greeter pose, hotel receptionist pose, customer service pose, "
     "event greeter, hotel receptionist, office receptionist, friendly counselor, "
-    "cardigan office lady, lifestyle blogger, friendly middle-aged office worker, "
+    "cheap office-cardigan styling, lifestyle blogger, friendly middle-aged office worker, "
     "overly warm lighting, golden hour, harsh shadows, overexposed face, "
     "excessive makeup, heavy contouring, dramatic eye makeup, "
     "motion blur, film grain, painterly style, illustration, anime, cartoon, "
@@ -275,34 +279,77 @@ NEGATIVE_PROMPT_V6 = (
 NEGATIVE_PROMPT_V5 = NEGATIVE_PROMPT_V6
 
 # ---------------------------------------------------------------------------
-# Weather-Mapped Closet Catalog — 105936-family premium closet
-# Each weather key has 3 variants.
-# Palette: ivory, cream, champagne, camel, charcoal, muted taupe.
-# All variants: premium handbag always present, fitted/elegant silhouette.
+# Weather-mapped wardrobe catalog. Variants remain ``str`` instances for
+# compatibility while carrying structured metadata for artifact traceability.
 # ---------------------------------------------------------------------------
+
+
+class WardrobeVariant(str):
+    def __new__(
+        cls,
+        text: str,
+        *,
+        family: str,
+        palette: str,
+        silhouette: str,
+        prop: str,
+        scene: str,
+    ) -> "WardrobeVariant":
+        value = str.__new__(cls, text)
+        value.family = family
+        value.palette = palette
+        value.silhouette = silhouette
+        value.prop = prop
+        value.scene = scene
+        return value
+
+
+def _look(
+    text: str,
+    *,
+    family: str,
+    palette: str,
+    silhouette: str,
+    prop: str,
+    scene: str,
+) -> WardrobeVariant:
+    return WardrobeVariant(
+        text,
+        family=family,
+        palette=palette,
+        silhouette=silhouette,
+        prop=prop,
+        scene=scene,
+    )
 
 WEATHER_CLOSET_CATALOG: Dict[str, Dict[str, Any]] = {
     "clear_cool": {
         "label": "Clear / Cool (≤18°C)",
         "conditions": "clear or partly cloudy, ≤18°C",
         "variants": [
-            (
-                "A luxury ivory silk-knit top with clean refined structure, "
-                "paired with a satin pencil skirt in warm ivory. "
-                "Beige premium structured handbag. Pearl stud earrings. "
-                "Private-owner luxury register — never casual, never public-facing."
+            _look(
+                "An ink-navy silk blouse with pearl-gray tailored wide-leg trousers, polished and fluid.",
+                family="silk_blouse_wide_leg_trousers", palette="ink navy / pearl gray",
+                silhouette="fluid tailored wide-leg", prop="slim clutch",
+                scene="quiet corridor near a glass wall",
             ),
-            (
-                "A champagne fine-knit blouse with subtle sheen and refined silhouette, "
-                "paired with a cream fitted skirt in silk-blend. "
-                "Structured premium handbag. Slim watch. "
-                "Understated luxury — the exact private-owner register of the reference image."
+            _look(
+                "A deep-forest fine-knit midi dress with a clean column line and restrained waist definition.",
+                family="knit_midi_dress", palette="deep forest",
+                silhouette="refined column midi", prop="no visible prop",
+                scene="private entrance hall",
             ),
-            (
-                "A cream boat-neck knit top, fitted and elegant with clean lines, "
-                "paired with a silk-blend fitted skirt in soft champagne. "
-                "Small luxury handbag. Simple gold stud earrings. "
-                "Cool and composed — 105936-family premium closet."
+            _look(
+                "A dusty-rose silk blouse with a slate-blue A-line midi skirt, elegant without stiffness.",
+                family="silk_blouse_a_line_midi", palette="dusty rose / slate blue",
+                silhouette="soft A-line midi", prop="smartphone",
+                scene="window-side hallway",
+            ),
+            _look(
+                "A pearl-gray refined cardigan set with espresso relaxed tailored trousers.",
+                family="refined_cardigan_relaxed_trousers", palette="pearl gray / espresso brown",
+                silhouette="soft layered tailoring", prop="structured handbag",
+                scene="executive elevator lobby",
             ),
         ],
     },
@@ -310,23 +357,29 @@ WEATHER_CLOSET_CATALOG: Dict[str, Dict[str, Any]] = {
         "label": "Cold (≤10°C)",
         "conditions": "any, ≤10°C",
         "variants": [
-            (
-                "A premium camel cashmere overcoat — clean structured silhouette, "
-                "worn over an ivory fine-knit top. "
-                "Refined skirt in warm taupe or ivory. Premium structured handbag. Slim watch. "
-                "Seasonal warmth at luxury register — overcoat quality, not knitwear bulk."
+            _look(
+                "A camel cashmere coat over a muted-wine knit midi dress, warm but sharply refined.",
+                family="cashmere_coat_knit_dress", palette="camel / muted wine",
+                silhouette="long coat over column midi", prop="refined scarf",
+                scene="winter coat-room doorway",
             ),
-            (
-                "An ivory wool coat with elegant clean lines, "
-                "worn over a champagne fine-knit layer. "
-                "Taupe fitted luxury skirt. Premium structured handbag. "
-                "Refined cold-weather register — same private-owner mood."
+            _look(
+                "An ink-navy fine-wool coat with pearl-gray tailored wide-leg trousers and a silk inner layer.",
+                family="wool_coat_wide_leg_trousers", palette="ink navy / pearl gray",
+                silhouette="long tailored layers", prop="no visible prop",
+                scene="private office doorway",
             ),
-            (
-                "A charcoal fine-wool coat over a cream fine-knit inner layer — "
-                "clean, structured, impeccably proportioned. "
-                "Muted luxury fitted skirt in ivory or taupe. Premium structured handbag. "
-                "Cool intelligent register — 105936-family closet in cold weather."
+            _look(
+                "A deep-forest refined cardigan jacket with a charcoal long pleated skirt.",
+                family="cardigan_long_pleated_skirt", palette="deep forest / soft charcoal",
+                silhouette="soft jacket over long pleats", prop="structured handbag",
+                scene="evening office lounge",
+            ),
+            _look(
+                "An espresso wrap dress beneath a slate-blue tailored coat, composed and modern.",
+                family="wrap_dress_tailored_coat", palette="espresso brown / slate blue",
+                silhouette="defined wrap midi with long coat", prop="slim clutch",
+                scene="private entrance hall",
             ),
         ],
     },
@@ -334,23 +387,29 @@ WEATHER_CLOSET_CATALOG: Dict[str, Dict[str, Any]] = {
         "label": "Rainy",
         "conditions": "rainy, any temperature",
         "variants": [
-            (
-                "An ivory luxury trench coat, belted with clean structure, "
-                "over a silk-knit inner in cream. "
-                "Refined fitted skirt in champagne. Premium structured handbag. "
-                "Rain does not lower the register — same owner-facing private luxury mood."
+            _look(
+                "A slate-blue luxury trench over ink-navy tailored wide-leg trousers and a silk blouse.",
+                family="trench_wide_leg_trousers", palette="slate blue / ink navy",
+                silhouette="belted trench with fluid trousers", prop="slim umbrella",
+                scene="rainy building lobby",
             ),
-            (
-                "A camel luxury trench coat with refined lapels and tailored belt, "
-                "over a champagne silk blouse. "
-                "Taupe fitted skirt. Premium structured handbag. "
-                "Polished and private — the rain is outside, not in her register."
+            _look(
+                "A deep-forest wrap midi dress under a soft-charcoal rain coat.",
+                family="wrap_dress_rain_coat", palette="deep forest / soft charcoal",
+                silhouette="wrap midi with clean outer layer", prop="slim clutch",
+                scene="quiet corridor near a glass wall",
             ),
-            (
-                "A charcoal luxury coat — structured, not sporty, not casual — "
-                "over an ivory fine-knit layer. "
-                "Refined fitted skirt in muted champagne. Premium handbag. "
-                "Quiet authority without exposure — 105936-family rainy register."
+            _look(
+                "A muted-wine silk blouse with a pearl-gray long pleated skirt and a light trench.",
+                family="silk_blouse_long_pleated_skirt", palette="muted wine / pearl gray",
+                silhouette="long moving pleats", prop="umbrella",
+                scene="private entrance hall",
+            ),
+            _look(
+                "A muted-teal cardigan set with espresso relaxed trousers and a water-resistant outer layer.",
+                family="cardigan_relaxed_trousers", palette="muted teal / espresso brown",
+                silhouette="relaxed tailored layers", prop="no visible prop",
+                scene="executive elevator lobby",
             ),
         ],
     },
@@ -358,24 +417,29 @@ WEATHER_CLOSET_CATALOG: Dict[str, Dict[str, Any]] = {
         "label": "Warm (19–26°C)",
         "conditions": "any, 19–26°C",
         "variants": [
-            (
-                "A light ivory silk-knit blouse with refined silhouette and subtle sheen, "
-                "paired with an elegant fitted skirt in champagne. "
-                "Premium luxury handbag. Slim watch. "
-                "Breathable but never casual — owner-facing private exclusivity at warm temperature."
+            _look(
+                "A muted-teal silk blouse with pearl-gray tailored wide-leg trousers.",
+                family="silk_blouse_wide_leg_trousers", palette="muted teal / pearl gray",
+                silhouette="fluid wide-leg tailoring", prop="no visible prop",
+                scene="window-side hallway",
             ),
-            (
-                "A champagne short-sleeve silk-blend top — elegant silhouette, "
-                "never revealing, fitted at the waist — "
-                "paired with a refined ivory fitted skirt. "
-                "Premium structured handbag. "
-                "Warm-weather luxury register — same private closing mood."
+            _look(
+                "A dusty-rose wrap midi dress with restrained drape and a refined waist line.",
+                family="wrap_midi_dress", palette="dusty rose",
+                silhouette="soft wrap midi", prop="slim clutch",
+                scene="evening office lounge",
             ),
-            (
-                "A cream lightweight knit top with clean refined structure, "
-                "paired with a satin-blend fitted skirt in soft champagne. "
-                "Small luxury handbag. Simple stud earrings. "
-                "Cool and composed even in warm air — 105936-family warm register."
+            _look(
+                "An ink-navy silk blouse with a pearl-gray A-line midi skirt.",
+                family="silk_blouse_a_line_midi", palette="ink navy / pearl gray",
+                silhouette="structured A-line midi", prop="smartphone",
+                scene="quiet corridor near a glass wall",
+            ),
+            _look(
+                "A deep-forest lightweight knit dress with a long clean line and subtle movement.",
+                family="lightweight_knit_dress", palette="deep forest",
+                silhouette="long refined knit midi", prop="structured handbag",
+                scene="private entrance hall",
             ),
         ],
     },
@@ -383,24 +447,29 @@ WEATHER_CLOSET_CATALOG: Dict[str, Dict[str, Any]] = {
         "label": "Hot (≥27°C)",
         "conditions": "any, ≥27°C",
         "variants": [
-            (
-                "A breathable premium ivory silk-blend top with clean structure "
-                "and an elegant silhouette, "
-                "paired with a refined fitted skirt in champagne or cream. "
-                "Premium handbag. No casual summer styling — luxury register unchanged."
+            _look(
+                "A slate-blue sleeveless high-neck silk top with ink-navy wide-leg trousers, fully professional.",
+                family="sleeveless_silk_wide_leg_trousers", palette="slate blue / ink navy",
+                silhouette="airy wide-leg tailoring", prop="no visible prop",
+                scene="window-side hallway",
             ),
-            (
-                "A cream sleeveless high-neck luxury top — "
-                "no exposure, no casual summer cut — "
-                "with a refined champagne fitted skirt. "
-                "Small premium handbag. Slim watch. "
-                "Hot weather does not change the private-owner exclusivity."
+            _look(
+                "A muted-teal short-sleeve wrap dress with refined drape and no party styling.",
+                family="short_sleeve_wrap_dress", palette="muted teal",
+                silhouette="light wrap midi", prop="slim clutch",
+                scene="private entrance hall",
             ),
-            (
-                "A champagne lightweight blouse in fine silk-blend with refined drape, "
-                "paired with a fitted satin skirt in soft ivory. "
-                "Premium structured handbag. "
-                "The same 105936-family luxury register — just in finer, lighter fabric."
+            _look(
+                "A dusty-rose silk blouse with a pearl-gray long pleated skirt.",
+                family="silk_blouse_long_pleated_skirt", palette="dusty rose / pearl gray",
+                silhouette="light long pleats", prop="smartphone",
+                scene="quiet corridor near a glass wall",
+            ),
+            _look(
+                "An ink-navy evening lounge midi dress with a clean neckline and restrained sheen, never party wear.",
+                family="evening_lounge_midi_dress", palette="ink navy",
+                silhouette="elongated lounge midi", prop="no visible prop",
+                scene="evening office lounge",
             ),
         ],
     },
@@ -408,29 +477,89 @@ WEATHER_CLOSET_CATALOG: Dict[str, Dict[str, Any]] = {
         "label": "Snowy / Freezing (≤0°C)",
         "conditions": "snow or freezing, ≤0°C",
         "variants": [
-            (
-                "A premium ivory cashmere coat — impeccably structured, no bulk — "
-                "with an elegant refined scarf in ivory silk or cashmere. "
-                "Premium structured handbag. "
-                "Seasonal but never domestic — always at luxury register."
+            _look(
+                "A soft-charcoal cashmere coat over a muted-wine knit midi dress.",
+                family="cashmere_coat_knit_dress", palette="soft charcoal / muted wine",
+                silhouette="long coat over column midi", prop="refined scarf",
+                scene="winter coat-room doorway",
             ),
-            (
-                "A camel wool-cashmere coat with clean tailored lines, "
-                "over a cream fine-knit inner layer. "
-                "Refined fitted skirt in ivory. Premium structured handbag. "
-                "Cold-weather luxury — not aunt-styling, not bulk-layer office wear."
+            _look(
+                "An espresso wool-cashmere coat with pearl-gray wide-leg trousers and a fine-knit layer.",
+                family="cashmere_coat_wide_leg_trousers", palette="espresso brown / pearl gray",
+                silhouette="long coat with fluid trousers", prop="folded scarf",
+                scene="private office doorway",
             ),
-            (
-                "A charcoal premium structured coat — fine wool-cashmere blend, "
-                "impeccably proportioned, never heavy or shapeless — "
-                "with an ivory refined scarf. Premium handbag. "
-                "Same 105936-family private-owner register, even in freezing weather."
+            _look(
+                "An ink-navy structured coat over a deep-forest A-line midi skirt and fine-knit top.",
+                family="structured_coat_a_line_midi", palette="ink navy / deep forest",
+                silhouette="long coat over A-line midi", prop="slim clutch",
+                scene="private entrance hall",
+            ),
+            _look(
+                "A pearl-gray tailored coat over a slate-blue knit dress, clean and warm without bulk.",
+                family="tailored_coat_knit_dress", palette="pearl gray / slate blue",
+                silhouette="tailored coat over knit midi", prop="no visible prop",
+                scene="executive elevator lobby",
+            ),
+        ],
+    },
+    "unknown": {
+        "label": "Limited / Unknown Weather",
+        "conditions": "temperature unavailable and no decisive weather condition",
+        "variants": [
+            _look(
+                "An ink-navy silk blouse with pearl-gray tailored wide-leg trousers.",
+                family="silk_blouse_wide_leg_trousers", palette="ink navy / pearl gray",
+                silhouette="fluid wide-leg tailoring", prop="no visible prop",
+                scene="private entrance hall",
+            ),
+            _look(
+                "A deep-forest wrap midi dress with restrained drape.",
+                family="wrap_midi_dress", palette="deep forest",
+                silhouette="soft wrap midi", prop="slim clutch",
+                scene="evening office lounge",
+            ),
+            _look(
+                "A muted-wine knit dress with a clean column line.",
+                family="knit_midi_dress", palette="muted wine",
+                silhouette="refined column midi", prop="smartphone",
+                scene="quiet corridor near a glass wall",
+            ),
+            _look(
+                "A pearl-gray refined cardigan set with espresso relaxed trousers.",
+                family="cardigan_relaxed_trousers", palette="pearl gray / espresso brown",
+                silhouette="soft layered tailoring", prop="structured handbag",
+                scene="executive elevator lobby",
+            ),
+            _look(
+                "A dusty-rose silk blouse with a slate-blue A-line midi skirt.",
+                family="silk_blouse_a_line_midi", palette="dusty rose / slate blue",
+                silhouette="soft A-line midi", prop="no visible prop",
+                scene="window-side hallway",
+            ),
+            _look(
+                "A muted-teal silk blouse with a soft-charcoal long pleated skirt.",
+                family="silk_blouse_long_pleated_skirt", palette="muted teal / soft charcoal",
+                silhouette="long moving pleats", prop="smartphone",
+                scene="private office doorway",
+            ),
+            _look(
+                "An espresso evening lounge midi dress with restrained sheen, never party wear.",
+                family="evening_lounge_midi_dress", palette="espresso brown",
+                silhouette="elongated lounge midi", prop="slim clutch",
+                scene="evening office lounge",
+            ),
+            _look(
+                "A slate-blue soft blazer with ink-navy relaxed tailored trousers, fluid rather than corporate.",
+                family="soft_blazer_relaxed_trousers", palette="slate blue / ink navy",
+                silhouette="soft blazer with relaxed trousers", prop="no visible prop",
+                scene="private entrance hall",
             ),
         ],
     },
 }
 
-_DEFAULT_CLOSET_KEY = "clear_cool"
+_DEFAULT_CLOSET_KEY = "unknown"
 
 
 def _weather_to_closet_key(
@@ -451,6 +580,7 @@ def _weather_to_closet_key(
             return "hot"
         if temperature_c >= 19:
             return "warm"
+        return "clear_cool"
 
     if cond == "snow" or "winter" in season_lower:
         return "snowy"
@@ -506,6 +636,11 @@ def _resolve_wardrobe(
         "taste_cluster": closet_key,
         "taste_cluster_label": entry["label"],
         "weather_outfit_source": weather_outfit_source,
+        "wardrobe_family": outfit_text.family,
+        "color_palette": outfit_text.palette,
+        "silhouette": outfit_text.silhouette,
+        "prop": outfit_text.prop,
+        "scene": outfit_text.scene,
     }
 
 
@@ -566,13 +701,17 @@ def build_bottom_shot_prompt(
     outfit_text = wardrobe_result["outfit_descriptor"]
     pose_text = _select_pose_variant(pose_variant)
 
-    # Prop/gesture section: base constraint + selected pose variant
-    prop_gesture_section = f"{FIXED_PROP_GESTURE_GENE}\n{pose_text}"
+    scene_text = f"Selected scene: {wardrobe_result['scene']}."
+    prop_gesture_section = (
+        f"{FIXED_PROP_GESTURE_GENE}\nSelected prop: {wardrobe_result['prop']}.\n{pose_text}"
+    )
 
     prompt_parts = [
         SCENE_LOCK,
         FIXED_IDENTITY_GENE,
+        ANCHOR_ANTI_COPY_INSTRUCTION,
         FIXED_ROLE_SCENE_GENE,
+        scene_text,
         FIXED_EXPRESSION_GENE,
         outfit_text,
         prop_gesture_section,
@@ -606,8 +745,15 @@ def build_bottom_shot_prompt(
             "gene": "C_variable_wardrobe",
             "taste_cluster": wardrobe_result["taste_cluster"],
             "taste_cluster_label": wardrobe_result["taste_cluster_label"],
+            "wardrobe_family": wardrobe_result["wardrobe_family"],
+            "color_palette": wardrobe_result["color_palette"],
+            "silhouette": wardrobe_result["silhouette"],
+            "prop": wardrobe_result["prop"],
+            "scene": wardrobe_result["scene"],
         },
         "pose_variant_text": pose_text,
+        "anchor_anti_copy_instruction": ANCHOR_ANTI_COPY_INSTRUCTION,
+        "anchor_anti_copy_instruction_applied": True,
         "fixed_identity_gene": {
             "text": FIXED_IDENTITY_GENE,
             "gene": "A_fixed_identity",
@@ -681,5 +827,24 @@ def build_bottom_shot_prompt_metadata_only(
         "bottom_shot_weather_case": result["weather_outfit_shell"]["weather_case"],
         "bottom_shot_outfit_map_key": result["weather_outfit_shell"]["outfit_map_key"],
         "bottom_shot_weather_outfit_source": result["weather_input_metadata"]["weather_outfit_source"],
-        "bottom_shot_prompt_preview": result["prompt_text"][:200],
+        "bottom_shot_wardrobe_variant": result["weather_outfit_shell"]["outfit_variant_index"],
+        "bottom_shot_wardrobe_family": result["weather_outfit_shell"]["wardrobe_family"],
+        "bottom_shot_wardrobe_descriptor": result["weather_outfit_shell"]["outfit_descriptor"],
+        "bottom_shot_color_palette": result["weather_outfit_shell"]["color_palette"],
+        "bottom_shot_silhouette": result["weather_outfit_shell"]["silhouette"],
+        "bottom_shot_prop": result["weather_outfit_shell"]["prop"],
+        "bottom_shot_scene": result["weather_outfit_shell"]["scene"],
+        "bottom_shot_pose_variant": result["pose_variant_text"],
+        "bottom_shot_anti_copy_instruction_applied": True,
+        "bottom_shot_prompt_preview": (
+            f"Selected wardrobe: {result['weather_outfit_shell']['outfit_descriptor']}\n"
+            f"Selected scene: {result['weather_outfit_shell']['scene']}\n"
+            f"Selected prop: {result['weather_outfit_shell']['prop']}\n"
+            f"{result['prompt_text']}"
+        )[:1200],
+        "bottom_shot_prompt_metadata": {
+            "wardrobe": dict(result["weather_outfit_shell"]),
+            "pose_variant": result["pose_variant_text"],
+            "anti_copy_instruction_applied": True,
+        },
     }
