@@ -363,6 +363,10 @@ def _item_field(item: Mapping[str, Any], *keys: str) -> str:
     return ""
 
 
+def _normalize_misused_double_periods(text: str) -> str:
+    return re.sub(r"(?<!\.)\s*\.\.\s*(?!\.)", ", ", str(text or "")).strip()
+
+
 def _judgment_block(item: Mapping[str, Any]) -> tuple[str, str]:
     label = _item_field(item, "keysuri_judgment_label", "judgment_label")
     text = _item_field(item, "keysuri_judgment", "keysuri_judgment_text", "judgment_explanation")
@@ -462,6 +466,16 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
     )
     hype_caution = _item_field(item, "hype_caution")
     j_label, j_text = _judgment_block(item)
+    if _is_korea_program(program_id):
+        headline = _normalize_misused_double_periods(headline)
+        selection_reason = _normalize_misused_double_periods(selection_reason)
+        what_happened = _normalize_misused_double_periods(what_happened)
+        why_now = _normalize_misused_double_periods(why_now)
+        owner_angle = _normalize_misused_double_periods(owner_angle)
+        next_watch = _normalize_misused_double_periods(next_watch)
+        hype_caution = _normalize_misused_double_periods(hype_caution)
+        j_label = _normalize_misused_double_periods(j_label)
+        j_text = _normalize_misused_double_periods(j_text)
 
     insuff_badge = ""
     if insufficient:
@@ -481,6 +495,8 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
       </div>"""
 
     angle_chip = _angle_chip_text(program_id, item)
+    if _is_korea_program(program_id):
+        angle_chip = _normalize_misused_double_periods(angle_chip)
     emphasis_label = _card_emphasis_label(program_id)
     emphasis_body = _item_field(item, "next_day_impact_line", "owner_action_line")
     if _is_korea_program(program_id) and emphasis_body:
@@ -491,6 +507,7 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
             ),
             fallback=_item_field(item, "korean_title", "headline"),
         )
+        emphasis_body = _normalize_misused_double_periods(emphasis_body)
     if emphasis_body:
         emphasis_html = (
             f'<p class="card-emphasis-line">'
@@ -505,9 +522,10 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
             f'<span class="card-emphasis-label">{_esc(emphasis_label)}</span></p>'
         )
 
+    rank_html = "" if _is_korea_program(program_id) else f'<div class="card-rank">{rank}</div>'
     return f"""
     <article class="briefing-card top-item" data-top-item="{rank}">
-      <div class="card-rank">{rank}</div>
+      {rank_html}
       <span class="angle-chip">{_esc(angle_chip)}</span>
       <h3 class="card-headline">{rank}. {_esc(headline)}</h3>
       {insuff_badge}

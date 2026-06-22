@@ -780,6 +780,32 @@ class KeysuriContractPreviewRendererTests(unittest.TestCase):
                 self.assertRegex(html, r"(검증 상태|verification_status|sample_only|not_verified)", re.IGNORECASE)
 
     @_require_contract_renderer
+    def test_korea_top5_keeps_title_number_without_standalone_rank(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        html = _render_contract_html(mod, build_korea_contract_fixture())
+        self.assertNotIn('class="card-rank"', html)
+        self.assertRegex(html, r'class="card-headline">1\.\s')
+        global_html = _render_contract_html(mod, build_global_contract_fixture())
+        self.assertIn('class="card-rank"', global_html)
+
+    @_require_contract_renderer
+    def test_korea_top5_repairs_double_periods_but_keeps_ellipsis(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        fixture = build_korea_contract_fixture()
+        item = fixture["top_5_items"][0]
+        item["what_happened"] = "공급망 변화.. 투자 일정이 조정됐습니다. 후속 발표는 아직... 확인 중입니다."
+        item["why_now"] = "정책 일정.. 조달 계획이 함께 움직입니다."
+        item["owner_angle"] = "계약 조건.. 실행 시점을 함께 보셔야 합니다."
+        html = _render_contract_html(mod, fixture)
+        self.assertIn("공급망 변화, 투자 일정이 조정됐습니다.", html)
+        self.assertIn("정책 일정, 조달 계획이 함께 움직입니다.", html)
+        self.assertIn("계약 조건, 실행 시점을 함께 보셔야 합니다.", html)
+        self.assertIn("아직... 확인 중입니다.", html)
+        self.assertNotIn("공급망 변화..", html)
+
+    @_require_contract_renderer
     def test_deep_dive_layer_structure_not_single_dense_block(self) -> None:
         mod = _CONTRACT_RENDERER
         assert mod is not None
