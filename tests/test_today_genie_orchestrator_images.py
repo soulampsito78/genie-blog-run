@@ -4,8 +4,10 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 from orchestrator import (
     OrchestrationResult,
@@ -89,7 +91,18 @@ class TodayGenieOrchestratorImageGenerationTests(unittest.TestCase):
                 )
                 with patch("orchestrator.send_email_if_allowed", return_value=True) as mock_send:
                     with patch("orchestrator.persist_orchestrator_run_artifact", return_value="rid") as mock_persist:
-                        execute_orchestrator_run("today_genie", trigger_source="scheduler")
+                        execute_orchestrator_run(
+                            "today_genie",
+                            trigger_source="scheduler",
+                            schedule_now=datetime(
+                                2026,
+                                6,
+                                19,
+                                6,
+                                30,
+                                tzinfo=ZoneInfo("Asia/Seoul"),
+                            ),
+                        )
         mock_images.assert_called_once()
         mock_send.assert_called_once()
         self.assertIsNotNone(mock_send.call_args.kwargs.get("today_image_result"))

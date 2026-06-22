@@ -9,10 +9,12 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from email_sender import send_genie_email
+from genie_schedule_policy import ScheduledWeekendSkip, today_genie_weekend_skip_payload
 from naver_draft import create_naver_draft
 from programs.registry import UnknownProgramError, get_program, resolve_program_id
 from publishing_policy import PublishingDecision, decide_publishing_actions
@@ -602,6 +604,7 @@ def execute_orchestrator_run(
     admin_reissue: bool = False,
     trigger_source: str | None = None,
     send_owner_email: bool = True,
+    schedule_now: datetime | None = None,
 ) -> tuple[str, OrchestrationResult, bool]:
     """
     Run Genie job, attempt owner-review email, persist admin artifact.
@@ -609,6 +612,15 @@ def execute_orchestrator_run(
     Pass send_owner_email=False for no-send artifact verification (suppresses email
     unconditionally; artifact still written with verification_mode=no_send_verification).
     """
+    if str(mode or "").strip() == "today_genie":
+        skip_payload = today_genie_weekend_skip_payload(
+            trigger_source=trigger_source,
+            now=schedule_now,
+        )
+        if skip_payload is not None:
+            logger.info("execute_orchestrator_run: scheduled run skipped payload=%s", skip_payload)
+            raise ScheduledWeekendSkip(skip_payload)
+
     prev_flag = os.environ.get("GENIE_ADMIN_REISSUE")
     if admin_reissue:
         os.environ["GENIE_ADMIN_REISSUE"] = "1"

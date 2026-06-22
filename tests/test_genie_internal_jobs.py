@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import os
 import unittest
+from datetime import datetime
 from typing import Any, Dict
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
@@ -78,8 +80,14 @@ class GenieCreateOwnerReviewTests(unittest.TestCase):
             os.environ, {"GENIE_INTERNAL_JOB_TOKEN": _TOKEN}, clear=False
         )
         self._env_patch.start()
+        self._clock_patch = mock.patch(
+            "internal_jobs.get_kst_now",
+            return_value=datetime(2026, 6, 22, 6, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
+        self._clock_patch.start()
 
     def tearDown(self) -> None:
+        self._clock_patch.stop()
         self._env_patch.stop()
 
     def test_calls_today_genie_orchestrator(self) -> None:

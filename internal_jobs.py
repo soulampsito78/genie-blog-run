@@ -24,6 +24,11 @@ from keysuri_live_source_smoke import (
     LiveSourceSmokeResult,
     run_keysuri_live_source_smoke,
 )
+from genie_schedule_policy import (
+    ScheduledWeekendSkip,
+    get_kst_now,
+    today_genie_weekend_skip_payload,
+)
 from orchestrator import execute_orchestrator_run
 
 router = APIRouter(tags=["internal"])
@@ -262,11 +267,18 @@ def create_owner_review_endpoint(
     if auth_fail is not None:
         return auth_fail
 
+    trigger = (body.trigger_source or DEFAULT_TRIGGER_SOURCE).strip() or DEFAULT_TRIGGER_SOURCE
+    skip_payload = today_genie_weekend_skip_payload(
+        trigger_source=trigger,
+        now=get_kst_now(),
+    )
+    if skip_payload is not None:
+        logger.info("create_owner_review: scheduled run skipped payload=%s", skip_payload)
+        return JSONResponse(status_code=200, content=skip_payload)
+
     store_err, _desc = check_artifact_store_ready()
     if store_err:
         return _artifact_store_not_ready_response()
-
-    trigger = (body.trigger_source or DEFAULT_TRIGGER_SOURCE).strip() or DEFAULT_TRIGGER_SOURCE
 
     if body.service_full_run:
         from today_genie_service_full_run import run_today_genie_service_full_run
@@ -311,6 +323,9 @@ def create_owner_review_endpoint(
             trigger_source=trigger,
             send_owner_email=body.send_owner_email,
         )
+    except ScheduledWeekendSkip as exc:
+        logger.info("create_owner_review: orchestrator weekend guard payload=%s", exc.payload)
+        return JSONResponse(status_code=200, content=exc.payload)
     except Exception as exc:
         logger.exception(
             "create_owner_review: orchestration_failed error_type=%s",
