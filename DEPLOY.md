@@ -1,6 +1,24 @@
 # Genie – deployment commands (plain-language guide)
 
-This guide is for the **first rollout: email only** (no Naver draft). You need: (1) the Genie API already deployed and its URL, (2) GCP project ID and region, (3) SMTP and email settings.
+> **⚠️ HISTORICAL DOCUMENT — Read this notice first**
+>
+> This document describes a two-container deployment (Genie API service + separate worker/orchestrator
+> Cloud Run Job). The **actual production architecture** as of 2026-06-23 is a **single Cloud Run
+> service** (`genie-blog-run`) deployed via `cloudbuild.yaml` triggered by GitHub push to `main`.
+>
+> The Cloud Run Jobs and separate worker image described below are **not used** in production.
+> Use this document as a historical reference for the deployment model that was originally planned.
+>
+> **Actual production deployment:**
+> - Single service: `genie-blog-run` (Cloud Run Service, not Jobs)
+> - CI/CD: GitHub → Cloud Build (`cloudbuild.yaml`) → Cloud Run revision
+> - No separate `Dockerfile.worker` or `genie-orchestrator` image in active use
+> - Secrets: `genie-smtp-password`, `genie-admin-password`, `genie-internal-job-token` in Secret Manager
+> - Current revision: `genie-blog-run-00176-x7r` @ `f08ad53` (2026-06-23 audit)
+
+---
+
+This guide is for the **first rollout: email only** (no Naver draft). [HISTORICAL REFERENCE]
 
 ---
 

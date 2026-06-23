@@ -2,17 +2,29 @@
 
 Automated publishing system for the Genie persona briefing content.
 
-This project generates and distributes two daily briefings based on a single character persona.
+This project generates and distributes daily briefings for multiple programs under a single Cloud Run service.
 
-Modes
+Programs
 
-1. today_genie
-06:30 pre-market briefing
-Role: financial news anchor
+1. today_genie (오늘의 지니)
+Scheduler: 06:30 KST Mon–Fri (ENABLED)
+Role: financial news anchor / pre-market briefing
 
-2. tomorrow_genie
-15:00 next-day weather & life briefing
+2. keysuri_global_tech (키수리 — Global)
+Scheduler: 12:30 KST Mon–Fri (ENABLED)
+Role: premium AI/tech secretary — global tech briefing
+
+3. keysuri_korea_tech (키수리 — Korea)
+Scheduler: 18:30 KST Mon–Fri (ENABLED)
+Role: premium AI/tech secretary — Korea tech briefing
+
+4. tomorrow_genie (내일의 지니)
+Scheduler: 18:00 KST daily (PAUSED — not currently in production rotation)
 Role: weather/lifestyle broadcast caster
+Note: Code exists; GCP Scheduler is PAUSED. Not listed in programs/registry.py.
+
+Authoritative schedule reference: live GCP Cloud Scheduler settings.
+See SCHEDULE_OVERRIDE.md and docs/keysuri/KEYSURI_SCHEDULER_STATE_AND_FUTURE_WIRING_DESIGN.md.
 
 
 --------------------------------
@@ -54,17 +66,17 @@ delivery / publishing pipeline
 PROJECT DOCUMENT AUTHORITY
 --------------------------------
 
-When conflicts occur between documents:
+When conflicts occur between documents, use this priority order:
 
-1 GENIE_PROJECT_SSOT_v2
-2 GENIE_CONTENT_AND_OUTPUT_CONTRACT_v2
-3 GENIE_CONTENT_POLICY_AND_OUTPUT_SPEC_v2
-4 GENIE_SYSTEM_AND_API_ARCHITECTURE_v2
-5 GENIE_DELIVERY_AND_PUBLISHING_OPS_v2
-6 GENIE_OPS_AND_MAINTENANCE_SYSTEM_v2
+1. Live GCP state (Cloud Scheduler, Cloud Run, GCS artifacts) — always authoritative
+2. docs/CURRENT_STATUS_SNAPSHOT.md — latest confirmed operational snapshot
+3. docs/keysuri/KEYSURI_SCHEDULER_STATE_AND_FUTURE_WIRING_DESIGN.md — Kee-Suri scheduler record
+4. SCHEDULE_OVERRIDE.md — schedule authority during doc-alignment interim
+5. README.md (this file) — general reference
 
-
-Older v1 documents are reference only.
+Note: GENIE_PROJECT_SSOT_v2 and related v2 documents referenced above
+do not exist in this repository as of 2026-06-23 audit. GCP live state
+and the documents listed above are the current authority.
 
 
 --------------------------------
@@ -109,13 +121,16 @@ generation must be shortened or aborted.
 
 tomorrow_genie
 
-Next-day preparation briefing.
+Next-day preparation briefing (currently PAUSED in production).
 
 Primary data source:
 
 weather forecast for tomorrow (reference time 06:00).
 
 No precise weather numbers may be invented.
+
+Production status: GCP Scheduler PAUSED. Code present but not in active rotation.
+Resume requires explicit operator decision. Not in programs/registry.py.
 
 
 

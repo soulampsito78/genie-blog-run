@@ -1,10 +1,25 @@
 # Genie Project – production rollout preparation
 
-Operational plan for first controlled production deployment. No architecture or code redesign.
+> **⚠️ HISTORICAL DOCUMENT — Read this notice first**
+>
+> This document was written as a pre-production rollout plan describing a two-container architecture
+> (API service + separate worker/orchestrator container). The **actual production deployment** as of
+> 2026-06-23 is a **single Cloud Run service** (`genie-blog-run`) that integrates generation,
+> validation, owner review, customer delivery, admin UI, and internal scheduler job endpoints.
+>
+> The API + Worker separation described below was **not adopted**. Do not follow these instructions
+> for the current production system. Use this document as a historical reference only.
+>
+> **Current production facts (2026-06-23 audit):**
+> - Service: `genie-blog-run`, region `asia-northeast3`, revision `genie-blog-run-00176-x7r`
+> - Scheduler: `Today_Geenee` ENABLED 06:30, `KeeSuri_Global_Tech` ENABLED 12:30, `KeeSuri_Korea_Tech` ENABLED 18:30
+> - All programs (today_genie, keysuri_global_tech, keysuri_korea_tech) running in the single service
+> - Customer delivery requires operator approval via `/admin` UI
+> - GCS artifact bucket: `gen-lang-client-0667098249-genie-artifacts`
 
 ---
 
-## 1. Rollout checklist (high level)
+## 1. Rollout checklist (high level) [HISTORICAL — for reference only]
 
 - [ ] **Secrets**: Create Secret Manager secrets; map to worker env / `*_FILE` (see §2).
 - [ ] **Genie API**: Deploy API service (existing Dockerfile); set PROJECT_ID, VERTEX_*, OPENWEATHER_API_KEY, TODAY_GENIE_*_JSON (or placeholders).
@@ -64,23 +79,21 @@ If the platform mounts a secret as a file, set e.g. `SMTP_PASSWORD_FILE=/mnt/sec
 
 ---
 
-## 3. Scheduler plan
+## 3. Scheduler plan [HISTORICAL — see SCHEDULE_OVERRIDE.md for actual schedules]
 
-### Recommended KST times (from README)
+> The times below (05:30, 14:00) were planning-stage recommendations.
+> **Actual deployed schedules** differ — see SCHEDULE_OVERRIDE.md or live GCP.
 
-| Mode | Recommended run time (KST) | Rationale |
-|------|----------------------------|-----------|
-| **today_genie** | **05:30** | Before 06:30 briefing; allows ingestion + generation + delivery |
-| **tomorrow_genie** | **14:00** | Before 15:00 briefing; allows weather fetch + generation + draft |
+### Planning-stage times (superseded)
 
-Use timezone Asia/Seoul when configuring cron or Cloud Scheduler.
+| Mode | Planned time | Actual deployed time (GCP) |
+|------|-------------|---------------------------|
+| **today_genie** | 05:30 | **06:30 KST** (`30 6 * * 1-5`) |
+| **tomorrow_genie** | 14:00 | 18:00 KST — **PAUSED** |
+| **keysuri_global_tech** | (not planned here) | **12:30 KST** (`30 12 * * 1-5`) |
+| **keysuri_korea_tech** | (not planned here) | **18:30 KST** (`30 18 * * 1-5`) |
 
-### Separate jobs vs one shared job
-
-- **Recommended: two separate schedules (or two invocations of the same job with different mode).**
-  - **today_genie**: One Cloud Scheduler job (or cron) that runs at 05:30 KST and invokes the worker with `mode=today_genie` (or `GENIE_MODE=today_genie`).
-  - **tomorrow_genie**: Another job that runs at 14:00 KST with `mode=tomorrow_genie`.
-- **Alternative: one parameterized job** that receives `mode` in the request body or as a query param; the trigger (e.g. Cloud Scheduler + Cloud Functions or a small HTTP wrapper) would call it twice per day with the appropriate mode. Either way, **each mode runs once per day at its own time.**
+Use SCHEDULE_OVERRIDE.md and live GCP as authoritative references.
 
 ---
 
