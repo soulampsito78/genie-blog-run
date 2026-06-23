@@ -12,6 +12,12 @@ today.local.env
 # Generated proof runs, previews, diagnostics, archives (runtime under output/)
 output/
 
+# Operator image inspection archive (downloaded from GCS; never commit)
+_ops_image_archive/
+
+# Operator local artifact quarantine (generated PDFs/HTMLs; never commit)
+_ops_local_artifacts/
+
 # --- Local Genie proof artifacts (generated; do not commit with pipeline work) ---
 
 # Repo-root PDF/HTML proof exports
