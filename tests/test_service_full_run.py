@@ -121,6 +121,102 @@ def _fake_keysuri_smoke(program_id: str, **_kwargs) -> LiveSourceSmokeResult:
     )
 
 
+class KeysuriOwnerEmailDeliveryFieldsTests(unittest.TestCase):
+    def test_success_masks_recipients_and_keeps_domains_and_hashes(self) -> None:
+        from keysuri_service_full_run import _owner_email_delivery_fields
+
+        trace = {
+            "envelope_to": [
+                "tera9003@daum.net",
+                "tomato3593@gmail.com",
+                "tera9003@daum.net",
+                "a@naver.com",
+            ],
+            "mime_html_sha256": "html-sha",
+            "mime_html_bytes_len": 1234,
+            "inline_input_hashes": [
+                {
+                    "path": str(Path(__file__).resolve()),
+                    "cid": "keysuri_topshot_korea_20260623",
+                    "filename": "/tmp/top.jpg",
+                    "sha256": "top-sha",
+                }
+            ],
+        }
+        with patch("keysuri_service_full_run.email_sender.last_send_trace", return_value=trace):
+            with patch("keysuri_service_full_run.email_sender.last_send_diagnostic", return_value=""):
+                fields = _owner_email_delivery_fields(
+                    smtp_attempted=True,
+                    email_sent=True,
+                    subject="[운영자 검토] Kee-Suri Korea Tech",
+                )
+
+        self.assertEqual(fields["owner_email_delivery_status"], "smtp_accepted")
+        self.assertEqual(fields["owner_email_recipient_count"], 3)
+        self.assertEqual(fields["owner_email_recipient_domains"], ["daum.net", "gmail.com", "naver.com"])
+        self.assertEqual(
+            fields["owner_email_recipients_masked"],
+            ["te***03@daum.net", "to***93@gmail.com", "a***@naver.com"],
+        )
+        self.assertEqual(fields["owner_email_mime_html_sha256"], "html-sha")
+        self.assertEqual(fields["owner_email_mime_html_bytes_len"], 1234)
+        self.assertEqual(fields["owner_email_inline_image_hashes"][0]["cid"], "keysuri_topshot_korea_20260623")
+        self.assertEqual(fields["owner_email_inline_image_hashes"][0]["filename"], "top.jpg")
+        blob = json.dumps(fields, ensure_ascii=False)
+        self.assertNotIn("tera9003@daum.net", blob)
+        self.assertNotIn("tomato3593@gmail.com", blob)
+
+    def test_failure_records_failed_status_and_sanitized_diagnostic(self) -> None:
+        from keysuri_service_full_run import _owner_email_delivery_fields
+
+        trace = {
+            "envelope_to": ["kha6210@hanmail.com"],
+            "mime_html_sha256": "",
+            "mime_html_bytes_len": 0,
+            "inline_input_hashes": [],
+        }
+        diagnostic = (
+            "SMTPAuthenticationError: password=rawpass token=rawtoken "
+            "recipient kha6210@hanmail.com rejected"
+        )
+        with patch.dict(os.environ, {"SMTP_PASSWORD": "rawpass", "GENIE_INTERNAL_JOB_TOKEN": "rawtoken"}, clear=False):
+            with patch("keysuri_service_full_run.email_sender.last_send_trace", return_value=trace):
+                with patch("keysuri_service_full_run.email_sender.last_send_diagnostic", return_value=diagnostic):
+                    fields = _owner_email_delivery_fields(
+                        smtp_attempted=True,
+                        email_sent=False,
+                        subject="[운영자 검토] Kee-Suri Korea Tech",
+                    )
+
+        self.assertEqual(fields["owner_email_delivery_status"], "failed")
+        self.assertEqual(fields["owner_email_recipient_count"], 1)
+        self.assertEqual(fields["owner_email_recipients_masked"], ["kh***10@hanmail.com"])
+        self.assertIn("password=[redacted]", fields["owner_email_send_diagnostic"])
+        self.assertIn("token=[redacted]", fields["owner_email_send_diagnostic"])
+        self.assertNotIn("rawpass", fields["owner_email_send_diagnostic"])
+        self.assertNotIn("rawtoken", fields["owner_email_send_diagnostic"])
+        self.assertNotIn("kha6210@hanmail.com", json.dumps(fields, ensure_ascii=False))
+
+    def test_not_sent_does_not_read_stale_send_trace(self) -> None:
+        from keysuri_service_full_run import _owner_email_delivery_fields
+
+        with patch("keysuri_service_full_run.email_sender.last_send_trace") as trace_reader:
+            with patch("keysuri_service_full_run.email_sender.last_send_diagnostic") as diag_reader:
+                fields = _owner_email_delivery_fields(
+                    smtp_attempted=False,
+                    email_sent=False,
+                    subject="[운영자 검토] Kee-Suri Korea Tech",
+                )
+
+        trace_reader.assert_not_called()
+        diag_reader.assert_not_called()
+        self.assertEqual(fields["owner_email_delivery_status"], "not_sent")
+        self.assertFalse(fields["owner_email_smtp_attempted"])
+        self.assertIsNone(fields["owner_email_sent_at_kst"])
+        self.assertEqual(fields["owner_email_recipient_count"], 0)
+        self.assertEqual(fields["owner_email_send_diagnostic"], "")
+
+
 class ServiceFullRunContractTests(unittest.TestCase):
     def test_generated_image_source_passes(self) -> None:
         outcome = ServiceImageOutcome(
@@ -547,12 +643,27 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
             "source_pack": {"sources": []},
         }
         mock_send.return_value = True
+        fake_trace = {
+            "envelope_to": ["tera9003@daum.net", "tomato3593@gmail.com", "tera9003@daum.net"],
+            "mime_html_sha256": "abc123",
+            "mime_html_bytes_len": 2048,
+            "inline_input_hashes": [
+                {
+                    "path": str(image_rel.resolve()),
+                    "cid": "keysuri_topshot_global_20260611",
+                    "filename": "keysuri_global_service_test_mirai_on_watermarked.jpg",
+                    "sha256": "image-sha",
+                }
+            ],
+        }
 
-        payload = run_keysuri_service_full_run(
-            PROGRAM_GLOBAL,
-            smoke_runner=lambda **_kw: self._global_smoke(pack_path, raw_path),
-            send_fn=mock_send,
-        )
+        with patch("keysuri_service_full_run.email_sender.last_send_trace", return_value=fake_trace):
+            with patch("keysuri_service_full_run.email_sender.last_send_diagnostic", return_value=""):
+                payload = run_keysuri_service_full_run(
+                    PROGRAM_GLOBAL,
+                    smoke_runner=lambda **_kw: self._global_smoke(pack_path, raw_path),
+                    send_fn=mock_send,
+                )
 
         self.assertTrue(payload.get("ok"))
         self.assertTrue(payload.get("service_full_run"))
@@ -588,6 +699,21 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         self.assertNotIn(self._token, email_html)
         # Gmail-safe Global owner email renderer
         self.assertIn("키수리 글로벌 테크 브리핑", email_html)
+
+        saved_meta = mock_save.call_args.args[0]
+        self.assertEqual(saved_meta.get("owner_email_delivery_status"), "smtp_accepted")
+        self.assertTrue(saved_meta.get("owner_email_smtp_attempted"))
+        self.assertTrue(saved_meta.get("owner_email_sent_at_kst"))
+        self.assertEqual(saved_meta.get("owner_email_recipient_count"), 2)
+        self.assertEqual(saved_meta.get("owner_email_recipient_domains"), ["daum.net", "gmail.com"])
+        self.assertEqual(saved_meta.get("owner_email_recipients_masked"), ["te***03@daum.net", "to***93@gmail.com"])
+        self.assertEqual(saved_meta.get("owner_email_subject"), "[운영자 검토] Kee-Suri Global Tech")
+        self.assertEqual(saved_meta.get("owner_email_mime_html_sha256"), "abc123")
+        self.assertEqual(saved_meta.get("owner_email_mime_html_bytes_len"), 2048)
+        self.assertTrue(saved_meta.get("owner_email_send_trace_available"))
+        self.assertEqual(saved_meta.get("owner_email_inline_image_hashes")[0]["sha256"], "image-sha")
+        self.assertNotIn("tera9003@daum.net", json.dumps(saved_meta, ensure_ascii=False))
+        self.assertNotIn("tomato3593@gmail.com", json.dumps(saved_meta, ensure_ascii=False))
         self.assertIn("글로벌 신호", email_html)
         self.assertIn('role="presentation"', email_html)
         self.assertNotIn("<style", email_html.lower())

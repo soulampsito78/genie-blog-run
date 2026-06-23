@@ -5,11 +5,15 @@ import json
 import logging
 import os
 import hashlib
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from admin_store import admin_artifact_bucket_name, admin_artifact_gcs_prefix, artifact_email_path, artifact_json_path, generate_run_id, save_run_artifact
 from admin_urls import build_owner_review_admin_url
+import email_sender
 from email_sender import send_genie_email
 from keysuri_approved_image_assets import KOREA_BOTTOM_ROLE, list_approved_assets
 from keysuri_image_overlay import apply_keysuri_mirai_on_watermark
@@ -226,6 +230,159 @@ def _repo_rel(path: Path) -> str:
         return path.resolve().relative_to(_REPO.resolve()).as_posix()
     except ValueError:
         return str(path.resolve())
+
+
+_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+_SENSITIVE_DIAGNOSTIC_RE = re.compile(
+    r"(?i)\b(password|passwd|token|secret|authorization)\b(\s*[=:]\s*)([^\s,;]+)"
+)
+
+
+def _dedupe_preserve_order(values: List[str]) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for value in values:
+        key = value.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(value.strip())
+    return out
+
+
+def _mask_email_address(address: str) -> str:
+    raw = str(address or "").strip()
+    if "@" not in raw:
+        return ""
+    local, domain = raw.rsplit("@", 1)
+    local = local.strip()
+    domain = domain.strip().lower()
+    if not local or not domain:
+        return ""
+    if len(local) <= 4:
+        masked_local = f"{local[:1]}***"
+    else:
+        masked_local = f"{local[:2]}***{local[-2:]}"
+    return f"{masked_local}@{domain}"
+
+
+def _mask_email_addresses(addresses: List[str]) -> List[str]:
+    masked = [_mask_email_address(addr) for addr in _dedupe_preserve_order(addresses)]
+    return [addr for addr in masked if addr]
+
+
+def _recipient_domains(addresses: List[str]) -> List[str]:
+    domains: List[str] = []
+    for address in _dedupe_preserve_order(addresses):
+        raw = str(address or "").strip()
+        if "@" not in raw:
+            continue
+        domain = raw.rsplit("@", 1)[1].strip().lower()
+        if domain:
+            domains.append(domain)
+    return _dedupe_preserve_order(domains)
+
+
+def _safe_trace_path(path_value: Any) -> str:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return ""
+    path = Path(raw)
+    try:
+        return path.resolve().relative_to(_REPO.resolve()).as_posix()
+    except (OSError, ValueError):
+        return path.name
+
+
+def _owner_email_inline_image_hashes(trace: Dict[str, Any]) -> List[Dict[str, str]]:
+    hashes: List[Dict[str, str]] = []
+    for row in trace.get("inline_input_hashes") or []:
+        if not isinstance(row, dict):
+            continue
+        hashes.append(
+            {
+                "path": _safe_trace_path(row.get("path")),
+                "cid": str(row.get("cid") or ""),
+                "filename": Path(str(row.get("filename") or "")).name,
+                "sha256": str(row.get("sha256") or ""),
+            }
+        )
+    return hashes
+
+
+def _sanitize_owner_email_diagnostic(diagnostic: str) -> str:
+    clean = str(diagnostic or "")
+    if not clean:
+        return ""
+    clean = _EMAIL_RE.sub(lambda match: _mask_email_address(match.group(0)), clean)
+    clean = _SENSITIVE_DIAGNOSTIC_RE.sub(r"\1\2[redacted]", clean)
+    for env_key in ("SMTP_PASSWORD", "SMTP_APP_PASSWORD", "GENIE_INTERNAL_JOB_TOKEN"):
+        secret_value = os.getenv(env_key, "").strip()
+        if secret_value:
+            clean = clean.replace(secret_value, "[redacted]")
+    return clean[:500]
+
+
+def _owner_review_delivery_status(smtp_attempted: bool, email_sent: bool) -> str:
+    if email_sent:
+        return "smtp_accepted"
+    if smtp_attempted:
+        return "failed"
+    return "not_sent"
+
+
+def _owner_email_delivery_fields(
+    *,
+    smtp_attempted: bool,
+    email_sent: bool,
+    subject: str,
+) -> Dict[str, Any]:
+    status = _owner_review_delivery_status(smtp_attempted, email_sent)
+    trace = email_sender.last_send_trace() if smtp_attempted else {}
+    diagnostic = email_sender.last_send_diagnostic() if smtp_attempted else ""
+    recipients = [
+        str(addr or "").strip()
+        for addr in (trace.get("envelope_to") or [])
+        if str(addr or "").strip()
+    ]
+    recipients = _dedupe_preserve_order(recipients)
+    return {
+        "owner_email_delivery_status": status,
+        "owner_email_smtp_attempted": bool(smtp_attempted),
+        "owner_email_sent_at_kst": (
+            datetime.now(ZoneInfo("Asia/Seoul")).isoformat() if email_sent else None
+        ),
+        "owner_email_recipient_count": len(recipients),
+        "owner_email_recipient_domains": _recipient_domains(recipients),
+        "owner_email_recipients_masked": _mask_email_addresses(recipients),
+        "owner_email_subject": str(subject or ""),
+        "owner_email_mime_html_sha256": str(trace.get("mime_html_sha256") or ""),
+        "owner_email_mime_html_bytes_len": int(trace.get("mime_html_bytes_len") or 0),
+        "owner_email_inline_image_hashes": _owner_email_inline_image_hashes(trace),
+        "owner_email_send_trace_available": bool(trace),
+        "owner_email_send_diagnostic": _sanitize_owner_email_diagnostic(diagnostic),
+    }
+
+
+def _log_owner_email_delivery_event(
+    *,
+    program_id: str,
+    run_id: str,
+    fields: Dict[str, Any],
+) -> None:
+    event = {
+        "event": "keysuri_owner_review_email_delivery",
+        "program_id": program_id,
+        "run_id": run_id,
+        "smtp_attempted": bool(fields.get("owner_email_smtp_attempted")),
+        "email_sent": fields.get("owner_email_delivery_status") == "smtp_accepted",
+        "owner_email_delivery_status": fields.get("owner_email_delivery_status"),
+        "recipient_count": int(fields.get("owner_email_recipient_count") or 0),
+        "recipient_domains": list(fields.get("owner_email_recipient_domains") or []),
+        "subject": str(fields.get("owner_email_subject") or ""),
+        "inline_image_count": len(fields.get("owner_email_inline_image_hashes") or []),
+    }
+    logger.info(json.dumps(event, ensure_ascii=False, sort_keys=True))
 
 
 def _watermarked_top_shot_path(source_path: Path) -> Path:
@@ -848,11 +1005,11 @@ def run_keysuri_service_full_run(
 
     email_sent = False
     smtp_attempted = False
+    subject = _PROGRAM_EMAIL_SUBJECT.get(pid, f"[운영자 검토] {PROGRAM_DISPLAY.get(pid, pid)}")
     if send_owner_email:
         if os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip() not in ("1", "true", "yes"):
             issue_codes.append("owner_review_send_gate_off")
         else:
-            subject = _PROGRAM_EMAIL_SUBJECT.get(pid, f"[운영자 검토] {PROGRAM_DISPLAY.get(pid, pid)}")
             smtp_attempted = True
             sender = send_fn or send_genie_email
             if pid == PROGRAM_GLOBAL:
@@ -907,6 +1064,13 @@ def run_keysuri_service_full_run(
         owner_review_url=owner_review_url or None,
         artifact_storage_durable=storage_durable,
     )
+    owner_email_fields = _owner_email_delivery_fields(
+        smtp_attempted=smtp_attempted,
+        email_sent=email_sent,
+        subject=subject,
+    )
+    meta.update(owner_email_fields)
+    _log_owner_email_delivery_event(program_id=pid, run_id=run_id, fields=owner_email_fields)
     meta["artifact_status"] = "emailed" if email_sent else "stored"
     meta["generated_image_path_raw"] = raw_generated_image_path
     meta["generated_image_path_watermarked"] = watermarked_generated_image_path
