@@ -76,7 +76,25 @@ _CUSTOMER_DELIVERY_STATUS_LABELS_KO = {
     "unknown": "확인 불가",
     "customer_sent_after_approval": "SMTP 접수",
     "sent_after_owner_approval": "SMTP 접수",
+    "blocked": "정책 차단",
 }
+
+_CUSTOMER_DELIVERY_PANEL_GRADE: Dict[str, tuple[str, str]] = {
+    "smtp_accepted": ("PASS", "발송 접수 완료"),
+    "delivery_confirmed": ("PASS", "발송 접수 완료"),
+    "customer_sent_after_approval": ("PASS", "발송 접수 완료"),
+    "sent_after_owner_approval": ("PASS", "발송 접수 완료"),
+    "failed": ("FAIL", "발송 실패"),
+    "bounced": ("FAIL", "발송 실패"),
+    "rejected": ("FAIL", "발송 실패"),
+    "blocked": ("BLOCKED", "정책 차단"),
+    "not_sent": ("대기", "미발송"),
+    "send_attempted": ("대기", "발송 시도 중"),
+    "unknown": ("대기", "확인 불가"),
+}
+
+_ADMIN_MISSING = "미기록"
+_ADMIN_NONE = "없음"
 
 
 def repo_root() -> Path:
@@ -369,6 +387,197 @@ def sanitize_delivery_error_summary(raw: str, *, max_len: int = 240) -> str:
 def customer_delivery_status_label_ko(status: str) -> str:
     key = str(status or "not_sent").strip() or "not_sent"
     return _CUSTOMER_DELIVERY_STATUS_LABELS_KO.get(key, key)
+
+
+def mask_customer_email(address: str) -> str:
+    """Mask customer email for admin display: tera9003@daum.net -> t***3@daum.net."""
+    raw = str(address or "").strip()
+    if not raw or "@" not in raw:
+        return raw or _ADMIN_NONE
+    local, domain = raw.split("@", 1)
+    local = local.strip()
+    domain = domain.strip()
+    if not local or not domain:
+        return raw
+    if len(local) == 1:
+        masked_local = f"{local[0]}***"
+    else:
+        masked_local = f"{local[0]}***{local[-1]}"
+    return f"{masked_local}@{domain}"
+
+
+def _panel_value(meta: Dict[str, Any], *keys: str, default: str = _ADMIN_MISSING) -> str:
+    for key in keys:
+        value = meta.get(key)
+        if value in (None, ""):
+            continue
+        if isinstance(value, bool):
+            return "예" if value else "아니오"
+        return str(value).strip()
+    return default
+
+
+def _panel_recipients(meta: Dict[str, Any]) -> List[str]:
+    for key in ("customer_recipients", "customer_recipient_list", "envelope_to"):
+        raw = meta.get(key)
+        if isinstance(raw, list):
+            out = [str(item).strip() for item in raw if str(item).strip()]
+            if out:
+                return out
+        if isinstance(raw, str) and raw.strip():
+            parts = [part.strip() for part in re.split(r"[,;]", raw) if part.strip()]
+            if parts:
+                return parts
+    trace = meta.get("customer_delivery_send_trace")
+    if isinstance(trace, dict):
+        envelope = trace.get("envelope_to")
+        if isinstance(envelope, list):
+            out = [str(item).strip() for item in envelope if str(item).strip()]
+            if out:
+                return out
+    return []
+
+
+def _panel_delivery_grade(meta: Dict[str, Any]) -> tuple[str, str, str]:
+    delivery_status = str(meta.get("customer_delivery_status") or "not_sent").strip() or "not_sent"
+    if delivery_status in _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED:
+        return delivery_status, "PASS", "발송 접수 완료"
+    if delivery_status == "failed":
+        return delivery_status, "FAIL", "발송 실패"
+    if delivery_status == "blocked":
+        return delivery_status, "BLOCKED", "정책 차단"
+    grade = _CUSTOMER_DELIVERY_PANEL_GRADE.get(
+        delivery_status,
+        ("대기", customer_delivery_status_label_ko(delivery_status)),
+    )
+    return delivery_status, grade[0], grade[1]
+
+
+def _panel_double_send_blocked(meta: Dict[str, Any]) -> str:
+    delivery_status = str(meta.get("customer_delivery_status") or "not_sent").strip()
+    owner_status = str(meta.get("owner_review_status") or "").strip()
+    if delivery_status in _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED or owner_status == "approved":
+        return "예 — 이미 발송됨 / 재발송 차단"
+    return "아니오"
+
+
+def _panel_smtp_accepted(meta: Dict[str, Any]) -> str:
+    if meta.get("smtp_accepted") is True:
+        return "예"
+    if meta.get("smtp_accepted") is False:
+        return "아니오"
+    delivery_status = str(meta.get("customer_delivery_status") or "not_sent").strip()
+    if delivery_status in _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED:
+        return "예"
+    if delivery_status in {"failed", "bounced", "rejected"}:
+        return "아니오"
+    return _ADMIN_MISSING
+
+
+def _panel_image_evidence(meta: Dict[str, Any]) -> Dict[str, str]:
+    top_cid = _panel_value(meta, "top_image_cid", default=_ADMIN_NONE)
+    bottom_cid = _panel_value(
+        meta,
+        "bottom_image_cid",
+        "korea_bottom_shot_cid",
+        default=_ADMIN_NONE,
+    )
+    cids = meta.get("customer_email_image_cids") or meta.get("owner_email_image_cids") or []
+    mime_count = str(len(cids)) if isinstance(cids, list) and cids else _ADMIN_MISSING
+    image_source = str(meta.get("customer_image_source") or meta.get("image_source") or "").strip()
+    bottom_source = str(meta.get("korea_bottom_shot_source") or meta.get("bottom_shot_source") or "").strip()
+    static_latest = _ADMIN_MISSING
+    if image_source:
+        static_latest = "예" if "static" in image_source.lower() or "fallback" in image_source.lower() else "아니오"
+    elif bottom_source:
+        static_latest = "예" if "fixed_105936" in bottom_source or "fallback" in bottom_source else "아니오"
+    generated_used = _ADMIN_MISSING
+    if meta.get("run_specific_images") is True or meta.get("generated_image_path") or meta.get("customer_top_image_path"):
+        generated_used = "예"
+    elif meta.get("run_specific_images") is False:
+        generated_used = "아니오"
+    return {
+        "top_image_source": _panel_value(
+            meta,
+            "customer_image_source",
+            "image_source",
+            "top_shot_image_source",
+            default=_ADMIN_NONE,
+        ),
+        "bottom_image_source": _panel_value(
+            meta,
+            "korea_bottom_shot_source",
+            "bottom_shot_source",
+            default=_ADMIN_NONE,
+        ),
+        "top_image_path": _panel_value(
+            meta,
+            "generated_image_path_watermarked",
+            "generated_image_path",
+            "customer_top_image_path",
+            default=_ADMIN_NONE,
+        ),
+        "bottom_image_path": _panel_value(
+            meta,
+            "korea_bottom_shot_path",
+            "bottom_shot_image_path",
+            "customer_bottom_image_path",
+            default=_ADMIN_NONE,
+        ),
+        "top_cid_present": "예" if top_cid not in (_ADMIN_NONE, _ADMIN_MISSING, "") else "아니오",
+        "bottom_cid_present": "예" if bottom_cid not in (_ADMIN_NONE, _ADMIN_MISSING, "") else "아니오",
+        "top_cid": top_cid,
+        "bottom_cid": bottom_cid,
+        "mime_inline_part_count": mime_count,
+        "static_latest_used": static_latest,
+        "generated_image_path_used": generated_used,
+    }
+
+
+def build_customer_delivery_admin_panel(meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Read-only customer delivery evidence for admin UI (no SMTP / no env reads)."""
+    status_code, grade_label, grade_detail = _panel_delivery_grade(meta)
+    recipients = _panel_recipients(meta)
+    recipient_count_raw = meta.get("customer_recipient_count")
+    if recipient_count_raw in (None, ""):
+        recipient_count = str(len(recipients)) if recipients else _ADMIN_MISSING
+    else:
+        recipient_count = str(recipient_count_raw)
+    sent_at = _panel_value(
+        meta,
+        "customer_sent_at",
+        "customer_delivery_completed_at",
+        default=_ADMIN_MISSING,
+    )
+    return {
+        "status_code": status_code,
+        "status_grade": grade_label,
+        "status_detail": grade_detail,
+        "status_label_ko": customer_delivery_status_label_ko(status_code),
+        "sent_at_kst": sent_at,
+        "recipient_count": recipient_count,
+        "recipients_masked": [mask_customer_email(addr) for addr in recipients],
+        "smtp_accepted": _panel_smtp_accepted(meta),
+        "smtp_message_id": _panel_value(
+            meta,
+            "smtp_message_id",
+            "customer_delivery_message_id",
+            "message_id",
+            default=_ADMIN_MISSING,
+        ),
+        "failure_reason_code": _panel_value(
+            meta,
+            "customer_delivery_error_code",
+            "customer_delivery_reason",
+            default=_ADMIN_NONE,
+        ),
+        "failure_message": _panel_value(meta, "customer_delivery_error_summary", default=_ADMIN_NONE),
+        "double_send_blocked": _panel_double_send_blocked(meta),
+        "mode": _panel_value(meta, "mode", "program_id", default=_ADMIN_MISSING),
+        "run_id": _panel_value(meta, "run_id", default=_ADMIN_MISSING),
+        "subject": _panel_value(meta, "email_subject", "customer_email_subject", default=_ADMIN_MISSING),
+        "image": _panel_image_evidence(meta),
+    }
 
 
 def owner_review_email_label_ko(meta: Dict[str, Any]) -> str:

@@ -22,9 +22,9 @@ from admin_store import (
     artifact_store_display_path,
     apply_reissue_child_metadata,
     approve_run,
+    build_customer_delivery_admin_panel,
     can_approve_customer_send,
     now_kst_iso,
-    customer_delivery_status_label_ko,
     load_run_artifact,
     load_run_email_html,
     list_run_artifacts,
@@ -173,37 +173,77 @@ def _esc(text: object) -> str:
     return html.escape(str(text or ""), quote=True)
 
 
+def _render_panel_row(label: str, value: str) -> str:
+    return (
+        f"<tr><th scope=\"row\" style=\"width:34%;font-weight:700;background:#f8fafc;\">{_esc(label)}</th>"
+        f"<td class=\"break-long\">{_esc(value)}</td></tr>"
+    )
+
+
+def _render_customer_delivery_status_panel(meta: dict) -> str:
+    panel = build_customer_delivery_admin_panel(meta)
+    recipients = panel.get("recipients_masked") or []
+    recipients_display = ", ".join(str(item) for item in recipients) if recipients else "미기록"
+    image = panel.get("image") if isinstance(panel.get("image"), dict) else {}
+    rows = [
+        _render_panel_row("발송 상태", f"{panel.get('status_grade')} / {panel.get('status_detail')} ({panel.get('status_code')})"),
+        _render_panel_row("상태 라벨", str(panel.get("status_label_ko") or "미기록")),
+        _render_panel_row("발송 시각 (KST)", str(panel.get("sent_at_kst") or "미기록")),
+        _render_panel_row("수신자 수", str(panel.get("recipient_count") or "미기록")),
+        _render_panel_row("수신자 목록 (마스킹)", recipients_display),
+        _render_panel_row("SMTP accepted", str(panel.get("smtp_accepted") or "미기록")),
+        _render_panel_row("SMTP message id", str(panel.get("smtp_message_id") or "미기록")),
+        _render_panel_row("실패 reason code", str(panel.get("failure_reason_code") or "없음")),
+        _render_panel_row("실패 message", str(panel.get("failure_message") or "없음")),
+        _render_panel_row("double-send 차단", str(panel.get("double_send_blocked") or "미기록")),
+        _render_panel_row("mode", str(panel.get("mode") or "미기록")),
+        _render_panel_row("run_id", str(panel.get("run_id") or "미기록")),
+        _render_panel_row("subject", str(panel.get("subject") or "미기록")),
+    ]
+    image_rows = [
+        _render_panel_row("Top image source", str(image.get("top_image_source") or "없음")),
+        _render_panel_row("Bottom image source", str(image.get("bottom_image_source") or "없음")),
+        _render_panel_row("Top image path", str(image.get("top_image_path") or "없음")),
+        _render_panel_row("Bottom image path", str(image.get("bottom_image_path") or "없음")),
+        _render_panel_row("Top CID present", str(image.get("top_cid_present") or "미기록")),
+        _render_panel_row("Bottom CID present", str(image.get("bottom_cid_present") or "미기록")),
+        _render_panel_row("Top CID", str(image.get("top_cid") or "없음")),
+        _render_panel_row("Bottom CID", str(image.get("bottom_cid") or "없음")),
+        _render_panel_row("MIME inline part count", str(image.get("mime_inline_part_count") or "미기록")),
+        _render_panel_row("static latest used", str(image.get("static_latest_used") or "미기록")),
+        _render_panel_row("generated image path used", str(image.get("generated_image_path_used") or "미기록")),
+    ]
+    return f"""
+<div class="card">
+<h2>고객 이메일 발송 상태</h2>
+<p style="margin:0 0 12px 0;font-size:12px;line-height:1.6;color:#64748b;">
+SMTP 접수는 메일 서버가 발송 요청을 받은 상태입니다. 실제 수신함 도착과는 다를 수 있습니다.
+고객 발송은 운영자 승인 후에만 실행됩니다.
+</p>
+<div class="table-wrap">
+<table aria-label="고객 이메일 발송 상태">
+{"".join(rows)}
+</table>
+</div>
+<h3 style="margin:20px 0 8px 0;font-size:15px;">이미지 발송 근거</h3>
+<div class="table-wrap">
+<table aria-label="고객 이메일 이미지 발송 근거">
+{"".join(image_rows)}
+</table>
+</div>
+</div>
+"""
+
+
 def _render_delivery_report_sections(meta: dict) -> str:
     owner_label = owner_review_email_label_ko(meta)
-    delivery_status = str(meta.get("customer_delivery_status") or "not_sent")
-    delivery_label = customer_delivery_status_label_ko(delivery_status)
-    delivery_summary = str(meta.get("customer_delivery_error_summary") or "").strip()
-    delivery_summary_row = ""
-    if delivery_summary:
-        delivery_summary_row = (
-            f"<p class=\"break-long\" style=\"margin:8px 0 0 0;font-size:13px;color:#b91c1c;\">"
-            f"오류 요약: {_esc(delivery_summary)}</p>"
-        )
-    helper = (
-        "<p style=\"margin:8px 0 0 0;font-size:12px;line-height:1.6;color:#64748b;\">"
-        "SMTP 접수는 메일 서버가 발송 요청을 받은 상태입니다. 실제 수신함 도착과는 다를 수 있습니다.<br>"
-        "반송/거절/지연 이벤트는 메일 제공자의 회신 또는 웹훅 기준으로 표시됩니다.<br>"
-        "고객 발송은 운영자 승인 후에만 실행됩니다.<br>"
-        "운영자 검토 메일 발송 상태와 고객 이메일 전달 상태는 별도로 표시됩니다."
-        "</p>"
-    )
+    customer_panel = _render_customer_delivery_status_panel(meta)
     return f"""
+{customer_panel}
 <div class="card">
 <h2>운영자 검토 메일</h2>
 <p style="margin:0;font-size:14px;"><strong>{_esc(owner_label)}</strong></p>
 <p style="margin:8px 0 0 0;font-size:12px;color:#64748b;">고객 최종 배포와 별도입니다.</p>
-</div>
-<div class="card">
-<h2>고객 이메일 전달</h2>
-<p style="margin:0;font-size:14px;"><strong>{_esc(delivery_label)}</strong>
-<span style="color:#64748b;font-size:12px;"> ({_esc(delivery_status)})</span></p>
-{delivery_summary_row}
-{helper}
 </div>
 """
 

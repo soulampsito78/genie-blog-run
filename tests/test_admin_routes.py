@@ -14,7 +14,9 @@ from admin_store import (
     admin_runs_dir,
     apply_reissue_child_metadata,
     approve_run,
+    build_customer_delivery_admin_panel,
     load_run_artifact,
+    mask_customer_email,
     save_run_artifact,
 )
 from main import app
@@ -144,7 +146,7 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("이미지만 재발행", resp.text)
         self.assertIn("본문·이미지 모두 재발행", resp.text)
         self.assertIn("운영자 검토 메일", resp.text)
-        self.assertIn("고객 이메일 전달", resp.text)
+        self.assertIn("고객 이메일 발송 상태", resp.text)
         self.assertIn("선택할 수 있지만, 실행은 아직 차단됩니다", resp.text)
 
     def test_reissue_scope_radios_are_selectable_not_disabled(self) -> None:
@@ -207,12 +209,16 @@ class AdminRoutesTests(unittest.TestCase):
                 "validation_result": "pass",
                 "workflow_status": "validated",
                 "customer_delivery_status": "smtp_accepted",
+                "customer_sent_at": "2026-05-30T12:20:00+09:00",
                 "email_sent": True,
                 "response_status": 200,
                 "reason_summary": "ok",
             }
         )
         resp = self.client.get(f"/admin/runs/{run_id}")
+        self.assertIn("고객 이메일 발송 상태", resp.text)
+        self.assertIn("PASS", resp.text)
+        self.assertIn("발송 접수 완료", resp.text)
         self.assertIn("SMTP 접수", resp.text)
         self.assertNotIn("전달 확인", resp.text)
 
@@ -512,6 +518,131 @@ class AdminStoreReissueMetadataTests(unittest.TestCase):
         reloaded = load_run_artifact(child_id) or {}
         self.assertEqual(reloaded.get("reissue_scope"), EXECUTABLE_REISSUE_SCOPE)
         self.assertEqual(reloaded.get("reissue_scope_status"), "executed")
+
+
+class CustomerDeliveryAdminPanelTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._prev_pwd = os.environ.get("GENIE_ADMIN_PASSWORD")
+        os.environ["GENIE_ADMIN_PASSWORD"] = "test-admin-secret"
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        if self._prev_pwd is None:
+            os.environ.pop("GENIE_ADMIN_PASSWORD", None)
+        else:
+            os.environ["GENIE_ADMIN_PASSWORD"] = self._prev_pwd
+
+    def _login(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+
+    def test_mask_customer_email(self) -> None:
+        self.assertEqual(mask_customer_email("tera9003@daum.net"), "t***3@daum.net")
+        self.assertEqual(mask_customer_email("tomato3593@gmail.com"), "t***3@gmail.com")
+        self.assertEqual(mask_customer_email("aegis001@naver.com"), "a***1@naver.com")
+        self.assertEqual(mask_customer_email("kha6210@hanmail.com"), "k***0@hanmail.com")
+
+    def test_panel_smtp_accepted_run(self) -> None:
+        panel = build_customer_delivery_admin_panel(
+            {"customer_delivery_status": "smtp_accepted", "mode": "today_genie"}
+        )
+        self.assertEqual(panel["status_grade"], "PASS")
+        self.assertEqual(panel["status_detail"], "발송 접수 완료")
+
+    def test_panel_failed_run(self) -> None:
+        panel = build_customer_delivery_admin_panel(
+            {
+                "customer_delivery_status": "failed",
+                "customer_delivery_error_code": "send_failed",
+                "customer_delivery_error_summary": "SMTPException: relay denied",
+            }
+        )
+        self.assertEqual(panel["status_grade"], "FAIL")
+        self.assertEqual(panel["failure_reason_code"], "send_failed")
+        self.assertIn("relay denied", panel["failure_message"])
+
+    def test_panel_blocked_run(self) -> None:
+        panel = build_customer_delivery_admin_panel({"customer_delivery_status": "blocked"})
+        self.assertEqual(panel["status_grade"], "BLOCKED")
+
+    def test_panel_not_sent_run(self) -> None:
+        panel = build_customer_delivery_admin_panel({"customer_delivery_status": "not_sent"})
+        self.assertEqual(panel["status_grade"], "대기")
+        self.assertEqual(panel["status_detail"], "미발송")
+
+    def test_panel_five_recipients(self) -> None:
+        recipients = [
+            "tera9003@daum.net",
+            "tomato3593@gmail.com",
+            "aegis001@naver.com",
+            "kha6210@hanmail.com",
+            "beta5@example.com",
+        ]
+        panel = build_customer_delivery_admin_panel(
+            {
+                "customer_delivery_status": "smtp_accepted",
+                "customer_recipients": recipients,
+                "customer_recipient_count": 5,
+            }
+        )
+        self.assertEqual(panel["recipient_count"], "5")
+        self.assertEqual(len(panel["recipients_masked"]), 5)
+
+    def test_panel_missing_metadata_is_safe(self) -> None:
+        panel = build_customer_delivery_admin_panel({})
+        self.assertEqual(panel["recipient_count"], "미기록")
+        self.assertEqual(panel["smtp_message_id"], "미기록")
+        self.assertEqual(panel["subject"], "미기록")
+
+    def test_detail_page_shows_panel_for_modes(self) -> None:
+        self._login()
+        fixtures = (
+            ("20260530_123000_today_genie_aabbccdd", "today_genie"),
+            ("20260530_123100_keysuri_global_tech_aabbccdd", "keysuri_global_tech"),
+            ("20260530_123200_keysuri_korea_tech_aabbccdd", "keysuri_korea_tech"),
+        )
+        for run_id, mode in fixtures:
+            save_run_artifact(
+                {
+                    "run_id": run_id,
+                    "mode": mode,
+                    "validation_result": "pass",
+                    "customer_delivery_status": "not_sent",
+                }
+            )
+            resp = self.client.get(f"/admin/runs/{run_id}")
+            self.assertEqual(resp.status_code, 200, msg=mode)
+            self.assertIn("고객 이메일 발송 상태", resp.text, msg=mode)
+            self.assertIn("미발송", resp.text, msg=mode)
+
+    def test_detail_failed_and_double_send_blocked(self) -> None:
+        self._login()
+        run_id = "20260530_124000_today_genie_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": run_id,
+                "mode": "today_genie",
+                "validation_result": "pass",
+                "customer_delivery_status": "failed",
+                "customer_delivery_error_code": "send_failed",
+                "customer_delivery_error_summary": "timeout",
+            }
+        )
+        resp = self.client.get(f"/admin/runs/{run_id}")
+        self.assertIn("FAIL", resp.text)
+        self.assertIn("send_failed", resp.text)
+
+        approved_id = "20260530_124100_today_genie_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": approved_id,
+                "mode": "today_genie",
+                "validation_result": "pass",
+                "customer_delivery_status": "smtp_accepted",
+                "owner_review_status": "approved",
+            }
+        )
+        approved_resp = self.client.get(f"/admin/runs/{approved_id}")
+        self.assertIn("재발송 차단", approved_resp.text)
 
 
 if __name__ == "__main__":
