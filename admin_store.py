@@ -1147,3 +1147,227 @@ def process_approval_timeouts(
         summary["retired"] = True
         summary["note"] = "timeout customer send retired"
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Beta customer recipient config (GCS-backed, admin-managed)
+# ---------------------------------------------------------------------------
+
+_BETA_RECIPIENTS_GCS_KEY = "admin_config/customer_recipients.json"
+_BETA_RECIPIENTS_LOCAL_PATH = "output/admin_config/customer_recipients.json"
+
+# Intentionally permissive but injection-safe: local@domain pattern.
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+
+
+def _is_valid_email(addr: str) -> bool:
+    """Return True if *addr* passes basic RFC-5321-inspired validation.
+
+    Rejects blank, newlines, commas, angle brackets, and anything that would
+    allow header injection.
+    """
+    if not addr or not isinstance(addr, str):
+        return False
+    stripped = addr.strip()
+    if not stripped:
+        return False
+    # Newline/header-injection guard
+    if "\n" in stripped or "\r" in stripped:
+        return False
+    # Comma-packed or angle-bracket forms blocked
+    if "," in stripped or "<" in stripped or ">" in stripped:
+        return False
+    return bool(_EMAIL_RE.match(stripped))
+
+
+def _beta_recipients_local_path() -> Path:
+    p = repo_root() / _BETA_RECIPIENTS_LOCAL_PATH
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def load_beta_recipient_config() -> Dict[str, Any]:
+    """Load admin-managed beta recipient config.
+
+    GCS backend is used when GENIE_ADMIN_ARTIFACT_BUCKET / GENIE_ARTIFACT_BUCKET
+    is configured.  On missing config (key not found or parse error) returns an
+    empty-recipients dict — callers treat this as "no admin recipients".
+    On GCS read *error* (network, auth) also returns empty — fails closed to
+    env-only baseline.
+
+    The returned dict carries ``load_ok``: True for a genuinely missing config
+    (first-time use) or a clean read, False when the backing store could not be
+    read or parsed. Mutation helpers must refuse to write when ``load_ok`` is
+    False so a transient read failure cannot silently overwrite existing
+    recipients with a partial list.
+    """
+    empty: Dict[str, Any] = {
+        "recipients": [],
+        "disabled_recipients": [],
+        "updated_at": "",
+        "updated_by": "admin",
+        "version": 1,
+        "load_ok": True,
+    }
+
+    def _error_empty() -> Dict[str, Any]:
+        err = dict(empty)
+        err["load_ok"] = False
+        return err
+
+    try:
+        if _uses_gcs_backend():
+            raw = _gcs_download_text(_BETA_RECIPIENTS_GCS_KEY)
+        else:
+            p = _beta_recipients_local_path()
+            raw = p.read_text(encoding="utf-8") if p.is_file() else None
+    except Exception:
+        return _error_empty()
+    if raw is None:
+        return dict(empty)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return _error_empty()
+    if not isinstance(data, dict):
+        return _error_empty()
+    # Normalise fields
+    recipients = [str(r).strip().lower() for r in data.get("recipients", []) if str(r).strip()]
+    disabled = [str(r).strip().lower() for r in data.get("disabled_recipients", []) if str(r).strip()]
+    return {
+        "recipients": recipients,
+        "disabled_recipients": disabled,
+        "updated_at": str(data.get("updated_at") or ""),
+        "updated_by": str(data.get("updated_by") or "admin"),
+        "version": int(data.get("version") or 1),
+        "load_ok": True,
+    }
+
+
+def save_beta_recipient_config(
+    recipients: List[str],
+    *,
+    disabled_recipients: Optional[List[str]] = None,
+    updated_by: str = "admin",
+) -> None:
+    """Persist admin-managed beta recipient config to GCS (or local fallback)."""
+    payload = {
+        "recipients": [str(r).strip().lower() for r in recipients],
+        "disabled_recipients": [str(r).strip().lower() for r in (disabled_recipients or [])],
+        "updated_at": now_kst_iso(),
+        "updated_by": updated_by,
+        "version": 1,
+    }
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    if _uses_gcs_backend():
+        _gcs_upload_text(_BETA_RECIPIENTS_GCS_KEY, text, content_type="application/json")
+    else:
+        p = _beta_recipients_local_path()
+        p.write_text(text, encoding="utf-8")
+
+
+def resolve_customer_recipients() -> Dict[str, Any]:
+    """Return merged customer recipient list from env baseline + admin config.
+
+    Result keys:
+      final_recipients  – ordered, deduped, validated list to use for sending
+      env_recipients    – addresses from GENIE_CUSTOMER_EMAIL_TO
+      admin_recipients  – validated addresses from admin config (non-disabled)
+      invalid_entries   – rejected addresses with reason
+      source_summary    – human-readable provenance string
+      admin_config_ok   – True if config loaded without error
+    """
+    from email_sender import parse_customer_to_addrs
+
+    env_list: List[str] = [a.strip().lower() for a in parse_customer_to_addrs() if a.strip()]
+
+    cfg = load_beta_recipient_config()
+    admin_list_raw: List[str] = cfg.get("recipients", [])
+    disabled_set = {a.strip().lower() for a in cfg.get("disabled_recipients", []) if a.strip()}
+
+    admin_valid: List[str] = []
+    invalid: List[Dict[str, str]] = []
+    for addr in admin_list_raw:
+        norm = addr.strip().lower()
+        if norm in disabled_set:
+            continue
+        if not _is_valid_email(norm):
+            invalid.append({"email": norm, "reason": "invalid_format"})
+            continue
+        admin_valid.append(norm)
+
+    # Validate env entries too (warn but keep — env is operator-controlled)
+    env_valid: List[str] = []
+    for addr in env_list:
+        if _is_valid_email(addr):
+            env_valid.append(addr)
+        else:
+            invalid.append({"email": addr, "reason": "invalid_format_env"})
+
+    # Deduplicate: env first, then admin additions
+    seen: set = set()
+    final: List[str] = []
+    for addr in env_valid + admin_valid:
+        if addr not in seen:
+            seen.add(addr)
+            final.append(addr)
+
+    env_count = len(env_valid)
+    admin_count = len(admin_valid)
+    parts = []
+    if env_count:
+        parts.append(f"env({env_count})")
+    if admin_count:
+        parts.append(f"admin_config({admin_count})")
+    source_summary = "+".join(parts) if parts else "empty"
+
+    return {
+        "final_recipients": final,
+        "env_recipients": env_valid,
+        "admin_recipients": admin_valid,
+        "invalid_entries": invalid,
+        "source_summary": source_summary,
+        "admin_config_ok": True,
+    }
+
+
+def add_beta_recipient(email: str) -> tuple[bool, str]:
+    """Add *email* to the admin-managed beta recipient list.
+
+    Returns (ok, error_message).  Does not send email.
+    """
+    norm = str(email or "").strip().lower()
+    if not norm:
+        return False, "empty_email"
+    if not _is_valid_email(norm):
+        return False, "invalid_format"
+    cfg = load_beta_recipient_config()
+    if not cfg.get("load_ok", True):
+        # Read failed/corrupt: refuse to write so we never clobber existing data.
+        return False, "config_unavailable"
+    current = [str(r).strip().lower() for r in cfg.get("recipients", [])]
+    if norm in current:
+        return False, "already_exists"
+    current.append(norm)
+    save_beta_recipient_config(current, disabled_recipients=cfg.get("disabled_recipients", []))
+    return True, ""
+
+
+def remove_beta_recipient(email: str) -> tuple[bool, str]:
+    """Remove *email* from the admin-managed beta recipient list.
+
+    Returns (ok, error_message).  Does not send email.
+    """
+    norm = str(email or "").strip().lower()
+    if not norm:
+        return False, "empty_email"
+    cfg = load_beta_recipient_config()
+    if not cfg.get("load_ok", True):
+        # Read failed/corrupt: refuse to write so we never clobber existing data.
+        return False, "config_unavailable"
+    current = [str(r).strip().lower() for r in cfg.get("recipients", [])]
+    if norm not in current:
+        return False, "not_found"
+    updated = [r for r in current if r != norm]
+    save_beta_recipient_config(updated, disabled_recipients=cfg.get("disabled_recipients", []))
+    return True, ""

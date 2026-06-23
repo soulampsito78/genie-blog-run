@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from admin_store import resolve_customer_recipients
 from email_sender import parse_customer_to_addrs, send_genie_email
 from renderers import today_genie_email_inline_cid_pair
 
@@ -71,7 +72,7 @@ def customer_html_contains_naver_markers(html_body: str) -> bool:
 
 
 def customer_delivery_config_ready() -> tuple[bool, str]:
-    if not parse_customer_to_addrs():
+    if not resolve_customer_recipients()["final_recipients"]:
         return False, "missing_customer_to"
     host = os.getenv("SMTP_HOST", "").strip()
     user = os.getenv("SMTP_USER", "").strip()
@@ -297,7 +298,7 @@ def send_today_geenee_customer_final_email(
         return False
 
     subject = build_customer_final_subject(meta, saved_html)
-    customer_to = parse_customer_to_addrs()
+    customer_to = resolve_customer_recipients()["final_recipients"]
     os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
     return send_genie_email(
         html_body,

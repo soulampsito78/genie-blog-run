@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from admin_store import resolve_customer_recipients
 from email_sender import parse_customer_to_addrs, send_genie_email
 from keysuri_contract_preview_renderer import (
     REVIEW_CONFIRMATION_TEXT,
@@ -90,7 +91,7 @@ def last_keysuri_delivery_result() -> Optional[KeysuriCustomerDeliveryResult]:
 
 
 def customer_delivery_config_ready() -> tuple[bool, str]:
-    if not parse_customer_to_addrs():
+    if not resolve_customer_recipients()["final_recipients"]:
         return False, "missing_customer_to"
     host = os.getenv("SMTP_HOST", "").strip()
     user = os.getenv("SMTP_USER", "").strip()
@@ -474,7 +475,7 @@ def send_keysuri_customer_final_email(
         return False
 
     cid_tokens = [row[1] for row in inline_parts] or _cid_tokens_from_html(saved_html)
-    customer_to = parse_customer_to_addrs()
+    customer_to = resolve_customer_recipients()["final_recipients"]
     os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
     sent = send_genie_email(
         html_body,

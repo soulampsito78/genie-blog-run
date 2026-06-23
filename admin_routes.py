@@ -19,17 +19,21 @@ from admin_store import (
     EXECUTABLE_REISSUE_SCOPE,
     REISSUE_SCOPES,
     UNSUPPORTED_REISSUE_SCOPES,
+    add_beta_recipient,
     artifact_store_display_path,
     apply_reissue_child_metadata,
     approve_run,
     build_customer_delivery_admin_panel,
     can_approve_customer_send,
+    load_beta_recipient_config,
     now_kst_iso,
     load_run_artifact,
     load_run_email_html,
     list_run_artifacts,
     owner_review_email_label_ko,
     record_parent_reissue_audit,
+    remove_beta_recipient,
+    resolve_customer_recipients,
     validate_run_id,
 )
 from orchestrator import execute_orchestrator_run
@@ -752,3 +756,163 @@ def admin_run_reissue(
             status_code=303,
         )
     return RedirectResponse(url=f"/admin/runs/{new_run_id}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Beta customer recipient management
+# ---------------------------------------------------------------------------
+
+def _render_customer_recipients_page(
+    request: Request,
+    *,
+    error: str = "",
+    success: str = "",
+) -> HTMLResponse:
+    resolved = resolve_customer_recipients()
+    cfg = load_beta_recipient_config()
+
+    env_addrs = resolved["env_recipients"]
+    admin_addrs = resolved["admin_recipients"]
+    final_addrs = resolved["final_recipients"]
+    invalid = resolved["invalid_entries"]
+    source_summary = resolved["source_summary"]
+    updated_at = cfg.get("updated_at") or "—"
+
+    # env recipients table (read-only)
+    env_rows = "".join(
+        f"<tr><td>{_esc(a)}</td><td style='color:#64748b;font-size:13px'>env (GENIE_CUSTOMER_EMAIL_TO)</td></tr>"
+        for a in env_addrs
+    ) or "<tr><td colspan='2' style='color:#94a3b8'>환경변수 미설정</td></tr>"
+
+    # admin-managed recipients table with remove button
+    admin_rows_html = ""
+    for a in admin_addrs:
+        admin_rows_html += (
+            f"<tr><td>{_esc(a)}</td>"
+            f"<td>"
+            f"<form method='post' action='/admin/customer-recipients/remove' style='margin:0'>"
+            f"<input type='hidden' name='email' value='{_esc(a)}'>"
+            f"<button type='submit' class='btn' style='background:#dc2626;padding:6px 12px;font-size:13px;min-height:32px;'>삭제</button>"
+            f"</form>"
+            f"</td></tr>"
+        )
+    if not admin_rows_html:
+        admin_rows_html = "<tr><td colspan='2' style='color:#94a3b8'>관리 추가 수신자 없음</td></tr>"
+
+    # invalid entries warning
+    invalid_html = ""
+    if invalid:
+        items = "".join(f"<li>{_esc(e['email'])} — {_esc(e['reason'])}</li>" for e in invalid)
+        invalid_html = f"<div class='warn' style='margin:12px 0'><strong>유효하지 않은 주소 (무시됨):</strong><ul>{items}</ul></div>"
+
+    error_html = f"<div class='warn' style='margin:8px 0'>{_esc(error)}</div>" if error else ""
+    success_html = (
+        f"<div style='background:#f0fdf4;border:1px solid #86efac;padding:12px;border-radius:8px;margin:8px 0;font-size:14px'>{_esc(success)}</div>"
+        if success
+        else ""
+    )
+
+    inner = f"""
+<div class="page-head"><h1>베타 고객 수신자 관리</h1>
+<a href="/admin/runs" class="btn">← 실행 목록</a></div>
+
+<div class="card">
+<p style="font-size:14px;color:#64748b;margin:0 0 8px">
+  최종 수신자 <strong>{len(final_addrs)}명</strong> &nbsp;|&nbsp;
+  env 기본 <strong>{len(env_addrs)}명</strong> &nbsp;|&nbsp;
+  어드민 추가 <strong>{len(admin_addrs)}명</strong> &nbsp;|&nbsp;
+  출처: <code>{_esc(source_summary)}</code>
+</p>
+<p style="font-size:13px;color:#dc2626;font-weight:600;margin:0">
+  ⚠️ 저장만으로 발송되지 않습니다. 다음 고객 발송부터 적용됩니다.
+</p>
+</div>
+
+{error_html}{success_html}
+
+<div class="card">
+<h2 style="font-size:16px;margin:0 0 12px">환경변수 기본 수신자 (읽기 전용)</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>이메일</th><th>출처</th></tr></thead>
+<tbody>{env_rows}</tbody>
+</table></div>
+</div>
+
+<div class="card">
+<h2 style="font-size:16px;margin:0 0 4px">어드민 관리 추가 수신자</h2>
+<p style="font-size:13px;color:#64748b;margin:0 0 12px">마지막 수정: {_esc(updated_at)}</p>
+<div class="table-wrap"><table>
+<thead><tr><th>이메일</th><th>액션</th></tr></thead>
+<tbody>{admin_rows_html}</tbody>
+</table></div>
+</div>
+
+{invalid_html}
+
+<div class="card">
+<h2 style="font-size:16px;margin:0 0 12px">수신자 추가</h2>
+<form method="post" action="/admin/customer-recipients/add">
+<label for="new-email" style="display:block;font-size:14px;font-weight:600;margin:0 0 6px">이메일 주소</label>
+<input type="text" id="new-email" name="email" placeholder="example@domain.com"
+  style="max-width:360px;margin-bottom:12px;" autocomplete="off" autocapitalize="none">
+<div class="form-actions">
+<button type="submit" class="btn">추가</button>
+</div>
+</form>
+<p style="font-size:12px;color:#64748b;margin:12px 0 0">
+  추가 후 즉시 발송되지 않습니다. 다음 고객 승인 발송 시 적용됩니다.
+</p>
+</div>
+"""
+    return HTMLResponse(_layout("베타 고객 수신자 관리", inner))
+
+
+@router.get("/admin/customer-recipients", response_class=HTMLResponse)
+def admin_customer_recipients(request: Request) -> HTMLResponse:
+    gate = _require_login(request)
+    if gate is not None:
+        return gate  # type: ignore[return-value]
+    return _render_customer_recipients_page(request)
+
+
+@router.post("/admin/customer-recipients/add")
+def admin_customer_recipients_add(
+    request: Request,
+    email: str = Form(...),
+) -> Response:
+    gate = _require_login(request)
+    if gate is not None:
+        return gate  # type: ignore[return-value]
+    ok, err = add_beta_recipient(email)
+    if not ok:
+        _error_labels = {
+            "empty_email": "이메일 주소를 입력하세요.",
+            "invalid_format": "유효하지 않은 이메일 형식입니다.",
+            "already_exists": "이미 목록에 있는 주소입니다.",
+            "config_unavailable": "수신자 설정을 읽을 수 없어 저장을 중단했습니다. 잠시 후 다시 시도하세요.",
+        }
+        return _render_customer_recipients_page(
+            request, error=_error_labels.get(err, f"추가 실패: {err}")
+        )
+    return RedirectResponse(url="/admin/customer-recipients?added=1", status_code=303)
+
+
+@router.post("/admin/customer-recipients/remove")
+def admin_customer_recipients_remove(
+    request: Request,
+    email: str = Form(...),
+) -> Response:
+    gate = _require_login(request)
+    if gate is not None:
+        return gate  # type: ignore[return-value]
+    ok, err = remove_beta_recipient(email)
+    if not ok:
+        _error_labels = {
+            "empty_email": "이메일 주소를 입력하세요.",
+            "not_found": "목록에 없는 주소입니다.",
+            "config_unavailable": "수신자 설정을 읽을 수 없어 삭제를 중단했습니다. 잠시 후 다시 시도하세요.",
+        }
+        return _render_customer_recipients_page(
+            request, error=_error_labels.get(err, f"삭제 실패: {err}")
+        )
+    return RedirectResponse(url="/admin/customer-recipients?removed=1", status_code=303)
