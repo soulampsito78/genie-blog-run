@@ -99,6 +99,32 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn(run_id, resp.text)
 
+    def test_runs_list_shows_beta_recipients_nav_link(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        resp = self.client.get("/admin/runs")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("베타 고객 수신자 관리", resp.text)
+        self.assertIn('href="/admin/customer-recipients"', resp.text)
+
+    def test_run_detail_shows_beta_recipients_nav_link(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        run_id = "20260530_120100_today_genie_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": run_id,
+                "mode": "today_genie",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": False,
+                "response_status": 200,
+                "reason_summary": "ok",
+            }
+        )
+        resp = self.client.get(f"/admin/runs/{run_id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("베타 고객 수신자 관리", resp.text)
+        self.assertIn('href="/admin/customer-recipients"', resp.text)
+
     def test_reissue_requires_login(self) -> None:
         run_id = "20260530_120000_today_genie_aabbccdd"
         save_run_artifact(
