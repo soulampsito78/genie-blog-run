@@ -57,6 +57,13 @@ def last_send_trace() -> dict:
     return dict(_LAST_SEND_TRACE)
 
 
+def reset_last_send_state() -> None:
+    """Clear send diagnostics before a higher-level delivery attempt."""
+    global _LAST_SEND_DIAGNOSTIC, _LAST_SEND_TRACE
+    _LAST_SEND_DIAGNOSTIC = ""
+    _LAST_SEND_TRACE = {}
+
+
 def _read_secret(env_key: str, file_env_key: str) -> str:
     """Read from env or, if file_env_key is set, from that path (Secret Manager mount)."""
     val = os.getenv(env_key, "").strip()
@@ -437,6 +444,7 @@ def send_genie_email(
             "to_header": str(msg.get("To", "")),
             "cc_header": str(msg.get("Cc", "")),
             "bcc_header": str(msg.get("Bcc", "")),
+            "subject": subject or "(Genie briefing)",
             "envelope_to": list(to_addrs),
             "mime_html_present": bool(sent_html_bytes),
             "mime_html_text": sent_html_bytes.decode("utf-8", errors="replace") if sent_html_bytes else "",
@@ -452,7 +460,19 @@ def send_genie_email(
         with smtplib.SMTP(host, port, timeout=30) as server:
             server.starttls()
             server.login(user, password)
-            server.sendmail(from_addr, list(to_addrs), payload)
+            refused = server.sendmail(from_addr, list(to_addrs), payload)
+        refused = refused or {}
+        refused_recipients = [str(addr) for addr in refused.keys()]
+        # sendmail() refusal data is immediate SMTP feedback only; delayed bounces are not covered here.
+        _LAST_SEND_TRACE.update(
+            {
+                "smtp_refused_recipients": refused_recipients,
+                "smtp_refused_recipient_count": len(refused_recipients),
+                "smtp_refused": {str(k): str(v) for k, v in refused.items()},
+                "smtp_partial_refusal": bool(refused_recipients),
+                "smtp_accepted_recipient_count": max(0, len(to_addrs) - len(refused_recipients)),
+            }
+        )
         logger.info(
             "send_genie_email: sent (recipients=%d mime_rich=%s)",
             len(to_addrs),

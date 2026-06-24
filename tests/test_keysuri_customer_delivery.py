@@ -1,6 +1,7 @@
 """Kee-Suri customer delivery tests (Global enabled; Korea gated by bottom QA baseline)."""
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -228,17 +229,37 @@ class KeysuriGlobalApproveRunTests(unittest.TestCase):
     def test_keysuri_global_approve_run_sends_customer_email(self, mock_send: MagicMock) -> None:
         mock_send.return_value = True
         run_id = "20260612_120000_keysuri_global_tech_aabbccdd"
+        trace = {
+            "subject": "[키수리] 글로벌 테크 브리핑",
+            "envelope_to": ["supergp@hanmail.net", "phainace@gmail.com"],
+            "mime_html_sha256": "keysuri-html-sha",
+            "mime_html_bytes_len": 2048,
+            "inline_input_hashes": [
+                {"path": "output/images/top.jpg", "cid": "keysuri_top", "filename": "top.jpg", "sha256": "top-sha"}
+            ],
+            "smtp_accepted_recipient_count": 2,
+            "smtp_refused_recipients": [],
+        }
         save_run_artifact(
             _keysuri_global_artifact_meta(run_id),
             email_html=_keysuri_global_gmail_owner_review_email_html(run_id),
         )
-        updated, status = approve_run(run_id)
+        with patch("email_sender.last_send_trace", return_value=trace):
+            with patch("email_sender.last_send_diagnostic", return_value=""):
+                updated, status = approve_run(run_id)
         self.assertEqual(status, "ok")
         self.assertIsNotNone(updated)
         mock_send.assert_called_once()
         meta = load_run_artifact(run_id) or {}
         self.assertEqual(meta.get("owner_review_status"), "approved")
         self.assertEqual(meta.get("customer_delivery_status"), "smtp_accepted")
+        self.assertEqual(meta.get("customer_email_delivery_status"), "smtp_accepted")
+        self.assertEqual(meta.get("customer_email_recipient_count"), 2)
+        self.assertEqual(meta.get("customer_email_recipients_masked"), ["su***gp@hanmail.net", "ph***ce@gmail.com"])
+        self.assertEqual(meta.get("customer_email_subject"), "[키수리] 글로벌 테크 브리핑")
+        self.assertEqual(meta.get("customer_email_mime_html_sha256"), "keysuri-html-sha")
+        self.assertEqual(meta.get("customer_email_inline_image_hashes")[0]["cid"], "keysuri_top")
+        self.assertNotIn("supergp@hanmail.net", json.dumps(meta, ensure_ascii=False))
 
 
 class KeysuriApproveRunBlockedTests(unittest.TestCase):

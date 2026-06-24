@@ -203,6 +203,9 @@ def _render_customer_delivery_status_panel(meta: dict) -> str:
         _render_panel_row("mode", str(panel.get("mode") or "미기록")),
         _render_panel_row("run_id", str(panel.get("run_id") or "미기록")),
         _render_panel_row("subject", str(panel.get("subject") or "미기록")),
+        _render_panel_row("MIME HTML sha256", str(panel.get("mime_html_sha256") or "미기록")),
+        _render_panel_row("MIME HTML bytes", str(panel.get("mime_html_bytes_len") or "미기록")),
+        _render_panel_row("inline image hash count", str(panel.get("inline_image_count") or "미기록")),
     ]
     image_rows = [
         _render_panel_row("Top image source", str(image.get("top_image_source") or "없음")),

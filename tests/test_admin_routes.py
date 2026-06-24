@@ -569,10 +569,34 @@ class CustomerDeliveryAdminPanelTests(unittest.TestCase):
 
     def test_panel_smtp_accepted_run(self) -> None:
         panel = build_customer_delivery_admin_panel(
-            {"customer_delivery_status": "smtp_accepted", "mode": "today_genie"}
+            {
+                "customer_delivery_status": "smtp_accepted",
+                "customer_delivery_reason": "owner_approved",
+                "mode": "today_genie",
+            }
         )
         self.assertEqual(panel["status_grade"], "PASS")
         self.assertEqual(panel["status_detail"], "발송 접수 완료")
+        self.assertEqual(panel["failure_reason_code"], "없음")
+
+    def test_panel_uses_customer_email_trace_fields(self) -> None:
+        panel = build_customer_delivery_admin_panel(
+            {
+                "customer_delivery_status": "smtp_accepted",
+                "customer_email_recipient_count": 2,
+                "customer_email_recipients_masked": ["su***gp@hanmail.net", "ph***ce@gmail.com"],
+                "customer_email_subject": "[장전 브리핑] 테스트",
+                "customer_email_mime_html_sha256": "html-sha",
+                "customer_email_mime_html_bytes_len": 1234,
+                "customer_email_inline_image_hashes": [{"cid": "top", "sha256": "top-sha"}],
+            }
+        )
+        self.assertEqual(panel["recipient_count"], "2")
+        self.assertEqual(panel["recipients_masked"], ["su***gp@hanmail.net", "ph***ce@gmail.com"])
+        self.assertEqual(panel["subject"], "[장전 브리핑] 테스트")
+        self.assertEqual(panel["mime_html_sha256"], "html-sha")
+        self.assertEqual(panel["mime_html_bytes_len"], "1234")
+        self.assertEqual(panel["inline_image_count"], "1")
 
     def test_panel_failed_run(self) -> None:
         panel = build_customer_delivery_admin_panel(

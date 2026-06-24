@@ -108,6 +108,17 @@ class Batch83TimeoutRemovalTests(unittest.TestCase):
 
     def test_approve_never_writes_timeout_statuses(self) -> None:
         run_id = "20260604_120000_today_genie_aabbccdd"
+        trace = {
+            "subject": "[장전 브리핑] 테스트",
+            "envelope_to": ["supergp@hanmail.net", "phainace@gmail.com"],
+            "mime_html_sha256": "today-html-sha",
+            "mime_html_bytes_len": 1234,
+            "inline_input_hashes": [
+                {"path": "output/images/top.jpg", "cid": "top", "filename": "top.jpg", "sha256": "top-sha"}
+            ],
+            "smtp_accepted_recipient_count": 2,
+            "smtp_refused_recipients": [],
+        }
         save_run_artifact(
             {
                 "run_id": run_id,
@@ -124,11 +135,23 @@ class Batch83TimeoutRemovalTests(unittest.TestCase):
             "today_geenee_customer_delivery.send_today_geenee_customer_final_email",
             return_value=True,
         ):
-            updated, status = approve_run(run_id)
+            with patch("email_sender.last_send_trace", return_value=trace):
+                with patch("email_sender.last_send_diagnostic", return_value=""):
+                    updated, status = approve_run(run_id)
         self.assertEqual(status, "ok")
         assert updated is not None
         self.assertEqual(updated.get("customer_delivery_status"), "smtp_accepted")
         self.assertEqual(updated.get("customer_delivery_legacy_status"), "customer_sent_after_approval")
+        self.assertEqual(updated.get("customer_email_delivery_status"), "smtp_accepted")
+        self.assertEqual(updated.get("customer_email_recipient_count"), 2)
+        self.assertEqual(updated.get("customer_email_recipients_masked"), ["su***gp@hanmail.net", "ph***ce@gmail.com"])
+        self.assertEqual(updated.get("customer_email_recipient_domains"), ["hanmail.net", "gmail.com"])
+        self.assertEqual(updated.get("customer_email_subject"), "[장전 브리핑] 테스트")
+        self.assertEqual(updated.get("customer_email_mime_html_sha256"), "today-html-sha")
+        self.assertEqual(updated.get("customer_email_inline_image_hashes")[0]["sha256"], "top-sha")
+        self.assertEqual(updated.get("customer_recipient_count"), 2)
+        self.assertNotIn("supergp@hanmail.net", json.dumps(updated, ensure_ascii=False))
+        self.assertNotIn("phainace@gmail.com", json.dumps(updated, ensure_ascii=False))
         self.assertNotIn(
             updated.get("customer_delivery_status"),
             ("sent_after_timeout", "auto_sent_after_timeout", "delivery_confirmed"),
@@ -267,6 +290,13 @@ class Batch83ApproveRouteTests(unittest.TestCase):
     @patch("today_geenee_customer_delivery.send_today_geenee_customer_final_email")
     def test_approve_failure_persists_failed_delivery_metadata(self, mock_send: MagicMock) -> None:
         mock_send.return_value = False
+        trace = {
+            "subject": "[장전 브리핑] 테스트",
+            "envelope_to": ["supergp@hanmail.net"],
+            "mime_html_sha256": "today-html-sha",
+            "mime_html_bytes_len": 999,
+            "inline_input_hashes": [],
+        }
         run_id = "20260604_141000_today_genie_ccddeeff"
         save_run_artifact(
             {
@@ -280,8 +310,10 @@ class Batch83ApproveRouteTests(unittest.TestCase):
             },
             email_html="<p>brief</p>",
         )
-        with patch("email_sender.last_send_diagnostic", return_value="SMTPException: relay denied"):
-            updated, status = approve_run(run_id)
+        diagnostic = "SMTPException: password=secret token=tok recipient supergp@hanmail.net relay denied"
+        with patch("email_sender.last_send_trace", return_value=trace):
+            with patch("email_sender.last_send_diagnostic", return_value=diagnostic):
+                updated, status = approve_run(run_id)
         self.assertEqual(status, "send_failed")
         self.assertIsNone(updated)
         meta = load_run_artifact(run_id) or {}
@@ -289,6 +321,13 @@ class Batch83ApproveRouteTests(unittest.TestCase):
         self.assertEqual(meta.get("customer_delivery_status"), "failed")
         self.assertEqual(meta.get("customer_delivery_error_code"), "send_failed")
         self.assertIn("relay denied", str(meta.get("customer_delivery_error_summary") or ""))
+        self.assertEqual(meta.get("customer_email_delivery_status"), "failed")
+        self.assertEqual(meta.get("customer_email_recipient_count"), 1)
+        self.assertEqual(meta.get("customer_email_recipients_masked"), ["su***gp@hanmail.net"])
+        self.assertIn("password=[redacted]", str(meta.get("customer_email_send_diagnostic") or ""))
+        self.assertIn("token=[redacted]", str(meta.get("customer_email_send_diagnostic") or ""))
+        self.assertNotIn("supergp@hanmail.net", json.dumps(meta, ensure_ascii=False))
+        self.assertNotIn("secret", str(meta.get("customer_email_send_diagnostic") or ""))
         self.assertIsNone(meta.get("approved_at"))
         self.assertIsNone(meta.get("customer_sent_at"))
         events = meta.get("customer_delivery_events") or []

@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
+from delivery_trace import build_customer_email_delivery_fields, sanitize_email_diagnostic
+
 _RUN_ID_MODES = (
     "today_genie",
     "tomorrow_genie",
@@ -376,7 +378,8 @@ def _increment_parent_reissue_count(parent_run_id: str) -> None:
 
 
 def sanitize_delivery_error_summary(raw: str, *, max_len: int = 240) -> str:
-    cleaned = re.sub(r"[\x00-\x1f\x7f]+", " ", str(raw or "").strip())
+    cleaned = sanitize_email_diagnostic(str(raw or "").strip())
+    cleaned = re.sub(r"[\x00-\x1f\x7f]+", " ", cleaned)
     if not cleaned:
         return "Customer email send failed."
     if len(cleaned) > max_len:
@@ -418,6 +421,11 @@ def _panel_value(meta: Dict[str, Any], *keys: str, default: str = _ADMIN_MISSING
 
 
 def _panel_recipients(meta: Dict[str, Any]) -> List[str]:
+    masked = meta.get("customer_email_recipients_masked") or meta.get("customer_recipients_masked")
+    if isinstance(masked, list):
+        out = [str(item).strip() for item in masked if str(item).strip()]
+        if out:
+            return out
     for key in ("customer_recipients", "customer_recipient_list", "envelope_to"):
         raw = meta.get(key)
         if isinstance(raw, list):
@@ -538,7 +546,9 @@ def build_customer_delivery_admin_panel(meta: Dict[str, Any]) -> Dict[str, Any]:
     """Read-only customer delivery evidence for admin UI (no SMTP / no env reads)."""
     status_code, grade_label, grade_detail = _panel_delivery_grade(meta)
     recipients = _panel_recipients(meta)
-    recipient_count_raw = meta.get("customer_recipient_count")
+    recipient_count_raw = meta.get("customer_email_recipient_count")
+    if recipient_count_raw in (None, ""):
+        recipient_count_raw = meta.get("customer_recipient_count")
     if recipient_count_raw in (None, ""):
         recipient_count = str(len(recipients)) if recipients else _ADMIN_MISSING
     else:
@@ -556,7 +566,11 @@ def build_customer_delivery_admin_panel(meta: Dict[str, Any]) -> Dict[str, Any]:
         "status_label_ko": customer_delivery_status_label_ko(status_code),
         "sent_at_kst": sent_at,
         "recipient_count": recipient_count,
-        "recipients_masked": [mask_customer_email(addr) for addr in recipients],
+        "recipients_masked": (
+            recipients
+            if meta.get("customer_email_recipients_masked") or meta.get("customer_recipients_masked")
+            else [mask_customer_email(addr) for addr in recipients]
+        ),
         "smtp_accepted": _panel_smtp_accepted(meta),
         "smtp_message_id": _panel_value(
             meta,
@@ -565,17 +579,29 @@ def build_customer_delivery_admin_panel(meta: Dict[str, Any]) -> Dict[str, Any]:
             "message_id",
             default=_ADMIN_MISSING,
         ),
-        "failure_reason_code": _panel_value(
-            meta,
-            "customer_delivery_error_code",
-            "customer_delivery_reason",
-            default=_ADMIN_NONE,
+        "failure_reason_code": (
+            _ADMIN_NONE
+            if status_code in _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED
+            else _panel_value(
+                meta,
+                "customer_delivery_error_code",
+                default=_ADMIN_NONE,
+            )
         ),
-        "failure_message": _panel_value(meta, "customer_delivery_error_summary", default=_ADMIN_NONE),
+        "failure_message": (
+            _ADMIN_NONE
+            if status_code in _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED
+            else _panel_value(meta, "customer_delivery_error_summary", default=_ADMIN_NONE)
+        ),
         "double_send_blocked": _panel_double_send_blocked(meta),
         "mode": _panel_value(meta, "mode", "program_id", default=_ADMIN_MISSING),
         "run_id": _panel_value(meta, "run_id", default=_ADMIN_MISSING),
-        "subject": _panel_value(meta, "email_subject", "customer_email_subject", default=_ADMIN_MISSING),
+        "subject": _panel_value(meta, "customer_email_subject", "email_subject", default=_ADMIN_MISSING),
+        "mime_html_sha256": _panel_value(meta, "customer_email_mime_html_sha256", default=_ADMIN_MISSING),
+        "mime_html_bytes_len": _panel_value(meta, "customer_email_mime_html_bytes_len", default=_ADMIN_MISSING),
+        "inline_image_count": str(len(meta.get("customer_email_inline_image_hashes") or []))
+        if meta.get("customer_email_inline_image_hashes")
+        else _ADMIN_MISSING,
         "image": _panel_image_evidence(meta),
     }
 
@@ -870,25 +896,36 @@ def approve_run(
 
     attempted_at = now_kst_iso()
     update_run_artifact(run_id, lambda m: _record_customer_delivery_attempt(m, attempted_at=attempted_at))
+    from email_sender import last_send_diagnostic, last_send_trace, reset_last_send_state
+
+    reset_last_send_state()
 
     mode = str(meta.get("mode") or "")
     if mode == "today_genie":
-        from email_sender import last_send_diagnostic
         from today_geenee_customer_delivery import send_today_geenee_customer_final_email
 
         send_ok = send_today_geenee_customer_final_email(saved_html, meta)
-        diag_source = last_send_diagnostic
     elif mode in ("keysuri_global_tech", "keysuri_korea_tech"):
-        from email_sender import last_send_diagnostic
         from keysuri_customer_delivery import send_keysuri_customer_final_email
 
         send_ok = send_keysuri_customer_final_email(saved_html, meta)
-        diag_source = last_send_diagnostic
     else:
         return None, "unsupported_mode"
 
+    send_trace = last_send_trace()
+    send_diagnostic = last_send_diagnostic()
+    customer_subject = str(send_trace.get("subject") or "")
+
     if not send_ok:
-        diag = sanitize_delivery_error_summary(diag_source() or "Customer email send failed.")
+        diag = sanitize_delivery_error_summary(send_diagnostic or "Customer email send failed.")
+        delivery_fields = build_customer_email_delivery_fields(
+            attempted=True,
+            send_ok=False,
+            subject=customer_subject,
+            trace=send_trace,
+            diagnostic=diag,
+            repo_root=repo_root(),
+        )
 
         def _fail(m: Dict[str, Any]) -> None:
             _record_customer_delivery_failure(
@@ -897,12 +934,22 @@ def approve_run(
                 error_summary=diag,
                 error_code="send_failed",
             )
+            m.update(delivery_fields)
 
         update_run_artifact(run_id, _fail)
         return None, "send_failed"
 
     cleaned_note = note.strip()
     sent_ts = now_kst_iso()
+    delivery_fields = build_customer_email_delivery_fields(
+        attempted=True,
+        send_ok=True,
+        subject=customer_subject,
+        trace=send_trace,
+        diagnostic=send_diagnostic,
+        sent_at_kst=sent_ts,
+        repo_root=repo_root(),
+    )
 
     def _mut(m: Dict[str, Any]) -> None:
         m["owner_review_status"] = "approved"
@@ -913,6 +960,7 @@ def approve_run(
         m["customer_delivery_reason"] = "owner_approved"
         m["customer_sent_at"] = sent_ts
         _record_customer_delivery_smtp_accepted(m, completed_at=sent_ts)
+        m.update(delivery_fields)
         if approval_audit:
             for key, value in approval_audit.items():
                 m[key] = value
