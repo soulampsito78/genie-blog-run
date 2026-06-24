@@ -84,7 +84,7 @@ SUBJECT_LINES_GLOBAL: tuple[str, ...] = (
     "[키수리 브리핑] 오늘 테크 시장에서 조용히 이동한 권한",
     "[키수리] 연구를 넘어 운영으로 — AI가 인프라가 된 날의 신호",
     "AI 내재화 경쟁, 오늘 읽어야 할 단 하나의 구조",
-    "[키수리 브리핑] 같은 날 움직인 구글과 OpenAI — 방향은 하나입니다",
+    "[키수리 브리핑] 동시에 움직인 AI 인프라 신호 — 방향을 다시 점검합니다",
 )
 
 SUBJECT_LINES_GLOBAL_MOBILE: tuple[str, ...] = (
@@ -94,7 +94,7 @@ SUBJECT_LINES_GLOBAL_MOBILE: tuple[str, ...] = (
 )
 
 PREHEADERS_GLOBAL: tuple[str, ...] = (
-    "구글·OpenAI가 같은 방향으로 움직였습니다. 오늘의 구조부터 정리했습니다.",
+    "오늘 상위 AI·테크 신호를 구조 변화 관점에서 정리했습니다.",
     "모델 경쟁이 아니라, 인프라·라우팅 통제권 싸움으로 넘어가는 중입니다.",
     "에이전트가 개발을 재편하면, 다음 순서는 조직과 비용입니다.",
     "발표 5건을 신호 5개로 압축했습니다. 주인님 관점까지 함께 올립니다.",
@@ -105,7 +105,7 @@ PREHEADERS_GLOBAL: tuple[str, ...] = (
     "헤드라인이 아니라, 오늘 조용히 이동한 권한을 봅니다.",
     "AI가 연구실을 떠나 인프라가 된 신호를 한자리에 모았습니다.",
     "오늘 다섯 건 중, 주인님이 꼭 봐야 할 하나의 구조를 짚었습니다.",
-    "같은 날, 같은 방향. 두 회사의 움직임이 말하는 한 가지.",
+    "같은 날 포착된 여러 신호가 어떤 구조 변화를 가리키는지 짚었습니다.",
 )
 
 REVIEW_STATE_PREVIEW_PENDING = "preview_pending"
@@ -364,7 +364,9 @@ def _item_field(item: Mapping[str, Any], *keys: str) -> str:
 
 
 def _normalize_misused_double_periods(text: str) -> str:
-    return re.sub(r"(?<!\.)\s*\.\.\s*(?!\.)", ", ", str(text or "")).strip()
+    out = re.sub(r"(?<!\.)\s*\.\.\s*(?!\.)", ", ", str(text or ""))
+    out = re.sub(r"\s*(?:\.{3,}|…)\s*", " ", out)
+    return re.sub(r"\s+", " ", out).strip()
 
 
 def _judgment_block(item: Mapping[str, Any]) -> tuple[str, str]:
@@ -387,7 +389,7 @@ def _signal_chip_text(item: Mapping[str, Any]) -> str:
     parts = re.split(r"[—\-:|]", title, maxsplit=1)
     chip = parts[0].strip()
     if len(chip) > 18:
-        chip = chip[:16] + "…"
+        chip = chip[:18].rstrip(" ,·.")
     return chip or "신호"
 
 
@@ -1901,6 +1903,7 @@ def build_keysuri_korea_gmail_owner_email_html(
     fixture: Mapping[str, Any],
     *,
     subject: str,
+    preheader: str | None = None,
     admin_url: str = "",
     run_id: str = "",
 ) -> str:
@@ -1914,7 +1917,8 @@ def build_keysuri_korea_gmail_owner_email_html(
     c = _GMAIL_KOREA_COLORS
     slot_badge = _slot_badge(program_id, str(fixture.get("slot") or "18:30"))
     hero_title, hero_subtitle = _hero_copy(program_id)
-    _subject, preheader = _selected_subject_preheader(fixture, program_id)
+    _subject, fixture_preheader = _selected_subject_preheader(fixture, program_id)
+    preheader_text = str(preheader or fixture_preheader or "").strip()
     opening_lead = str(fixture.get("opening_lead") or "").strip()
     hero_src = str(fixture.get("top_shot_image_src") or "").strip()
     title = _esc(str(subject or _subject or KOREA_HERO_TITLE).strip() or KOREA_HERO_TITLE)
@@ -1968,7 +1972,7 @@ def build_keysuri_korea_gmail_owner_email_html(
 <title>{title}</title>
 </head>
 <body style="margin:0;padding:0;background:{c["bg"]};">
-<span style="{PREHEADER_STYLE}">{_esc(preheader)}</span>
+<span style="{PREHEADER_STYLE}">{_esc(preheader_text)}</span>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:{c["bg"]};">
 <tr><td align="center" style="padding:20px 12px;">
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;background:{c["surface"]};border:1px solid {c["line"]};border-radius:16px;">
@@ -2009,6 +2013,7 @@ def build_keysuri_global_gmail_owner_email_html(
     fixture: Mapping[str, Any],
     *,
     subject: str,
+    preheader: str | None = None,
     admin_url: str = "",
     run_id: str = "",
 ) -> str:
@@ -2023,7 +2028,8 @@ def build_keysuri_global_gmail_owner_email_html(
     slot_raw = str(fixture.get("slot") or "12:30")
     slot_badge = _slot_badge(program_id, slot_raw)
     hero_title, hero_subtitle = _hero_copy(program_id)
-    _subject, preheader = _selected_subject_preheader(fixture, program_id)
+    _subject, fixture_preheader = _selected_subject_preheader(fixture, program_id)
+    preheader_text = str(preheader or fixture_preheader or "").strip()
     opening_lead = str(fixture.get("opening_lead") or "").strip()
     hero_src = str(fixture.get("top_shot_image_src") or "").strip()
     title = _esc(str(subject or _subject or GLOBAL_HERO_TITLE).strip() or GLOBAL_HERO_TITLE)
@@ -2079,7 +2085,7 @@ def build_keysuri_global_gmail_owner_email_html(
 <title>{title}</title>
 </head>
 <body style="margin:0;padding:0;background:{c["bg"]};">
-<span style="{PREHEADER_STYLE}">{_esc(preheader)}</span>
+<span style="{PREHEADER_STYLE}">{_esc(preheader_text)}</span>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:{c["bg"]};">
 <tr><td align="center" style="padding:20px 12px;">
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;background:{c["surface"]};border:1px solid {c["line"]};border-radius:16px;">
@@ -2148,6 +2154,7 @@ def build_keysuri_owner_review_email_html(
     preview_html: str,
     *,
     subject: str,
+    preheader: str | None = None,
     admin_url: str = "",
     run_id: str = "",
 ) -> str:
@@ -2160,6 +2167,10 @@ def build_keysuri_owner_review_email_html(
     styles, body_inner = extract_contract_preview_email_fragments(preview_html)
     admin_block = _owner_review_admin_email_block(admin_url=admin_url, run_id=run_id)
     title = _esc(str(subject or GLOBAL_HERO_TITLE).strip() or GLOBAL_HERO_TITLE)
+    preheader_span = ""
+    preheader_text = str(preheader or "").strip()
+    if preheader_text:
+        preheader_span = f'<span style="{PREHEADER_STYLE}">{_esc(preheader_text)}</span>\n'
     return f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -2169,6 +2180,7 @@ def build_keysuri_owner_review_email_html(
 <style>{styles}</style>
 </head>
 <body>
+{preheader_span}
 {body_inner}
 {admin_block}
 </body>

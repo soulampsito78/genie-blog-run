@@ -15,7 +15,9 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from admin_store import resolve_customer_recipients
 from email_sender import parse_customer_to_addrs, send_genie_email
+from keysuri_email_identity import build_keysuri_customer_subject, sanitize_preheader_text
 from keysuri_contract_preview_renderer import (
+    PREHEADER_STYLE,
     REVIEW_CONFIRMATION_TEXT,
     REVIEW_STATE_PREVIEW_PENDING,
     REVIEW_STATE_REVIEW_PASSED,
@@ -26,6 +28,10 @@ from keysuri_service_full_run import (
     inline_jpeg_parts_for_global_service_email,
     inline_jpeg_parts_for_korea_service_email,
     keysuri_global_service_email_cid_token,
+)
+from keysuri_visible_text_quality import (
+    KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+    validate_keysuri_html_visible_text_quality,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,6 +89,7 @@ class KeysuriCustomerDeliveryResult:
     reason: str
     customer_delivery_status: str
     customer_email_subject: str
+    customer_email_preheader: str = ""
     cid_tokens_used: List[str] = field(default_factory=list)
 
 
@@ -216,6 +223,11 @@ def prepare_keysuri_customer_final_html(
 
 
 def build_keysuri_customer_final_subject(meta: Dict[str, Any], saved_html: str) -> str:
+    mode = str(meta.get("mode") or meta.get("program_id") or "")
+    if meta.get("editorial_subject") or meta.get("email_subject"):
+        editorial = build_keysuri_customer_subject(mode, meta=meta)
+        if editorial:
+            return editorial
     drafts_subj = ""
     if isinstance(meta.get("email_subject"), str):
         drafts_subj = meta["email_subject"].strip()
@@ -240,6 +252,37 @@ def build_keysuri_customer_final_subject(meta: Dict[str, Any], saved_html: str) 
         if drafts_subj.startswith(prefix):
             drafts_subj = drafts_subj.split("]", 1)[-1].strip(" -")
     return drafts_subj
+
+
+def build_keysuri_customer_final_preheader(meta: Dict[str, Any], saved_html: str) -> str:
+    explicit = str(meta.get("customer_email_preheader") or "").strip()
+    if explicit:
+        return sanitize_preheader_text(explicit)
+    mode = str(meta.get("mode") or meta.get("program_id") or "")
+    scope = "국내" if mode == PROGRAM_KOREA else "글로벌"
+    top_headline = str(meta.get("subject_top_headline") or "").strip()
+    if top_headline:
+        return sanitize_preheader_text(f"{scope} AI·테크 신호 브리핑 · 주요 신호: {top_headline}")
+    for key in ("email_preheader", "owner_email_preheader"):
+        value = str(meta.get(key) or "").strip()
+        if value:
+            return sanitize_preheader_text(
+                value.replace("수동 검증 run · ", "").replace("검수 대기", "브리핑")
+            )
+    subject = build_keysuri_customer_final_subject(meta, saved_html)
+    return sanitize_preheader_text(f"{scope} AI·테크 신호 브리핑 · 주요 신호: {subject}")
+
+
+def _insert_hidden_preheader(html_body: str, preheader: str) -> str:
+    clean = sanitize_preheader_text(preheader)
+    if not clean:
+        return html_body
+    hidden = f'<span style="{PREHEADER_STYLE}">{html.escape(clean)}</span>'
+    body_open = re.search(r"<body\b[^>]*>", html_body or "", flags=re.IGNORECASE)
+    if body_open:
+        idx = body_open.end()
+        return f"{html_body[:idx]}{hidden}{html_body[idx:]}"
+    return f"{hidden}{html_body}"
 
 
 def _repo_root() -> Path:
@@ -423,6 +466,7 @@ def send_keysuri_customer_final_email(
     global _last_delivery_result
     mode = str(meta.get("mode") or meta.get("program_id") or "")
     subject = build_keysuri_customer_final_subject(meta, saved_html)
+    preheader = build_keysuri_customer_final_preheader(meta, saved_html)
 
     ready, err = customer_delivery_config_ready()
     if not ready:
@@ -431,6 +475,7 @@ def send_keysuri_customer_final_email(
             reason=err,
             customer_delivery_status="not_sent",
             customer_email_subject=subject,
+            customer_email_preheader=preheader,
         )
         logger.warning("send_keysuri_customer_final_email: blocked (%s)", err)
         return False
@@ -441,6 +486,7 @@ def send_keysuri_customer_final_email(
             reason="unsupported_mode",
             customer_delivery_status="not_sent",
             customer_email_subject=subject,
+            customer_email_preheader=preheader,
         )
         return False
 
@@ -452,8 +498,24 @@ def send_keysuri_customer_final_email(
             reason=str(exc),
             customer_delivery_status="not_sent",
             customer_email_subject=subject,
+            customer_email_preheader=preheader,
         )
         logger.warning("send_keysuri_customer_final_email: %s", exc)
+        return False
+    html_body = _insert_hidden_preheader(html_body, preheader)
+    html_quality = validate_keysuri_html_visible_text_quality(
+        html_body,
+        path="customer_email_html.visible_text",
+    )
+    if html_quality.get("visible_text_ellipsis_blocked"):
+        _last_delivery_result = KeysuriCustomerDeliveryResult(
+            sent=False,
+            reason=KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+            customer_delivery_status="not_sent",
+            customer_email_subject=subject,
+            customer_email_preheader=preheader,
+        )
+        logger.warning("send_keysuri_customer_final_email: %s", KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED)
         return False
 
     inline_parts = resolve_keysuri_inline_jpeg_parts(saved_html, meta)
@@ -470,6 +532,7 @@ def send_keysuri_customer_final_email(
             reason=reason,
             customer_delivery_status="not_sent",
             customer_email_subject=subject,
+            customer_email_preheader=preheader,
         )
         logger.warning("send_keysuri_customer_final_email: %s", reason)
         return False
@@ -489,6 +552,7 @@ def send_keysuri_customer_final_email(
         reason="ok" if sent else "smtp_send_failed",
         customer_delivery_status="smtp_accepted" if sent else "not_sent",
         customer_email_subject=subject,
+        customer_email_preheader=preheader,
         cid_tokens_used=list(cid_tokens),
     )
     return bool(sent)

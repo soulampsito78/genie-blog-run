@@ -30,6 +30,13 @@ from keysuri_contract_preview_renderer import (
 from keysuri_briefing_content_enricher import enrich_generated_briefing_content
 from keysuri_bottom_shot_generation import generate_keysuri_korea_bottom_v6
 from keysuri_generation_prompt import parse_keysuri_generated_response
+from keysuri_email_identity import build_keysuri_subject_artifact_fields
+from keysuri_visible_text_quality import (
+    KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+    merge_visible_text_quality_fields,
+    validate_and_repair_keysuri_visible_text_quality,
+    validate_keysuri_html_visible_text_quality,
+)
 from keysuri_live_source_smoke import (
     PROGRAM_GLOBAL,
     PROGRAM_KOREA,
@@ -586,6 +593,15 @@ def _validation_result_from_smoke(smoke: LiveSourceSmokeResult) -> str:
     return "block"
 
 
+def _extend_unique(values: List[str], extras: List[str]) -> List[str]:
+    out = list(values)
+    for extra in extras:
+        text = str(extra or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
 def _build_service_keysuri_image_prompt(program_id: str) -> str:
     label = "Global Tech" if program_id == PROGRAM_GLOBAL else "Korea Tech"
     return (
@@ -733,6 +749,7 @@ def _owner_review_email_html(
     program_id: str,
     run_id: str,
     subject: str | None = None,
+    preheader: str | None = None,
 ) -> str:
     """Wrap contract-preview premium briefing HTML for SMTP without nesting or debug headers."""
     admin_url = build_owner_review_admin_url(run_id) or ""
@@ -744,6 +761,7 @@ def _owner_review_email_html(
     return build_keysuri_owner_review_email_html(
         preview_html,
         subject=email_subject,
+        preheader=preheader,
         admin_url=admin_url,
         run_id=run_id,
     )
@@ -873,6 +891,42 @@ def run_keysuri_service_full_run(
         save_run_artifact(meta, email_html="")
         return {"ok": False, "run_id": run_id, "program_id": pid, "service_full_run": True, "email_sent": False, "error": "generated_briefing_reload_failed"}
 
+    generated_briefing, visible_text_quality_fields = validate_and_repair_keysuri_visible_text_quality(
+        generated_briefing,
+        root_path="generated_briefing",
+    )
+    if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
+        block_issue_codes = _extend_unique(
+            issue_codes,
+            list(visible_text_quality_fields.get("visible_text_quality_issue_codes") or []),
+        )
+        meta = build_service_artifact_fields(
+            run_id=run_id,
+            mode=pid,
+            program_id=pid,
+            trigger_source=trigger_source,
+            validation_result="block",
+            issue_codes=block_issue_codes,
+            called_gemini=True,
+            image_outcome=image_outcome,
+            email_sent=False,
+            error_code=KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+        )
+        meta.update(visible_text_quality_fields)
+        save_run_artifact(meta, email_html="")
+        return {
+            "ok": False,
+            "run_id": run_id,
+            "program_id": pid,
+            "service_full_run": True,
+            "validation_result": "block",
+            "called_gemini": True,
+            "called_image_api": image_outcome.called_image_api,
+            "email_sent": False,
+            "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+            "issue_codes": block_issue_codes,
+        }
+
     raw_generated_image_path = str(image_outcome.generated_image_path or "")
     gen_image_raw_abs = _REPO / raw_generated_image_path
     try:
@@ -951,6 +1005,59 @@ def run_keysuri_service_full_run(
         image_mode=IMAGE_MODE_PREVIEW,
         bottom_shot_image_path=bottom_image_path,
     )
+    subject_fields = build_keysuri_subject_artifact_fields(
+        pid,
+        generated_briefing=generated_briefing,
+        prompt_input=prompt_input,
+        run_id=run_id,
+        trigger_source=trigger_source,
+        contract_fixture=contract_fixture_preview,
+    )
+    subject_fields, subject_quality_fields = validate_and_repair_keysuri_visible_text_quality(
+        subject_fields,
+        root_path="subject_fields",
+    )
+    visible_text_quality_fields = merge_visible_text_quality_fields(
+        visible_text_quality_fields,
+        subject_quality_fields,
+    )
+    if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
+        block_issue_codes = _extend_unique(
+            issue_codes,
+            list(visible_text_quality_fields.get("visible_text_quality_issue_codes") or []),
+        )
+        meta = build_service_artifact_fields(
+            run_id=run_id,
+            mode=pid,
+            program_id=pid,
+            trigger_source=trigger_source,
+            validation_result="block",
+            issue_codes=block_issue_codes,
+            called_gemini=True,
+            image_outcome=image_outcome,
+            email_sent=False,
+            error_code=KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+        )
+        meta.update(visible_text_quality_fields)
+        meta.update(subject_fields)
+        save_run_artifact(meta, email_html="")
+        return {
+            "ok": False,
+            "run_id": run_id,
+            "program_id": pid,
+            "service_full_run": True,
+            "validation_result": "block",
+            "called_gemini": True,
+            "called_image_api": image_outcome.called_image_api,
+            "email_sent": False,
+            "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+            "issue_codes": block_issue_codes,
+        }
+    editorial_subject = subject_fields["editorial_subject"]
+    owner_subject = subject_fields["owner_email_subject"]
+    owner_preheader = subject_fields["owner_email_preheader"]
+    contract_fixture_preview["selected_subject"] = editorial_subject
+    contract_fixture_preview["preheader"] = owner_preheader
     html = render_keysuri_contract_preview_html(
         contract_fixture_preview,
         repo_root=_REPO,
@@ -972,7 +1079,8 @@ def run_keysuri_service_full_run(
         contract_fixture_email["top_shot_image_src"] = keysuri_global_service_email_cid_src(run_id)
         email_html = build_keysuri_global_gmail_owner_email_html(
             contract_fixture_email,
-            subject=_PROGRAM_EMAIL_SUBJECT.get(pid, ""),
+            subject=owner_subject,
+            preheader=owner_preheader,
             admin_url=owner_review_url,
             run_id=run_id,
         )
@@ -983,7 +1091,8 @@ def run_keysuri_service_full_run(
             contract_fixture_email["bottom_shot_image_src"] = keysuri_korea_bottom_service_email_cid_src(run_id)
         email_html = build_keysuri_korea_gmail_owner_email_html(
             contract_fixture_email,
-            subject=_PROGRAM_EMAIL_SUBJECT.get(pid, ""),
+            subject=owner_subject,
+            preheader=owner_preheader,
             admin_url=owner_review_url,
             run_id=run_id,
         )
@@ -1000,12 +1109,61 @@ def run_keysuri_service_full_run(
             email_preview_html,
             program_id=pid,
             run_id=run_id,
-            subject=_PROGRAM_EMAIL_SUBJECT.get(pid),
+            subject=owner_subject,
+            preheader=owner_preheader,
         )
+
+    html_quality_fields = merge_visible_text_quality_fields(
+        validate_keysuri_html_visible_text_quality(html, path="owner_preview_html.visible_text"),
+        validate_keysuri_html_visible_text_quality(email_html, path="owner_email_html.visible_text"),
+    )
+    visible_text_quality_fields = merge_visible_text_quality_fields(
+        visible_text_quality_fields,
+        html_quality_fields,
+    )
+    if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
+        block_issue_codes = _extend_unique(
+            issue_codes,
+            list(visible_text_quality_fields.get("visible_text_quality_issue_codes") or []),
+        )
+        meta = build_service_artifact_fields(
+            run_id=run_id,
+            mode=pid,
+            program_id=pid,
+            trigger_source=trigger_source,
+            validation_result="block",
+            issue_codes=block_issue_codes,
+            called_gemini=True,
+            image_outcome=image_outcome,
+            html_path=html_rel,
+            owner_review_html_path=str(artifact_email_path(run_id)),
+            smtp_attempted=False,
+            email_sent=False,
+            workflow_status=smoke.preview_overall_status,
+            owner_review_url=owner_review_url or None,
+            artifact_storage_durable=storage_durable,
+            error_code=KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+        )
+        meta.update(subject_fields)
+        meta.update(visible_text_quality_fields)
+        save_run_artifact(meta, email_html="")
+        return {
+            "ok": False,
+            "run_id": run_id,
+            "program_id": pid,
+            "service_full_run": True,
+            "validation_result": "block",
+            "called_gemini": True,
+            "called_image_api": image_outcome.called_image_api,
+            "email_sent": False,
+            "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+            "issue_codes": block_issue_codes,
+            "html_path": html_rel,
+        }
 
     email_sent = False
     smtp_attempted = False
-    subject = _PROGRAM_EMAIL_SUBJECT.get(pid, f"[운영자 검토] {PROGRAM_DISPLAY.get(pid, pid)}")
+    subject = owner_subject
     if send_owner_email:
         if os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip() not in ("1", "true", "yes"):
             issue_codes.append("owner_review_send_gate_off")
@@ -1070,6 +1228,9 @@ def run_keysuri_service_full_run(
         subject=subject,
     )
     meta.update(owner_email_fields)
+    meta.update(subject_fields)
+    meta.update(visible_text_quality_fields)
+    meta["owner_email_subject"] = subject
     _log_owner_email_delivery_event(program_id=pid, run_id=run_id, fields=owner_email_fields)
     meta["artifact_status"] = "emailed" if email_sent else "stored"
     meta["generated_image_path_raw"] = raw_generated_image_path

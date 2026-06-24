@@ -135,7 +135,7 @@ def render_visible_lines(value: Any, *, style: str = "inline") -> str:
     if style == "bullets":
         return "\n".join(f"• {line}" for line in lines)
     if style == "sentence":
-        parts = [line if line.endswith((".", "!", "?", "…")) else f"{line}." for line in lines]
+        parts = [line if line.endswith((".", "!", "?")) else f"{line}." for line in lines]
         return " ".join(parts)
     return " / ".join(lines)
 
@@ -327,7 +327,7 @@ def repair_obvious_korean_quality_artifacts(text: Any) -> str:
     while previous != out:
         previous = out
         out = _KOREA_DUPLICATE_MORPHEME_RE.sub(r"\1", out)
-    out = re.sub(r"\s+([,.!?…])", r"\1", out)
+    out = re.sub(r"\s+([,.!?])", r"\1", out)
     return out.strip()
 
 
@@ -443,7 +443,10 @@ def _entity_hook_from_title(title: str) -> str:
         return ""
     if len(title) <= 36:
         return title.rstrip(".")
-    return title[:33].rstrip() + "…"
+    cut = title[:36].rstrip()
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut.rstrip(" ,·.")
 
 
 def _korea_reason_from_tags_and_category(

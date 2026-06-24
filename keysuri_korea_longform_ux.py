@@ -124,7 +124,10 @@ def clamp_korea_block(text: str, *, max_chars: int = KOREA_DEEP_MAX_PARAGRAPH_CH
         return ""
     out = _first_sentences(out, max_sentences)
     if len(out) > max_chars:
-        out = out[: max_chars - 1].rstrip() + "…"
+        cut = out[:max_chars].rstrip()
+        if " " in cut:
+            cut = cut.rsplit(" ", 1)[0]
+        out = cut.rstrip(" ,·.")
     return out
 
 
@@ -161,7 +164,7 @@ def _sentence_ends_complete_korean(sentence: str) -> bool:
     sent = _text(sentence)
     if not sent:
         return True
-    if re.search(r"[.!?…]$", sent):
+    if re.search(r"[.!?]$", sent):
         return True
     if re.search(
         r"(습니다|입니다|니다|세요|요|다|함|음|겠습니다|되었습니다|할 수 있습니다|있습니다|됩니다)\.?$",
@@ -186,7 +189,7 @@ def has_incomplete_korean_sentence_ending(text: str) -> bool:
         return True
     if re.search(r"[가-힣]{2,}(?:합|입니|습니|됩니|했습)$", last):
         return True
-    if len(last) >= 10 and not re.search(r"[.!?…]$", last):
+    if len(last) >= 10 and not re.search(r"[.!?]$", last):
         if re.search(r"(?:에|의|를|을|와|과|로|에서|으로|및|등)$", last):
             return True
     return False
@@ -209,7 +212,10 @@ def clamp_korea_visible_field_at_sentence(text: str, *, max_chars: int = _KOREA_
         total += extra
     if kept:
         return " ".join(kept)
-    return out[: max_chars - 1].rstrip() + "…"
+    cut = out[:max_chars].rstrip()
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut.rstrip(" ,·.")
 
 
 def repair_incomplete_korean_visible_text(text: str, *, fallback: str = "") -> str:
@@ -458,7 +464,7 @@ def _declarative_risk_statement(line: str) -> str:
         return "세부 방향·규모·일정에 대한 불확실성이 리스크로 남아 있습니다."
     if not _sentence_ends_complete_korean(stripped):
         stripped = finalize_korea_visible_field(stripped)
-    if stripped and not stripped.endswith((".", "!", "…")):
+    if stripped and not stripped.endswith((".", "!")):
         stripped += "."
     return stripped
 

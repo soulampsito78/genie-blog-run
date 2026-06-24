@@ -107,6 +107,7 @@ def build_customer_email_delivery_fields(
     subject: str,
     trace: Dict[str, Any] | None,
     diagnostic: str,
+    preheader: str = "",
     sent_at_kst: str | None = None,
     repo_root: Path | None = None,
 ) -> Dict[str, Any]:
@@ -145,6 +146,9 @@ def build_customer_email_delivery_fields(
         "smtp_partial_refusal": bool(refused),
         "smtp_accepted_recipient_count": accepted_count,
     }
+    clean_preheader = sanitize_email_diagnostic(str(preheader or "").strip())
+    if clean_preheader:
+        fields["customer_email_preheader"] = clean_preheader
     fields["customer_recipient_count"] = fields["customer_email_recipient_count"]
     fields["customer_recipients_masked"] = fields["customer_email_recipients_masked"]
     fields.setdefault("customer_delivery_message_id", "")

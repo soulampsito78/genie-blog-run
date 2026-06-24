@@ -661,6 +661,7 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
             with patch("keysuri_service_full_run.email_sender.last_send_diagnostic", return_value=""):
                 payload = run_keysuri_service_full_run(
                     PROGRAM_GLOBAL,
+                    trigger_source="manual_service_full_run",
                     smoke_runner=lambda **_kw: self._global_smoke(pack_path, raw_path),
                     send_fn=mock_send,
                 )
@@ -707,7 +708,18 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         self.assertEqual(saved_meta.get("owner_email_recipient_count"), 2)
         self.assertEqual(saved_meta.get("owner_email_recipient_domains"), ["daum.net", "gmail.com"])
         self.assertEqual(saved_meta.get("owner_email_recipients_masked"), ["te***03@daum.net", "to***93@gmail.com"])
-        self.assertEqual(saved_meta.get("owner_email_subject"), "[운영자 검토] Kee-Suri Global Tech")
+        self.assertTrue(str(saved_meta.get("owner_email_subject") or "").startswith("[운영자 검토][수동] "))
+        self.assertIn("글로벌 브리핑", str(saved_meta.get("owner_email_subject") or ""))
+        self.assertEqual(saved_meta.get("email_subject"), saved_meta.get("editorial_subject"))
+        self.assertEqual(saved_meta.get("subject_source"), "generated_title")
+        self.assertEqual(saved_meta.get("subject_kst_date"), "20260611")
+        self.assertEqual(saved_meta.get("subject_kst_time"), "15:08")
+        self.assertEqual(saved_meta.get("subject_trigger_label"), "수동")
+        self.assertEqual(saved_meta.get("program_schedule_label"), "12:30")
+        self.assertTrue(saved_meta.get("owner_email_preheader"))
+        self.assertIn(str(saved_meta.get("owner_email_preheader") or ""), email_html)
+        self.assertEqual(saved_meta.get("visible_text_quality_status"), "pass")
+        self.assertFalse(saved_meta.get("visible_text_ellipsis_blocked"))
         self.assertEqual(saved_meta.get("owner_email_mime_html_sha256"), "abc123")
         self.assertEqual(saved_meta.get("owner_email_mime_html_bytes_len"), 2048)
         self.assertTrue(saved_meta.get("owner_email_send_trace_available"))
@@ -735,6 +747,65 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         self.assertIn("_mirai_on_watermarked", str(saved_meta.get("generated_image_path")))
         self.assertIn("_mirai_on_watermarked", str(saved_meta.get("generated_image_path_watermarked")))
         self.assertFalse(saved_meta.get("artifact_storage_durable"))
+
+    @patch("keysuri_service_full_run.build_keysuri_prompt_input")
+    @patch("keysuri_service_full_run.save_run_artifact")
+    @patch("keysuri_service_full_run._generate_keysuri_service_image")
+    @patch("keysuri_service_full_run.generate_run_id")
+    def test_visible_text_unrecoverable_ellipsis_blocks_owner_smtp(
+        self,
+        mock_run_id: MagicMock,
+        mock_image: MagicMock,
+        mock_save: MagicMock,
+        mock_prompt_input: MagicMock,
+    ) -> None:
+        from keysuri_service_full_run import run_keysuri_service_full_run
+        from keysuri_visible_text_quality import KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED
+
+        repo = Path(__file__).resolve().parents[1]
+        run_id = "20260611_150810_keysuri_global_tech_blocked"
+        mock_run_id.return_value = run_id
+        pack_path = repo / "output" / "keysuri_preview" / "test_pack_global_block.json"
+        pack_path.parent.mkdir(parents=True, exist_ok=True)
+        pack_path.write_text(json.dumps({"sources": [], "program_id": PROGRAM_GLOBAL}), encoding="utf-8")
+        raw_path = repo / "output" / "keysuri_preview" / "raw_global_block.txt"
+        raw_path.write_text("{}", encoding="utf-8")
+        image_rel = repo / "output" / "images" / "keysuri_global_service_block.jpg"
+        image_rel.parent.mkdir(parents=True, exist_ok=True)
+        image_rel.write_bytes(b"\xff\xd8\xff" + b"\x00" * 128)
+        mock_image.return_value = ServiceImageOutcome(
+            called_image_api=True,
+            image_generation_status="generated",
+            image_source=IMAGE_SOURCE_GENERATED,
+            generated_image_path=str(image_rel.relative_to(repo)),
+        )
+        mock_prompt_input.return_value = {
+            "program_id": PROGRAM_GLOBAL,
+            "prompt_status": "ready_for_generation",
+            "source_pack": {"sources": []},
+        }
+        smoke = self._global_smoke(pack_path, raw_path)
+        smoke.generated_briefing = {
+            "top_5_news": {"items": [{"headline": "확인 불가…"}]},
+            "title": "글로벌 브리핑",
+        }
+        mock_send = MagicMock(return_value=True)
+
+        payload = run_keysuri_service_full_run(
+            PROGRAM_GLOBAL,
+            trigger_source="manual_service_full_run",
+            smoke_runner=lambda **_kw: smoke,
+            send_fn=mock_send,
+        )
+
+        self.assertFalse(payload.get("ok"))
+        self.assertEqual(payload.get("error"), KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED)
+        mock_send.assert_not_called()
+        saved_meta = mock_save.call_args.args[0]
+        self.assertEqual(saved_meta.get("visible_text_quality_status"), "block")
+        self.assertTrue(saved_meta.get("visible_text_ellipsis_blocked"))
+        self.assertIn(KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED, saved_meta.get("visible_text_quality_issue_codes"))
+        self.assertFalse(saved_meta.get("email_sent"))
 
     def test_registry_image_cannot_pass_global_service_full_run_contract(self) -> None:
         outcome = ServiceImageOutcome(

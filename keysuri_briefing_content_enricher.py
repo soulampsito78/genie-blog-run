@@ -134,17 +134,19 @@ def _ensure_sentence_depth(
     min_sentences: int,
     padding: List[str],
 ) -> str:
-    base = _split_clauses_to_sentences(text)
+    base = dedupe_sentences_in_paragraph(_split_clauses_to_sentences(text))
     parts: List[str] = []
     if base:
         parts.append(base.rstrip("."))
     for pad in padding:
         if _sentence_count(". ".join(parts) + ".") >= min_sentences:
             break
-        if pad and pad not in " ".join(parts):
-            parts.append(pad.rstrip("."))
+        pad_clean = _text(pad).rstrip(".")
+        joined = " ".join(parts).rstrip(".")
+        if pad_clean and pad_clean not in joined:
+            parts.append(pad_clean)
     out = ". ".join(p for p in parts if p).strip()
-    if out and not out.endswith((".", "!", "?", "…")):
+    if out and not out.endswith((".", "!", "?")):
         out += "."
     return out
 
@@ -355,7 +357,10 @@ def _build_next_watch(item: dict, meta: dict) -> str:
 def _short_title(item: dict) -> str:
     title = _get_field(item, "korean_title", "headline")
     if len(title) > 48:
-        return title[:45] + "…"
+        cut = title[:48].rstrip()
+        if " " in cut:
+            cut = cut.rsplit(" ", 1)[0]
+        return cut.rstrip(" ,·.")
     return title
 
 

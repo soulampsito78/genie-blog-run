@@ -150,8 +150,8 @@ def _title_tokens(item: dict) -> List[str]:
     tokens: List[str] = []
     if title:
         tokens.append(title)
-        short = title[:36] + ("…" if len(title) > 36 else "")
-        if short != title:
+        short = _short_title_without_ellipsis(title, 36) if len(title) > 36 else title
+        if short and short != title:
             tokens.append(short)
     blob = title.lower()
     for needle, label in _COMPANY_ALIASES:
@@ -205,8 +205,8 @@ def rewrite_signal_marker_sentence_to_natural_prose(
     tb = _text(b.get("korean_title") or b.get("headline"))
     companies_a = [label for needle, label in _COMPANY_ALIASES if needle in ta.lower()]
     companies_b = [label for needle, label in _COMPANY_ALIASES if needle in tb.lower()]
-    lead_a = companies_a[0] if companies_a else (ta[:24] + "…" if len(ta) > 24 else ta)
-    lead_b = companies_b[0] if companies_b else (tb[:24] + "…" if len(tb) > 24 else tb)
+    lead_a = companies_a[0] if companies_a else _short_title_without_ellipsis(ta, 24)
+    lead_b = companies_b[0] if companies_b else _short_title_without_ellipsis(tb, 24)
 
     natural = (
         f"오늘 눈에 띄는 점은 {lead_a} 흐름과 {lead_b} 이슈가 동시에 보인다는 것입니다. "
@@ -216,6 +216,16 @@ def rewrite_signal_marker_sentence_to_natural_prose(
     if count_signal_references(cleaned, top5_items) >= 2:
         return cleaned
     return f"{natural}\n\n{cleaned}".strip()
+
+
+def _short_title_without_ellipsis(title: str, max_chars: int) -> str:
+    clean = _text(title)
+    if len(clean) <= max_chars:
+        return clean
+    cut = clean[:max_chars].rstrip()
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut.rstrip(" ,·.")
 
 
 def normalize_visible_item_fields(item: dict, *, thin_source: bool = False, korea_program: bool = False) -> dict:

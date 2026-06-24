@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from admin_store import approve_run, can_approve_customer_send, load_run_artifact, save_run_artifact
@@ -218,6 +219,24 @@ class KeysuriApproveRunGateTests(unittest.TestCase):
         self.assertEqual(err, "ok")
 
 
+class KeysuriCustomerSubjectTests(unittest.TestCase):
+    def test_customer_final_subject_uses_editorial_subject_without_owner_prefix(self) -> None:
+        from keysuri_customer_delivery import build_keysuri_customer_final_subject
+
+        subject = build_keysuri_customer_final_subject(
+            {
+                "mode": "keysuri_global_tech",
+                "editorial_subject": "AI 데이터센터 전력 계약 확대: 6월 24일 글로벌 테크 브리핑",
+                "owner_email_subject": "[운영자 검토][수동] AI 데이터센터 전력 계약 확대: 6월 24일 글로벌 테크 브리핑",
+            },
+            "<h1>키수리 글로벌 테크 브리핑</h1>",
+        )
+
+        self.assertEqual(subject, "AI 데이터센터 전력 계약 확대: 6월 24일 글로벌 테크 브리핑")
+        self.assertNotIn("[운영자 검토]", subject)
+        self.assertNotIn("[수동]", subject)
+
+
 class KeysuriGlobalApproveRunTests(unittest.TestCase):
     def setUp(self) -> None:
         os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
@@ -246,7 +265,14 @@ class KeysuriGlobalApproveRunTests(unittest.TestCase):
         )
         with patch("email_sender.last_send_trace", return_value=trace):
             with patch("email_sender.last_send_diagnostic", return_value=""):
-                updated, status = approve_run(run_id)
+                with patch(
+                    "keysuri_customer_delivery.last_keysuri_delivery_result",
+                    return_value=SimpleNamespace(
+                        customer_email_subject="AI 인프라 신호 점검: 6월 12일 글로벌 테크 브리핑",
+                        customer_email_preheader="글로벌 AI·테크 신호 브리핑 · 주요 신호: AI 인프라 신호 점검",
+                    ),
+                ):
+                    updated, status = approve_run(run_id)
         self.assertEqual(status, "ok")
         self.assertIsNotNone(updated)
         mock_send.assert_called_once()
@@ -256,7 +282,11 @@ class KeysuriGlobalApproveRunTests(unittest.TestCase):
         self.assertEqual(meta.get("customer_email_delivery_status"), "smtp_accepted")
         self.assertEqual(meta.get("customer_email_recipient_count"), 2)
         self.assertEqual(meta.get("customer_email_recipients_masked"), ["su***gp@hanmail.net", "ph***ce@gmail.com"])
-        self.assertEqual(meta.get("customer_email_subject"), "[키수리] 글로벌 테크 브리핑")
+        self.assertEqual(meta.get("customer_email_subject"), "AI 인프라 신호 점검: 6월 12일 글로벌 테크 브리핑")
+        self.assertEqual(
+            meta.get("customer_email_preheader"),
+            "글로벌 AI·테크 신호 브리핑 · 주요 신호: AI 인프라 신호 점검",
+        )
         self.assertEqual(meta.get("customer_email_mime_html_sha256"), "keysuri-html-sha")
         self.assertEqual(meta.get("customer_email_inline_image_hashes")[0]["cid"], "keysuri_top")
         self.assertNotIn("supergp@hanmail.net", json.dumps(meta, ensure_ascii=False))
@@ -319,6 +349,20 @@ class KeysuriApproveRunBlockedTests(unittest.TestCase):
 
 
 class KeysuriCustomerDeliveryHtmlTests(unittest.TestCase):
+    def test_customer_hidden_preheader_can_be_inserted_at_body_top(self) -> None:
+        from keysuri_customer_delivery import _insert_hidden_preheader
+
+        html = _insert_hidden_preheader(
+            "<html><body><p>키수리 브리핑</p></body></html>",
+            "글로벌 AI·테크 신호 브리핑 · 주요 신호: AI 인프라",
+        )
+
+        body_idx = html.lower().find("<body>")
+        preheader_idx = html.find("글로벌 AI·테크 신호 브리핑")
+        paragraph_idx = html.find("<p>키수리 브리핑</p>")
+        self.assertGreater(preheader_idx, body_idx)
+        self.assertLess(preheader_idx, paragraph_idx)
+
     def test_keysuri_gmail_customer_delivery_strips_owner_admin_block(self) -> None:
         from keysuri_customer_delivery import prepare_keysuri_customer_final_html
 

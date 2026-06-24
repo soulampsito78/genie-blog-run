@@ -901,20 +901,33 @@ def approve_run(
     reset_last_send_state()
 
     mode = str(meta.get("mode") or "")
+    keysuri_delivery_result = None
     if mode == "today_genie":
         from today_geenee_customer_delivery import send_today_geenee_customer_final_email
 
         send_ok = send_today_geenee_customer_final_email(saved_html, meta)
     elif mode in ("keysuri_global_tech", "keysuri_korea_tech"):
-        from keysuri_customer_delivery import send_keysuri_customer_final_email
+        from keysuri_customer_delivery import (
+            last_keysuri_delivery_result,
+            send_keysuri_customer_final_email,
+        )
 
         send_ok = send_keysuri_customer_final_email(saved_html, meta)
+        keysuri_delivery_result = last_keysuri_delivery_result()
     else:
         return None, "unsupported_mode"
 
     send_trace = last_send_trace()
     send_diagnostic = last_send_diagnostic()
     customer_subject = str(send_trace.get("subject") or "")
+    customer_preheader = ""
+    if keysuri_delivery_result is not None:
+        result_subject = str(getattr(keysuri_delivery_result, "customer_email_subject", "") or "").strip()
+        if result_subject:
+            customer_subject = result_subject
+        customer_preheader = str(
+            getattr(keysuri_delivery_result, "customer_email_preheader", "") or ""
+        ).strip()
 
     if not send_ok:
         diag = sanitize_delivery_error_summary(send_diagnostic or "Customer email send failed.")
@@ -924,6 +937,7 @@ def approve_run(
             subject=customer_subject,
             trace=send_trace,
             diagnostic=diag,
+            preheader=customer_preheader,
             repo_root=repo_root(),
         )
 
@@ -947,6 +961,7 @@ def approve_run(
         subject=customer_subject,
         trace=send_trace,
         diagnostic=send_diagnostic,
+        preheader=customer_preheader,
         sent_at_kst=sent_ts,
         repo_root=repo_root(),
     )

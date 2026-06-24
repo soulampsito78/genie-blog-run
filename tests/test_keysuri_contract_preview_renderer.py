@@ -790,7 +790,7 @@ class KeysuriContractPreviewRendererTests(unittest.TestCase):
         self.assertIn('class="card-rank"', global_html)
 
     @_require_contract_renderer
-    def test_korea_top5_repairs_double_periods_but_keeps_ellipsis(self) -> None:
+    def test_korea_top5_repairs_double_periods_and_ellipsis(self) -> None:
         mod = _CONTRACT_RENDERER
         assert mod is not None
         fixture = build_korea_contract_fixture()
@@ -802,7 +802,8 @@ class KeysuriContractPreviewRendererTests(unittest.TestCase):
         self.assertIn("공급망 변화, 투자 일정이 조정됐습니다.", html)
         self.assertIn("정책 일정, 조달 계획이 함께 움직입니다.", html)
         self.assertIn("계약 조건, 실행 시점을 함께 보셔야 합니다.", html)
-        self.assertIn("아직... 확인 중입니다.", html)
+        self.assertIn("아직 확인 중입니다.", html)
+        self.assertNotIn("아직... 확인 중입니다.", html)
         self.assertNotIn("공급망 변화..", html)
 
     @_require_contract_renderer
