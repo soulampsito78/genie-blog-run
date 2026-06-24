@@ -36,6 +36,32 @@ class KeysuriVisibleTextQualityTests(unittest.TestCase):
         self.assertIn("AI 생산을 위한 흐름", result.text)
         self.assertIn("구축 이슈", result.text)
 
+    def test_object_marked_construct_ellipsis_drops_stray_particle(self) -> None:
+        result = repair_korean_connector_ellipsis_text(
+            "특화된 AI를 구축… 이슈가 있습니다"
+        )
+
+        self.assertTrue(result.found)
+        self.assertTrue(result.repaired)
+        self.assertFalse(result.blocked)
+        self.assertNotRegex(result.text, r"…|\.{2,}|\.{2}")
+        self.assertNotIn("를 구축 이슈", result.text)
+        self.assertNotIn("을 구축 이슈", result.text)
+        self.assertNotEqual(result.text, "특화된 AI를 구축 이슈가 있습니다")
+        self.assertIn("AI 구축 이슈", result.text)
+
+    def test_object_marked_construct_ellipsis_in_longer_sentence(self) -> None:
+        result = repair_korean_connector_ellipsis_text(
+            "기업들이 신뢰할 수 있는 특화된 AI를 구축… 이슈가 있습니다"
+        )
+
+        self.assertTrue(result.found)
+        self.assertTrue(result.repaired)
+        self.assertFalse(result.blocked)
+        self.assertNotRegex(result.text, r"…|\.{2,}|\.{2}")
+        self.assertNotIn("를 구축 이슈", result.text)
+        self.assertNotIn("을 구축 이슈", result.text)
+
     def test_unrecoverable_trailing_ellipsis_blocks_with_sample(self) -> None:
         payload = {
             "top_5_news": {

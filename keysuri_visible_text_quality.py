@@ -99,6 +99,14 @@ def repair_korean_connector_ellipsis_text(value: Any) -> EllipsisRepairResult:
     repaired = text
     replacements: Tuple[Tuple[str, str], ...] = (
         (r"((?:을|를)\s+위한)\s*…\s*(흐름|움직임|변화|전환|확산)", r"\1 \2"),
+        # "OBJECT를/을 구축… 이슈" leaves a stray 를/을 if only "구축" is captured
+        # (e.g. "AI를 구축 이슈"), so the object word and its particle are
+        # captured together and the particle is dropped to form a valid
+        # noun-compound ("AI 구축 이슈") instead.
+        (
+            r"([가-힣A-Za-z0-9]+)(?:을|를)\s*구축\s*…\s*(이슈|흐름|움직임|변화|전환|확산)",
+            r"\1 구축 \2",
+        ),
         (r"(구축)\s*…\s*(이슈|흐름|움직임|변화|전환|확산)", r"\1 \2"),
         (r"(흐름|움직임|변화|전환|확산|이슈)\s*…\s*(?:와|과)\s*", r"\1과 "),
         (r"(흐름|움직임|변화|전환|확산|이슈)\s*…\s*(?:이|가|은|는)\s*", r"\1이 "),
