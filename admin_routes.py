@@ -36,6 +36,7 @@ from admin_store import (
     resolve_customer_recipients,
     validate_run_id,
 )
+from keysuri_service_full_run import run_keysuri_image_only_reissue
 from orchestrator import execute_orchestrator_run
 
 router = APIRouter(tags=["admin"])
@@ -57,12 +58,12 @@ REISSUE_REASONS = (
 )
 
 REISSUE_SCOPE_OPTIONS = (
-    ("text_only", "본문만 재발행", "텍스트, 제목, 출처, 수치, 문장 흐름만 다시 생성합니다. 기존 이미지는 유지합니다."),
-    ("image_only", "이미지만 재발행", "이미지 프롬프트와 이미지 산출물만 다시 생성합니다. 본문은 유지합니다."),
+    ("text_only", "본문만 재발행", "준비 중 — 본문만 재발행은 아직 지원하지 않습니다."),
+    ("image_only", "이미지만 재발행", "이미지 prompt와 이미지 산출물만 다시 생성합니다. 본문은 유지됩니다."),
     (
         "text_and_image",
         "본문·이미지 모두 재발행",
-        "본문과 이미지 산출물을 모두 다시 생성합니다. 전체 방향이 틀렸을 때 선택합니다.",
+        "본문과 이미지를 모두 새로 생성합니다. 전체 방향이 틀렸을 때 사용합니다.",
     ),
 )
 
@@ -71,7 +72,7 @@ _REISSUE_ERROR_MESSAGES = {
     "missing_reissue_scope": "재발행 범위를 선택하세요.",
     "unsupported_reissue_scope": (
         "선택한 재발행 범위는 아직 실행할 수 없습니다. "
-        "현재는 본문·이미지 모두 재발행만 실행 가능합니다."
+        "화면에 표시된 실행 가능 범위를 확인하세요."
     ),
 }
 
@@ -255,23 +256,43 @@ def _render_delivery_report_sections(meta: dict) -> str:
 """
 
 
-def _render_reissue_scope_field() -> str:
+def _mode_supports_image_only_reissue(mode: str) -> bool:
+    return str(mode or "").strip() in ("keysuri_global_tech", "keysuri_korea_tech")
+
+
+def _mode_supports_text_and_image_reissue(mode: str) -> bool:
+    return str(mode or "").strip() in ("today_genie", "tomorrow_genie")
+
+
+def _render_reissue_scope_field(mode: str) -> str:
+    mode = str(mode or "").strip()
+    image_only_enabled = _mode_supports_image_only_reissue(mode)
+    text_and_image_enabled = _mode_supports_text_and_image_reissue(mode)
+    default_scope = "image_only" if image_only_enabled else EXECUTABLE_REISSUE_SCOPE
     rows = [
         '<p style="margin:0 0 12px 0;font-size:12px;line-height:1.6;color:#9a3412;">'
-        "현재 본문만/이미지만 재발행은 선택할 수 있지만, 실행은 아직 차단됩니다. "
-        "범위 보존 및 병합 로직이 준비된 뒤 활성화됩니다."
+        "선택 가능한 범위만 서버에서 실행됩니다. 본문만 재발행은 아직 준비 중입니다."
         "</p>"
     ]
     for scope, label, helper in REISSUE_SCOPE_OPTIONS:
         scope_helper = helper
-        if scope in UNSUPPORTED_REISSUE_SCOPES:
-            scope_helper = f"{helper} (현재는 선택만 가능하며 실행은 차단됩니다.)"
-        checked = " checked" if scope == EXECUTABLE_REISSUE_SCOPE else ""
+        disabled = False
+        if scope == "text_only":
+            disabled = True
+        elif scope == "image_only" and not image_only_enabled:
+            disabled = True
+            scope_helper = "이 실행 mode에서는 아직 지원하지 않습니다."
+        elif scope == "text_and_image" and not text_and_image_enabled:
+            disabled = True
+            scope_helper = "이 실행 mode에서는 아직 지원하지 않습니다."
+        checked = " checked" if scope == default_scope and not disabled else ""
+        disabled_attr = " disabled" if disabled else ""
+        disabled_class = " radio-scope--disabled" if disabled else ""
         rows.append(
-            f"<label class=\"radio-scope\">"
+            f"<label class=\"radio-scope{disabled_class}\">"
             f"<span class=\"radio-scope__control\">"
             f"<input type=\"radio\" name=\"reissue_scope\" value=\"{_esc(scope)}\" required"
-            f"{checked}>"
+            f"{checked}{disabled_attr}>"
             f"</span>"
             f"<span class=\"radio-scope__body\">"
             f"<strong>{_esc(label)}</strong>"
@@ -333,8 +354,10 @@ pre,code{{overflow-wrap:anywhere;word-break:break-word;}}
 pre{{overflow-x:auto;max-width:100%;}}
 .radio-scope{{display:flex;align-items:flex-start;gap:10px;margin:0 0 10px;padding:14px 16px;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc;cursor:pointer;-webkit-tap-highlight-color:transparent;box-sizing:border-box;}}
 .radio-scope:has(input:checked){{border-color:#0f172a;background:#fff;box-shadow:inset 0 0 0 1px #0f172a;}}
+.radio-scope--disabled{{opacity:.58;cursor:not-allowed;background:#f1f5f9;}}
 .radio-scope__control{{flex:0 0 auto;padding-top:2px;}}
 .radio-scope__control input[type=radio]{{width:20px;height:20px;margin:0;cursor:pointer;}}
+.radio-scope--disabled .radio-scope__control input[type=radio]{{cursor:not-allowed;}}
 .radio-scope__body{{flex:1;min-width:0;}}
 .radio-helper{{display:block;margin-top:6px;font-size:12px;color:#64748b;line-height:1.5;overflow-wrap:anywhere;}}
 input[type=password],input[type=text],select,textarea{{width:100%;max-width:420px;padding:10px 8px;font-size:16px;box-sizing:border-box;}}
@@ -504,7 +527,7 @@ def admin_run_detail(request: Request, run_id: str):
         for k, v in sorted(meta.items())
         if k not in ("issue_details", "customer_delivery_events")
     )
-    scope_field = _render_reissue_scope_field()
+    scope_field = _render_reissue_scope_field(mode)
     inner = f"""
 <div class="page-head">
 <h1>실행 상세</h1>
@@ -522,9 +545,9 @@ def admin_run_detail(request: Request, run_id: str):
 </div>
 <div class="card warn">
 <strong>재발행 안내</strong><br>
-재발행은 새 브리핑을 생성하고 <strong>운영자 검토용 이메일</strong>을 다시 보냅니다. 고객 최종 배포가 아닙니다.<br>
-현재 실행 경로는 새 본문 생성과 운영자 검토용 이메일 재발송을 수행합니다. 이미지는 현재 최신 이미지 자산을 재사용할 수 있습니다.<br>
-본문만/이미지만 재발행은 선택할 수 있지만 실행은 서버에서 차단됩니다. 현재 즉시 실행 가능한 경로는 본문·이미지 모두 재발행입니다.
+재발행은 <strong>운영자 검토용 이메일</strong>을 다시 보내는 작업입니다. 고객 최종 배포가 아닙니다.<br>
+이미지만 재발행은 KeeSuri 실행에서 본문을 보존하고 이미지 prompt와 이미지 산출물만 다시 생성합니다.<br>
+본문만 재발행은 준비 중이며, 본문·이미지 모두 재발행은 기존 Today/Tomorrow 실행 경로에서만 사용할 수 있습니다.
 </div>
 <div class="card">
 <h2>재발행 요청</h2>
@@ -702,24 +725,60 @@ def admin_run_reissue(
             url=f"/admin/runs/{run_id}?reissue_error=invalid_reissue_scope",
             status_code=303,
         )
+    mode = str(parent.get("mode") or parent.get("program_id") or "").strip()
     if scope in UNSUPPORTED_REISSUE_SCOPES:
         return RedirectResponse(
             url=f"/admin/runs/{run_id}?reissue_error=unsupported_reissue_scope",
             status_code=303,
         )
+    reason_code = reason_option.strip()
+    note = reason_note.strip()
+
+    if scope == "image_only":
+        if not _mode_supports_image_only_reissue(mode):
+            return RedirectResponse(
+                url=f"/admin/runs/{run_id}?reissue_error=unsupported_reissue_scope",
+                status_code=303,
+            )
+        try:
+            result = run_keysuri_image_only_reissue(
+                run_id,
+                parent_meta=parent,
+                reissue_reason_code=reason_code,
+                reissue_reason_note=note,
+            )
+        except Exception as exc:  # noqa: BLE001
+            inner = (
+                f"<p>이미지만 재발행 실행 중 오류가 발생했습니다.</p>"
+                f"<p>{_esc(type(exc).__name__)}</p>"
+                f"<p><a href=\"/admin/runs/{_esc(run_id)}\">돌아가기</a></p>"
+            )
+            return HTMLResponse(_layout("Reissue error", inner), status_code=500)
+        new_run_id = str(result.get("run_id") or "").strip()
+        if new_run_id and not result.get("email_sent") and not result.get("error"):
+            return RedirectResponse(
+                url=f"/admin/runs/{new_run_id}?reissue_warn=email_not_sent",
+                status_code=303,
+            )
+        if not result.get("ok") or not new_run_id:
+            inner = (
+                f"<p>이미지만 재발행을 완료하지 못했습니다.</p>"
+                f"<p>{_esc(str(result.get('error') or 'image_only_reissue_failed'))}</p>"
+                f"<p><a href=\"/admin/runs/{_esc(run_id)}\">돌아가기</a></p>"
+            )
+            return HTMLResponse(_layout("Reissue failed", inner), status_code=500)
+        return RedirectResponse(url=f"/admin/runs/{new_run_id}", status_code=303)
+
     if scope != EXECUTABLE_REISSUE_SCOPE:
         return RedirectResponse(
             url=f"/admin/runs/{run_id}?reissue_error=invalid_reissue_scope",
             status_code=303,
         )
 
-    mode = str(parent.get("mode") or "").strip()
     if mode not in ("today_genie", "tomorrow_genie"):
         inner = f"<p>재발행할 수 없는 mode: {_esc(mode)}</p><p><a href=\"/admin/runs/{_esc(run_id)}\">돌아가기</a></p>"
         return HTMLResponse(_layout("Reissue failed", inner), status_code=400)
 
-    reason_code = reason_option.strip()
-    note = reason_note.strip()
     reason = reason_code
     if note:
         reason = f"{reason} — {note}"

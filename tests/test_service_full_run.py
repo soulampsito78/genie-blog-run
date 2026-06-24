@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from admin_store import load_run_artifact, load_run_email_html
+from admin_store import load_run_artifact, load_run_email_html, save_run_artifact
 from fastapi.testclient import TestClient
 from internal_jobs import create_keysuri_owner_review_job
 from keysuri_live_source_smoke import PROGRAM_GLOBAL, PROGRAM_KOREA, LiveSourceSmokeResult
@@ -215,6 +215,158 @@ class KeysuriOwnerEmailDeliveryFieldsTests(unittest.TestCase):
         self.assertIsNone(fields["owner_email_sent_at_kst"])
         self.assertEqual(fields["owner_email_recipient_count"], 0)
         self.assertEqual(fields["owner_email_send_diagnostic"], "")
+
+
+class KeysuriImageOnlyReissueTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._env = patch.dict(
+            os.environ,
+            {
+                "GENIE_OWNER_REVIEW_SEND": "1",
+                "GENIE_ADMIN_PUBLIC_BASE_URL": "https://example.com",
+                "GENIE_ADMIN_ARTIFACT_BUCKET": "",
+                "GENIE_ARTIFACT_BUCKET": "",
+            },
+            clear=False,
+        )
+        self._env.start()
+
+    def tearDown(self) -> None:
+        self._env.stop()
+
+    @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
+    @patch("keysuri_service_full_run.run_keysuri_live_source_smoke")
+    @patch("keysuri_service_full_run.build_keysuri_prompt_input")
+    @patch("keysuri_service_full_run.resolve_korea_bottom_email_image_path")
+    @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
+    @patch("keysuri_service_full_run.generate_run_id")
+    def test_image_only_reissue_preserves_text_replaces_images_and_sends_owner_only(
+        self,
+        mock_run_id: MagicMock,
+        mock_watermark: MagicMock,
+        mock_bottom: MagicMock,
+        mock_prompt_input: MagicMock,
+        mock_smoke: MagicMock,
+        mock_customer_final: MagicMock,
+    ) -> None:
+        from keysuri_service_full_run import run_keysuri_image_only_reissue
+
+        repo = Path(__file__).resolve().parents[1]
+        parent_id = "20260624_183002_keysuri_korea_tech_aabbccdd"
+        child_id = "20260624_190000_keysuri_korea_tech_11223344"
+        mock_run_id.return_value = child_id
+        raw_top = repo / "output" / "images" / "image_only_regen_top_raw.jpg"
+        raw_top.parent.mkdir(parents=True, exist_ok=True)
+        raw_top.write_bytes(b"\xff\xd8\xff" + b"\x44" * 128)
+        mock_watermark.side_effect = _mock_keysuri_watermark
+        bottom_path = repo / "output" / "images" / "image_only_regen_bottom.jpg"
+        bottom_path.write_bytes(b"\xff\xd8\xff" + b"\x55" * 128)
+        mock_bottom.return_value = (
+            bottom_path,
+            [],
+            {
+                "bottom_shot_source": "test_generated",
+                "bottom_shot_generation_status": "generated",
+                "bottom_shot_image_path": str(bottom_path.relative_to(repo)),
+            },
+        )
+        parent_html = (
+            '<html><body><p id="brief">보존해야 하는 본문 텍스트입니다.</p>'
+            '<img src="cid:keysuri_topshot_korea_20260624"/>'
+            '<img src="cid:keysuri_bottomshot_korea_20260624"/>'
+            f'<a href="https://example.com/admin/runs/{parent_id}">review</a>'
+            "</body></html>"
+        )
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_korea_tech",
+                "program_id": "keysuri_korea_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+                "owner_email_subject": "[운영자 검토] 국내 AI 반도체 정책 점검: 6월 24일 국내 테크 브리핑",
+                "owner_email_preheader": "국내 AI·테크 신호 검수 대기 · 주요 신호: 국내 AI 반도체 정책 점검",
+                "email_subject": "국내 AI 반도체 정책 점검: 6월 24일 국내 테크 브리핑",
+                "email_preheader": "국내 AI·테크 신호 검수 대기 · 주요 신호: 국내 AI 반도체 정책 점검",
+                "editorial_subject": "국내 AI 반도체 정책 점검: 6월 24일 국내 테크 브리핑",
+                "subject_top_headline": "국내 AI 반도체 정책 점검",
+                "reissue_count": 0,
+            },
+            email_html=parent_html,
+        )
+
+        def _image_runner(program_id: str, **kwargs):
+            self.assertEqual(program_id, "keysuri_korea_tech")
+            self.assertEqual(kwargs.get("run_id"), parent_id)
+            self.assertEqual(kwargs.get("subject_top_headline"), "국내 AI 반도체 정책 점검")
+            return ServiceImageOutcome(
+                called_image_api=True,
+                image_generation_status="generated",
+                image_source=IMAGE_SOURCE_GENERATED,
+                generated_image_path=str(raw_top.relative_to(repo)),
+            )
+
+        send_fn = MagicMock(return_value=True)
+        trace = {
+            "envelope_to": ["owner@example.com"],
+            "mime_html_sha256": "html-sha",
+            "mime_html_bytes_len": 456,
+            "inline_input_hashes": [
+                {"path": str(raw_top), "cid": "keysuri_topshot_korea_20260624_regen_11223344", "filename": "top.jpg", "sha256": "top-sha"},
+                {"path": str(bottom_path), "cid": "keysuri_bottomshot_korea_20260624_regen_11223344", "filename": "bottom.jpg", "sha256": "bottom-sha"},
+            ],
+        }
+        with patch("keysuri_service_full_run.email_sender.last_send_trace", return_value=trace):
+            with patch("keysuri_service_full_run.email_sender.last_send_diagnostic", return_value=""):
+                result = run_keysuri_image_only_reissue(
+                    parent_id,
+                    image_canary_runner=_image_runner,
+                    send_fn=send_fn,
+                    reissue_reason_code="이미지 품질 이슈",
+                    reissue_reason_note="image only",
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["run_id"], child_id)
+        self.assertFalse(result["called_gemini"])
+        self.assertTrue(result["image_generation_called"])
+        mock_smoke.assert_not_called()
+        mock_prompt_input.assert_not_called()
+        mock_customer_final.assert_not_called()
+        send_fn.assert_called_once()
+        inline_parts = send_fn.call_args.kwargs["inline_jpeg_parts"]
+        self.assertEqual(len(inline_parts), 2)
+        self.assertEqual(inline_parts[0][1], "keysuri_topshot_korea_20260624_regen_11223344")
+        self.assertEqual(inline_parts[1][1], "keysuri_bottomshot_korea_20260624_regen_11223344")
+
+        child = load_run_artifact(child_id) or {}
+        self.assertEqual(child.get("regen_type"), "image_only")
+        self.assertEqual(child.get("regen_parent_run_id"), parent_id)
+        self.assertTrue(child.get("regen_preserved_text"))
+        self.assertTrue(child.get("regen_regenerated_images"))
+        self.assertFalse(child.get("text_generation_called"))
+        self.assertTrue(child.get("image_generation_called"))
+        self.assertEqual(child.get("customer_delivery_status"), "not_sent")
+        self.assertEqual(child.get("owner_review_status"), "pending_review")
+        self.assertEqual(child.get("artifact_status"), "emailed")
+        self.assertEqual(child.get("owner_email_delivery_status"), "smtp_accepted")
+        self.assertTrue(str(child.get("owner_email_subject") or "").startswith("[이미지 재발행][운영자 검토]"))
+        self.assertEqual(child.get("reissue_reason_code"), "이미지 품질 이슈")
+        self.assertEqual(child.get("reissue_reason_note"), "image only")
+        self.assertNotIn("customer_email_subject", child)
+
+        child_html = load_run_email_html(child_id) or ""
+        self.assertIn("보존해야 하는 본문 텍스트입니다.", child_html)
+        self.assertNotIn("cid:keysuri_topshot_korea_20260624\"", child_html)
+        self.assertIn("cid:keysuri_topshot_korea_20260624_regen_11223344", child_html)
+        self.assertIn("cid:keysuri_bottomshot_korea_20260624_regen_11223344", child_html)
+        self.assertIn(child_id, child_html)
+        parent = load_run_artifact(parent_id) or {}
+        self.assertEqual(parent.get("reissue_count", 0), 0)
+        self.assertNotIn("regen_type", parent)
 
 
 class ServiceFullRunContractTests(unittest.TestCase):

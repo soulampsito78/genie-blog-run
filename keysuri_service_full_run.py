@@ -11,7 +11,17 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from admin_store import admin_artifact_bucket_name, admin_artifact_gcs_prefix, artifact_email_path, artifact_json_path, generate_run_id, save_run_artifact
+from admin_store import (
+    admin_artifact_bucket_name,
+    admin_artifact_gcs_prefix,
+    artifact_email_path,
+    artifact_json_path,
+    generate_run_id,
+    load_run_artifact,
+    load_run_email_html,
+    now_kst_iso,
+    save_run_artifact,
+)
 from admin_urls import build_owner_review_admin_url
 import email_sender
 from email_sender import send_genie_email
@@ -742,6 +752,341 @@ def _reload_generated_briefing(
     if not isinstance(briefing, dict):
         return None
     return enrich_generated_briefing_content(briefing, program_id, prompt_input)
+
+
+def _image_only_regen_cid_tokens(program_id: str, run_id: str) -> Tuple[str, Optional[str]]:
+    stamp = _kst_date_from_run_id(run_id)
+    suffix = str(run_id or "").rsplit("_", 1)[-1]
+    if program_id == PROGRAM_GLOBAL:
+        return f"{KEYSURI_GLOBAL_SERVICE_EMAIL_CID_PREFIX}_{stamp}_regen_{suffix}", None
+    return (
+        f"{KEYSURI_KOREA_SERVICE_EMAIL_CID_PREFIX}_{stamp}_regen_{suffix}",
+        f"{KEYSURI_KOREA_BOTTOM_SERVICE_EMAIL_CID_PREFIX}_{stamp}_regen_{suffix}",
+    )
+
+
+def _replace_keysuri_image_cids(
+    html_body: str,
+    *,
+    program_id: str,
+    top_cid: str,
+    bottom_cid: Optional[str] = None,
+) -> str:
+    body = str(html_body or "")
+    if program_id == PROGRAM_GLOBAL:
+        return re.sub(
+            r"cid:keysuri_topshot_global_[0-9]{8}(?:_regen_[a-f0-9]+)?",
+            f"cid:{top_cid}",
+            body,
+        )
+    body = re.sub(
+        r"cid:keysuri_topshot_korea_[0-9]{8}(?:_regen_[a-f0-9]+)?",
+        f"cid:{top_cid}",
+        body,
+    )
+    if bottom_cid:
+        body = re.sub(
+            r"cid:keysuri_bottomshot_korea_[0-9]{8}(?:_regen_[a-f0-9]+)?",
+            f"cid:{bottom_cid}",
+            body,
+        )
+    return body
+
+
+def _subject_headline_from_artifact(meta: Dict[str, Any]) -> str:
+    for key in ("subject_top_headline", "top_image_subject_headline", "top_headline"):
+        text = str(meta.get(key) or "").strip()
+        if text:
+            return text
+    for key in ("editorial_subject", "email_subject", "owner_email_subject"):
+        text = str(meta.get(key) or "").strip()
+        if not text:
+            continue
+        text = re.sub(r"^\s*(?:\[[^\]]+\]\s*)+", "", text).strip()
+        if ": " in text:
+            text = text.split(": ", 1)[0].strip()
+        if text:
+            return text
+    return "centered on the preserved briefing content"
+
+
+def _korea_bottom_weather_inputs_from_artifact(meta: Dict[str, Any]) -> Dict[str, Any]:
+    prompt_meta = meta.get("bottom_shot_prompt_metadata")
+    if not isinstance(prompt_meta, dict):
+        return {"weather_condition": "cloudy", "temperature_c": None, "season": None}
+    weather = prompt_meta.get("weather_input")
+    if not isinstance(weather, dict):
+        weather = {}
+    temperature = weather.get("temperature_c")
+    if not isinstance(temperature, (int, float)):
+        temperature = None
+    return {
+        "weather_condition": str(
+            weather.get("weather_condition_input")
+            or weather.get("weather_condition")
+            or "cloudy"
+        ).strip().lower(),
+        "temperature_c": temperature,
+        "season": str(weather.get("season_input") or weather.get("season") or "").strip() or None,
+    }
+
+
+def _copy_subject_identity_fields(parent: Dict[str, Any], child: Dict[str, Any]) -> None:
+    for key in (
+        "email_subject",
+        "email_preheader",
+        "editorial_subject",
+        "subject_top_headline",
+        "subject_source",
+        "subject_kst_date",
+        "subject_kst_time",
+        "subject_kst_label",
+        "subject_program_label",
+        "subject_trigger_label",
+    ):
+        if key in parent and parent.get(key) is not None:
+            child[key] = parent.get(key)
+
+
+def run_keysuri_image_only_reissue(
+    parent_run_id: str,
+    *,
+    parent_meta: Optional[Dict[str, Any]] = None,
+    parent_email_html: Optional[str] = None,
+    trigger_source: str = "admin_image_only_reissue",
+    reissue_reason_code: str = "",
+    reissue_reason_note: str = "",
+    send_owner_email: bool = True,
+    image_canary_runner=None,
+    bottom_generate_fn: Optional[Callable[..., Path]] = None,
+    bottom_watermark_fn: Optional[Callable[[Path, Path], Path]] = None,
+    send_fn: Optional[Callable[..., bool]] = None,
+    image_upload_fn=None,
+) -> Dict[str, Any]:
+    """Regenerate Kee-Suri owner-review images without touching briefing text.
+
+    This path intentionally does not call Gemini text generation, news/source
+    fetch, customer approval, or customer-final SMTP. It reads the parent
+    artifact and saved owner-review email HTML, swaps image CIDs, sends a new
+    owner-review email, and stores a new artifact.
+    """
+    parent = dict(parent_meta or load_run_artifact(parent_run_id, normalize=False) or {})
+    pid = str(parent.get("program_id") or parent.get("mode") or "").strip()
+    if pid not in _KEYSURI_PROGRAMS:
+        return {"ok": False, "error": "image_only_reissue_unsupported_mode", "program_id": pid}
+
+    preserved_email_html = str(parent_email_html if parent_email_html is not None else load_run_email_html(parent_run_id) or "")
+    if not preserved_email_html.strip():
+        return {
+            "ok": False,
+            "error": "image_only_reissue_missing_parent_email_html",
+            "program_id": pid,
+        }
+
+    child_run_id = generate_run_id(pid)
+    top_image_headline = _subject_headline_from_artifact(parent)
+    top_variation_fields = _keysuri_top_image_variation_fields(
+        pid,
+        parent_run_id,
+        top_image_headline,
+    )
+
+    canary_fn = image_canary_runner or _generate_keysuri_service_image
+    try:
+        image_outcome = canary_fn(
+            pid,
+            run_id=parent_run_id,
+            subject_top_headline=top_image_headline,
+        )
+    except TypeError:
+        image_outcome = canary_fn(pid)
+    if not image_outcome.ok:
+        return {
+            "ok": False,
+            "run_id": child_run_id,
+            "program_id": pid,
+            "error": image_outcome.error_code or ERROR_IMAGE_GENERATION_FAILED,
+            "called_gemini": False,
+            "called_image_api": bool(image_outcome.called_image_api),
+            "text_generation_called": False,
+            "image_generation_called": bool(image_outcome.called_image_api),
+        }
+
+    raw_generated_image_path = str(image_outcome.generated_image_path or "")
+    gen_image_raw_abs = _REPO / raw_generated_image_path
+    gen_image_abs = _watermarked_top_shot_path(gen_image_raw_abs)
+    watermarked_generated_image_path = _repo_rel(gen_image_abs)
+    image_outcome.generated_image_path = watermarked_generated_image_path
+
+    issue_codes: List[str] = []
+    bottom_image_path: Optional[Path] = None
+    bottom_image_status = "not_applicable"
+    bottom_image_source = ""
+    bottom_image_meta: Dict[str, Any] = {}
+    if pid == PROGRAM_KOREA:
+        bottom_image_path, bottom_issues, bottom_image_meta = resolve_korea_bottom_email_image_path(
+            child_run_id,
+            **_korea_bottom_weather_inputs_from_artifact(parent),
+            generate_fn=bottom_generate_fn,
+            watermark_fn=bottom_watermark_fn,
+        )
+        if bottom_image_path is not None:
+            bottom_image_status = "available"
+            bottom_image_source = str(bottom_image_meta.get("bottom_shot_source") or "fixed_105936_fallback")
+            if bottom_image_source == "generated_v6_multi_ref":
+                bottom_image_meta.update(
+                    _persist_korea_generated_images(
+                        child_run_id,
+                        gen_image_abs,
+                        bottom_image_path,
+                        upload_fn=image_upload_fn,
+                    )
+                )
+        else:
+            bottom_image_status = "placeholder"
+            issue_codes.extend(bottom_issues)
+
+    top_cid, bottom_cid = _image_only_regen_cid_tokens(pid, child_run_id)
+    email_html = _replace_keysuri_image_cids(
+        preserved_email_html,
+        program_id=pid,
+        top_cid=top_cid,
+        bottom_cid=bottom_cid,
+    )
+    email_html = email_html.replace(parent_run_id, child_run_id)
+
+    old_subject = str(
+        parent.get("owner_email_subject")
+        or parent.get("email_subject")
+        or _PROGRAM_EMAIL_SUBJECT.get(pid, "")
+        or PROGRAM_DISPLAY.get(pid, pid)
+    ).strip()
+    subject = old_subject if old_subject.startswith("[이미지 재발행]") else f"[이미지 재발행]{old_subject}"
+    preheader = str(parent.get("owner_email_preheader") or parent.get("email_preheader") or "").strip()
+
+    email_sent = False
+    smtp_attempted = False
+    if send_owner_email:
+        if os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip() not in ("1", "true", "yes"):
+            issue_codes.append("owner_review_send_gate_off")
+        else:
+            smtp_attempted = True
+            os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
+            inline_parts: List[Tuple[str, str, str]] = [
+                (str(gen_image_abs.resolve()), top_cid, gen_image_abs.name or "keysuri_top_regen.jpg")
+            ]
+            if bottom_image_path is not None and bottom_cid:
+                inline_parts.append(
+                    (
+                        str(bottom_image_path.resolve()),
+                        bottom_cid,
+                        bottom_image_path.name or "keysuri_korea_bottom_regen.jpg",
+                    )
+                )
+            sender = send_fn or send_genie_email
+            email_sent = bool(
+                sender(
+                    email_html,
+                    subject,
+                    inline_jpeg_parts=inline_parts,
+                    attachment_jpeg_parts=[],
+                )
+            )
+
+    meta = build_service_artifact_fields(
+        run_id=child_run_id,
+        mode=pid,
+        program_id=pid,
+        trigger_source=trigger_source,
+        validation_result=str(parent.get("validation_result") or "pass"),
+        issue_codes=issue_codes,
+        called_gemini=False,
+        image_outcome=image_outcome,
+        html_path=str(parent.get("html_path") or ""),
+        owner_review_html_path=str(artifact_email_path(child_run_id)),
+        smtp_attempted=smtp_attempted,
+        email_sent=email_sent,
+        customer_delivery_status="not_sent",
+        response_status=200,
+        workflow_status=str(parent.get("workflow_status") or "review_required"),
+        owner_review_url=build_owner_review_admin_url(child_run_id) or None,
+        artifact_storage_durable=_service_artifact_storage_durable(),
+    )
+    _copy_subject_identity_fields(parent, meta)
+    meta.update(
+        {
+            "regen_type": "image_only",
+            "regen_parent_run_id": parent_run_id,
+            "regen_requested_at_kst": now_kst_iso(),
+            "regen_requested_by": "admin",
+            "reissue_scope": "image_only",
+            "reissue_scope_supported": True,
+            "reissue_scope_status": "executed",
+            "reissue_reason_code": reissue_reason_code or None,
+            "reissue_reason_note": reissue_reason_note or None,
+            "regen_preserved_text": True,
+            "regen_regenerated_images": True,
+            "text_generation_called": False,
+            "image_generation_called": True,
+            "source_fetch_called": False,
+            "news_fetch_called": False,
+            "customer_approve_called": False,
+            "customer_final_email_called": False,
+            "image_only_regen_source_run_id": parent_run_id,
+            "generated_image_path_raw": raw_generated_image_path,
+            "generated_image_path_watermarked": watermarked_generated_image_path,
+            "top_shot_watermark_status": "applied",
+            "top_shot_watermark_text": "MirAI:ON",
+            "top_image_cid": top_cid,
+            "owner_email_image_cids": [top_cid],
+            "owner_email_subject": subject,
+            "owner_email_preheader": preheader,
+            "email_preheader": meta.get("email_preheader") or preheader,
+        }
+    )
+    if top_variation_fields:
+        meta.update(top_variation_fields)
+    if pid == PROGRAM_KOREA:
+        meta.update(bottom_image_meta)
+        meta.setdefault("bottom_shot_variation_enabled", korea_bottom_variation_enabled())
+        meta.setdefault("bottom_shot_source", bottom_image_source or "fixed_105936_fallback_unavailable")
+        meta.setdefault("bottom_shot_watermark_status", "applied" if bottom_image_path is not None else "unavailable")
+        meta["korea_bottom_shot_status"] = bottom_image_status
+        if bottom_image_source:
+            meta["korea_bottom_shot_source"] = bottom_image_source
+        if bottom_image_path is not None and bottom_cid:
+            meta["korea_bottom_shot_path"] = _repo_rel(bottom_image_path)
+            meta["korea_bottom_shot_cid"] = bottom_cid
+            meta["bottom_image_cid"] = bottom_cid
+            meta["bottom_shot_image_path"] = meta["korea_bottom_shot_path"]
+            meta["owner_email_image_cids"] = [top_cid, bottom_cid]
+
+    owner_email_fields = _owner_email_delivery_fields(
+        smtp_attempted=smtp_attempted,
+        email_sent=email_sent,
+        subject=subject,
+    )
+    meta.update(owner_email_fields)
+    meta["owner_email_subject"] = subject
+    _log_owner_email_delivery_event(program_id=pid, run_id=child_run_id, fields=owner_email_fields)
+    saved_run_id = save_run_artifact(meta, email_html=email_html)
+
+    return {
+        "ok": image_outcome.ok and (not send_owner_email or email_sent),
+        "run_id": saved_run_id,
+        "program_id": pid,
+        "regen_type": "image_only",
+        "regen_parent_run_id": parent_run_id,
+        "called_gemini": False,
+        "called_image_api": image_outcome.called_image_api,
+        "text_generation_called": False,
+        "image_generation_called": True,
+        "email_sent": email_sent,
+        "owner_email_subject": subject,
+        "customer_delivery_status": "not_sent",
+        "top_image_cid": top_cid,
+        "bottom_image_cid": bottom_cid,
+    }
 
 
 def _build_service_contract_fixture(

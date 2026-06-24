@@ -173,9 +173,9 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("본문·이미지 모두 재발행", resp.text)
         self.assertIn("운영자 검토 메일", resp.text)
         self.assertIn("고객 이메일 발송 상태", resp.text)
-        self.assertIn("선택할 수 있지만, 실행은 아직 차단됩니다", resp.text)
+        self.assertIn("본문만 재발행은 아직 준비 중입니다", resp.text)
 
-    def test_reissue_scope_radios_are_selectable_not_disabled(self) -> None:
+    def test_today_reissue_scope_radios_match_backend_support(self) -> None:
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
         run_id = "20260530_121100_today_genie_aabbccdd"
         save_run_artifact(
@@ -191,12 +191,35 @@ class AdminRoutesTests(unittest.TestCase):
         )
         resp = self.client.get(f"/admin/runs/{run_id}")
         self.assertEqual(resp.status_code, 200)
-        self.assertNotRegex(resp.text, r'value="text_only"[^>]*\bdisabled\b')
-        self.assertNotRegex(resp.text, r'value="image_only"[^>]*\bdisabled\b')
+        self.assertRegex(resp.text, r'value="text_only"[^>]*\bdisabled\b')
+        self.assertRegex(resp.text, r'value="image_only"[^>]*\bdisabled\b')
         self.assertRegex(resp.text, r'value="text_and_image"[^>]*\bchecked\b')
         self.assertIn('name="reissue_scope"', resp.text)
         self.assertIn('class="radio-scope"', resp.text)
         self.assertIn('class="radio-helper"', resp.text)
+
+    def test_keysuri_reissue_scope_radios_enable_image_only(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        run_id = "20260530_121101_keysuri_korea_tech_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": run_id,
+                "mode": "keysuri_korea_tech",
+                "program_id": "keysuri_korea_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": False,
+                "response_status": 200,
+                "reason_summary": "ok",
+            }
+        )
+        resp = self.client.get(f"/admin/runs/{run_id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertRegex(resp.text, r'value="text_only"[^>]*\bdisabled\b')
+        self.assertNotRegex(resp.text, r'value="image_only"[^>]*\bdisabled\b')
+        self.assertRegex(resp.text, r'value="image_only"[^>]*\bchecked\b')
+        self.assertRegex(resp.text, r'value="text_and_image"[^>]*\bdisabled\b')
+        self.assertIn("이미지 prompt와 이미지 산출물만 다시 생성합니다", resp.text)
 
     def test_admin_pages_include_viewport_meta(self) -> None:
         login_resp = self.client.get("/admin")
@@ -336,7 +359,7 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertEqual(parent.get("reissue_count", 0), 0)
 
     @patch("admin_routes.execute_orchestrator_run")
-    def test_reissue_image_only_blocked(self, mock_exec) -> None:
+    def test_reissue_image_only_blocked_for_today(self, mock_exec) -> None:
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
         parent_id = "20260530_120200_today_genie_aabbccdd"
         save_run_artifact(
@@ -362,7 +385,52 @@ class AdminRoutesTests(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertIn("unsupported_reissue_scope", str(resp.url))
-        self.assertIn("본문·이미지 모두 재발행만 실행 가능합니다", resp.text)
+        self.assertIn("화면에 표시된 실행 가능 범위를 확인하세요", resp.text)
+        mock_exec.assert_not_called()
+        parent = load_run_artifact(parent_id) or {}
+        self.assertEqual(parent.get("reissue_count", 0), 0)
+
+    @patch("admin_routes.execute_orchestrator_run")
+    @patch("admin_routes.run_keysuri_image_only_reissue")
+    def test_reissue_image_only_executes_keysuri_helper_only(self, mock_image_only, mock_exec) -> None:
+        child_id = "20260530_130100_keysuri_korea_tech_11223344"
+        mock_image_only.return_value = {
+            "ok": True,
+            "run_id": child_id,
+            "regen_type": "image_only",
+            "email_sent": True,
+        }
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120201_keysuri_korea_tech_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_korea_tech",
+                "program_id": "keysuri_korea_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+                "reason_summary": "ok",
+                "reissue_count": 0,
+            },
+            email_html='<html><body><p>original body</p><img src="cid:keysuri_topshot_korea_20260530"></body></html>',
+        )
+        resp = self.client.post(
+            f"/admin/runs/{parent_id}/reissue",
+            data={
+                "reason_option": "이미지 품질 이슈",
+                "reason_note": "replace only images",
+                "reissue_scope": "image_only",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        self.assertIn(child_id, resp.headers.get("location", ""))
+        mock_image_only.assert_called_once()
+        self.assertEqual(mock_image_only.call_args.args[0], parent_id)
+        self.assertEqual(mock_image_only.call_args.kwargs["reissue_reason_code"], "이미지 품질 이슈")
+        self.assertEqual(mock_image_only.call_args.kwargs["reissue_reason_note"], "replace only images")
         mock_exec.assert_not_called()
         parent = load_run_artifact(parent_id) or {}
         self.assertEqual(parent.get("reissue_count", 0), 0)
