@@ -604,5 +604,41 @@ class FinalPromptGateSafetyTests(unittest.TestCase):
             self.assertEqual(meta["top_image_final_prompt_validation_issues"], [])
 
 
+class HairTextureLockTests(unittest.TestCase):
+    """Verify that the Hair + Texture Identity Lock patch phrases survive
+    the full prompt-build pipeline for both KeeSuri programs."""
+
+    def test_hair_lock_phrases_in_top_image_prompt(self) -> None:
+        for build in (_global, _korea):
+            pos = build()["positive_prompt"].lower()
+            self.assertIn("same sleek chin-length bob silhouette", pos)
+            self.assertIn("same side-parted compact bob", pos)
+            self.assertIn("smooth inward-folding ends", pos)
+
+    def test_assistant_side_composition_in_top_image(self) -> None:
+        for build in (_global, _korea):
+            pos = build()["positive_prompt"].lower()
+            self.assertIn("assistant-side composition", pos)
+
+    def test_hair_drift_guard_in_negative_prompt(self) -> None:
+        for build in (_global, _korea):
+            neg = build()["negative_prompt"].lower()
+            self.assertIn("no long bob", neg)
+            self.assertIn("no different haircut", neg)
+            self.assertIn("no hairstyle change between top and bottom images", neg)
+
+    def test_role_drift_guard_in_negative_prompt(self) -> None:
+        for build in (_global, _korea):
+            neg = build()["negative_prompt"].lower()
+            self.assertIn("no ceo office portrait", neg)
+            self.assertIn("no boss desk composition", neg)
+
+    def test_clean_final_prompt_passes_with_hair_lock(self) -> None:
+        for build in (_global, _korea):
+            built = build()
+            self.assertEqual(built["final_prompt_validation_status"], "pass")
+            self.assertEqual(built["final_prompt_validation_issues"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

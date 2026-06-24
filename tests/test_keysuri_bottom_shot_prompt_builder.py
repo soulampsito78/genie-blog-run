@@ -817,7 +817,8 @@ class FixedIdentityGeneTests(unittest.TestCase):
     def test_identity_hair_is_sleek_no_curl(self):
         text = _build()["fixed_identity_gene"]["text"]
         self.assertIn("sleek", text)
-        self.assertIn("no curl at the ends", text)
+        self.assertIn("same sleek chin-length bob silhouette", text)
+        self.assertIn("natural inward-folding ends", text)
 
     def test_identity_no_quiet_authority(self):
         text = _build()["fixed_identity_gene"]["text"]
@@ -839,7 +840,8 @@ class FixedIdentityGeneTests(unittest.TestCase):
 
     def test_identity_no_c_curl_in_invariants(self):
         inv = _build()["fixed_identity_gene"]["invariants"]
-        self.assertIn("no C-curl", inv["hair"])
+        self.assertIn("same sleek chin-length bob silhouette", inv["hair"])
+        self.assertIn("natural inward-folding ends", inv["hair"])
 
     def test_identity_maintains_reference_image(self):
         text = _build()["fixed_identity_gene"]["text"]
@@ -862,11 +864,11 @@ class FixedRoleSceneGeneTests(unittest.TestCase):
     def test_role_contains_owner_farewell(self):
         text = _build()["fixed_role_scene_gene"]["text"]
         self.assertIn("대표님", text)
-        self.assertIn("farewell", text)
+        self.assertIn("secondary briefing-support visual", text)
 
     def test_role_allows_selected_private_transition_space(self):
         text = _build()["fixed_role_scene_gene"]["text"]
-        self.assertIn("private transition space", text)
+        self.assertIn("work surface", text)
         self.assertIn("owner", text)
 
     def test_role_unchanged_across_weather(self):
@@ -884,7 +886,8 @@ class FixedRoleSceneGeneTests(unittest.TestCase):
 
     def test_role_exclusive_owner_facing(self):
         text = _build()["fixed_role_scene_gene"]["text"]
-        self.assertIn("exclusive owner-facing private closing moment", text)
+        self.assertIn("assistant-facing", text)
+        self.assertIn("reserved only for 대표님", text)
 
     def test_role_reserved_for_owner(self):
         text = _build()["fixed_role_scene_gene"]["text"]
@@ -892,7 +895,7 @@ class FixedRoleSceneGeneTests(unittest.TestCase):
 
     def test_role_unattainable_not_approachable(self):
         text = _build()["fixed_role_scene_gene"]["text"]
-        self.assertIn("Unattainable, not approachable", text)
+        self.assertIn("Private, composed", text)
 
     def test_role_no_warmth_framing(self):
         text = _build()["fixed_role_scene_gene"]["text"]
@@ -965,7 +968,7 @@ class FixedCameraGeneTests(unittest.TestCase):
 
     def test_camera_knee_up(self):
         text = _build()["fixed_camera_gene"]["text"]
-        self.assertIn("Knee-up", text)
+        self.assertIn("Upper-body", text)
         self.assertIn("85mm", text)
 
     def test_camera_no_anti_body_stack(self):
@@ -1450,7 +1453,7 @@ class V5DriftBanTests(unittest.TestCase):
         self.assertIn("Selected prop:", _build()["prompt_text"])
 
     def test_farewell_in_prompt(self):
-        self.assertIn("farewell", _build()["prompt_text"])
+        self.assertIn("secondary briefing-support visual", _build()["prompt_text"])
 
     def test_restrained_composed_smile_in_prompt(self):
         self.assertIn("restrained composed slight smile", _build()["prompt_text"])

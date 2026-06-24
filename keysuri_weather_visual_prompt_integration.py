@@ -80,6 +80,13 @@ REQUIRED_NEGATIVE_PHRASES = (
     "no executive chair pose",
     "no boss chair",
     "not seated behind the main executive desk",
+    "no long bob",
+    "no shoulder-length hair",
+    "no different haircut",
+    "no salon bob variation",
+    "no hairstyle change between top and bottom images",
+    "no ceo office portrait",
+    "no boss desk composition",
 )
 
 KOREA_EXTRA_NEGATIVE_PHRASES = (
@@ -522,8 +529,11 @@ def _build_negative_prompt(program_id: str) -> str:
 _PRODUCTION_TOP_IMAGE_IDENTITY = (
     "Photorealistic premium Korean private AI tech briefing secretary Kee-Suri "
     "(테크 비서 키수리). Same person as the reference image: refined Korean visual "
-    "impression, sleek short bob, thin metal glasses, calm attentive intelligent "
-    "gaze. One-person private briefing mood — standing beside or near the user, "
+    "impression, sleek short bob, same sleek chin-length bob silhouette, "
+    "same side-parted compact bob, jawline-length hair contour, smooth inward-folding ends, "
+    "restrained and consistent hair volume, thin metal glasses, calm attentive intelligent "
+    "gaze. One-person private briefing mood — assistant-side composition, "
+    "standing beside or near the user, "
     "quietly competent, composed, and helpful, in a premium private tech briefing "
     "atmosphere. Not a public news anchor, not a weathercaster, not a CEO or "
     "chairwoman or senior executive, not a fashion model, not a generic office "
@@ -549,7 +559,8 @@ _PRODUCTION_TOP_IMAGE_STYLE_LOCK = (
     "look, same restrained contrast and polished office lighting family, realistic "
     "lens. No beauty-ad gloss, no fashion editorial texture, no cinematic poster "
     "look, no casual stock-photo look, no anime, no illustration, no plastic skin, "
-    "no over-saturated color grading, no random style shift between runs"
+    "no over-saturated color grading, no random style shift between runs, "
+    "no hairstyle change between runs, no texture mismatch between runs"
 )
 
 # Light time/mood stem for production — NO hard office+monitor lock. Background is
@@ -628,6 +639,9 @@ _FINAL_NEGATABLE_ROLE_TOKENS = (
 _FINAL_REQUIRED_POSITIVE_PHRASES = (
     "same person as the reference",
     "sleek short bob",
+    "same sleek chin-length bob silhouette",
+    "same side-parted compact bob",
+    "assistant-side composition",
     "thin metal glasses",
     "private",
     "tech",
@@ -652,6 +666,11 @@ _FINAL_REQUIRED_NEGATIVE_PHRASES = (
     "no weather app ui",
     "no meteorological dashboard",
     "not seated behind the main executive desk",
+    "no long bob",
+    "no different haircut",
+    "no hairstyle change between top and bottom images",
+    "no ceo office portrait",
+    "no boss desk composition",
 )
 _FINAL_PROGRAM_CONTEXT_MARKER = {
     "keysuri_global_tech": "global big-tech",

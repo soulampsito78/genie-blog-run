@@ -72,7 +72,9 @@ DIRECTION_REF_105936_NOTE = (
 
 FIXED_IDENTITY_GENE = (
     "She is Key-Suri. Maintain her exact identity from the reference image. "
-    "Her sleek side-parted short bob lies close to the jaw — smooth and straight, no curl at the ends. "
+    "Her sleek side-parted short bob lies close to the jaw — same sleek chin-length bob silhouette as the top image, "
+    "same side-parted compact bob, jawline-length hair contour, smooth with natural inward-folding ends at the jaw, "
+    "restrained and consistent hair volume, same haircut across all Kee-Suri runs. "
     "Thin metal rectangular glasses rest naturally on her face. "
     "Noble sensuality and controlled feminine magnetism expressed through posture, silhouette, and gaze — "
     "never through exposure. Premium presence without effort."
@@ -88,7 +90,7 @@ ANCHOR_ANTI_COPY_INSTRUCTION = (
 
 IDENTITY_INVARIANTS = {
     "anchor": "105936 reference image — primary visual identity source",
-    "hair": "sleek side-parted short bob, hair close to jaw, smooth and straight, no curl at ends, no C-curl, no bangs, no updos, no ponytails",
+    "hair": "sleek side-parted short bob, same sleek chin-length bob silhouette as top image, same side-parted compact bob, hair close to jaw, smooth with natural inward-folding ends at the jaw, restrained and consistent hair volume, no bangs, no updos, no ponytails",
     "glasses": "thin metal rectangular frames — always present",
     "expression": "noble sensuality, controlled feminine magnetism, cool intelligence softened only for the owner",
     "ethnicity": "Korean woman",
@@ -100,23 +102,22 @@ IDENTITY_INVARIANTS = {
 
 FIXED_ROLE_SCENE_GENE = (
     "She is Key-Suri, a premium private AI secretary. "
-    "The briefing is finished and she is pausing in a quiet private transition space "
-    "to say a personal farewell to the owner — 대표님. She faces the viewer directly — "
-    "the reader is the owner she is leaving toward. "
-    "This is an exclusive owner-facing private closing moment, reserved only for 대표님. "
-    "Unattainable, not approachable. Cool intelligence softened only for the owner. "
-    "Private secretary intimacy with strict dignity."
+    "This is a secondary briefing-support visual — she is at a private work surface or side briefing table, "
+    "reviewing printed briefing cards, memo notes, or a compact tech signal board for the owner — 대표님. "
+    "She may appear at the side or partially engaged with the work surface; this is not a face-first portrait. "
+    "The composition supports the briefing, not her appearance. "
+    "Cool intelligence in a quiet working moment. Private, composed, assistant-facing — reserved only for 대표님."
 )
 
 ROLE_SCENE_INVARIANTS = {
-    "role": "premium private AI secretary — briefing finished, personal farewell to owner",
-    "emotional_register": "exclusive owner-facing private closing moment — unattainable, noble sensuality, reserved for 대표님 only",
-    "scene": "selected quiet premium transition space, private and owner-facing",
-    "viewer_relationship": "reader is the owner (대표님) she is leaving toward",
+    "role": "premium private AI secretary — secondary briefing-support visual at a private work surface",
+    "emotional_register": "quiet working moment — cool intelligence, composed, assistant-facing, reserved for 대표님",
+    "scene": "private work surface or side briefing table with briefing cards, memo notes, or tech signal board",
+    "viewer_relationship": "reader is the owner (대표님) receiving the briefing support material",
     "forbidden_environment": [
         "busy public lobby, crowded corridor, public event space",
-        "tablet, tech screen, monitor wall, desk",
-        "briefing posture, briefing host framing",
+        "hallway, fashion corridor, coat-room, transition space, farewell scene",
+        "full-body portrait mode, face-first beauty shot, main character entrance",
     ],
 }
 
@@ -189,18 +190,18 @@ POSE_FORBIDDEN_TERMS: List[str] = [
 # ---------------------------------------------------------------------------
 
 FIXED_CAMERA_GENE = (
-    "Knee-up portrait showing approximately three-quarters of her body — "
-    "from the knee to just above the crown. "
-    "Face-first composition: the face is the primary subject, "
-    "the selected outfit and optional prop read naturally below. "
-    "Camera angle: eye level or 2–3 degrees above, never below chin level. "
+    "Upper-body to waist-up framing, desk-adjacent angle — "
+    "showing Kee-Suri at or near the work surface with visible briefing material. "
+    "This is a secondary briefing-support visual: the work surface and briefing material "
+    "share the frame with the subject; face is not the sole focal point. "
+    "Camera angle: eye level or slightly above, never dramatically below chin level. "
     "Lens: 85mm portrait equivalent, shallow depth of field, "
-    "subject sharp, background softly defocused."
+    "subject and briefing material sharp, background softly defocused."
 )
 
 CAMERA_INVARIANTS = {
-        "framing": "knee-up / 3/4 body — face-first, selected outfit and optional prop visible below",
-    "angle": "eye level or 2-3 degrees above — never below chin",
+        "framing": "upper-body to waist-up, desk-adjacent — work surface and briefing material share frame with subject",
+    "angle": "eye level or slightly above — never dramatically below chin",
     "lens": "85mm portrait equivalent",
     "depth_of_field": "subject sharp, background softly defocused",
     "forbidden": [
@@ -273,7 +274,11 @@ NEGATIVE_PROMPT_V6 = (
     "friendly smile, welcoming expression, approachable warmth, "
     "ordinary office lady, lifestyle model, cheap sexiness, "
     "hostess, bar mood, lounge mood, lounge hostess, "
-    "public-facing smile, open approachable expression"
+    "public-facing smile, open approachable expression, "
+    "no full-body hallway portrait, no fashion hallway shot, "
+    "no luxury transition shot, no coat-room portrait, no posing in corridor, "
+    "no handbag-focused portrait, no main character beauty shot, "
+    "no repeating top image as another portrait"
 )
 
 NEGATIVE_PROMPT_V5 = NEGATIVE_PROMPT_V6
@@ -331,25 +336,25 @@ WEATHER_CLOSET_CATALOG: Dict[str, Dict[str, Any]] = {
                 "An ink-navy silk blouse with pearl-gray tailored wide-leg trousers, polished and fluid.",
                 family="silk_blouse_wide_leg_trousers", palette="ink navy / pearl gray",
                 silhouette="fluid tailored wide-leg", prop="slim clutch",
-                scene="quiet corridor near a glass wall",
+                scene="side briefing table with open documents",
             ),
             _look(
                 "A deep-forest fine-knit midi dress with a clean column line and restrained waist definition.",
                 family="knit_midi_dress", palette="deep forest",
                 silhouette="refined column midi", prop="no visible prop",
-                scene="private entrance hall",
+                scene="compact briefing desk with printed cards",
             ),
             _look(
                 "A dusty-rose silk blouse with a slate-blue A-line midi skirt, elegant without stiffness.",
                 family="silk_blouse_a_line_midi", palette="dusty rose / slate blue",
                 silhouette="soft A-line midi", prop="smartphone",
-                scene="window-side hallway",
+                scene="window-side briefing station",
             ),
             _look(
                 "A pearl-gray refined cardigan set with espresso relaxed tailored trousers.",
                 family="refined_cardigan_relaxed_trousers", palette="pearl gray / espresso brown",
                 silhouette="soft layered tailoring", prop="structured handbag",
-                scene="executive elevator lobby",
+                scene="compact side table with briefing materials",
             ),
         ],
     },
@@ -361,25 +366,25 @@ WEATHER_CLOSET_CATALOG: Dict[str, Dict[str, Any]] = {
                 "A camel cashmere coat over a muted-wine knit midi dress, warm but sharply refined.",
                 family="cashmere_coat_knit_dress", palette="camel / muted wine",
                 silhouette="long coat over column midi", prop="refined scarf",
-                scene="winter coat-room doorway",
+                scene="private tech signal board beside a work surface",
             ),
             _look(
                 "An ink-navy fine-wool coat with pearl-gray tailored wide-leg trousers and a silk inner layer.",
                 family="wool_coat_wide_leg_trousers", palette="ink navy / pearl gray",
                 silhouette="long tailored layers", prop="no visible prop",
-                scene="private office doorway",
+                scene="private work surface with documents",
             ),
             _look(
                 "A deep-forest refined cardigan jacket with a charcoal long pleated skirt.",
                 family="cardigan_long_pleated_skirt", palette="deep forest / soft charcoal",
                 silhouette="soft jacket over long pleats", prop="structured handbag",
-                scene="evening office lounge",
+                scene="quiet private work corner with briefing notes",
             ),
             _look(
                 "An espresso wrap dress beneath a slate-blue tailored coat, composed and modern.",
                 family="wrap_dress_tailored_coat", palette="espresso brown / slate blue",
                 silhouette="defined wrap midi with long coat", prop="slim clutch",
-                scene="private entrance hall",
+                scene="compact briefing desk with printed cards",
             ),
         ],
     },
@@ -391,25 +396,25 @@ WEATHER_CLOSET_CATALOG: Dict[str, Dict[str, Any]] = {
                 "A slate-blue luxury trench over ink-navy tailored wide-leg trousers and a silk blouse.",
                 family="trench_wide_leg_trousers", palette="slate blue / ink navy",
                 silhouette="belted trench with fluid trousers", prop="slim umbrella",
-                scene="rainy building lobby",
+                scene="private covered briefing station",
             ),
             _look(
                 "A deep-forest wrap midi dress under a soft-charcoal rain coat.",
                 family="wrap_dress_rain_coat", palette="deep forest / soft charcoal",
                 silhouette="wrap midi with clean outer layer", prop="slim clutch",
-                scene="quiet corridor near a glass wall",
+                scene="side briefing table with open documents",
             ),
             _look(
                 "A muted-wine silk blouse with a pearl-gray long pleated skirt and a light trench.",
                 family="silk_blouse_long_pleated_skirt", palette="muted wine / pearl gray",
                 silhouette="long moving pleats", prop="umbrella",
-                scene="private entrance hall",
+                scene="compact briefing desk with printed cards",
             ),
             _look(
                 "A muted-teal cardigan set with espresso relaxed trousers and a water-resistant outer layer.",
                 family="cardigan_relaxed_trousers", palette="muted teal / espresso brown",
                 silhouette="relaxed tailored layers", prop="no visible prop",
-                scene="executive elevator lobby",
+                scene="compact side table with briefing materials",
             ),
         ],
     },
@@ -421,25 +426,25 @@ WEATHER_CLOSET_CATALOG: Dict[str, Dict[str, Any]] = {
                 "A muted-teal silk blouse with pearl-gray tailored wide-leg trousers.",
                 family="silk_blouse_wide_leg_trousers", palette="muted teal / pearl gray",
                 silhouette="fluid wide-leg tailoring", prop="no visible prop",
-                scene="window-side hallway",
+                scene="window-side briefing station",
             ),
             _look(
                 "A dusty-rose wrap midi dress with restrained drape and a refined waist line.",
                 family="wrap_midi_dress", palette="dusty rose",
                 silhouette="soft wrap midi", prop="slim clutch",
-                scene="evening office lounge",
+                scene="quiet private work corner with briefing notes",
             ),
             _look(
                 "An ink-navy silk blouse with a pearl-gray A-line midi skirt.",
                 family="silk_blouse_a_line_midi", palette="ink navy / pearl gray",
                 silhouette="structured A-line midi", prop="smartphone",
-                scene="quiet corridor near a glass wall",
+                scene="side briefing table with open documents",
             ),
             _look(
                 "A deep-forest lightweight knit dress with a long clean line and subtle movement.",
                 family="lightweight_knit_dress", palette="deep forest",
                 silhouette="long refined knit midi", prop="structured handbag",
-                scene="private entrance hall",
+                scene="compact briefing desk with printed cards",
             ),
         ],
     },
@@ -451,25 +456,25 @@ WEATHER_CLOSET_CATALOG: Dict[str, Dict[str, Any]] = {
                 "A slate-blue sleeveless high-neck silk top with ink-navy wide-leg trousers, fully professional.",
                 family="sleeveless_silk_wide_leg_trousers", palette="slate blue / ink navy",
                 silhouette="airy wide-leg tailoring", prop="no visible prop",
-                scene="window-side hallway",
+                scene="window-side briefing station",
             ),
             _look(
                 "A muted-teal short-sleeve wrap dress with refined drape and no party styling.",
                 family="short_sleeve_wrap_dress", palette="muted teal",
                 silhouette="light wrap midi", prop="slim clutch",
-                scene="private entrance hall",
+                scene="compact briefing desk with printed cards",
             ),
             _look(
                 "A dusty-rose silk blouse with a pearl-gray long pleated skirt.",
                 family="silk_blouse_long_pleated_skirt", palette="dusty rose / pearl gray",
                 silhouette="light long pleats", prop="smartphone",
-                scene="quiet corridor near a glass wall",
+                scene="side briefing table with open documents",
             ),
             _look(
                 "An ink-navy evening lounge midi dress with a clean neckline and restrained sheen, never party wear.",
                 family="evening_lounge_midi_dress", palette="ink navy",
                 silhouette="elongated lounge midi", prop="no visible prop",
-                scene="evening office lounge",
+                scene="quiet private work corner with briefing notes",
             ),
         ],
     },
@@ -481,25 +486,25 @@ WEATHER_CLOSET_CATALOG: Dict[str, Dict[str, Any]] = {
                 "A soft-charcoal cashmere coat over a muted-wine knit midi dress.",
                 family="cashmere_coat_knit_dress", palette="soft charcoal / muted wine",
                 silhouette="long coat over column midi", prop="refined scarf",
-                scene="winter coat-room doorway",
+                scene="private tech signal board beside a work surface",
             ),
             _look(
                 "An espresso wool-cashmere coat with pearl-gray wide-leg trousers and a fine-knit layer.",
                 family="cashmere_coat_wide_leg_trousers", palette="espresso brown / pearl gray",
                 silhouette="long coat with fluid trousers", prop="folded scarf",
-                scene="private office doorway",
+                scene="private work surface with documents",
             ),
             _look(
                 "An ink-navy structured coat over a deep-forest A-line midi skirt and fine-knit top.",
                 family="structured_coat_a_line_midi", palette="ink navy / deep forest",
                 silhouette="long coat over A-line midi", prop="slim clutch",
-                scene="private entrance hall",
+                scene="compact briefing desk with printed cards",
             ),
             _look(
                 "A pearl-gray tailored coat over a slate-blue knit dress, clean and warm without bulk.",
                 family="tailored_coat_knit_dress", palette="pearl gray / slate blue",
                 silhouette="tailored coat over knit midi", prop="no visible prop",
-                scene="executive elevator lobby",
+                scene="compact side table with briefing materials",
             ),
         ],
     },
@@ -511,49 +516,49 @@ WEATHER_CLOSET_CATALOG: Dict[str, Dict[str, Any]] = {
                 "An ink-navy silk blouse with pearl-gray tailored wide-leg trousers.",
                 family="silk_blouse_wide_leg_trousers", palette="ink navy / pearl gray",
                 silhouette="fluid wide-leg tailoring", prop="no visible prop",
-                scene="private entrance hall",
+                scene="compact briefing desk with printed cards",
             ),
             _look(
                 "A deep-forest wrap midi dress with restrained drape.",
                 family="wrap_midi_dress", palette="deep forest",
                 silhouette="soft wrap midi", prop="slim clutch",
-                scene="evening office lounge",
+                scene="quiet private work corner with briefing notes",
             ),
             _look(
                 "A muted-wine knit dress with a clean column line.",
                 family="knit_midi_dress", palette="muted wine",
                 silhouette="refined column midi", prop="smartphone",
-                scene="quiet corridor near a glass wall",
+                scene="side briefing table with open documents",
             ),
             _look(
                 "A pearl-gray refined cardigan set with espresso relaxed trousers.",
                 family="cardigan_relaxed_trousers", palette="pearl gray / espresso brown",
                 silhouette="soft layered tailoring", prop="structured handbag",
-                scene="executive elevator lobby",
+                scene="compact side table with briefing materials",
             ),
             _look(
                 "A dusty-rose silk blouse with a slate-blue A-line midi skirt.",
                 family="silk_blouse_a_line_midi", palette="dusty rose / slate blue",
                 silhouette="soft A-line midi", prop="no visible prop",
-                scene="window-side hallway",
+                scene="window-side briefing station",
             ),
             _look(
                 "A muted-teal silk blouse with a soft-charcoal long pleated skirt.",
                 family="silk_blouse_long_pleated_skirt", palette="muted teal / soft charcoal",
                 silhouette="long moving pleats", prop="smartphone",
-                scene="private office doorway",
+                scene="private work surface with documents",
             ),
             _look(
                 "An espresso evening lounge midi dress with restrained sheen, never party wear.",
                 family="evening_lounge_midi_dress", palette="espresso brown",
                 silhouette="elongated lounge midi", prop="slim clutch",
-                scene="evening office lounge",
+                scene="quiet private work corner with briefing notes",
             ),
             _look(
                 "A slate-blue soft blazer with ink-navy relaxed tailored trousers, fluid rather than corporate.",
                 family="soft_blazer_relaxed_trousers", palette="slate blue / ink navy",
                 silhouette="soft blazer with relaxed trousers", prop="no visible prop",
-                scene="private entrance hall",
+                scene="compact briefing desk with printed cards",
             ),
         ],
     },
