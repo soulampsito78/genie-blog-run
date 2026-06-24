@@ -5,9 +5,12 @@ import re
 import unittest
 
 from keysuri_top_image_variation import (
+    CAMERA_VARIANTS,
     GLOBAL_PROP_VARIANTS,
     KOREA_PROP_VARIANTS,
     OUTFIT_VARIANTS,
+    POSE_VARIANTS,
+    PROGRAM_VISUAL_CONTEXT,
     SIDE_EFFECTS_DISABLED,
     build_top_image_diversity_seed,
     resolve_keysuri_top_image_variation,
@@ -183,6 +186,20 @@ class GlobalKoreaSeparationTests(unittest.TestCase):
         self.assertNotIn("korean tech-ecosystem", g)
         self.assertNotIn("global big-tech", k)
 
+    def test_global_context_avoids_weather_cloud_icon_cues(self) -> None:
+        text = PROGRAM_VISUAL_CONTEXT["keysuri_global_tech"].lower()
+        for forbidden in (
+            "cloud diagram",
+            "cloud icon",
+            "cloud cue",
+            "cloud silhouette",
+            "weather icon",
+            "weather-like symbols",
+        ):
+            self.assertNotIn(forbidden, text)
+        self.assertIn("distributed computing infrastructure", text)
+        self.assertIn("no forecast-style symbols", text)
+
     def test_no_readable_company_or_policy_text_instruction(self) -> None:
         for build in (_global, _korea):
             pos = build()["positive_prompt"].lower()
@@ -218,6 +235,93 @@ class ProgramPropRuleTests(unittest.TestCase):
         g = {pid for pid, _ in GLOBAL_PROP_VARIANTS}
         k = {pid for pid, _ in KOREA_PROP_VARIANTS}
         self.assertEqual(g & k, set())
+
+
+class ImageFamilyConsistencyTests(unittest.TestCase):
+    def test_assistant_role_pose_catalog_has_no_executive_seat(self) -> None:
+        pose_ids = {pid for pid, _ in POSE_VARIANTS}
+        self.assertNotIn("pose_seated_desk", pose_ids)
+        joined = " ".join(clause for _pid, clause in POSE_VARIANTS).lower()
+        for forbidden in (
+            "seated behind the main executive desk",
+            "sitting in the boss chair",
+            "executive chair pose",
+            "ceo office portrait",
+            "boardroom authority pose",
+        ):
+            self.assertNotIn(forbidden, joined)
+        self.assertIn("assistant-side briefing table", joined)
+        self.assertIn("not behind the main desk", joined)
+        self.assertIn("not in an executive chair", joined)
+
+    def test_camera_catalog_avoids_authority_angle(self) -> None:
+        camera_ids = {cid for cid, _ in CAMERA_VARIANTS}
+        self.assertNotIn("cam_three_quarter_above", camera_ids)
+        joined = " ".join(clause for _cid, clause in CAMERA_VARIANTS).lower()
+        self.assertIn("neutral eye level", joined)
+        self.assertIn("no authority angle", joined)
+
+    def test_style_family_lock_shared_by_both_programs(self) -> None:
+        required = (
+            "consistent premium photorealistic editorial style",
+            "natural realistic skin texture",
+            "clean korean premium tech briefing brand look",
+            "same restrained contrast and polished office lighting family",
+            "realistic lens",
+            "no beauty-ad gloss",
+            "no fashion editorial texture",
+            "no cinematic poster look",
+            "no casual stock-photo look",
+            "no anime",
+            "no illustration",
+            "no plastic skin",
+            "no over-saturated color grading",
+            "no random style shift between runs",
+        )
+        for build in (_global, _korea):
+            pos = build()["positive_prompt"].lower()
+            for phrase in required:
+                self.assertIn(phrase, pos)
+
+    def test_weather_icon_negatives_required(self) -> None:
+        required = (
+            "no weather icons",
+            "no cloud weather symbol",
+            "no sun/rain/cloud forecast icon",
+            "no weather app ui",
+            "no meteorological dashboard",
+            "no tomorrow genie weather mood",
+        )
+        for build in (_global, _korea):
+            neg = build()["negative_prompt"].lower()
+            for phrase in required:
+                self.assertIn(phrase, neg)
+
+    def test_final_prompt_avoids_weather_icon_invitation(self) -> None:
+        forbidden = (
+            "cloud diagram",
+            "cloud cue",
+            "cloud silhouette",
+            "weather icon",
+            "weather app ui",
+            "meteorological dashboard",
+            "tomorrow genie weather mood",
+        )
+        for build in (_global, _korea):
+            pos = build()["positive_prompt"].lower()
+            for phrase in forbidden:
+                self.assertNotIn(phrase, pos)
+
+    def test_validator_blocks_executive_pose_and_weather_icon(self) -> None:
+        built = _global()
+        issues = validate_keysuri_final_top_image_prompt(
+            "keysuri_global_tech",
+            built["positive_prompt"] + " seated behind the main executive desk with a cloud icon.",
+            built["negative_prompt"],
+        )
+        codes = {i["code"] for i in issues}
+        self.assertIn("executive_boss_pose_present", codes)
+        self.assertIn("weather_cloud_icon_present", codes)
 
 
 class ReferenceSeparationTests(unittest.TestCase):

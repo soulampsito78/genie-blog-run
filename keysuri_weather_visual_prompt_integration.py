@@ -71,6 +71,15 @@ REQUIRED_NEGATIVE_PHRASES = (
     "no ceo or chairwoman or senior executive framing",
     "no boardroom authority portrait",
     "no fashion model styling",
+    "no weather icons",
+    "no cloud weather symbol",
+    "no sun/rain/cloud forecast icon",
+    "no weather app ui",
+    "no meteorological dashboard",
+    "no tomorrow genie weather mood",
+    "no executive chair pose",
+    "no boss chair",
+    "not seated behind the main executive desk",
 )
 
 KOREA_EXTRA_NEGATIVE_PHRASES = (
@@ -534,6 +543,15 @@ _PRODUCTION_TOP_IMAGE_REFERENCE = (
     "selected variant below"
 )
 
+_PRODUCTION_TOP_IMAGE_STYLE_LOCK = (
+    "Consistent premium photorealistic editorial style across all Kee-Suri runs: "
+    "natural realistic skin texture, clean Korean premium tech briefing brand "
+    "look, same restrained contrast and polished office lighting family, realistic "
+    "lens. No beauty-ad gloss, no fashion editorial texture, no cinematic poster "
+    "look, no casual stock-photo look, no anime, no illustration, no plastic skin, "
+    "no over-saturated color grading, no random style shift between runs"
+)
+
 # Light time/mood stem for production — NO hard office+monitor lock. Background is
 # decided by the selected background variant + program visual context, not here.
 _PRODUCTION_TIME_MOOD_STEM = {
@@ -551,6 +569,29 @@ _PRODUCTION_TIME_MOOD_STEM = {
 _FINAL_FORBIDDEN_OFFICE_STEM_TOKENS = (
     "desk and monitor with abstract non-readable charts",
     "premium private office with large windows, desk and monitor",
+)
+_FINAL_FORBIDDEN_EXECUTIVE_POSE_TOKENS = (
+    "seated behind the main executive desk",
+    "sitting in the boss chair",
+    "executive chair pose",
+    "ceo office portrait",
+    "boardroom authority pose",
+    "owner of the company mood",
+    "representative mood",
+    "director mood",
+    "chairwoman mood",
+)
+_FINAL_FORBIDDEN_WEATHER_ICON_TOKENS = (
+    "cloud icon",
+    "cloud cue",
+    "cloud silhouette",
+    "cloud diagram",
+    "cloud weather",
+    "weather icon",
+    "weather app ui",
+    "meteorological dashboard",
+    "sun/rain/cloud forecast icon",
+    "tomorrow genie weather mood",
 )
 # Reference-continuity phrases that must NOT reappear in the final prompt.
 _FINAL_FORBIDDEN_CONTINUITY_TOKENS = (
@@ -593,6 +634,12 @@ _FINAL_REQUIRED_POSITIVE_PHRASES = (
     "secretary",
     "one-person private briefing",
     "no readable real",
+    "consistent premium photorealistic editorial style",
+    "natural realistic skin texture",
+    "clean korean premium tech briefing brand look",
+    "same restrained contrast and polished office lighting family",
+    "realistic lens",
+    "no random style shift between runs",
 )
 _FINAL_REQUIRED_NEGATIVE_PHRASES = (
     "no readable text overlay",
@@ -600,6 +647,11 @@ _FINAL_REQUIRED_NEGATIVE_PHRASES = (
     "not a public news anchor",
     "not a weathercaster",
     "no fashion model styling",
+    "no weather icons",
+    "no cloud weather symbol",
+    "no weather app ui",
+    "no meteorological dashboard",
+    "not seated behind the main executive desk",
 )
 _FINAL_PROGRAM_CONTEXT_MARKER = {
     "keysuri_global_tech": "global big-tech",
@@ -619,6 +671,14 @@ def _occurrence_is_negated(sentence: str, token: str) -> bool:
         if not re.search(r"\b(not|no|avoid|without|never)\b", prefix):
             return False
         start = idx + len(token)
+
+
+def _token_has_unnegated_sentence(text: str, token: str) -> bool:
+    """True if token appears in any sentence without a local negation word."""
+    for sentence in _SENTENCE_SPLIT_RE.split(text):
+        if token in sentence and not _occurrence_is_negated(sentence, token):
+            return True
+    return False
 
 
 def validate_keysuri_final_top_image_prompt(
@@ -758,6 +818,28 @@ def validate_keysuri_final_top_image_prompt(
                 )
             )
 
+    # --- Assistant role: never render Kee-Suri as the person commanding the room.
+    for token in _FINAL_FORBIDDEN_EXECUTIVE_POSE_TOKENS:
+        if _token_has_unnegated_sentence(scan_lower, token):
+            issues.append(
+                _issue(
+                    "executive_boss_pose_present",
+                    f"final positive_prompt must keep Kee-Suri in assistant briefing position ({token!r})",
+                    "positive_prompt",
+                )
+            )
+
+    # --- Global tech must not collapse into weather/Tomorrow Genie iconography.
+    for token in _FINAL_FORBIDDEN_WEATHER_ICON_TOKENS:
+        if _token_has_unnegated_sentence(scan_lower, token):
+            issues.append(
+                _issue(
+                    "weather_cloud_icon_present",
+                    f"final positive_prompt must not invite weather/cloud iconography ({token!r})",
+                    "positive_prompt",
+                )
+            )
+
     # --- Program-specific prop rule ---------------------------------------------
     if pid == "keysuri_global_tech":
         if "tablet" not in scan_lower and "ipad" not in scan_lower:
@@ -839,6 +921,7 @@ def build_keysuri_production_top_image_prompt(
     parts = [
         _PRODUCTION_TOP_IMAGE_IDENTITY,
         _PRODUCTION_TOP_IMAGE_REFERENCE,
+        _PRODUCTION_TOP_IMAGE_STYLE_LOCK,
         wardrobe,
         pose_prop,
         framing,

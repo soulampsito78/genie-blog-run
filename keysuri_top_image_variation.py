@@ -60,7 +60,10 @@ OUTFIT_VARIANTS: Tuple[Tuple[str, str], ...] = (
 POSE_VARIANTS: Tuple[Tuple[str, str], ...] = (
     ("pose_three_quarter_standing", "standing in a calm three-quarter private briefing stance"),
     ("pose_relaxed_upright", "standing near the desk with a relaxed upright posture"),
-    ("pose_seated_desk", "seated calmly at the briefing desk, turned slightly toward the viewer"),
+    (
+        "pose_assistant_side_table_seated",
+        "seated only at a small assistant-side briefing table, turned toward the viewer as if briefing one person, not behind the main desk and not in an executive chair",
+    ),
     ("pose_side_on", "standing slightly side-on, attentively composed"),
 )
 
@@ -85,7 +88,7 @@ KOREA_PROP_VARIANTS: Tuple[Tuple[str, str], ...] = (
 GLOBAL_BACKGROUND_VARIANTS: Tuple[Tuple[str, str], ...] = (
     ("gbg_worldmap_panel", "a bright cool-toned office with a faint abstract world-map panel"),
     ("gbg_datacenter_silhouette", "a clean studio-like space with abstract data-center and server silhouettes"),
-    ("gbg_cloud_semiconductor", "an airy office corner with abstract cloud and semiconductor diagrams on a distant screen"),
+    ("gbg_semiconductor_infra", "an airy office corner with abstract semiconductor and distributed computing infrastructure diagrams on a distant non-readable surface"),
     ("gbg_global_network", "a minimal bright workspace with a soft global-network abstract backdrop"),
 )
 
@@ -99,7 +102,7 @@ KOREA_BACKGROUND_VARIANTS: Tuple[Tuple[str, str], ...] = (
 
 CAMERA_VARIANTS: Tuple[Tuple[str, str], ...] = (
     ("cam_waist_up_eye_level", "medium waist-up framing at eye level"),
-    ("cam_three_quarter_above", "relaxed three-quarter framing slightly above eye level"),
+    ("cam_three_quarter_neutral", "relaxed three-quarter briefing framing at neutral eye level, no authority angle"),
     ("cam_upper_body_portrait", "calm upper-body portrait distance"),
     ("cam_standing_upper_body", "natural standing upper-body framing"),
 )
@@ -121,9 +124,10 @@ SUBJECT_CUES: Tuple[str, ...] = (
 PROGRAM_VISUAL_CONTEXT: Dict[str, str] = {
     PROGRAM_GLOBAL: (
         "Subtle global big-tech briefing cues: faint abstract world-map and "
-        "data-center / server silhouettes, abstract semiconductor and cloud "
-        "diagrams on a distant non-readable screen, cool blue-gray international "
-        "tech briefing mood. No readable real company names or text in the image."
+        "data-center / server silhouettes, abstract semiconductor and distributed "
+        "computing infrastructure diagrams on a distant non-readable surface, cool "
+        "blue-gray international tech briefing mood. No forecast-style symbols, "
+        "no readable real company names or text in the image."
     ),
     PROGRAM_KOREA: (
         "Subtle Korean tech-ecosystem briefing cues: a domestic startup-and-policy "
