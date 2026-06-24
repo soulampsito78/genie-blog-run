@@ -12,6 +12,10 @@ Design rules (do NOT relax):
     company names, or policy names inside the image.
   * Same (program_id, run_date_kst, subject_top_headline, palette_version) ->
     identical variation. Different date / program / headline -> variation may differ.
+  * Prop and background are PROGRAM-AWARE: Global daytime keeps a tablet/iPad
+    briefing prop and global big-tech backgrounds; Korea evening uses non-tablet
+    domestic props (notebook / cards / laptop / phone-memo / board) and Seoul
+    domestic backgrounds. The two programs must not share the same prop set.
   * No side effects: pure functions, no image API, no network, no secrets.
 """
 from __future__ import annotations
@@ -21,15 +25,13 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Tuple
 
-VARIATION_VERSION = "tiv1"
+VARIATION_VERSION = "tiv2"
 DEFAULT_PALETTE_VERSION = "v1"
 
-KEYSURI_TOP_IMAGE_PROGRAMS = frozenset(
-    {
-        "keysuri_global_tech",
-        "keysuri_korea_tech",
-    }
-)
+PROGRAM_GLOBAL = "keysuri_global_tech"
+PROGRAM_KOREA = "keysuri_korea_tech"
+
+KEYSURI_TOP_IMAGE_PROGRAMS = frozenset({PROGRAM_GLOBAL, PROGRAM_KOREA})
 
 SIDE_EFFECTS_DISABLED: Dict[str, bool] = {
     "image_api_calls": False,
@@ -42,14 +44,17 @@ SIDE_EFFECTS_DISABLED: Dict[str, bool] = {
 # --- Identity-safe variant catalogs --------------------------------------------
 # Each entry preserves face/hair/glasses/role and stays within "refined private
 # tech secretary office styling". No age, no power-boss, no revealing styling.
+# Wardrobe is deliberately CONTRASTED (color / material / silhouette / item) so
+# the result no longer collapses to the single charcoal-suit reference look.
 
 OUTFIT_VARIANTS: Tuple[Tuple[str, str], ...] = (
+    ("outfit_navy_jacket_paleblue", "a soft navy short jacket with a pale blue blouse"),
+    ("outfit_slate_blouse_vest", "a muted slate blouse with a dark structured vest and no suit jacket"),
+    ("outfit_cream_knit_vest", "a cream knit top with a structured dark vest"),
+    ("outfit_grayblue_blouse_trousers", "a soft gray-blue blouse with slim dark trousers"),
+    ("outfit_dark_cardigan_blouse", "a refined dark cardigan over a light office blouse"),
+    ("outfit_light_blouse_skirt", "a light office blouse with a tailored mid-tone skirt"),
     ("outfit_charcoal_ivory", "a charcoal fitted suit with an ivory blouse"),
-    ("outfit_navy_cream", "a deep navy fitted suit with a soft cream blouse"),
-    ("outfit_graphite_champagne", "a muted graphite suit with a champagne blouse"),
-    ("outfit_slate_soft_ivory", "a dark slate suit with a soft ivory blouse"),
-    ("outfit_taupe_knit", "a warm taupe tailored blazer over a fine ribbed knit top"),
-    ("outfit_charcoal_knit", "a soft charcoal knit blazer with a high-neck ivory top"),
 )
 
 POSE_VARIANTS: Tuple[Tuple[str, str], ...] = (
@@ -59,22 +64,37 @@ POSE_VARIANTS: Tuple[Tuple[str, str], ...] = (
     ("pose_side_on", "standing slightly side-on, attentively composed"),
 )
 
-PROP_VARIANTS: Tuple[Tuple[str, str], ...] = (
-    ("prop_slim_tablet", "holding a slim tablet simply at waist height, fingers mostly hidden"),
-    ("prop_briefing_folder", "holding a slim briefing folder against her side"),
-    ("prop_signal_cards", "with a small stack of printed signal cards resting in one hand"),
-    ("prop_laptop_desk", "a laptop open on the desk beside her, hands resting calmly"),
-    ("prop_small_notebook", "a small notebook held lightly in one hand"),
-    ("prop_phone_memo", "a phone and a memo pad on the desk, hands calmly arranged"),
-    ("prop_none_hands_desk", "no handheld prop, hands calmly arranged near the desk"),
+# Global daytime: a tablet / iPad briefing prop is preferred, with varied handling.
+GLOBAL_PROP_VARIANTS: Tuple[Tuple[str, str], ...] = (
+    ("gprop_tablet_at_side", "holding a slim tablet at her side"),
+    ("gprop_tablet_review_desk", "reviewing a slim tablet near the desk"),
+    ("gprop_tablet_on_desk_brief", "a slim tablet resting on the desk while she briefs"),
+    ("gprop_tablet_folder_hold", "holding a slim tablet folder-style in one hand"),
 )
 
-BACKGROUND_VARIANTS: Tuple[Tuple[str, str], ...] = (
-    ("bg_windows_minimal_desk", "a premium private office with large windows and a clean minimal desk"),
-    ("bg_low_shelf_objects", "a premium private office with a low shelf of abstract tech objects behind her"),
-    ("bg_single_wall_monitor", "a premium private office with a single wall monitor showing abstract non-readable charts"),
-    ("bg_neutral_panels_plant", "a premium private office with soft neutral wall panels and a plant near the window"),
-    ("bg_corner_meeting_table", "a premium private office corner with a small meeting table"),
+# Korea evening: NON-tablet domestic briefing props only (must not overlap Global).
+KOREA_PROP_VARIANTS: Tuple[Tuple[str, str], ...] = (
+    ("kprop_notebook", "holding a small notebook"),
+    ("kprop_briefing_cards", "a small stack of printed briefing cards in one hand"),
+    ("kprop_laptop_desk", "a laptop open on the desk beside her"),
+    ("kprop_phone_memo", "a phone and a memo pad on the desk"),
+    ("kprop_policy_board", "a domestic startup-and-policy briefing board beside her"),
+)
+
+# Global backgrounds: cool, global big-tech, no fixed right-side monitor wall.
+GLOBAL_BACKGROUND_VARIANTS: Tuple[Tuple[str, str], ...] = (
+    ("gbg_worldmap_panel", "a bright cool-toned office with a faint abstract world-map panel"),
+    ("gbg_datacenter_silhouette", "a clean studio-like space with abstract data-center and server silhouettes"),
+    ("gbg_cloud_semiconductor", "an airy office corner with abstract cloud and semiconductor diagrams on a distant screen"),
+    ("gbg_global_network", "a minimal bright workspace with a soft global-network abstract backdrop"),
+)
+
+# Korea backgrounds: warmer Seoul / startup / policy, no fixed monitor wall.
+KOREA_BACKGROUND_VARIANTS: Tuple[Tuple[str, str], ...] = (
+    ("kbg_seoul_startup_board", "a warm-toned Seoul office with a domestic startup briefing board"),
+    ("kbg_platform_motifs", "a cozy evening workspace with abstract Korean platform motifs"),
+    ("kbg_policy_board_dusk", "a warm office corner with a policy briefing board and soft city dusk"),
+    ("kbg_domestic_workspace", "a refined domestic tech workspace with warm interior light"),
 )
 
 CAMERA_VARIANTS: Tuple[Tuple[str, str], ...] = (
@@ -99,18 +119,28 @@ SUBJECT_CUES: Tuple[str, ...] = (
 )
 
 PROGRAM_VISUAL_CONTEXT: Dict[str, str] = {
-    "keysuri_global_tech": (
+    PROGRAM_GLOBAL: (
         "Subtle global big-tech briefing cues: faint abstract world-map and "
         "data-center / server silhouettes, abstract semiconductor and cloud "
         "diagrams on a distant non-readable screen, cool blue-gray international "
         "tech briefing mood. No readable real company names or text in the image."
     ),
-    "keysuri_korea_tech": (
+    PROGRAM_KOREA: (
         "Subtle Korean tech-ecosystem briefing cues: a domestic startup-and-policy "
-        "briefing board with abstract non-readable Korean tech motifs, Seoul "
+        "briefing board with abstract non-readable Korean tech motifs, warm Seoul "
         "business-district ambience, a slightly warmer briefing mood. No readable "
         "real company or policy names or text in the image."
     ),
+}
+
+# Program-aware prop / background catalog dispatch.
+_PROP_BY_PROGRAM: Dict[str, Tuple[Tuple[str, str], ...]] = {
+    PROGRAM_GLOBAL: GLOBAL_PROP_VARIANTS,
+    PROGRAM_KOREA: KOREA_PROP_VARIANTS,
+}
+_BACKGROUND_BY_PROGRAM: Dict[str, Tuple[Tuple[str, str], ...]] = {
+    PROGRAM_GLOBAL: GLOBAL_BACKGROUND_VARIANTS,
+    PROGRAM_KOREA: KOREA_BACKGROUND_VARIANTS,
 }
 
 _KST_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -211,17 +241,20 @@ def resolve_keysuri_top_image_variation(
     subject_top_headline: str = "",
     palette_version: str = DEFAULT_PALETTE_VERSION,
 ) -> TopImageVariation:
-    """Resolve the deterministic, identity-safe top image variation."""
+    """Resolve the deterministic, identity-safe, program-aware top image variation."""
     pid = _normalize_program_id(program_id)
     date_str = _validate_kst_date(run_date_kst)
     palette = (palette_version or DEFAULT_PALETTE_VERSION).strip() or DEFAULT_PALETTE_VERSION
     seed = build_top_image_diversity_seed(pid, date_str, subject_top_headline, palette)
     seed_hash = diversity_seed_hash(seed)
 
+    prop_catalog = _PROP_BY_PROGRAM[pid]
+    background_catalog = _BACKGROUND_BY_PROGRAM[pid]
+
     outfit_id, outfit_clause = _pick(OUTFIT_VARIANTS, seed, "outfit")
     pose_id, pose_clause = _pick(POSE_VARIANTS, seed, "pose")
-    prop_id, prop_clause = _pick(PROP_VARIANTS, seed, "prop")
-    bg_id, bg_clause = _pick(BACKGROUND_VARIANTS, seed, "background")
+    prop_id, prop_clause = _pick(prop_catalog, seed, "prop")
+    bg_id, bg_clause = _pick(background_catalog, seed, "background")
     cam_id, cam_clause = _pick(CAMERA_VARIANTS, seed, "camera")
     light_id, light_clause = _pick(LIGHTING_VARIANTS, seed, "lighting")
     subject_cue = _pick_str(SUBJECT_CUES, seed, "subject_cue")

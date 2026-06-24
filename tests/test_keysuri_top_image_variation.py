@@ -5,8 +5,9 @@ import re
 import unittest
 
 from keysuri_top_image_variation import (
+    GLOBAL_PROP_VARIANTS,
+    KOREA_PROP_VARIANTS,
     OUTFIT_VARIANTS,
-    PROP_VARIANTS,
     SIDE_EFFECTS_DISABLED,
     build_top_image_diversity_seed,
     resolve_keysuri_top_image_variation,
@@ -188,17 +189,110 @@ class GlobalKoreaSeparationTests(unittest.TestCase):
             self.assertIn("no readable real", pos)
 
 
-class PropVariantTests(unittest.TestCase):
-    def test_tablet_not_mandatory(self) -> None:
-        prop_ids = {pid for pid, _clause in PROP_VARIANTS}
-        self.assertIn("prop_none_hands_desk", prop_ids)
-        self.assertIn("prop_briefing_folder", prop_ids)
-        # Across dates at least one non-tablet prop is selected for Global.
-        chosen = {
-            _global(date=f"2026-06-{d:02d}")["variation"]["top_image_prop_variant"]
-            for d in range(1, 26)
-        }
-        self.assertTrue(chosen - {"prop_slim_tablet"})
+class ProgramPropRuleTests(unittest.TestCase):
+    def test_global_props_are_all_tablet(self) -> None:
+        for _id, clause in GLOBAL_PROP_VARIANTS:
+            self.assertIn("tablet", clause.lower())
+
+    def test_korea_props_have_no_tablet(self) -> None:
+        for _id, clause in KOREA_PROP_VARIANTS:
+            self.assertNotIn("tablet", clause.lower())
+
+    def test_global_final_prompt_always_has_tablet(self) -> None:
+        for d in range(1, 13):
+            pos = _global(date=f"2026-06-{d:02d}", headline=f"h{d}")["positive_prompt"].lower()
+            self.assertIn("tablet", pos)
+
+    def test_korea_final_prompt_has_domestic_non_tablet_prop(self) -> None:
+        markers = ("notebook", "briefing cards", "laptop", "phone and a memo", "briefing board")
+        for d in range(1, 13):
+            built = _korea(date=f"2026-06-{d:02d}", headline=f"h{d}")
+            self.assertEqual(built["final_prompt_validation_status"], "pass")
+            # Korea prop (outside the reference-separation paragraph) must not be a tablet.
+            from keysuri_weather_visual_prompt_integration import _PRODUCTION_TOP_IMAGE_REFERENCE
+            scan = built["positive_prompt"].lower().replace(_PRODUCTION_TOP_IMAGE_REFERENCE.lower(), " ")
+            self.assertNotIn("tablet", scan)
+            self.assertTrue(any(m in scan for m in markers))
+
+    def test_global_korea_prop_sets_disjoint(self) -> None:
+        g = {pid for pid, _ in GLOBAL_PROP_VARIANTS}
+        k = {pid for pid, _ in KOREA_PROP_VARIANTS}
+        self.assertEqual(g & k, set())
+
+
+class ReferenceSeparationTests(unittest.TestCase):
+    def test_identity_only_and_do_not_preserve_present(self) -> None:
+        for build in (_global, _korea):
+            pos = build()["positive_prompt"].lower()
+            self.assertIn("only for facial identity", pos)
+            self.assertIn("do not preserve the reference outfit", pos)
+            self.assertIn("same person does not mean same wardrobe", pos)
+
+    def test_no_wardrobe_continuity_in_final_prompt(self) -> None:
+        for build in (_global, _korea):
+            built = build()
+            self.assertEqual(built["final_prompt_validation_status"], "pass")
+            from keysuri_weather_visual_prompt_integration import _PRODUCTION_TOP_IMAGE_REFERENCE
+            scan = built["positive_prompt"].lower().replace(_PRODUCTION_TOP_IMAGE_REFERENCE.lower(), " ")
+            self.assertNotIn("wardrobe continuity", scan)
+            self.assertNotIn("outfit continuity", scan)
+
+    def test_old_office_monitor_stem_absent(self) -> None:
+        for build in (_global, _korea):
+            pos = build()["positive_prompt"].lower()
+            self.assertNotIn("desk and monitor with abstract non-readable charts", pos)
+
+    def test_validator_blocks_reintroduced_continuity(self) -> None:
+        built = _global()
+        tampered = built["positive_prompt"] + " keep the same office and wardrobe continuity."
+        issues = validate_keysuri_final_top_image_prompt(
+            "keysuri_global_tech", tampered, built["negative_prompt"]
+        )
+        codes = {i["code"] for i in issues}
+        self.assertIn("reference_wardrobe_continuity_present", codes)
+
+    def test_validator_blocks_reintroduced_office_stem(self) -> None:
+        built = _korea()
+        tampered = built["positive_prompt"] + " Premium private office with large windows, desk and monitor with abstract non-readable charts."
+        issues = validate_keysuri_final_top_image_prompt(
+            "keysuri_korea_tech", tampered, built["negative_prompt"]
+        )
+        codes = {i["code"] for i in issues}
+        self.assertIn("old_office_monitor_stem_present", codes)
+
+
+class PromptFamilyTests(unittest.TestCase):
+    """Verify the prompt family (Global 6 + Korea 6) BEFORE any image API call."""
+
+    def _family(self, build, n=6):
+        rows = []
+        for d in range(1, n + 1):
+            r = build(date=f"2026-06-{d:02d}", headline=f"signal-{d}")
+            v = r["variation"]
+            rows.append((
+                v["top_image_wardrobe_variant"], v["top_image_pose_variant"],
+                v["top_image_prop_variant"], v["top_image_background_variant"],
+                r["final_prompt_validation_status"],
+            ))
+        return rows
+
+    def test_global_family_diverse_and_valid(self) -> None:
+        rows = self._family(_global)
+        self.assertTrue(all(r[4] == "pass" for r in rows))
+        self.assertGreaterEqual(len({r[0] for r in rows}), 3)  # >=3 distinct outfits
+        self.assertTrue(all(r[2].startswith("gprop_") for r in rows))
+
+    def test_korea_family_diverse_and_valid(self) -> None:
+        rows = self._family(_korea)
+        self.assertTrue(all(r[4] == "pass" for r in rows))
+        self.assertGreaterEqual(len({r[0] for r in rows}), 3)
+        self.assertTrue(all(r[2].startswith("kprop_") for r in rows))
+
+    def test_no_old_single_charcoal_clause_forced(self) -> None:
+        for build in (_global, _korea):
+            for d in range(1, 13):
+                pos = build(date=f"2026-06-{d:02d}")["positive_prompt"].lower()
+                self.assertNotIn("charcoal fitted suit, ivory or soft cream blouse, pencil skirt", pos)
 
 
 class MetadataTests(unittest.TestCase):

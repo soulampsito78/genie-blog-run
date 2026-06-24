@@ -521,6 +521,48 @@ _PRODUCTION_TOP_IMAGE_IDENTITY = (
     "worker, no powerful-boss or boardroom authority portrait"
 )
 
+# Reference separation: the reference image must drive FACE/HAIR/GLASSES identity
+# ONLY. It must NOT carry the reference outfit, blouse, skirt, tablet, office,
+# monitor wall, pose, lighting, or scene into the result — those come from the
+# selected daily variant. (Root cause of the prior failure: "wardrobe continuity".)
+_PRODUCTION_TOP_IMAGE_REFERENCE = (
+    "Use reference image 01 only for facial identity, short bob hairstyle, thin "
+    "glasses, and calm attentive eye impression. Do not preserve the reference "
+    "outfit, blouse, skirt, tablet, office background, monitor wall, pose, "
+    "lighting, or scene composition. Same person does not mean same wardrobe or "
+    "same office. Daily wardrobe, pose, prop, and background must follow the "
+    "selected variant below"
+)
+
+# Light time/mood stem for production — NO hard office+monitor lock. Background is
+# decided by the selected background variant + program visual context, not here.
+_PRODUCTION_TIME_MOOD_STEM = {
+    "keysuri_global_tech": (
+        "Daytime, bright cool natural light, understated professional global tech "
+        "briefing mood"
+    ),
+    "keysuri_korea_tech": (
+        "Early evening, warm Seoul interior light with a soft city dusk through the "
+        "window, understated domestic tech briefing mood"
+    ),
+}
+
+# Hard office/monitor stem fragments that must NOT reappear in the final prompt.
+_FINAL_FORBIDDEN_OFFICE_STEM_TOKENS = (
+    "desk and monitor with abstract non-readable charts",
+    "premium private office with large windows, desk and monitor",
+)
+# Reference-continuity phrases that must NOT reappear in the final prompt.
+_FINAL_FORBIDDEN_CONTINUITY_TOKENS = (
+    "wardrobe continuity",
+    "outfit continuity",
+    "same wardrobe",
+    "same suit",
+    "same blouse",
+    "same office",
+    "same background",
+)
+
 
 # Age tokens that must be wholly absent from the final image prompt (no negation
 # is acceptable — KeeSuri must carry no age label at all).
@@ -596,6 +638,11 @@ def validate_keysuri_final_top_image_prompt(
     pos = str(positive_prompt or "")
     pos_lower = pos.lower()
     neg_lower = str(negative_prompt or "").lower()
+    # The reference-separation paragraph legitimately mentions the very tokens it
+    # forbids ("do not preserve the reference ... tablet ... same wardrobe or same
+    # office"). Scan the forbidden-continuity / office-stem / Korea-tablet rules on
+    # the text with that known paragraph removed, so negated mentions don't trip.
+    scan_lower = pos_lower.replace(_PRODUCTION_TOP_IMAGE_REFERENCE.lower(), " ")
 
     if pid not in KEYSURI_PROGRAMS:
         issues.append(_issue("final_program_invalid", f"unknown program {program_id!r}", "program_id"))
@@ -673,6 +720,73 @@ def validate_keysuri_final_top_image_prompt(
             )
         )
 
+    # --- Reference separation: identity-only, no scene/outfit preservation -------
+    if "only for facial identity" not in pos_lower:
+        issues.append(
+            _issue(
+                "reference_identity_only_missing",
+                "final positive_prompt must restrict the reference to facial identity / hair / glasses only",
+                "positive_prompt",
+            )
+        )
+    if "do not preserve the reference outfit" not in pos_lower:
+        issues.append(
+            _issue(
+                "reference_do_not_preserve_scene_missing",
+                "final positive_prompt must instruct not to preserve reference outfit/background/pose/tablet/office",
+                "positive_prompt",
+            )
+        )
+    for token in _FINAL_FORBIDDEN_CONTINUITY_TOKENS:
+        if token in scan_lower:
+            issues.append(
+                _issue(
+                    "reference_wardrobe_continuity_present",
+                    f"final positive_prompt must not preserve reference continuity ({token!r})",
+                    "positive_prompt",
+                )
+            )
+
+    # --- Old generic office/monitor scene stem must not be a hard requirement ----
+    for token in _FINAL_FORBIDDEN_OFFICE_STEM_TOKENS:
+        if token in scan_lower:
+            issues.append(
+                _issue(
+                    "old_office_monitor_stem_present",
+                    f"final positive_prompt must not hard-fix the old office/monitor stem ({token!r})",
+                    "positive_prompt",
+                )
+            )
+
+    # --- Program-specific prop rule ---------------------------------------------
+    if pid == "keysuri_global_tech":
+        if "tablet" not in scan_lower and "ipad" not in scan_lower:
+            issues.append(
+                _issue(
+                    "global_tablet_prop_missing",
+                    "Global daytime final prompt must include a tablet/iPad briefing prop",
+                    "positive_prompt",
+                )
+            )
+    elif pid == "keysuri_korea_tech":
+        if "tablet" in scan_lower or "ipad" in scan_lower:
+            issues.append(
+                _issue(
+                    "korea_tablet_prop_present",
+                    "Korea evening final prompt must use a non-tablet domestic briefing prop",
+                    "positive_prompt",
+                )
+            )
+        korea_prop_markers = ("notebook", "briefing cards", "laptop", "phone and a memo", "briefing board")
+        if not any(m in pos_lower for m in korea_prop_markers):
+            issues.append(
+                _issue(
+                    "korea_domestic_prop_missing",
+                    "Korea evening final prompt must include a domestic briefing prop (notebook/cards/laptop/phone-memo/board)",
+                    "positive_prompt",
+                )
+            )
+
     return issues
 
 
@@ -702,34 +816,34 @@ def build_keysuri_production_top_image_prompt(
         palette_version,
     )
 
+    # Daily selected variant block — placed immediately after identity + reference
+    # separation, and BEFORE any scene/mood wording, so the model follows the
+    # variant instead of collapsing back to the reference look.
     wardrobe = (
-        f"She wears {variation.outfit_clause}, refined and understated premium "
-        "private tech secretary office styling — not over-luxury, not revealing; "
-        "the outfit may vary by day and must not define her identity"
+        f"Today she wears {variation.outfit_clause}, refined and understated "
+        "premium private tech secretary office styling — clearly different from a "
+        "plain charcoal business suit, not over-luxury, not revealing; the outfit "
+        "varies by day and must not define her identity"
     )
     pose_prop = (
         f"Calm one-person private briefing: {variation.pose_clause}, "
         f"{variation.prop_clause}. Keep hands simple and natural with no pointing, "
         "tapping, stylus, or screen-covering gestures"
     )
-    scene = (
-        _GLOBAL_SCENE_WEATHER_STEM
-        if pid == "keysuri_global_tech"
-        else _KOREA_SCENE_WEATHER_STEM
-    )
     framing = (
-        f"{variation.background_clause}, {variation.camera_clause}, "
+        f"Background today: {variation.background_clause}, {variation.camera_clause}, "
         f"{variation.lighting_clause}"
     )
+    time_mood = _PRODUCTION_TIME_MOOD_STEM[pid]
 
     parts = [
         _PRODUCTION_TOP_IMAGE_IDENTITY,
-        PRODUCTION_REFERENCE_PARAGRAPH,
+        _PRODUCTION_TOP_IMAGE_REFERENCE,
         wardrobe,
         pose_prop,
         framing,
         variation.program_visual_context,
-        scene,
+        time_mood,
         variation.subject_cue,
     ]
     positive_prompt = ". ".join(p.strip().rstrip(".") for p in parts if p) + "."
