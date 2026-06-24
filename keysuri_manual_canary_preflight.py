@@ -73,7 +73,7 @@ _BASELINE_REFERENCE_PATHS = {
 _IDENTITY_PREFIX = (
     "Photorealistic premium Korean private tech secretary Kee-Suri (테크 비서 키수리). "
     "Same person as the reference: refined Korean facial impression, sleek short bob, "
-    "thin metal glasses, calm intelligent gaze, mature professional age. "
+    "thin metal glasses, calm intelligent gaze. "
 )
 _IDENTITY_SUFFIX = (
     " Quiet, competent private executive secretary — not public "

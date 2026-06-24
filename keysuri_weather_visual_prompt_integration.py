@@ -6,6 +6,11 @@ from typing import Any, Dict, List
 
 from genie_runtime_weather_binding import RUNTIME_BINDING_STATUS
 from keysuri_daily_wardrobe_resolver import resolve_keysuri_daily_wardrobe
+from keysuri_top_image_variation import (
+    OUTFIT_VARIANTS,
+    PROGRAM_VISUAL_CONTEXT,
+    resolve_keysuri_top_image_variation,
+)
 from keysuri_visual_context import FORBIDDEN_SOURCE_MODES, IDENTITY_LABEL
 from keysuri_weather_binding_integration import (
     INTEGRATION_TYPE,
@@ -54,7 +59,6 @@ REQUIRED_NEGATIVE_PHRASES = (
     "no dramatic gesture",
     "no distorted hands",
     "no extra fingers",
-    "no wardrobe drift",
     "no newsroom",
     "no broadcast desk",
     "no tv studio",
@@ -63,6 +67,10 @@ REQUIRED_NEGATIVE_PHRASES = (
     "no today_geenee wardrobe logic",
     "not a different woman with similar clothes only",
     "no tomorrow_geenee",
+    "no age label",
+    "no ceo or chairwoman or senior executive framing",
+    "no boardroom authority portrait",
+    "no fashion model styling",
 )
 
 KOREA_EXTRA_NEGATIVE_PHRASES = (
@@ -173,10 +181,13 @@ REFERENCE_USAGE_POLICY = {
         "refined Korean facial impression",
         "sleek short bob hairstyle",
         "thin metal glasses",
-        "calm intelligent gaze",
-        "mature professional age impression",
-        "charcoal fitted suit continuity",
-        "ivory or soft cream blouse continuity",
+        "calm attentive intelligent gaze",
+        "private AI tech briefing secretary role",
+        "one-person private briefing distance and mood",
+        # Identity is preserved by face/hair/glasses/gaze/role — NOT by a single
+        # locked outfit. The wardrobe may vary per run within refined private
+        # tech secretary office styling; outfit must not define the identity.
+        "premium private tech secretary wardrobe continuity within refined office palette",
         "premium private tech secretary presence",
     ],
     "must_not_copy": [
@@ -377,7 +388,7 @@ def _program_is_forbidden(program_id: str) -> bool:
 _PRODUCTION_IDENTITY_PREFIX = (
     "Photorealistic premium Korean private tech secretary Kee-Suri (테크 비서 키수리). "
     "Same person as the reference: refined Korean facial impression, sleek short bob, "
-    "thin metal glasses, calm intelligent gaze, mature professional age. "
+    "thin metal glasses, calm intelligent gaze. "
 )
 _DEFAULT_WARDROBE_CLAUSE = (
     "Charcoal fitted suit, ivory or soft cream blouse, pencil skirt, premium private "
@@ -492,6 +503,262 @@ def _build_negative_prompt(program_id: str) -> str:
     if program_id == "keysuri_korea_tech":
         phrases.extend(KOREA_EXTRA_NEGATIVE_PHRASES)
     return ", ".join(phrases)
+
+
+# --- Production top image prompt (diversified, identity-locked, age-free) -------
+# This is the prompt the live owner-review run actually sends. It is separate from
+# the design-report contract above: it injects the deterministic daily wardrobe +
+# pose/prop/background/camera/lighting variation and the program visual context,
+# while keeping the fixed identity lock (face / short bob / thin glasses / role).
+_PRODUCTION_TOP_IMAGE_IDENTITY = (
+    "Photorealistic premium Korean private AI tech briefing secretary Kee-Suri "
+    "(테크 비서 키수리). Same person as the reference image: refined Korean visual "
+    "impression, sleek short bob, thin metal glasses, calm attentive intelligent "
+    "gaze. One-person private briefing mood — standing beside or near the user, "
+    "quietly competent, composed, and helpful, in a premium private tech briefing "
+    "atmosphere. Not a public news anchor, not a weathercaster, not a CEO or "
+    "chairwoman or senior executive, not a fashion model, not a generic office "
+    "worker, no powerful-boss or boardroom authority portrait"
+)
+
+
+# Age tokens that must be wholly absent from the final image prompt (no negation
+# is acceptable — KeeSuri must carry no age label at all).
+_FINAL_FORBIDDEN_AGE_TOKENS = (
+    "late 20s",
+    "late twenties",
+    "mature professional age",
+    "30s",
+    "thirties",
+    "mid-to-late",
+)
+# Role tokens that may appear ONLY inside an explicit negation ("not a ...").
+_FINAL_NEGATABLE_ROLE_TOKENS = (
+    "public news anchor",
+    "weathercaster",
+    "ceo",
+    "chairwoman",
+    "senior executive",
+    "fashion model",
+    "generic office worker",
+)
+_FINAL_REQUIRED_POSITIVE_PHRASES = (
+    "same person as the reference",
+    "sleek short bob",
+    "thin metal glasses",
+    "private",
+    "tech",
+    "secretary",
+    "one-person private briefing",
+    "no readable real",
+)
+_FINAL_REQUIRED_NEGATIVE_PHRASES = (
+    "no readable text overlay",
+    "no age label",
+    "not a public news anchor",
+    "not a weathercaster",
+    "no fashion model styling",
+)
+_FINAL_PROGRAM_CONTEXT_MARKER = {
+    "keysuri_global_tech": "global big-tech",
+    "keysuri_korea_tech": "korean tech-ecosystem",
+}
+_SENTENCE_SPLIT_RE = re.compile(r"[.!?]\s+")
+
+
+def _occurrence_is_negated(sentence: str, token: str) -> bool:
+    """True if every occurrence of token in the sentence follows a negation word."""
+    start = 0
+    while True:
+        idx = sentence.find(token, start)
+        if idx == -1:
+            return True
+        prefix = sentence[:idx]
+        if not re.search(r"\b(not|no|avoid|without|never)\b", prefix):
+            return False
+        start = idx + len(token)
+
+
+def validate_keysuri_final_top_image_prompt(
+    program_id: str,
+    positive_prompt: str,
+    negative_prompt: str,
+) -> List[Dict[str, str]]:
+    """Validate the FINAL image-API prompt (the diversified one actually sent).
+
+    This closes the gap where the safety gate validated only the static design
+    snapshot: the prompt that reaches the image API must itself pass identity,
+    age, role, readable-text, wardrobe-variant, and program-context checks.
+    Returns issue dicts (empty list == pass).
+    """
+    issues: List[Dict[str, str]] = []
+    pid = (program_id or "").strip()
+    pos = str(positive_prompt or "")
+    pos_lower = pos.lower()
+    neg_lower = str(negative_prompt or "").lower()
+
+    if pid not in KEYSURI_PROGRAMS:
+        issues.append(_issue("final_program_invalid", f"unknown program {program_id!r}", "program_id"))
+
+    for phrase in _FINAL_REQUIRED_POSITIVE_PHRASES:
+        if phrase not in pos_lower:
+            issues.append(
+                _issue(
+                    "final_positive_phrase_missing",
+                    f"final positive_prompt must include {phrase!r}",
+                    "positive_prompt",
+                )
+            )
+    for phrase in _FINAL_REQUIRED_NEGATIVE_PHRASES:
+        if phrase not in neg_lower:
+            issues.append(
+                _issue(
+                    "final_negative_phrase_missing",
+                    f"final negative_prompt must include {phrase!r}",
+                    "negative_prompt",
+                )
+            )
+
+    for token in _FINAL_FORBIDDEN_AGE_TOKENS:
+        if token in pos_lower:
+            issues.append(
+                _issue(
+                    "final_age_label_present",
+                    f"final positive_prompt must not contain age token {token!r}",
+                    "positive_prompt",
+                )
+            )
+
+    sentences = _SENTENCE_SPLIT_RE.split(pos_lower)
+    for token in _FINAL_NEGATABLE_ROLE_TOKENS:
+        for sentence in sentences:
+            if token in sentence and not _occurrence_is_negated(sentence, token):
+                issues.append(
+                    _issue(
+                        "final_forbidden_role_unnegated",
+                        f"final positive_prompt has un-negated forbidden role {token!r}",
+                        "positive_prompt",
+                    )
+                )
+                break
+
+    marker = _FINAL_PROGRAM_CONTEXT_MARKER.get(pid)
+    if marker and marker not in pos_lower:
+        issues.append(
+            _issue(
+                "final_program_context_missing",
+                f"final positive_prompt must include {marker!r} program visual context",
+                "positive_prompt",
+            )
+        )
+    other_marker = _FINAL_PROGRAM_CONTEXT_MARKER.get(
+        "keysuri_korea_tech" if pid == "keysuri_global_tech" else "keysuri_global_tech"
+    )
+    if other_marker and other_marker in pos_lower:
+        issues.append(
+            _issue(
+                "final_program_context_crossed",
+                f"final positive_prompt must not include the other program's context {other_marker!r}",
+                "positive_prompt",
+            )
+        )
+
+    allowed_outfit_clauses = [clause.lower() for _id, clause in OUTFIT_VARIANTS]
+    if not any(clause in pos_lower for clause in allowed_outfit_clauses):
+        issues.append(
+            _issue(
+                "final_wardrobe_variant_not_allowed",
+                "final positive_prompt must use an allowed wardrobe variant clause",
+                "positive_prompt",
+            )
+        )
+
+    return issues
+
+
+def build_keysuri_production_top_image_prompt(
+    program_id: str,
+    *,
+    run_date_kst: str,
+    subject_top_headline: str = "",
+    palette_version: str = "v1",
+) -> Dict[str, Any]:
+    """Build the diversified production top image prompt for a Kee-Suri program.
+
+    Deterministic on (program_id, run_date_kst, subject_top_headline, palette_version).
+    Returns positive_prompt, negative_prompt, artifact-safe variation metadata, and
+    the final-prompt validation status/issues for the prompt actually returned.
+    """
+    pid = (program_id or "").strip()
+    if _program_is_forbidden(pid):
+        raise ValueError(f"Forbidden program for top image prompt: {program_id!r}")
+    if pid not in KEYSURI_PROGRAMS:
+        raise ValueError(f"Unknown program for top image prompt: {program_id!r}")
+
+    variation = resolve_keysuri_top_image_variation(
+        pid,
+        run_date_kst,
+        subject_top_headline,
+        palette_version,
+    )
+
+    wardrobe = (
+        f"She wears {variation.outfit_clause}, refined and understated premium "
+        "private tech secretary office styling — not over-luxury, not revealing; "
+        "the outfit may vary by day and must not define her identity"
+    )
+    pose_prop = (
+        f"Calm one-person private briefing: {variation.pose_clause}, "
+        f"{variation.prop_clause}. Keep hands simple and natural with no pointing, "
+        "tapping, stylus, or screen-covering gestures"
+    )
+    scene = (
+        _GLOBAL_SCENE_WEATHER_STEM
+        if pid == "keysuri_global_tech"
+        else _KOREA_SCENE_WEATHER_STEM
+    )
+    framing = (
+        f"{variation.background_clause}, {variation.camera_clause}, "
+        f"{variation.lighting_clause}"
+    )
+
+    parts = [
+        _PRODUCTION_TOP_IMAGE_IDENTITY,
+        PRODUCTION_REFERENCE_PARAGRAPH,
+        wardrobe,
+        pose_prop,
+        framing,
+        variation.program_visual_context,
+        scene,
+        variation.subject_cue,
+    ]
+    positive_prompt = ". ".join(p.strip().rstrip(".") for p in parts if p) + "."
+    negative_prompt = _build_negative_prompt(pid)
+
+    validation_issues = validate_keysuri_final_top_image_prompt(
+        pid, positive_prompt, negative_prompt
+    )
+    validation_status = "block" if validation_issues else "pass"
+
+    metadata = variation.as_metadata()
+    metadata["top_image_program_visual_context"] = pid
+    metadata["top_image_identity_lock"] = (
+        "face+short_bob+thin_glasses+calm_gaze+private_briefing_role"
+    )
+    metadata["top_image_final_prompt_validated"] = True
+    metadata["top_image_final_prompt_validation_status"] = validation_status
+    metadata["top_image_final_prompt_validation_issues"] = [
+        i["code"] for i in validation_issues
+    ]
+
+    return {
+        "program_id": pid,
+        "positive_prompt": positive_prompt,
+        "negative_prompt": negative_prompt,
+        "variation": metadata,
+        "final_prompt_validation_status": validation_status,
+        "final_prompt_validation_issues": validation_issues,
+    }
 
 
 _DAILY_WARDROBE_METADATA_KEYS = (

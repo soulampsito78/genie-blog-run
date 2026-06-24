@@ -243,8 +243,21 @@ def _normalize_program_arg(program_id: str | None) -> tuple[str | None, List[dic
     return raw, issues
 
 
-def _gate_prompt_source(lock_path: str, program_id: str, manual_approval_for_gate: bool) -> tuple[dict | None, List[dict], bool]:
-    """Return prompt_source, issues, gate_ready."""
+def _gate_prompt_source(
+    lock_path: str,
+    program_id: str,
+    manual_approval_for_gate: bool,
+    *,
+    run_date_kst: str | None = None,
+    subject_top_headline: str = "",
+) -> tuple[dict | None, List[dict], bool]:
+    """Return prompt_source, issues, gate_ready.
+
+    The gate report itself (identity / safety / secret validation) is unchanged and
+    still governs go/no-go. When ``run_date_kst`` is provided, the returned
+    positive/negative prompt is the diversified production top image prompt
+    (deterministic per program/date/headline) instead of the static design snapshot.
+    """
     issues: List[dict] = []
     try:
         gate_report = build_keysuri_image_api_gate_report_from_canary_lock(
@@ -292,6 +305,50 @@ def _gate_prompt_source(lock_path: str, program_id: str, manual_approval_for_gat
         "positive_prompt": str(snap.get("positive_prompt") or ""),
         "negative_prompt": str(snap.get("negative_prompt") or ""),
     }
+
+    if run_date_kst:
+        try:
+            from keysuri_weather_visual_prompt_integration import (
+                build_keysuri_production_top_image_prompt,
+            )
+
+            diversified = build_keysuri_production_top_image_prompt(
+                program_id,
+                run_date_kst=run_date_kst,
+                subject_top_headline=subject_top_headline,
+            )
+            prompt_source["positive_prompt"] = diversified["positive_prompt"]
+            prompt_source["negative_prompt"] = diversified["negative_prompt"]
+            prompt_source["top_image_variation"] = diversified["variation"]
+            prompt_source["prompt_diversified"] = True
+            # The FINAL diversified prompt — the one actually sent to the image
+            # API — must itself pass the safety validation, not just the static
+            # design snapshot the gate report already checked.
+            final_status = diversified["final_prompt_validation_status"]
+            final_issues = diversified["final_prompt_validation_issues"]
+            prompt_source["final_prompt_validated"] = True
+            prompt_source["final_prompt_validation_status"] = final_status
+            prompt_source["final_prompt_validation_issues"] = final_issues
+            if final_status != "pass":
+                for fi in final_issues:
+                    issues.append(fi)
+                # Final prompt failed safety validation -> gate is NOT ready.
+                return prompt_source, issues, False
+        except Exception as exc:  # noqa: BLE001 — fail closed on builder error
+            issues.append(
+                _issue(
+                    "diversified_prompt_build_failed",
+                    str(exc),
+                    "top_image_variation",
+                )
+            )
+            prompt_source["final_prompt_validated"] = True
+            prompt_source["final_prompt_validation_status"] = "block"
+            prompt_source["final_prompt_validation_issues"] = [
+                {"code": "diversified_prompt_build_failed", "message": str(exc)}
+            ]
+            return prompt_source, issues, False
+
     return prompt_source, issues, True
 
 

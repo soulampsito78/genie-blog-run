@@ -91,6 +91,14 @@ def _kst_date_from_run_id(run_id: str) -> str:
     return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
 
 
+def _kst_dashed_date_from_run_id(run_id: str) -> str:
+    """KST date as YYYY-MM-DD (top image variation seed format)."""
+    stamp = _kst_date_from_run_id(run_id)
+    if len(stamp) == 8 and stamp.isdigit():
+        return f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}"
+    return stamp
+
+
 def keysuri_global_service_email_cid_token(run_id: str) -> str:
     """Content-ID token for Global service_full_run owner-review email hero image."""
     stamp = _kst_date_from_run_id(run_id)
@@ -605,19 +613,63 @@ def _extend_unique(values: List[str], extras: List[str]) -> List[str]:
 def _build_service_keysuri_image_prompt(program_id: str) -> str:
     label = "Global Tech" if program_id == PROGRAM_GLOBAL else "Korea Tech"
     return (
-        f"Kee-Suri private tech assistant hero image for {label} owner-review briefing. "
-        "Premium Korean woman in her late 20s, same recognizable face identity, refined editorial portrait, "
-        "trustworthy private tech assistant tone, not a public news anchor, not a weathercaster, "
-        "smart business-casual wardrobe, natural Seoul morning light, high detail commercial realism, "
+        f"Kee-Suri private AI tech briefing secretary hero image for {label} owner-review briefing. "
+        "Same recognizable Kee-Suri person as the reference: refined Korean visual impression, "
+        "sleek short bob, thin metal glasses, calm attentive intelligent gaze. "
+        "One-person private briefing mood, quietly competent and composed; "
+        "not a public news anchor, not a weathercaster, not a CEO or chairwoman or senior executive, "
+        "not a fashion model, not a generic office worker. "
+        "Refined private tech secretary office styling, natural Seoul interior light, high detail commercial realism, "
         "no text, no logo, no watermark, no split screen.\n\n"
-        "NEGATIVE:\nnot a public news anchor\nnot a weathercaster\nno readable text overlay\nno collage\nno split screen"
+        "NEGATIVE:\nno age label\nnot a public news anchor\nnot a weathercaster\n"
+        "no CEO or chairwoman or senior executive framing\nno fashion model styling\n"
+        "no readable text overlay\nno collage\nno split screen"
     )
+
+
+def _safe_keysuri_top_headline(smoke: LiveSourceSmokeResult, program_id: str) -> str:
+    """Best-effort top headline for the top image diversity seed (never raises)."""
+    try:
+        from keysuri_email_identity import extract_keysuri_top_headline
+
+        briefing = smoke.generated_briefing if isinstance(smoke.generated_briefing, dict) else None
+        if not briefing:
+            return ""
+        return str(extract_keysuri_top_headline(generated_briefing=briefing) or "").strip()
+    except Exception:  # noqa: BLE001 — headline is optional for the seed
+        return ""
+
+
+def _keysuri_top_image_variation_fields(
+    program_id: str,
+    run_id: str,
+    subject_top_headline: str,
+) -> Dict[str, Any]:
+    """Resolve artifact-safe top image variation metadata (never raises)."""
+    try:
+        from keysuri_weather_visual_prompt_integration import (
+            build_keysuri_production_top_image_prompt,
+        )
+
+        run_date_kst = _kst_dashed_date_from_run_id(run_id)
+        built = build_keysuri_production_top_image_prompt(
+            program_id,
+            run_date_kst=run_date_kst,
+            subject_top_headline=subject_top_headline,
+        )
+        # variation metadata already carries top_image_final_prompt_validation_* —
+        # this is the SAME deterministic prompt validated inside the image gate.
+        return dict(built["variation"])
+    except Exception:  # noqa: BLE001 — metadata is best-effort, never blocks a run
+        return {}
 
 
 def _generate_keysuri_service_image(
     program_id: str,
     *,
     generate_fn: Optional[Callable[..., Path]] = None,
+    run_id: Optional[str] = None,
+    subject_top_headline: str = "",
 ) -> ServiceImageOutcome:
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -634,11 +686,28 @@ def _generate_keysuri_service_image(
             error_message=f"missing reference asset: {ref_path}",
         )
 
+    run_date_kst = _kst_dashed_date_from_run_id(run_id) if run_id else None
     prompt_source, gate_issues, gate_ready = _gate_prompt_source(
         DEFAULT_LOCK_PATH,
         program_id,
         manual_approval_for_gate=True,
+        run_date_kst=run_date_kst,
+        subject_top_headline=subject_top_headline,
     )
+    # The FINAL diversified prompt must pass safety validation before it can reach
+    # the image API. If it blocks, fail closed — do NOT silently fall back to a
+    # generic prompt and do NOT call the image API.
+    if (
+        isinstance(prompt_source, dict)
+        and prompt_source.get("final_prompt_validation_status") == "block"
+    ):
+        codes = prompt_source.get("final_prompt_validation_issues") or []
+        if codes and isinstance(codes[0], dict):
+            codes = [c.get("code") for c in codes]
+        return ServiceImageOutcome(
+            error_code=ERROR_IMAGE_GENERATION_FAILED,
+            error_message="final_prompt_validation_failed: " + ", ".join(str(c) for c in codes),
+        )
     if gate_ready and prompt_source:
         positive = str(prompt_source.get("positive_prompt") or "").strip()
         negative = str(prompt_source.get("negative_prompt") or "").strip()
@@ -837,8 +906,18 @@ def run_keysuri_service_full_run(
             "issue_codes": issue_codes,
         }
 
+    top_image_headline = _safe_keysuri_top_headline(smoke, pid)
+    top_image_variation_fields = _keysuri_top_image_variation_fields(
+        pid, run_id, top_image_headline
+    )
     canary_fn = image_canary_runner or _generate_keysuri_service_image
-    image_outcome = canary_fn(pid)
+    try:
+        image_outcome = canary_fn(
+            pid, run_id=run_id, subject_top_headline=top_image_headline
+        )
+    except TypeError:
+        # Backward-compatible with a pid-only injected image_canary_runner.
+        image_outcome = canary_fn(pid)
     if not image_outcome.ok:
         meta = build_service_artifact_fields(
             run_id=run_id,
@@ -853,6 +932,8 @@ def run_keysuri_service_full_run(
             email_sent=False,
             error_code=image_outcome.error_code or ERROR_IMAGE_GENERATION_FAILED,
         )
+        if top_image_variation_fields:
+            meta.update(top_image_variation_fields)
         save_run_artifact(meta, email_html="")
         return {
             "ok": False,
@@ -1247,6 +1328,8 @@ def run_keysuri_service_full_run(
     )
     meta["top_image_cid"] = top_cid
     meta["owner_email_image_cids"] = [top_cid]
+    if top_image_variation_fields:
+        meta.update(top_image_variation_fields)
     if pid == PROGRAM_KOREA:
         meta.update(bottom_image_meta)
         meta.setdefault("bottom_shot_variation_enabled", korea_bottom_variation_enabled())
