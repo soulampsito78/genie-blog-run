@@ -517,8 +517,39 @@ def _parse_json_object(candidate: str) -> Dict[str, Any]:
     return data
 
 
-def extract_json_object_from_model_text(raw_text: str) -> dict:
-    """Extract exactly one non-empty JSON object from model output text."""
+# Discriminating top-level keys a valid Kee-Suri generated briefing payload
+# carries. Used only to rank candidates when the model emits more than one JSON
+# object; never to merge objects and never to relax downstream schema validation.
+KEYSURI_EXPECTED_TOP_LEVEL_KEYS: Tuple[str, ...] = (
+    "program_id",
+    "operational_status",
+    "generated_status",
+    "news_scope",
+    "section_heading",
+    "top_5_news",
+    "deep_dive",
+    "one_line_checkpoint",
+    "closing_sources",
+)
+
+
+def _expected_top_level_key_score(obj: Dict[str, Any]) -> int:
+    """Count present, non-empty expected top-level keys (schema-match heuristic)."""
+    if not isinstance(obj, dict):
+        return 0
+    score = 0
+    for key in KEYSURI_EXPECTED_TOP_LEVEL_KEYS:
+        if key in obj and obj.get(key) not in (None, "", [], {}):
+            score += 1
+    return score
+
+
+def extract_json_candidates_from_model_text(raw_text: str) -> List[Dict[str, Any]]:
+    """Return every distinct non-empty JSON object found in model output text.
+
+    Order is preserved as encountered (whole-text candidate first, then balanced
+    sub-objects). This does not choose between candidates and never merges them.
+    """
     if not isinstance(raw_text, str) or not raw_text.strip():
         raise ValueError("raw_text must be a non-empty string")
 
@@ -549,7 +580,16 @@ def extract_json_object_from_model_text(raw_text: str) -> dict:
             continue
         seen_canonical.add(canonical)
         parsed_objects.append(obj)
+    return parsed_objects
 
+
+def extract_json_object_from_model_text(raw_text: str) -> dict:
+    """Extract exactly one non-empty JSON object from model output text.
+
+    Strict single-object contract preserved for backward compatibility: raises
+    when zero, or more than one, distinct object is present.
+    """
+    parsed_objects = extract_json_candidates_from_model_text(raw_text)
     if not parsed_objects:
         raise ValueError("No JSON object could be extracted from model text")
     if len(parsed_objects) > 1:
@@ -567,35 +607,113 @@ def validate_parsed_keysuri_generated_briefing(
     return {"valid": len(issues) == 0, "issues": issues}
 
 
+def _parse_meta(
+    *,
+    candidate_count: int,
+    selected_index: "int | None",
+    recovery_used: bool,
+) -> Dict[str, Any]:
+    """Safe, PII-free metadata about the JSON extraction decision."""
+    return {
+        "multiple_json_objects_detected": candidate_count > 1,
+        "json_candidate_count": candidate_count,
+        "selected_json_candidate_index": selected_index,
+        "parser_recovery_used": recovery_used,
+    }
+
+
 def parse_keysuri_generated_response(
     raw_text: str,
     program_id: str,
     prompt_input: dict,
 ) -> dict:
-    """Parse raw model text, validate, and return structured parse result."""
+    """Parse raw model text, validate, and return structured parse result.
+
+    A single JSON object keeps the original behavior exactly. When the model
+    emits multiple JSON objects, candidates are ranked without merging: the first
+    object that passes full schema validation is selected; otherwise the object
+    with the best top-level-key match is reported through the normal
+    ``parsed_invalid`` (validation_blocked) path. Only the chosen object's content
+    is ever returned — raw model text is never propagated or stored.
+    """
     pid = (program_id or "").strip()
     try:
-        parsed = extract_json_object_from_model_text(raw_text)
+        candidates = extract_json_candidates_from_model_text(raw_text)
     except ValueError as exc:
         return {
             "parse_status": "parse_failed",
             "program_id": pid,
             "issues": [_issue("json_extract_failed", str(exc), "raw_text")],
             "generated_briefing": None,
+            "parse_meta": _parse_meta(candidate_count=0, selected_index=None, recovery_used=False),
         }
 
-    validation = validate_parsed_keysuri_generated_briefing(pid, parsed, prompt_input)
-    if validation["valid"]:
+    if not candidates:
+        return {
+            "parse_status": "parse_failed",
+            "program_id": pid,
+            "issues": [
+                _issue(
+                    "json_extract_failed",
+                    "No JSON object could be extracted from model text",
+                    "raw_text",
+                )
+            ],
+            "generated_briefing": None,
+            "parse_meta": _parse_meta(candidate_count=0, selected_index=None, recovery_used=False),
+        }
+
+    candidate_count = len(candidates)
+    multiple = candidate_count > 1
+
+    validations: List[Dict[str, Any]] = []
+    best_index = 0
+    best_score = -1
+    valid_index: "int | None" = None
+    for idx, obj in enumerate(candidates):
+        validation = validate_parsed_keysuri_generated_briefing(pid, obj, prompt_input)
+        validations.append(validation)
+        score = _expected_top_level_key_score(obj)
+        if score > best_score:
+            best_score = score
+            best_index = idx
+        if valid_index is None and validation["valid"]:
+            valid_index = idx
+
+    if valid_index is not None:
         return {
             "parse_status": "parsed_valid",
             "program_id": pid,
             "issues": [],
-            "generated_briefing": parsed,
+            "generated_briefing": candidates[valid_index],
+            "parse_meta": _parse_meta(
+                candidate_count=candidate_count,
+                selected_index=valid_index,
+                recovery_used=multiple,
+            ),
         }
 
+    # No fully valid candidate: surface the best schema match through the normal
+    # validation path. Never merge objects; never relax validation.
+    selected_index = best_index
+    issues = list(validations[selected_index]["issues"])
+    if multiple:
+        issues.insert(
+            0,
+            _issue(
+                "parse_multiple_json_objects_unrecoverable",
+                f"{candidate_count} JSON objects found; none passed schema validation",
+                "raw_text",
+            ),
+        )
     return {
         "parse_status": "parsed_invalid",
         "program_id": pid,
-        "issues": validation["issues"],
+        "issues": issues,
         "generated_briefing": None,
+        "parse_meta": _parse_meta(
+            candidate_count=candidate_count,
+            selected_index=selected_index,
+            recovery_used=False,
+        ),
     }

@@ -127,10 +127,12 @@ class KeysuriOfflineDryRunFailureTests(unittest.TestCase):
         self.assertIsNone(result["generated_status"])
         self._assert_side_effects_false(result)
 
-    def test_multiple_json_parse_failed(self) -> None:
+    def test_multiple_json_recovers_to_valid(self) -> None:
+        # Valid payload + trailing stray JSON object now recovers instead of
+        # blocking (matches the keysuri_korea_tech production fix).
         result = self._run_with_raw("keysuri_raw_response.multiple_json.sample.txt")
-        self.assertEqual(result["dry_run_status"], "parse_failed")
-        self.assertIsNone(result["generated_status"])
+        self.assertEqual(result["dry_run_status"], "pass")
+        self.assertEqual(result["generated_status"], GENERATED_STATUS_REQUIRED)
 
     def test_array_top_level_parse_failed(self) -> None:
         result = self._run_with_raw("keysuri_raw_response.array_top_level.sample.txt")

@@ -241,13 +241,20 @@ class KeysuriParsedResponseTests(unittest.TestCase):
         self.assertEqual(result["parse_status"], "parse_failed")
         self.assertIsNone(result["generated_briefing"])
 
-    def test_multiple_json_parse_failed(self) -> None:
+    def test_multiple_json_recovers_to_valid(self) -> None:
+        # Fixture is a fully valid payload followed by a stray trailing JSON
+        # object — the production keysuri_korea_tech failure pattern. The parser
+        # now selects the valid object instead of blocking the whole run.
         result = parse_keysuri_generated_response(
             _read_raw("keysuri_raw_response.multiple_json.sample.txt"),
             "keysuri_global_tech",
             _global_prompt(),
         )
-        self.assertEqual(result["parse_status"], "parse_failed")
+        self.assertEqual(result["parse_status"], "parsed_valid", result.get("issues"))
+        meta = result["parse_meta"]
+        self.assertTrue(meta["multiple_json_objects_detected"])
+        self.assertGreater(meta["json_candidate_count"], 1)
+        self.assertTrue(meta["parser_recovery_used"])
 
     def test_array_top_level_parse_failed(self) -> None:
         result = parse_keysuri_generated_response(
