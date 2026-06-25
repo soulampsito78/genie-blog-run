@@ -368,6 +368,535 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         self.assertEqual(parent.get("reissue_count", 0), 0)
         self.assertNotIn("regen_type", parent)
 
+    @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
+    @patch("keysuri_service_full_run.resolve_korea_bottom_email_image_path")
+    @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
+    @patch("keysuri_service_full_run.generate_run_id")
+    def test_image_only_reissue_global_regenerates_top_only(
+        self,
+        mock_run_id: MagicMock,
+        mock_watermark: MagicMock,
+        mock_bottom: MagicMock,
+        mock_customer_final: MagicMock,
+    ) -> None:
+        from keysuri_service_full_run import run_keysuri_image_only_reissue
+
+        repo = Path(__file__).resolve().parents[1]
+        parent_id = "20260624_183003_keysuri_global_tech_aabbccdd"
+        child_id = "20260624_190001_keysuri_global_tech_11223344"
+        mock_run_id.return_value = child_id
+        raw_top = repo / "output" / "images" / "image_only_regen_global_top_raw.jpg"
+        raw_top.parent.mkdir(parents=True, exist_ok=True)
+        raw_top.write_bytes(b"\xff\xd8\xff" + b"\x46" * 128)
+        mock_watermark.side_effect = _mock_keysuri_watermark
+        parent_html = (
+            '<html><body><p id="brief">글로벌 본문 텍스트입니다.</p>'
+            '<img src="cid:keysuri_topshot_global_20260624"/>'
+            f'<a href="https://example.com/admin/runs/{parent_id}">review</a>'
+            "</body></html>"
+        )
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_global_tech",
+                "program_id": "keysuri_global_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+                "owner_email_subject": "[운영자 검토] 클라우드 반도체 공급망 신호: 6월 24일 글로벌 테크 브리핑",
+                "owner_email_preheader": "글로벌 AI·테크 신호 검수 대기 · 주요 신호: 클라우드 반도체 공급망 신호",
+                "email_subject": "클라우드 반도체 공급망 신호: 6월 24일 글로벌 테크 브리핑",
+                "subject_top_headline": "클라우드 반도체 공급망 신호",
+                "reissue_count": 0,
+            },
+            email_html=parent_html,
+        )
+
+        def _image_runner(program_id: str, **kwargs):
+            self.assertEqual(program_id, "keysuri_global_tech")
+            self.assertEqual(kwargs.get("run_id"), parent_id)
+            return ServiceImageOutcome(
+                called_image_api=True,
+                image_generation_status="generated",
+                image_source=IMAGE_SOURCE_GENERATED,
+                generated_image_path=str(raw_top.relative_to(repo)),
+            )
+
+        send_fn = MagicMock(return_value=True)
+        trace = {
+            "envelope_to": ["owner@example.com"],
+            "mime_html_sha256": "html-global-sha",
+            "mime_html_bytes_len": 345,
+            "inline_input_hashes": [
+                {
+                    "path": str(raw_top),
+                    "cid": "keysuri_topshot_global_20260624_regen_11223344",
+                    "filename": "top.jpg",
+                    "sha256": "top-global-sha",
+                }
+            ],
+        }
+        with patch("keysuri_service_full_run.email_sender.last_send_trace", return_value=trace):
+            with patch("keysuri_service_full_run.email_sender.last_send_diagnostic", return_value=""):
+                result = run_keysuri_image_only_reissue(
+                    parent_id,
+                    image_canary_runner=_image_runner,
+                    send_fn=send_fn,
+                    reissue_reason_code="이미지 품질 이슈",
+                    reissue_reason_note="global image only",
+                )
+
+        self.assertTrue(result["ok"])
+        mock_bottom.assert_not_called()
+        mock_customer_final.assert_not_called()
+        send_fn.assert_called_once()
+        inline_parts = send_fn.call_args.kwargs["inline_jpeg_parts"]
+        self.assertEqual(len(inline_parts), 1)
+        child = load_run_artifact(child_id) or {}
+        self.assertEqual(child.get("regen_type"), "image_only")
+        self.assertEqual(child.get("program_id"), "keysuri_global_tech")
+        self.assertEqual(child.get("customer_delivery_status"), "not_sent")
+        self.assertNotIn("korea_bottom_shot_path", child)
+
+    @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
+    @patch("keysuri_service_full_run.generate_run_id")
+    @patch("keysuri_service_full_run.build_keysuri_prompt_input")
+    @patch("keysuri_service_full_run.build_keysuri_generation_prompt")
+    @patch("keysuri_service_full_run.parse_keysuri_generated_response")
+    @patch("keysuri_service_full_run.enrich_generated_briefing_content")
+    @patch("keysuri_service_full_run.validate_and_repair_keysuri_visible_text_quality")
+    @patch("keysuri_service_full_run._build_service_contract_fixture")
+    @patch("keysuri_service_full_run.build_keysuri_subject_artifact_fields")
+    @patch("keysuri_service_full_run.render_keysuri_contract_preview_html")
+    @patch("keysuri_service_full_run.build_keysuri_korea_gmail_owner_email_html")
+    @patch("keysuri_service_full_run.validate_keysuri_html_visible_text_quality")
+    def test_text_only_reissue_regenerates_text_reuses_images_and_sends_owner_only(
+        self,
+        mock_validate_html: MagicMock,
+        mock_email_html: MagicMock,
+        mock_render_preview: MagicMock,
+        mock_subject_fields: MagicMock,
+        mock_fixture: MagicMock,
+        mock_validate_visible: MagicMock,
+        mock_enrich: MagicMock,
+        mock_parse: MagicMock,
+        mock_build_prompt: MagicMock,
+        mock_build_input: MagicMock,
+        mock_run_id: MagicMock,
+        mock_customer_final: MagicMock,
+    ) -> None:
+        from keysuri_service_full_run import run_keysuri_text_only_reissue
+
+        repo = Path(__file__).resolve().parents[1]
+        parent_id = "20260624_183004_keysuri_korea_tech_aabbccdd"
+        child_id = "20260624_190002_keysuri_korea_tech_11223344"
+        mock_run_id.return_value = child_id
+        top_path = repo / "output" / "images" / "text_only_saved_top.jpg"
+        bottom_path = repo / "output" / "images" / "text_only_saved_bottom.jpg"
+        top_path.parent.mkdir(parents=True, exist_ok=True)
+        top_path.write_bytes(b"\xff\xd8\xff" + b"\x61" * 128)
+        bottom_path.write_bytes(b"\xff\xd8\xff" + b"\x62" * 128)
+
+        parent_snapshot = {"items": [{"headline": "국내 AI 반도체 정책 점검"}]}
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_korea_tech",
+                "program_id": "keysuri_korea_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+                "generated_image_path_watermarked": str(top_path.relative_to(repo)),
+                "korea_bottom_shot_path": str(bottom_path.relative_to(repo)),
+                "top_image_cid": "keysuri_topshot_korea_parent",
+                "bottom_image_cid": "keysuri_bottomshot_korea_parent",
+                "owner_email_subject": "[운영자 검토] 기존 제목",
+                "owner_email_preheader": "기존 프리헤더",
+                "regen_source_pack_snapshot": parent_snapshot,
+            },
+            email_html="<html><body><p>parent body</p></body></html>",
+        )
+
+        mock_build_input.return_value = {"target_date": "2026-06-24"}
+        mock_build_prompt.return_value = "PROMPT-BODY"
+        text_caller = MagicMock(return_value="RAW-TEXT")
+        generated_briefing = {"summary": "재생성 본문", "briefing_title": "새 제목"}
+        mock_parse.return_value = {
+            "parse_status": "parsed_valid",
+            "generated_briefing": generated_briefing,
+        }
+        mock_enrich.side_effect = lambda briefing, *_args: briefing
+        mock_validate_visible.side_effect = lambda payload, **_kwargs: (payload, {"visible_text_ellipsis_blocked": False})
+        mock_fixture.return_value = {
+            "selected_subject": "새 제목",
+            "preheader": "새 프리헤더",
+        }
+        mock_subject_fields.return_value = {
+            "editorial_subject": "국내 AI 반도체 정책 점검: 6월 24일 국내 테크 브리핑",
+            "email_subject": "국내 AI 반도체 정책 점검: 6월 24일 국내 테크 브리핑",
+            "owner_email_subject": "[운영자 검토] 국내 AI 반도체 정책 점검: 6월 24일 국내 테크 브리핑",
+            "email_preheader": "국내 AI·테크 신호 검수 대기",
+            "owner_email_preheader": "국내 AI·테크 신호 검수 대기",
+            "subject_top_headline": "국내 AI 반도체 정책 점검",
+            "subject_source": "top_signal_1_headline",
+            "subject_kst_date": "20260624",
+            "subject_kst_label": "6월 24일",
+            "subject_program_label": "국내 테크 브리핑",
+            "subject_trigger_label": "admin_text_only_reissue",
+        }
+        mock_render_preview.return_value = "<html><body><p>재생성 본문</p></body></html>"
+        mock_email_html.return_value = (
+            "<html><body><p>재생성 본문</p>"
+            '<img src="cid:keysuri_topshot_korea_parent"/>'
+            '<img src="cid:keysuri_bottomshot_korea_parent"/>'
+            "</body></html>"
+        )
+        mock_validate_html.return_value = {}
+        send_fn = MagicMock(return_value=True)
+
+        result = run_keysuri_text_only_reissue(
+            parent_id,
+            text_caller=text_caller,
+            send_fn=send_fn,
+            reissue_reason_code="제목 수정 요청",
+            reissue_reason_note="text only refresh",
+        )
+
+        self.assertTrue(result["ok"])
+        text_caller.assert_called_once_with("PROMPT-BODY")
+        mock_customer_final.assert_not_called()
+        send_fn.assert_called_once()
+        inline_parts = send_fn.call_args.kwargs["inline_jpeg_parts"]
+        self.assertEqual(len(inline_parts), 2)
+        self.assertIn(str(top_path.resolve()), inline_parts[0][0])
+        self.assertIn(str(bottom_path.resolve()), inline_parts[1][0])
+        child = load_run_artifact(child_id) or {}
+        self.assertEqual(child.get("regen_type"), "text_only")
+        self.assertEqual(child.get("regen_parent_run_id"), parent_id)
+        self.assertTrue(child.get("regen_preserved_images"))
+        self.assertTrue(child.get("regen_regenerated_text"))
+        self.assertFalse(child.get("image_generation_called"))
+        self.assertTrue(child.get("text_generation_called"))
+        self.assertEqual(child.get("customer_delivery_status"), "not_sent")
+        self.assertEqual(child.get("reissue_reason_code"), "제목 수정 요청")
+        self.assertEqual(child.get("generated_image_path"), str(top_path.relative_to(repo)))
+        self.assertEqual(child.get("korea_bottom_shot_path"), str(bottom_path.relative_to(repo)))
+        child_html = load_run_email_html(child_id) or ""
+        self.assertIn("cid:keysuri_topshot_korea_parent", child_html)
+        self.assertIn("cid:keysuri_bottomshot_korea_parent", child_html)
+        # duplicate_reselect metadata
+        self.assertTrue(child.get("duplicate_reselect_called"))
+        self.assertTrue(child.get("candidate_pool_reused"))
+        self.assertIn("excluded_signal_ids", child)
+        self.assertIn("replacement_signal_ids", child)
+        parent = load_run_artifact(parent_id) or {}
+        self.assertEqual(parent.get("generated_image_path_watermarked"), str(top_path.relative_to(repo)))
+        self.assertNotIn("regen_type", parent)
+
+    @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
+    @patch("keysuri_service_full_run.generate_run_id")
+    @patch("keysuri_service_full_run.build_keysuri_prompt_input")
+    @patch("keysuri_service_full_run.enrich_generated_briefing_content")
+    @patch("keysuri_service_full_run.validate_and_repair_keysuri_visible_text_quality")
+    @patch("keysuri_service_full_run.build_keysuri_subject_artifact_fields")
+    @patch("keysuri_service_full_run.render_keysuri_contract_preview_html")
+    @patch("keysuri_service_full_run.build_keysuri_korea_gmail_owner_email_html")
+    @patch("keysuri_service_full_run.validate_keysuri_html_visible_text_quality")
+    @patch("keysuri_service_full_run.resolve_korea_bottom_email_image_path")
+    @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
+    def test_text_and_image_reissue_regenerates_text_and_images_owner_only(
+        self,
+        mock_watermark: MagicMock,
+        mock_bottom: MagicMock,
+        mock_validate_html: MagicMock,
+        mock_email_html: MagicMock,
+        mock_render_preview: MagicMock,
+        mock_subject_fields: MagicMock,
+        mock_validate_visible: MagicMock,
+        mock_enrich: MagicMock,
+        mock_build_input: MagicMock,
+        mock_run_id: MagicMock,
+        mock_customer_final: MagicMock,
+    ) -> None:
+        from keysuri_service_full_run import run_keysuri_text_and_image_reissue
+
+        repo = Path(__file__).resolve().parents[1]
+        parent_id = "20260624_183005_keysuri_korea_tech_aabbccdd"
+        child_id = "20260624_190003_keysuri_korea_tech_11223344"
+        mock_run_id.return_value = child_id
+        raw_top = repo / "output" / "images" / "text_and_image_regen_top_raw.jpg"
+        raw_top.parent.mkdir(parents=True, exist_ok=True)
+        raw_top.write_bytes(b"\xff\xd8\xff" + b"\x71" * 128)
+        mock_watermark.side_effect = _mock_keysuri_watermark
+        bottom_path = repo / "output" / "images" / "text_and_image_regen_bottom.jpg"
+        bottom_path.write_bytes(b"\xff\xd8\xff" + b"\x72" * 128)
+        mock_bottom.return_value = (
+            bottom_path,
+            [],
+            {
+                "bottom_shot_source": "test_generated",
+                "bottom_shot_generation_status": "generated",
+                "bottom_shot_image_path": str(bottom_path.relative_to(repo)),
+            },
+        )
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_korea_tech",
+                "program_id": "keysuri_korea_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+            },
+            email_html="<html><body><p>parent body</p></body></html>",
+        )
+
+        # smoke_runner mock: text_and_image fetches fresh sources from scratch
+        fresh_source_pack = {"program_id": "keysuri_korea_tech", "sources": [], "claims": []}
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as _sp_file:
+            json.dump(fresh_source_pack, _sp_file)
+            _sp_path = _sp_file.name
+        fresh_briefing = {"summary": "새 본문", "briefing_title": "새 전체 제목"}
+        smoke_result = LiveSourceSmokeResult(
+            ok=True,
+            program_id="keysuri_korea_tech",
+            source_pack_path=_sp_path,
+            html_path="",
+            fetched_item_count=5,
+            feed_urls_used=[],
+            sample_marker_pass=True,
+            called_gemini=True,
+            parse_status="parsed_valid",
+            generated_briefing=fresh_briefing,
+        )
+        smoke_runner_mock = MagicMock(return_value=smoke_result)
+
+        mock_build_input.return_value = {"target_date": "2026-06-24"}
+        mock_enrich.side_effect = lambda briefing, *_args: briefing
+        mock_validate_visible.side_effect = lambda payload, **_kwargs: (payload, {"visible_text_ellipsis_blocked": False})
+        mock_subject_fields.return_value = {
+            "editorial_subject": "배터리 소재와 AI 장비: 6월 24일 국내 테크 브리핑",
+            "email_subject": "배터리 소재와 AI 장비: 6월 24일 국내 테크 브리핑",
+            "owner_email_subject": "[운영자 검토] 배터리 소재와 AI 장비: 6월 24일 국내 테크 브리핑",
+            "email_preheader": "국내 AI·테크 신호 검수 대기",
+            "owner_email_preheader": "국내 AI·테크 신호 검수 대기",
+            "subject_top_headline": "배터리 소재와 AI 장비",
+            "subject_source": "top_signal_1_headline",
+            "subject_kst_date": "20260624",
+            "subject_kst_label": "6월 24일",
+            "subject_program_label": "국내 테크 브리핑",
+            "subject_trigger_label": "admin_text_and_image_reissue",
+        }
+        mock_render_preview.return_value = "<html><body><p>새 본문</p></body></html>"
+        mock_email_html.return_value = (
+            "<html><body><p>새 본문</p>"
+            '<img src="cid:keysuri_topshot_korea_20260624_regen_11223344"/>'
+            '<img src="cid:keysuri_bottomshot_korea_20260624_regen_11223344"/>'
+            "</body></html>"
+        )
+        mock_validate_html.return_value = {}
+        send_fn = MagicMock(return_value=True)
+
+        image_runner = MagicMock(
+            return_value=ServiceImageOutcome(
+                called_image_api=True,
+                image_generation_status="generated",
+                image_source=IMAGE_SOURCE_GENERATED,
+                generated_image_path=str(raw_top.relative_to(repo)),
+            )
+        )
+
+        result = run_keysuri_text_and_image_reissue(
+            parent_id,
+            smoke_runner=smoke_runner_mock,
+            image_canary_runner=image_runner,
+            send_fn=send_fn,
+            reissue_reason_code="전체 방향 수정 요청",
+            reissue_reason_note="regen both",
+        )
+
+        self.assertTrue(result["ok"])
+        smoke_runner_mock.assert_called_once()  # test 21: smoke_runner called for fresh collection
+        image_runner.assert_called_once()
+        mock_bottom.assert_called_once()
+        mock_customer_final.assert_not_called()  # test 27: customer final blocked
+        send_fn.assert_called_once()
+        child = load_run_artifact(child_id) or {}
+        self.assertEqual(child.get("regen_type"), "text_and_image")
+        self.assertEqual(child.get("regen_parent_run_id"), parent_id)
+        self.assertTrue(child.get("source_fetch_called"))  # test 22
+        self.assertTrue(child.get("candidate_pool_refreshed"))  # test 22
+        self.assertTrue(child.get("selected_signals_refreshed"))  # test 23
+        self.assertTrue(child.get("regen_regenerated_text"))
+        self.assertTrue(child.get("regen_regenerated_images"))
+        self.assertTrue(child.get("text_generation_called"))  # test 24
+        self.assertTrue(child.get("image_generation_called"))  # test 25
+        self.assertEqual(child.get("customer_delivery_status"), "not_sent")
+        self.assertEqual(child.get("reissue_reason_code"), "전체 방향 수정 요청")
+        self.assertEqual(child.get("bottom_shot_image_path"), str(bottom_path.relative_to(repo)))
+        self.assertEqual(child.get("generated_image_path_raw"), str(raw_top.relative_to(repo)))
+        self.assertEqual(child.get("artifact_status"), "emailed")
+        parent = load_run_artifact(parent_id) or {}
+        self.assertNotIn("regen_type", parent)  # test 28: parent artifact not overwritten
+
+    def test_text_only_reissue_missing_candidate_pool_fails(self) -> None:
+        """Parent has no regen_source_pack_snapshot → must fail with missing_candidate_pool error."""
+        from keysuri_service_full_run import run_keysuri_text_only_reissue
+
+        parent_id = "20260624_200000_keysuri_korea_tech_00000000"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_korea_tech",
+                "program_id": "keysuri_korea_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+                # deliberately no regen_source_pack_snapshot
+            }
+        )
+
+        result = run_keysuri_text_only_reissue(parent_id)
+        self.assertFalse(result.get("ok"))
+        self.assertEqual(result.get("error"), "text_only_reselect_failed_missing_candidate_pool")
+
+    @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
+    @patch("keysuri_service_full_run.generate_run_id")
+    @patch("keysuri_service_full_run.build_keysuri_prompt_input")
+    @patch("keysuri_service_full_run.build_keysuri_generation_prompt")
+    @patch("keysuri_service_full_run.parse_keysuri_generated_response")
+    @patch("keysuri_service_full_run.enrich_generated_briefing_content")
+    @patch("keysuri_service_full_run.validate_and_repair_keysuri_visible_text_quality")
+    @patch("keysuri_service_full_run._build_service_contract_fixture")
+    @patch("keysuri_service_full_run.build_keysuri_subject_artifact_fields")
+    @patch("keysuri_service_full_run.render_keysuri_contract_preview_html")
+    @patch("keysuri_service_full_run.build_keysuri_korea_gmail_owner_email_html")
+    @patch("keysuri_service_full_run.validate_keysuri_html_visible_text_quality")
+    def test_text_only_reissue_excludes_previously_selected_signals(
+        self,
+        mock_validate_html: MagicMock,
+        mock_email_html: MagicMock,
+        mock_render_preview: MagicMock,
+        mock_subject_fields: MagicMock,
+        mock_fixture: MagicMock,
+        mock_validate_visible: MagicMock,
+        mock_enrich: MagicMock,
+        mock_parse: MagicMock,
+        mock_build_prompt: MagicMock,
+        mock_build_input: MagicMock,
+        mock_run_id: MagicMock,
+        mock_customer_final: MagicMock,
+    ) -> None:
+        """Parent regen_prompt_input_snapshot has previously selected signals.
+        Verify _filter_source_pack_for_reselect excludes them before regeneration."""
+        from keysuri_service_full_run import run_keysuri_text_only_reissue
+
+        repo = Path(__file__).resolve().parents[1]
+        parent_id = "20260624_200100_keysuri_korea_tech_e1e1e1e1"
+        child_id = "20260624_200200_keysuri_korea_tech_a2a2a2a2"
+        mock_run_id.return_value = child_id
+
+        top_path = repo / "output" / "images" / "exclude_test_top.jpg"
+        top_path.parent.mkdir(parents=True, exist_ok=True)
+        top_path.write_bytes(b"\xff\xd8\xff" + b"\x91" * 128)
+
+        previously_selected = [
+            {"news_id": "old_claim_01", "headline": "AI 반도체 공급망 핵심 이슈", "source_ids": ["src_old_01"]},
+            {"news_id": "old_claim_02", "headline": "글로벌 파운드리 경쟁 심화", "source_ids": ["src_old_02"]},
+        ]
+        source_pack_with_pool = {
+            "program_id": "keysuri_korea_tech",
+            "sources": [],
+            "claims": [
+                {"claim_id": "old_claim_01", "headline": "AI 반도체 공급망 핵심 이슈", "source_ids": ["src_old_01"]},
+                {"claim_id": "old_claim_02", "headline": "글로벌 파운드리 경쟁 심화", "source_ids": ["src_old_02"]},
+                {"claim_id": "new_claim_03", "headline": "국내 로봇 산업 성장 가속", "source_ids": ["src_new_03"]},
+            ],
+        }
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_korea_tech",
+                "program_id": "keysuri_korea_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+                "generated_image_path_watermarked": str(top_path.relative_to(repo)),
+                "top_image_cid": "keysuri_topshot_korea_excl",
+                "owner_email_subject": "[운영자 검토] 기존",
+                "owner_email_preheader": "프리헤더",
+                "regen_source_pack_snapshot": source_pack_with_pool,
+                "regen_prompt_input_snapshot": {"top_5_news": {"items": previously_selected}},
+            }
+        )
+
+        captured_source_pack: dict = {}
+
+        def _capture_build_input(pid, sp):
+            captured_source_pack.update(sp)
+            return {"target_date": "2026-06-24", "top_5_news": {"items": [
+                {"news_id": "new_claim_03", "headline": "국내 로봇 산업 성장 가속", "source_ids": ["src_new_03"]},
+            ]}}
+
+        mock_build_input.side_effect = _capture_build_input
+        mock_build_prompt.return_value = "PROMPT-EXCL"
+        mock_parse.return_value = {
+            "parse_status": "parsed_valid",
+            "generated_briefing": {"summary": "재선택 본문", "briefing_title": "로봇 제목"},
+        }
+        mock_enrich.side_effect = lambda briefing, *_args: briefing
+        mock_validate_visible.side_effect = lambda payload, **_kwargs: (payload, {"visible_text_ellipsis_blocked": False})
+        mock_fixture.return_value = {"selected_subject": "로봇 제목", "preheader": "프리헤더"}
+        mock_subject_fields.return_value = {
+            "editorial_subject": "국내 로봇 산업 성장 가속: 6월 24일 국내 테크 브리핑",
+            "email_subject": "국내 로봇 산업 성장 가속: 6월 24일 국내 테크 브리핑",
+            "owner_email_subject": "[운영자 검토] 국내 로봇 산업 성장 가속",
+            "email_preheader": "국내 AI·테크 신호 검수 대기",
+            "owner_email_preheader": "국내 AI·테크 신호 검수 대기",
+            "subject_top_headline": "국내 로봇 산업 성장 가속",
+            "subject_source": "top_signal_1_headline",
+            "subject_kst_date": "20260624",
+            "subject_kst_label": "6월 24일",
+            "subject_program_label": "국내 테크 브리핑",
+            "subject_trigger_label": "admin_text_only_reissue",
+        }
+        mock_render_preview.return_value = "<html><body><p>재선택 본문</p></body></html>"
+        mock_email_html.return_value = "<html><body><p>재선택 본문</p></body></html>"
+        mock_validate_html.return_value = {}
+
+        result = run_keysuri_text_only_reissue(
+            parent_id,
+            text_caller=MagicMock(return_value="RAW-EXCL"),
+            send_fn=MagicMock(return_value=True),
+        )
+
+        self.assertTrue(result["ok"])
+        # Verify old claims were excluded from the source_pack passed to build_keysuri_prompt_input
+        remaining_claims = [c["claim_id"] for c in captured_source_pack.get("claims", [])]
+        self.assertNotIn("old_claim_01", remaining_claims)
+        self.assertNotIn("old_claim_02", remaining_claims)
+        self.assertIn("new_claim_03", remaining_claims)
+        child = load_run_artifact(child_id) or {}
+        self.assertTrue(child.get("duplicate_reselect_called"))
+        self.assertTrue(child.get("candidate_pool_reused"))
+        excluded = child.get("excluded_signal_ids") or []
+        self.assertIn("old_claim_01", excluded)
+        self.assertIn("old_claim_02", excluded)
+        replacement = child.get("replacement_signal_ids") or []
+        self.assertIn("new_claim_03", replacement)
+
 
 class ServiceFullRunContractTests(unittest.TestCase):
     def test_generated_image_source_passes(self) -> None:

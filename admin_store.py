@@ -28,7 +28,7 @@ OWNER_REVIEW_STATUSES = frozenset(
 LEGACY_OWNER_REVIEW_STATUSES = frozenset({"auto_sent_after_timeout"})
 REISSUE_SCOPES = frozenset({"text_only", "image_only", "text_and_image"})
 EXECUTABLE_REISSUE_SCOPE = "text_and_image"
-UNSUPPORTED_REISSUE_SCOPES = frozenset({"text_only"})
+UNSUPPORTED_REISSUE_SCOPES = frozenset()
 
 CUSTOMER_DELIVERY_STATUSES = frozenset(
     {

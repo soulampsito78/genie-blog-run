@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import html
+import json
 import logging
 import os
 import secrets
@@ -36,7 +37,11 @@ from admin_store import (
     resolve_customer_recipients,
     validate_run_id,
 )
-from keysuri_service_full_run import run_keysuri_image_only_reissue
+from keysuri_service_full_run import (
+    run_keysuri_image_only_reissue,
+    run_keysuri_text_and_image_reissue,
+    run_keysuri_text_only_reissue,
+)
 from orchestrator import execute_orchestrator_run
 
 router = APIRouter(tags=["admin"])
@@ -48,17 +53,34 @@ APPROVE_NONCE_SALT = b"genie-approve-nonce-v1"
 APPROVE_NONCE_TTL_SECONDS = 900
 APPROVE_NONCE_FORM_FIELD = "approve_nonce"
 CUSTOMER_SEND_CONFIRM_FIELD = "customer_send_confirm"
-REISSUE_REASONS = (
-    "제목 수정 요청",
-    "요약 수정 요청",
-    "문장 표현 수정 요청",
-    "이미지 품질 이슈",
-    "구성 품질 이슈",
-    "기타",
-)
+REISSUE_REASON_OPTIONS_BY_SCOPE = {
+    "text_only": (
+        "뉴스 중복 이슈",            # DEFAULT
+        "오래된 뉴스 포함",
+        "관련도 낮은 뉴스 포함",
+        "국내/글로벌 범위 불일치",
+        "핵심 시그널 누락",
+        "제목 수정 요청",
+        "요약 수정 요청",
+        "문장 표현 수정 요청",
+    ),
+    "image_only": (
+        "이미지 품질 이슈",          # DEFAULT
+        "인물/헤어 일관성 이슈",
+        "장면/역할 불일치",
+        "배경/아이콘 오염",
+    ),
+    "text_and_image": (
+        "전체 방향 수정 요청",       # DEFAULT
+        "뉴스 수집부터 재실행 필요",
+        "이미지+본문 불일치",
+        "구성 품질 이슈",
+    ),
+}
+REISSUE_REASON_FALLBACKS = ("기타",)
 
 REISSUE_SCOPE_OPTIONS = (
-    ("text_only", "본문만 재발행", "준비 중 — 본문만 재발행은 아직 지원하지 않습니다."),
+    ("text_only", "본문만 재발행", "중복·부적합 뉴스를 제외하고 후보군의 다음 순위 뉴스로 본문을 다시 생성합니다. 기존 이미지는 유지됩니다."),
     ("image_only", "이미지만 재발행", "이미지 prompt와 이미지 산출물만 다시 생성합니다. 본문은 유지됩니다."),
     (
         "text_and_image",
@@ -260,25 +282,36 @@ def _mode_supports_image_only_reissue(mode: str) -> bool:
     return str(mode or "").strip() in ("keysuri_global_tech", "keysuri_korea_tech")
 
 
+def _mode_supports_text_only_reissue(mode: str) -> bool:
+    return str(mode or "").strip() in ("keysuri_global_tech", "keysuri_korea_tech")
+
+
 def _mode_supports_text_and_image_reissue(mode: str) -> bool:
-    return str(mode or "").strip() in ("today_genie", "tomorrow_genie")
+    return str(mode or "").strip() in (
+        "today_genie",
+        "tomorrow_genie",
+        "keysuri_global_tech",
+        "keysuri_korea_tech",
+    )
 
 
 def _render_reissue_scope_field(mode: str) -> str:
     mode = str(mode or "").strip()
+    text_only_enabled = _mode_supports_text_only_reissue(mode)
     image_only_enabled = _mode_supports_image_only_reissue(mode)
     text_and_image_enabled = _mode_supports_text_and_image_reissue(mode)
     default_scope = "image_only" if image_only_enabled else EXECUTABLE_REISSUE_SCOPE
     rows = [
         '<p style="margin:0 0 12px 0;font-size:12px;line-height:1.6;color:#9a3412;">'
-        "선택 가능한 범위만 서버에서 실행됩니다. 본문만 재발행은 아직 준비 중입니다."
+        "선택한 범위만 서버에서 재발행합니다. 재발행 결과는 운영자 검토용 이메일로만 발송되며, 고객 최종 발송은 별도 승인 전까지 수행되지 않습니다."
         "</p>"
     ]
     for scope, label, helper in REISSUE_SCOPE_OPTIONS:
         scope_helper = helper
         disabled = False
-        if scope == "text_only":
+        if scope == "text_only" and not text_only_enabled:
             disabled = True
+            scope_helper = "이 실행 mode에서는 아직 지원하지 않습니다."
         elif scope == "image_only" and not image_only_enabled:
             disabled = True
             scope_helper = "이 실행 mode에서는 아직 지원하지 않습니다."
@@ -300,6 +333,68 @@ def _render_reissue_scope_field(mode: str) -> str:
             f"</span></label>"
         )
     return "\n".join(rows)
+
+
+def _ordered_reissue_reasons_for_mode(mode: str) -> tuple[str, ...]:
+    mode = str(mode or "").strip()
+    if mode in ("keysuri_global_tech", "keysuri_korea_tech"):
+        ordered: list[str] = []
+        for scope in ("image_only", "text_only", "text_and_image"):
+            for reason in REISSUE_REASON_OPTIONS_BY_SCOPE.get(scope, ()):
+                if reason not in ordered:
+                    ordered.append(reason)
+        for reason in REISSUE_REASON_FALLBACKS:
+            if reason not in ordered:
+                ordered.append(reason)
+        return tuple(ordered)
+    ordered = list(REISSUE_REASON_OPTIONS_BY_SCOPE["text_and_image"])
+    for reason in (
+        "제목 수정 요청",
+        "요약 수정 요청",
+        "문장 표현 수정 요청",
+        "이미지 품질 이슈",
+        *REISSUE_REASON_FALLBACKS,
+    ):
+        if reason not in ordered:
+            ordered.append(reason)
+    return tuple(ordered)
+
+
+def _render_reissue_reason_select(mode: str) -> str:
+    options = _ordered_reissue_reasons_for_mode(mode)
+    options_html = "".join(
+        f'<option value="{_esc(reason)}">{_esc(reason)}</option>'
+        for reason in options
+    )
+    reason_map = {
+        scope: list(REISSUE_REASON_OPTIONS_BY_SCOPE.get(scope, ()))
+        for scope, _label, _helper in REISSUE_SCOPE_OPTIONS
+    }
+    reason_map["fallback"] = list(REISSUE_REASON_FALLBACKS)
+    return f"""
+<select id="reissue-reason-select" name="reason_option" required>{options_html}</select>
+<script>
+(() => {{
+  const form = document.currentScript && document.currentScript.closest("form");
+  if (!form) return;
+  const select = form.querySelector("#reissue-reason-select");
+  const radios = Array.from(form.querySelectorAll('input[name="reissue_scope"]'));
+  const reasonMap = {html.escape(json.dumps(reason_map), quote=False)};
+  const defaultReason = (scope) => {{
+    const choices = reasonMap[scope] || reasonMap.fallback || [];
+    return choices[0] || "";
+  }};
+  const syncReason = () => {{
+    const checked = radios.find((radio) => radio.checked);
+    if (!checked || !select) return;
+    const next = defaultReason(checked.value);
+    if (next) select.value = next;
+  }};
+  radios.forEach((radio) => radio.addEventListener("change", syncReason));
+  syncReason();
+}})();
+</script>
+"""
 
 
 def _admin_disabled_response() -> HTMLResponse:
@@ -518,9 +613,6 @@ def admin_run_detail(request: Request, run_id: str):
         warn += (
             f'<div class="warn">재발행 차단: {_esc(_REISSUE_ERROR_MESSAGES.get(err_code, err_code))}</div>'
         )
-    reason_opts = "".join(
-        f'<option value="{_esc(o)}">{_esc(o)}</option>' for o in REISSUE_REASONS
-    )
     delivery_sections = _render_delivery_report_sections(meta)
     meta_rows = "".join(
         f"<dt>{_esc(k)}</dt><dd>{_esc(v)}</dd>"
@@ -546,8 +638,7 @@ def admin_run_detail(request: Request, run_id: str):
 <div class="card warn">
 <strong>재발행 안내</strong><br>
 재발행은 <strong>운영자 검토용 이메일</strong>을 다시 보내는 작업입니다. 고객 최종 배포가 아닙니다.<br>
-이미지만 재발행은 KeeSuri 실행에서 본문을 보존하고 이미지 prompt와 이미지 산출물만 다시 생성합니다.<br>
-본문만 재발행은 준비 중이며, 본문·이미지 모두 재발행은 기존 Today/Tomorrow 실행 경로에서만 사용할 수 있습니다.
+선택한 범위만 서버에서 재발행합니다. 재발행 결과는 운영자 검토용 이메일로만 발송되며, 고객 최종 발송은 별도 승인 전까지 수행되지 않습니다.
 </div>
 <div class="card">
 <h2>재발행 요청</h2>
@@ -556,7 +647,7 @@ def admin_run_detail(request: Request, run_id: str):
 {scope_field}
 </label><br>
 <label>사유<br>
-<select name="reason_option" required>{reason_opts}</select>
+{_render_reissue_reason_select(mode)}
 </label><br><br>
 <label>추가 메모 (선택)<br>
 <input type="text" name="reason_note" maxlength="500" placeholder="선택 사유 보완">
@@ -734,14 +825,34 @@ def admin_run_reissue(
     reason_code = reason_option.strip()
     note = reason_note.strip()
 
-    if scope == "image_only":
-        if not _mode_supports_image_only_reissue(mode):
+    if mode in ("keysuri_global_tech", "keysuri_korea_tech"):
+        if scope == "text_only" and not _mode_supports_text_only_reissue(mode):
             return RedirectResponse(
                 url=f"/admin/runs/{run_id}?reissue_error=unsupported_reissue_scope",
                 status_code=303,
             )
+        if scope == "image_only" and not _mode_supports_image_only_reissue(mode):
+            return RedirectResponse(
+                url=f"/admin/runs/{run_id}?reissue_error=unsupported_reissue_scope",
+                status_code=303,
+            )
+        if scope == "text_and_image" and not _mode_supports_text_and_image_reissue(mode):
+            return RedirectResponse(
+                url=f"/admin/runs/{run_id}?reissue_error=unsupported_reissue_scope",
+                status_code=303,
+            )
+        runner = {
+            "text_only": run_keysuri_text_only_reissue,
+            "image_only": run_keysuri_image_only_reissue,
+            "text_and_image": run_keysuri_text_and_image_reissue,
+        }.get(scope)
+        if runner is None:
+            return RedirectResponse(
+                url=f"/admin/runs/{run_id}?reissue_error=invalid_reissue_scope",
+                status_code=303,
+            )
         try:
-            result = run_keysuri_image_only_reissue(
+            result = runner(
                 run_id,
                 parent_meta=parent,
                 reissue_reason_code=reason_code,

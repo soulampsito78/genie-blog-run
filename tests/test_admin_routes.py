@@ -173,7 +173,8 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("본문·이미지 모두 재발행", resp.text)
         self.assertIn("운영자 검토 메일", resp.text)
         self.assertIn("고객 이메일 발송 상태", resp.text)
-        self.assertIn("본문만 재발행은 아직 준비 중입니다", resp.text)
+        self.assertIn("선택한 범위만 서버에서 재발행합니다.", resp.text)
+        self.assertIn("고객 최종 발송은 별도 승인 전까지 수행되지 않습니다.", resp.text)
 
     def test_today_reissue_scope_radios_match_backend_support(self) -> None:
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
@@ -198,7 +199,7 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn('class="radio-scope"', resp.text)
         self.assertIn('class="radio-helper"', resp.text)
 
-    def test_keysuri_reissue_scope_radios_enable_image_only(self) -> None:
+    def test_keysuri_reissue_scope_radios_enable_all_scopes(self) -> None:
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
         run_id = "20260530_121101_keysuri_korea_tech_aabbccdd"
         save_run_artifact(
@@ -215,11 +216,30 @@ class AdminRoutesTests(unittest.TestCase):
         )
         resp = self.client.get(f"/admin/runs/{run_id}")
         self.assertEqual(resp.status_code, 200)
-        self.assertRegex(resp.text, r'value="text_only"[^>]*\bdisabled\b')
+        self.assertNotRegex(resp.text, r'value="text_only"[^>]*\bdisabled\b')
         self.assertNotRegex(resp.text, r'value="image_only"[^>]*\bdisabled\b')
         self.assertRegex(resp.text, r'value="image_only"[^>]*\bchecked\b')
-        self.assertRegex(resp.text, r'value="text_and_image"[^>]*\bdisabled\b')
+        self.assertNotRegex(resp.text, r'value="text_and_image"[^>]*\bdisabled\b')
+        self.assertIn("중복·부적합 뉴스를 제외하고 후보군의 다음 순위 뉴스로 본문을 다시 생성합니다. 기존 이미지는 유지됩니다.", resp.text)
         self.assertIn("이미지 prompt와 이미지 산출물만 다시 생성합니다", resp.text)
+        self.assertIn("본문과 이미지를 모두 새로 생성합니다. 전체 방향이 틀렸을 때 사용합니다.", resp.text)
+        self.assertIn("이미지 품질 이슈", resp.text)
+        self.assertIn("reissue-reason-select", resp.text)
+
+    def test_reason_dropdown_text_only_default_is_news_duplicate(self) -> None:
+        from admin_routes import REISSUE_REASON_OPTIONS_BY_SCOPE
+        reasons = REISSUE_REASON_OPTIONS_BY_SCOPE["text_only"]
+        self.assertEqual(reasons[0], "뉴스 중복 이슈")
+
+    def test_reason_dropdown_image_only_default_is_image_quality(self) -> None:
+        from admin_routes import REISSUE_REASON_OPTIONS_BY_SCOPE
+        reasons = REISSUE_REASON_OPTIONS_BY_SCOPE["image_only"]
+        self.assertEqual(reasons[0], "이미지 품질 이슈")
+
+    def test_reason_dropdown_text_and_image_default_is_full_regen(self) -> None:
+        from admin_routes import REISSUE_REASON_OPTIONS_BY_SCOPE
+        reasons = REISSUE_REASON_OPTIONS_BY_SCOPE["text_and_image"]
+        self.assertEqual(reasons[0], "전체 방향 수정 요청")
 
     def test_admin_pages_include_viewport_meta(self) -> None:
         login_resp = self.client.get("/admin")
@@ -351,8 +371,8 @@ class AdminRoutesTests(unittest.TestCase):
             follow_redirects=True,
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("unsupported_reissue_scope", str(resp.url))
-        self.assertIn("아직 실행할 수 없습니다", resp.text)
+        self.assertIn("invalid_reissue_scope", str(resp.url))
+        self.assertIn("재발행 범위가 올바르지 않습니다", resp.text)
         self.assertNotIn("sent_archived", resp.text)
         mock_exec.assert_not_called()
         parent = load_run_artifact(parent_id) or {}
@@ -384,8 +404,8 @@ class AdminRoutesTests(unittest.TestCase):
             follow_redirects=True,
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("unsupported_reissue_scope", str(resp.url))
-        self.assertIn("화면에 표시된 실행 가능 범위를 확인하세요", resp.text)
+        self.assertIn("invalid_reissue_scope", str(resp.url))
+        self.assertIn("재발행 범위가 올바르지 않습니다", resp.text)
         mock_exec.assert_not_called()
         parent = load_run_artifact(parent_id) or {}
         self.assertEqual(parent.get("reissue_count", 0), 0)
@@ -434,6 +454,92 @@ class AdminRoutesTests(unittest.TestCase):
         mock_exec.assert_not_called()
         parent = load_run_artifact(parent_id) or {}
         self.assertEqual(parent.get("reissue_count", 0), 0)
+
+    @patch("admin_routes.execute_orchestrator_run")
+    @patch("admin_routes.run_keysuri_text_only_reissue")
+    def test_reissue_text_only_executes_keysuri_helper_only(self, mock_text_only, mock_exec) -> None:
+        child_id = "20260530_130101_keysuri_korea_tech_11223344"
+        mock_text_only.return_value = {
+            "ok": True,
+            "run_id": child_id,
+            "regen_type": "text_only",
+            "email_sent": True,
+        }
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120202_keysuri_korea_tech_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_korea_tech",
+                "program_id": "keysuri_korea_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+                "reason_summary": "ok",
+                "reissue_count": 0,
+            },
+            email_html="<html><body><p>original body</p></body></html>",
+        )
+        resp = self.client.post(
+            f"/admin/runs/{parent_id}/reissue",
+            data={
+                "reason_option": "제목 수정 요청",
+                "reason_note": "refresh copy",
+                "reissue_scope": "text_only",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        self.assertIn(child_id, resp.headers.get("location", ""))
+        mock_text_only.assert_called_once()
+        self.assertEqual(mock_text_only.call_args.args[0], parent_id)
+        self.assertEqual(mock_text_only.call_args.kwargs["reissue_reason_code"], "제목 수정 요청")
+        self.assertEqual(mock_text_only.call_args.kwargs["reissue_reason_note"], "refresh copy")
+        mock_exec.assert_not_called()
+
+    @patch("admin_routes.execute_orchestrator_run")
+    @patch("admin_routes.run_keysuri_text_and_image_reissue")
+    def test_reissue_text_and_image_executes_keysuri_helper_only(self, mock_text_and_image, mock_exec) -> None:
+        child_id = "20260530_130102_keysuri_global_tech_11223344"
+        mock_text_and_image.return_value = {
+            "ok": True,
+            "run_id": child_id,
+            "regen_type": "text_and_image",
+            "email_sent": True,
+        }
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120203_keysuri_global_tech_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_global_tech",
+                "program_id": "keysuri_global_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+                "reason_summary": "ok",
+                "reissue_count": 0,
+            },
+            email_html="<html><body><p>original body</p></body></html>",
+        )
+        resp = self.client.post(
+            f"/admin/runs/{parent_id}/reissue",
+            data={
+                "reason_option": "전체 방향 수정 요청",
+                "reason_note": "reset package",
+                "reissue_scope": "text_and_image",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        self.assertIn(child_id, resp.headers.get("location", ""))
+        mock_text_and_image.assert_called_once()
+        self.assertEqual(mock_text_and_image.call_args.args[0], parent_id)
+        self.assertEqual(mock_text_and_image.call_args.kwargs["reissue_reason_code"], "전체 방향 수정 요청")
+        self.assertEqual(mock_text_and_image.call_args.kwargs["reissue_reason_note"], "reset package")
+        mock_exec.assert_not_called()
 
     @patch("admin_routes.execute_orchestrator_run")
     def test_reissue_invalid_scope_rejected(self, mock_exec) -> None:

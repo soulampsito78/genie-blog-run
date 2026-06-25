@@ -1,6 +1,7 @@
 """Kee-Suri Global/Korea service-level full run with generated images."""
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -8,7 +9,7 @@ import hashlib
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 
 from admin_store import (
@@ -40,6 +41,8 @@ from keysuri_contract_preview_renderer import (
 from keysuri_briefing_content_enricher import enrich_generated_briefing_content
 from keysuri_bottom_shot_generation import generate_keysuri_korea_bottom_v6
 from keysuri_generation_prompt import parse_keysuri_generated_response
+from keysuri_generation_prompt import build_keysuri_generation_prompt
+from keysuri_gemini_client import call_keysuri_gemini_text
 from keysuri_email_identity import build_keysuri_subject_artifact_fields
 from keysuri_visible_text_quality import (
     KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
@@ -848,6 +851,249 @@ def _copy_subject_identity_fields(parent: Dict[str, Any], child: Dict[str, Any])
             child[key] = parent.get(key)
 
 
+def _regen_source_pack_snapshot(parent: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    for key in ("regen_source_pack_snapshot", "source_pack_snapshot"):
+        value = parent.get(key)
+        if isinstance(value, dict):
+            return copy.deepcopy(value)
+    prompt_snapshot = parent.get("regen_prompt_input_snapshot")
+    if isinstance(prompt_snapshot, dict) and isinstance(prompt_snapshot.get("source_pack"), dict):
+        return copy.deepcopy(prompt_snapshot["source_pack"])
+    return None
+
+
+def _regen_prompt_input_from_parent(parent: Dict[str, Any], program_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    source_pack = _regen_source_pack_snapshot(parent)
+    if not isinstance(source_pack, dict):
+        return None, "regen_missing_source_pack_snapshot"
+    prompt_input = build_keysuri_prompt_input(program_id, source_pack)
+    prompt_input["source_pack"] = source_pack
+    return prompt_input, None
+
+
+def _regenerate_keysuri_text_from_snapshot(
+    parent: Dict[str, Any],
+    program_id: str,
+    *,
+    text_caller: Optional[Callable[..., str]] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[str]]:
+    prompt_input, err = _regen_prompt_input_from_parent(parent, program_id)
+    if err:
+        return None, None, err
+    prompt_text = build_keysuri_generation_prompt(prompt_input)
+    caller = text_caller or call_keysuri_gemini_text
+    raw_text = caller(prompt_text)
+    parse_result = parse_keysuri_generated_response(raw_text, program_id, prompt_input)
+    if str(parse_result.get("parse_status") or "") != "parsed_valid":
+        return None, None, "generated_briefing_regen_parse_failed"
+    generated_briefing = parse_result.get("generated_briefing")
+    if not isinstance(generated_briefing, dict):
+        return None, None, "generated_briefing_regen_missing"
+    generated_briefing = enrich_generated_briefing_content(generated_briefing, program_id, prompt_input)
+    generated_briefing, visible_text_quality_fields = validate_and_repair_keysuri_visible_text_quality(
+        generated_briefing,
+        root_path="generated_briefing",
+    )
+    if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
+        return None, None, KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED
+    return prompt_input, generated_briefing, None
+
+
+# ---------------------------------------------------------------------------
+# text_only reselect helpers
+# ---------------------------------------------------------------------------
+
+def _text_only_title_fingerprint(headline: str) -> str:
+    """Normalized headline fingerprint for text_only duplicate exclusion."""
+    t = re.sub(r"[^\w\s]", " ", str(headline or "").lower())
+    t = re.sub(r"\s+", " ", t).strip()[:80]
+    words = [w for w in t.split() if len(w) > 2]
+    return " ".join(words[:10])
+
+
+def _build_text_only_exclude_identifiers(
+    parent: Dict[str, Any],
+) -> Tuple[Set[str], Set[str], List[str]]:
+    """Extract previously selected signal identifiers from parent for duplicate exclusion.
+
+    Returns:
+        (source_id_set, url_set, title_fingerprint_list)
+    """
+    source_ids: Set[str] = set()
+    urls: Set[str] = set()
+    fps: List[str] = []
+    prompt_input = parent.get("regen_prompt_input_snapshot")
+    if not isinstance(prompt_input, dict):
+        return source_ids, urls, fps
+    top_5 = prompt_input.get("top_5_news")
+    if not isinstance(top_5, dict):
+        return source_ids, urls, fps
+    items = top_5.get("items")
+    if not isinstance(items, list):
+        return source_ids, urls, fps
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        news_id = str(item.get("news_id") or "").strip()
+        if news_id:
+            source_ids.add(news_id)
+        for sid in (item.get("source_ids") or []):
+            if sid:
+                source_ids.add(str(sid))
+        headline = str(item.get("headline") or "").strip()
+        if headline:
+            fps.append(_text_only_title_fingerprint(headline))
+    return source_ids, urls, fps
+
+
+def _filter_source_pack_for_reselect(
+    source_pack: Dict[str, Any],
+    exclude_source_ids: Set[str],
+    exclude_urls: Set[str],
+    exclude_fps: List[str],
+) -> Tuple[Dict[str, Any], List[str], List[str]]:
+    """Return (filtered_source_pack, excluded_claim_ids, excluded_fps) with previously selected claims removed."""
+    filtered = copy.deepcopy(source_pack)
+    claims = filtered.get("claims")
+    if not isinstance(claims, list):
+        return filtered, [], []
+    excluded_ids: List[str] = []
+    excluded_fps_out: List[str] = []
+    remaining: List[Any] = []
+    exclude_fps_set = set(exclude_fps)
+    for claim in claims:
+        if not isinstance(claim, dict):
+            remaining.append(claim)
+            continue
+        cid = str(claim.get("claim_id") or "").strip()
+        url = str(claim.get("url") or "").strip()
+        headline = str(claim.get("headline") or claim.get("title") or "").strip()
+        claim_sids = [str(s) for s in (claim.get("source_ids") or []) if s]
+        is_excluded = (
+            (cid and cid in exclude_source_ids)
+            or any(sid in exclude_source_ids for sid in claim_sids)
+            or (url and url in exclude_urls)
+            or (headline and _text_only_title_fingerprint(headline) in exclude_fps_set)
+        )
+        if is_excluded:
+            if cid:
+                excluded_ids.append(cid)
+            if headline:
+                excluded_fps_out.append(_text_only_title_fingerprint(headline))
+        else:
+            remaining.append(claim)
+    filtered["claims"] = remaining
+    # For global program: also filter global_top5_selection.selected_source_ids
+    global_sel = filtered.get("global_top5_selection")
+    if isinstance(global_sel, dict):
+        sel_ids = global_sel.get("selected_source_ids")
+        if isinstance(sel_ids, list):
+            global_sel["selected_source_ids"] = [
+                sid for sid in sel_ids if sid not in exclude_source_ids
+            ]
+    return filtered, excluded_ids, excluded_fps_out
+
+
+def _regenerate_keysuri_text_from_source_pack(
+    program_id: str,
+    source_pack: Dict[str, Any],
+    *,
+    text_caller: Optional[Callable[..., str]] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[str]]:
+    """Build prompt_input from a given source_pack and regenerate text via Gemini.
+
+    Like _regenerate_keysuri_text_from_snapshot but takes source_pack directly,
+    used for text_only reselect (candidate pool filtering already applied).
+    """
+    try:
+        prompt_input = build_keysuri_prompt_input(program_id, source_pack)
+    except (ValueError, KeyError) as exc:
+        return None, None, f"text_only_reselect_candidate_pool_exhausted: {exc}"
+    prompt_input["source_pack"] = source_pack
+    prompt_text = build_keysuri_generation_prompt(prompt_input)
+    caller = text_caller or call_keysuri_gemini_text
+    raw_text = caller(prompt_text)
+    parse_result = parse_keysuri_generated_response(raw_text, program_id, prompt_input)
+    if str(parse_result.get("parse_status") or "") != "parsed_valid":
+        return None, None, "generated_briefing_regen_parse_failed"
+    generated_briefing = parse_result.get("generated_briefing")
+    if not isinstance(generated_briefing, dict):
+        return None, None, "generated_briefing_regen_missing"
+    generated_briefing = enrich_generated_briefing_content(generated_briefing, program_id, prompt_input)
+    generated_briefing, visible_text_quality_fields = validate_and_repair_keysuri_visible_text_quality(
+        generated_briefing,
+        root_path="generated_briefing",
+    )
+    if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
+        return None, None, KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED
+    return prompt_input, generated_briefing, None
+
+
+def _resolve_saved_artifact_path(parent: Dict[str, Any], *keys: str) -> Optional[Path]:
+    for key in keys:
+        raw = str(parent.get(key) or "").strip()
+        if not raw:
+            continue
+        path = Path(raw)
+        if not path.is_absolute():
+            path = _REPO / path
+        if path.is_file():
+            return path
+    return None
+
+
+def _saved_top_image_path(parent: Dict[str, Any]) -> Optional[Path]:
+    return _resolve_saved_artifact_path(
+        parent,
+        "generated_image_path_watermarked",
+        "generated_image_path",
+        "top_image_path",
+        "top_shot_image_path",
+    )
+
+
+def _saved_korea_bottom_image_path(parent: Dict[str, Any]) -> Optional[Path]:
+    return _resolve_saved_artifact_path(
+        parent,
+        "korea_bottom_shot_path",
+        "bottom_shot_image_path",
+        "bottom_image_path",
+    )
+
+
+def _text_regen_subject_prefix(regen_type: str) -> str:
+    if regen_type == "text_only":
+        return "[본문 재발행]"
+    if regen_type == "text_and_image":
+        return "[본문·이미지 재발행]"
+    if regen_type == "image_only":
+        return "[이미지 재발행]"
+    return ""
+
+
+def _scope_delivery_reason_fields(regen_type: str) -> Dict[str, bool]:
+    return {
+        "regen_preserved_images": regen_type == "text_only",
+        "regen_regenerated_text": regen_type in ("text_only", "text_and_image"),
+        "regen_preserved_text": regen_type == "image_only",
+        "regen_regenerated_images": regen_type in ("image_only", "text_and_image"),
+        "text_generation_called": regen_type in ("text_only", "text_and_image"),
+        "image_generation_called": regen_type in ("image_only", "text_and_image"),
+    }
+
+
+def _owner_subject_for_regen(parent: Dict[str, Any], regenerated_subject: str, regen_type: str) -> str:
+    prefix = _text_regen_subject_prefix(regen_type)
+    if regen_type == "image_only":
+        old_subject = str(
+            parent.get("owner_email_subject")
+            or parent.get("email_subject")
+            or regenerated_subject
+        ).strip()
+        return old_subject if old_subject.startswith(prefix) else f"{prefix}{old_subject}"
+    return str(regenerated_subject or "").strip()
+
+
 def run_keysuri_image_only_reissue(
     parent_run_id: str,
     *,
@@ -1086,6 +1332,500 @@ def run_keysuri_image_only_reissue(
         "customer_delivery_status": "not_sent",
         "top_image_cid": top_cid,
         "bottom_image_cid": bottom_cid,
+    }
+
+
+def run_keysuri_text_only_reissue(
+    parent_run_id: str,
+    *,
+    parent_meta: Optional[Dict[str, Any]] = None,
+    trigger_source: str = "admin_text_only_reissue",
+    reissue_reason_code: str = "",
+    reissue_reason_note: str = "",
+    send_owner_email: bool = True,
+    text_caller: Optional[Callable[..., str]] = None,
+    send_fn: Optional[Callable[..., bool]] = None,
+) -> Dict[str, Any]:
+    parent = dict(parent_meta or load_run_artifact(parent_run_id, normalize=False) or {})
+    pid = str(parent.get("program_id") or parent.get("mode") or "").strip()
+    if pid not in _KEYSURI_PROGRAMS:
+        return {"ok": False, "error": "text_only_reissue_unsupported_mode", "program_id": pid}
+
+    # text_only: must use parent candidate pool — never start fresh
+    source_pack = _regen_source_pack_snapshot(parent)
+    if not isinstance(source_pack, dict):
+        return {
+            "ok": False,
+            "error": "text_only_reselect_failed_missing_candidate_pool",
+            "program_id": pid,
+            "reissue_blocked_reason": (
+                "후보군 snapshot이 없어 본문만 재발행 불가. "
+                "본문·이미지 모두 재발행(text_and_image)을 사용하십시오."
+            ),
+        }
+
+    exclude_source_ids, exclude_urls, exclude_fps = _build_text_only_exclude_identifiers(parent)
+    selected_count_before = len(exclude_source_ids)
+
+    filtered_source_pack, excluded_ids, excluded_fps_applied = _filter_source_pack_for_reselect(
+        source_pack, exclude_source_ids, exclude_urls, exclude_fps
+    )
+
+    prompt_input, generated_briefing, regen_error = _regenerate_keysuri_text_from_source_pack(
+        pid, filtered_source_pack, text_caller=text_caller,
+    )
+    if regen_error or prompt_input is None or generated_briefing is None:
+        return {"ok": False, "error": regen_error or "text_regeneration_failed", "program_id": pid}
+
+    _new_top_5 = prompt_input.get("top_5_news") if isinstance(prompt_input.get("top_5_news"), dict) else {}
+    _new_items = _new_top_5.get("items") if isinstance(_new_top_5.get("items"), list) else []
+    replacement_signal_ids = [str(it.get("news_id") or "") for it in _new_items if isinstance(it, dict)]
+    replacement_signal_titles = [str(it.get("headline") or "") for it in _new_items if isinstance(it, dict)]
+    selected_count_after = len(replacement_signal_ids)
+
+    child_run_id = generate_run_id(pid)
+    top_image_path = _saved_top_image_path(parent)
+    if top_image_path is None:
+        return {"ok": False, "error": "text_only_reissue_missing_saved_top_image", "program_id": pid}
+    bottom_image_path = _saved_korea_bottom_image_path(parent) if pid == PROGRAM_KOREA else None
+
+    contract_fixture_preview = _build_service_contract_fixture(
+        pid,
+        prompt_input=prompt_input,
+        generated_briefing=generated_briefing,
+        generated_image_path=top_image_path,
+        run_id=child_run_id,
+        image_mode=IMAGE_MODE_PREVIEW,
+        bottom_shot_image_path=bottom_image_path,
+    )
+    subject_fields = build_keysuri_subject_artifact_fields(
+        pid,
+        generated_briefing=generated_briefing,
+        prompt_input=prompt_input,
+        run_id=child_run_id,
+        trigger_source=trigger_source,
+        contract_fixture=contract_fixture_preview,
+    )
+    owner_preheader = subject_fields["owner_email_preheader"]
+    contract_fixture_preview["selected_subject"] = subject_fields["editorial_subject"]
+    contract_fixture_preview["preheader"] = owner_preheader
+    preview_html = render_keysuri_contract_preview_html(
+        contract_fixture_preview,
+        repo_root=_REPO,
+        image_mode=IMAGE_MODE_PREVIEW,
+        auto_prepare=False,
+    )
+    out_dir = _REPO / "output" / "admin_runs" / "keysuri_service"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_path = out_dir / f"{child_run_id}.html"
+    html_path.write_text(preview_html, encoding="utf-8")
+    html_rel = _repo_rel(html_path)
+
+    top_cid = str(parent.get("top_image_cid") or (
+        keysuri_global_service_email_cid_token(parent_run_id)
+        if pid == PROGRAM_GLOBAL
+        else keysuri_korea_service_email_cid_token(parent_run_id)
+    ))
+    bottom_cid = str(parent.get("bottom_image_cid") or parent.get("korea_bottom_shot_cid") or "").strip()
+    contract_fixture_email = dict(contract_fixture_preview)
+    contract_fixture_email["top_shot_image_src"] = f"cid:{top_cid}"
+    if pid == PROGRAM_KOREA and bottom_image_path is not None:
+        contract_fixture_email["bottom_shot_image_src"] = f"cid:{bottom_cid}" if bottom_cid else keysuri_korea_bottom_service_email_cid_src(parent_run_id)
+    owner_subject = _owner_subject_for_regen(parent, subject_fields["owner_email_subject"], "text_only")
+    owner_review_url = build_owner_review_admin_url(child_run_id) or ""
+    if pid == PROGRAM_GLOBAL:
+        email_html = build_keysuri_global_gmail_owner_email_html(
+            contract_fixture_email,
+            subject=owner_subject,
+            preheader=owner_preheader,
+            admin_url=owner_review_url,
+            run_id=child_run_id,
+        )
+    else:
+        email_html = build_keysuri_korea_gmail_owner_email_html(
+            contract_fixture_email,
+            subject=owner_subject,
+            preheader=owner_preheader,
+            admin_url=owner_review_url,
+            run_id=child_run_id,
+        )
+
+    visible_text_quality_fields = merge_visible_text_quality_fields(
+        validate_keysuri_html_visible_text_quality(preview_html, path="owner_preview_html.visible_text"),
+        validate_keysuri_html_visible_text_quality(email_html, path="owner_email_html.visible_text"),
+    )
+    if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
+        return {
+            "ok": False,
+            "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+            "program_id": pid,
+        }
+
+    smtp_attempted = False
+    email_sent = False
+    if send_owner_email:
+        if os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip() not in ("1", "true", "yes"):
+            pass
+        else:
+            smtp_attempted = True
+            os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
+            inline_parts = [(str(top_image_path.resolve()), top_cid, top_image_path.name)]
+            if pid == PROGRAM_KOREA and bottom_image_path is not None:
+                inline_parts.append(
+                    (
+                        str(bottom_image_path.resolve()),
+                        bottom_cid or keysuri_korea_bottom_service_email_cid_token(parent_run_id),
+                        bottom_image_path.name,
+                    )
+                )
+            sender = send_fn or send_genie_email
+            email_sent = bool(
+                sender(
+                    email_html,
+                    owner_subject,
+                    inline_jpeg_parts=inline_parts,
+                    attachment_jpeg_parts=[],
+                )
+            )
+
+    meta = build_service_artifact_fields(
+        run_id=child_run_id,
+        mode=pid,
+        program_id=pid,
+        trigger_source=trigger_source,
+        validation_result="pass",
+        issue_codes=[],
+        called_gemini=True,
+        html_path=html_rel,
+        owner_review_html_path=str(artifact_email_path(child_run_id)),
+        smtp_attempted=smtp_attempted,
+        email_sent=email_sent,
+        customer_delivery_status="not_sent",
+        response_status=200,
+        workflow_status=str(parent.get("workflow_status") or "review_required"),
+        owner_review_url=owner_review_url or None,
+        artifact_storage_durable=_service_artifact_storage_durable(),
+    )
+    meta.update(subject_fields)
+    meta.update(visible_text_quality_fields)
+    meta.update(_scope_delivery_reason_fields("text_only"))
+    meta.update(
+        {
+            "regen_type": "text_only",
+            "regen_parent_run_id": parent_run_id,
+            "regen_requested_at_kst": now_kst_iso(),
+            "regen_requested_by": "admin",
+            "reissue_scope": "text_only",
+            "reissue_scope_supported": True,
+            "reissue_scope_status": "executed",
+            "reissue_reason_code": reissue_reason_code or None,
+            "reissue_reason_note": reissue_reason_note or None,
+            "customer_approve_called": False,
+            "customer_final_email_called": False,
+            "source_fetch_called": False,
+            "news_fetch_called": False,
+            "duplicate_reselect_called": True,
+            "candidate_pool_reused": True,
+            "excluded_signal_ids": excluded_ids,
+            "excluded_signal_fingerprints": excluded_fps_applied,
+            "replacement_signal_ids": replacement_signal_ids,
+            "replacement_signal_titles": replacement_signal_titles,
+            "selected_signal_count_before": selected_count_before,
+            "selected_signal_count_after": selected_count_after,
+            "regen_source_pack_snapshot": _regen_source_pack_snapshot(parent),
+            "regen_prompt_input_snapshot": prompt_input,
+            "regen_generated_briefing_snapshot": generated_briefing,
+            "generated_image_path": _repo_rel(top_image_path),
+            "generated_image_path_watermarked": _repo_rel(top_image_path),
+            "top_image_cid": top_cid,
+            "owner_email_image_cids": [top_cid],
+            "owner_email_subject": owner_subject,
+            "owner_email_preheader": owner_preheader,
+            "email_preheader": subject_fields.get("email_preheader") or owner_preheader,
+        }
+    )
+    if pid == PROGRAM_KOREA and bottom_image_path is not None:
+        bottom_token = bottom_cid or keysuri_korea_bottom_service_email_cid_token(parent_run_id)
+        meta["bottom_image_cid"] = bottom_token
+        meta["korea_bottom_shot_cid"] = bottom_token
+        meta["korea_bottom_shot_path"] = _repo_rel(bottom_image_path)
+        meta["bottom_shot_image_path"] = _repo_rel(bottom_image_path)
+        meta["owner_email_image_cids"] = [top_cid, bottom_token]
+    owner_email_fields = _owner_email_delivery_fields(
+        smtp_attempted=smtp_attempted,
+        email_sent=email_sent,
+        subject=owner_subject,
+    )
+    meta.update(owner_email_fields)
+    meta["owner_email_subject"] = owner_subject
+    save_run_artifact(meta, email_html=email_html)
+    return {
+        "ok": not send_owner_email or email_sent,
+        "run_id": child_run_id,
+        "program_id": pid,
+        "regen_type": "text_only",
+        "email_sent": email_sent,
+        "customer_delivery_status": "not_sent",
+    }
+
+
+def run_keysuri_text_and_image_reissue(
+    parent_run_id: str,
+    *,
+    parent_meta: Optional[Dict[str, Any]] = None,
+    trigger_source: str = "admin_text_and_image_reissue",
+    reissue_reason_code: str = "",
+    reissue_reason_note: str = "",
+    send_owner_email: bool = True,
+    smoke_runner=None,
+    image_canary_runner=None,
+    bottom_generate_fn: Optional[Callable[..., Path]] = None,
+    bottom_watermark_fn: Optional[Callable[[Path, Path], Path]] = None,
+    send_fn: Optional[Callable[..., bool]] = None,
+    image_upload_fn=None,
+) -> Dict[str, Any]:
+    parent = dict(parent_meta or load_run_artifact(parent_run_id, normalize=False) or {})
+    pid = str(parent.get("program_id") or parent.get("mode") or "").strip()
+    if pid not in _KEYSURI_PROGRAMS:
+        return {"ok": False, "error": "text_and_image_reissue_unsupported_mode", "program_id": pid}
+
+    # text_and_image: fresh source/news collection from scratch — NOT from parent snapshot
+    _smoke_runner = smoke_runner or run_keysuri_live_source_smoke
+    smoke: LiveSourceSmokeResult = _smoke_runner(
+        program_id=pid,
+        use_gemini=True,
+        contract_preview=False,
+        send=False,
+    )
+    if not smoke.ok or not smoke.called_gemini or str(smoke.parse_status or "") != "parsed_valid":
+        return {
+            "ok": False,
+            "error": getattr(smoke, "error", None) or "text_and_image_reissue_source_collection_failed",
+            "program_id": pid,
+        }
+    generated_briefing = smoke.generated_briefing
+    if not isinstance(generated_briefing, dict):
+        return {
+            "ok": False,
+            "error": "text_and_image_reissue_generated_briefing_missing",
+            "program_id": pid,
+        }
+    fresh_source_pack = json.loads(Path(smoke.source_pack_path).read_text(encoding="utf-8"))
+    prompt_input = build_keysuri_prompt_input(pid, fresh_source_pack)
+    prompt_input["source_pack"] = fresh_source_pack
+    generated_briefing = enrich_generated_briefing_content(generated_briefing, pid, prompt_input)
+    generated_briefing, _visible_fresh = validate_and_repair_keysuri_visible_text_quality(
+        generated_briefing,
+        root_path="generated_briefing",
+    )
+    if _visible_fresh.get("visible_text_ellipsis_blocked"):
+        return {"ok": False, "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED, "program_id": pid}
+
+    child_run_id = generate_run_id(pid)
+    subject_fields = build_keysuri_subject_artifact_fields(
+        pid,
+        generated_briefing=generated_briefing,
+        prompt_input=prompt_input,
+        run_id=child_run_id,
+        trigger_source=trigger_source,
+    )
+    top_image_headline = str(subject_fields.get("subject_top_headline") or "")
+    top_variation_fields = _keysuri_top_image_variation_fields(pid, child_run_id, top_image_headline)
+    canary_fn = image_canary_runner or _generate_keysuri_service_image
+    image_outcome = canary_fn(pid, run_id=child_run_id, subject_top_headline=top_image_headline)
+    if not image_outcome.ok:
+        return {
+            "ok": False,
+            "error": image_outcome.error_code or ERROR_IMAGE_GENERATION_FAILED,
+            "program_id": pid,
+        }
+    gen_image_raw_abs = _REPO / str(image_outcome.generated_image_path or "")
+    gen_image_abs = _watermarked_top_shot_path(gen_image_raw_abs)
+    image_outcome.generated_image_path = _repo_rel(gen_image_abs)
+
+    bottom_image_path: Optional[Path] = None
+    bottom_image_meta: Dict[str, Any] = {}
+    bottom_image_status = "not_applicable"
+    bottom_image_source = ""
+    issue_codes: List[str] = []
+    if pid == PROGRAM_KOREA:
+        bottom_image_path, bottom_issues, bottom_image_meta = resolve_korea_bottom_email_image_path(
+            child_run_id,
+            **_korea_bottom_weather_inputs(prompt_input),
+            generate_fn=bottom_generate_fn,
+            watermark_fn=bottom_watermark_fn,
+        )
+        if bottom_image_path is not None:
+            bottom_image_status = "available"
+            bottom_image_source = str(bottom_image_meta.get("bottom_shot_source") or "fixed_105936_fallback")
+            if bottom_image_source == "generated_v6_multi_ref":
+                bottom_image_meta.update(
+                    _persist_korea_generated_images(
+                        child_run_id,
+                        gen_image_abs,
+                        bottom_image_path,
+                        upload_fn=image_upload_fn,
+                    )
+                )
+        else:
+            bottom_image_status = "placeholder"
+            issue_codes.extend(bottom_issues)
+
+    contract_fixture_preview = _build_service_contract_fixture(
+        pid,
+        prompt_input=prompt_input,
+        generated_briefing=generated_briefing,
+        generated_image_path=gen_image_abs,
+        run_id=child_run_id,
+        image_mode=IMAGE_MODE_PREVIEW,
+        bottom_shot_image_path=bottom_image_path,
+    )
+    owner_preheader = subject_fields["owner_email_preheader"]
+    contract_fixture_preview["selected_subject"] = subject_fields["editorial_subject"]
+    contract_fixture_preview["preheader"] = owner_preheader
+    preview_html = render_keysuri_contract_preview_html(
+        contract_fixture_preview,
+        repo_root=_REPO,
+        image_mode=IMAGE_MODE_PREVIEW,
+        auto_prepare=False,
+    )
+    out_dir = _REPO / "output" / "admin_runs" / "keysuri_service"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_path = out_dir / f"{child_run_id}.html"
+    html_path.write_text(preview_html, encoding="utf-8")
+    html_rel = _repo_rel(html_path)
+
+    owner_subject = _owner_subject_for_regen(parent, subject_fields["owner_email_subject"], "text_and_image")
+    owner_review_url = build_owner_review_admin_url(child_run_id) or ""
+    if pid == PROGRAM_GLOBAL:
+        contract_fixture_email = dict(contract_fixture_preview)
+        contract_fixture_email["top_shot_image_src"] = keysuri_global_service_email_cid_src(child_run_id)
+        email_html = build_keysuri_global_gmail_owner_email_html(
+            contract_fixture_email,
+            subject=owner_subject,
+            preheader=owner_preheader,
+            admin_url=owner_review_url,
+            run_id=child_run_id,
+        )
+    else:
+        contract_fixture_email = dict(contract_fixture_preview)
+        contract_fixture_email["top_shot_image_src"] = keysuri_korea_service_email_cid_src(child_run_id)
+        if bottom_image_path is not None:
+            contract_fixture_email["bottom_shot_image_src"] = keysuri_korea_bottom_service_email_cid_src(child_run_id)
+        email_html = build_keysuri_korea_gmail_owner_email_html(
+            contract_fixture_email,
+            subject=owner_subject,
+            preheader=owner_preheader,
+            admin_url=owner_review_url,
+            run_id=child_run_id,
+        )
+
+    visible_text_quality_fields = merge_visible_text_quality_fields(
+        validate_keysuri_html_visible_text_quality(preview_html, path="owner_preview_html.visible_text"),
+        validate_keysuri_html_visible_text_quality(email_html, path="owner_email_html.visible_text"),
+    )
+    if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
+        return {"ok": False, "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED, "program_id": pid}
+
+    smtp_attempted = False
+    email_sent = False
+    if send_owner_email:
+        if os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip() not in ("1", "true", "yes"):
+            pass
+        else:
+            smtp_attempted = True
+            sender = send_fn or send_genie_email
+            os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
+            if pid == PROGRAM_GLOBAL:
+                inline_parts = inline_jpeg_parts_for_global_service_email(gen_image_abs, child_run_id)
+            else:
+                inline_parts = inline_jpeg_parts_for_korea_service_email(
+                    gen_image_abs,
+                    child_run_id,
+                    bottom_image_path=bottom_image_path,
+                )
+            email_sent = bool(
+                sender(
+                    email_html,
+                    owner_subject,
+                    inline_jpeg_parts=inline_parts,
+                    attachment_jpeg_parts=[],
+                )
+            )
+
+    meta = build_service_artifact_fields(
+        run_id=child_run_id,
+        mode=pid,
+        program_id=pid,
+        trigger_source=trigger_source,
+        validation_result="pass",
+        issue_codes=issue_codes,
+        called_gemini=True,
+        image_outcome=image_outcome,
+        html_path=html_rel,
+        owner_review_html_path=str(artifact_email_path(child_run_id)),
+        smtp_attempted=smtp_attempted,
+        email_sent=email_sent,
+        customer_delivery_status="not_sent",
+        response_status=200,
+        workflow_status=str(parent.get("workflow_status") or "review_required"),
+        owner_review_url=owner_review_url or None,
+        artifact_storage_durable=_service_artifact_storage_durable(),
+    )
+    meta.update(subject_fields)
+    meta.update(visible_text_quality_fields)
+    meta.update(_scope_delivery_reason_fields("text_and_image"))
+    meta.update(
+        {
+            "regen_type": "text_and_image",
+            "regen_parent_run_id": parent_run_id,
+            "regen_requested_at_kst": now_kst_iso(),
+            "regen_requested_by": "admin",
+            "reissue_scope": "text_and_image",
+            "reissue_scope_supported": True,
+            "reissue_scope_status": "executed",
+            "reissue_reason_code": reissue_reason_code or None,
+            "reissue_reason_note": reissue_reason_note or None,
+            "customer_approve_called": False,
+            "customer_final_email_called": False,
+            "source_fetch_called": True,
+            "news_fetch_called": True,
+            "candidate_pool_refreshed": True,
+            "selected_signals_refreshed": True,
+            "regen_source_pack_snapshot": fresh_source_pack,
+            "regen_prompt_input_snapshot": prompt_input,
+            "regen_generated_briefing_snapshot": generated_briefing,
+            "generated_image_path_raw": str(gen_image_raw_abs.relative_to(_REPO)),
+            "generated_image_path_watermarked": _repo_rel(gen_image_abs),
+            "top_shot_watermark_status": "applied",
+            "top_shot_watermark_text": "MirAI:ON",
+            "owner_email_subject": owner_subject,
+            "owner_email_preheader": owner_preheader,
+            "email_preheader": subject_fields.get("email_preheader") or owner_preheader,
+        }
+    )
+    if top_variation_fields:
+        meta.update(top_variation_fields)
+    if pid == PROGRAM_KOREA:
+        meta.update(bottom_image_meta)
+        meta["korea_bottom_shot_status"] = bottom_image_status
+        if bottom_image_source:
+            meta["korea_bottom_shot_source"] = bottom_image_source
+    owner_email_fields = _owner_email_delivery_fields(
+        smtp_attempted=smtp_attempted,
+        email_sent=email_sent,
+        subject=owner_subject,
+    )
+    meta.update(owner_email_fields)
+    meta["owner_email_subject"] = owner_subject
+    save_run_artifact(meta, email_html=email_html)
+    return {
+        "ok": image_outcome.ok and (not send_owner_email or email_sent),
+        "run_id": child_run_id,
+        "program_id": pid,
+        "regen_type": "text_and_image",
+        "email_sent": email_sent,
+        "customer_delivery_status": "not_sent",
     }
 
 
@@ -1698,6 +2438,9 @@ def run_keysuri_service_full_run(
             meta.setdefault("bottom_shot_image_path", meta["korea_bottom_shot_path"])
             meta["owner_email_image_cids"] = [top_cid, bottom_cid]
             meta["customer_email_image_cids"] = [top_cid, bottom_cid]
+    meta["regen_source_pack_snapshot"] = copy.deepcopy(source_pack)
+    meta["regen_prompt_input_snapshot"] = copy.deepcopy(prompt_input)
+    meta["regen_generated_briefing_snapshot"] = copy.deepcopy(generated_briefing)
     save_run_artifact(meta, email_html=email_html)
 
     ok = image_outcome.ok and (not send_owner_email or email_sent)
