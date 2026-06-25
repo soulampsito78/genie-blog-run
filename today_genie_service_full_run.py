@@ -192,6 +192,24 @@ def _extract_issue_codes(result: OrchestrationResult) -> List[str]:
     return []
 
 
+def _dedup_artifact_fields_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    runtime_input = payload.get("runtime_input") if isinstance(payload.get("runtime_input"), dict) else {}
+    dedup = runtime_input.get("sent_news_dedup") if isinstance(runtime_input, dict) else None
+    if not isinstance(dedup, dict) or not dedup.get("used_dedup_gate"):
+        return {}
+    selected = dedup.get("selected_items")
+    rejected = dedup.get("rejected_items")
+    summary = dedup.get("dedup_summary")
+    return {
+        "used_dedup_gate": True,
+        "selected_items": selected if isinstance(selected, list) else [],
+        "rejected_items": rejected if isinstance(rejected, list) else [],
+        "dedup_summary": summary if isinstance(summary, dict) else {},
+        "required_count": int(dedup.get("required_count") or 0),
+        "selected_count": int(dedup.get("selected_count") or 0),
+    }
+
+
 def run_today_genie_service_full_run(
     *,
     trigger_source: str = SERVICE_FULL_RUN_TRIGGER,
@@ -381,6 +399,7 @@ def run_today_genie_service_full_run(
         response_status=result.response_status,
         workflow_status=workflow_status,
     )
+    meta.update(_dedup_artifact_fields_from_payload(payload))
     if image_bundle.ok:
         meta["generated_image_paths"] = {
             "top": image_bundle.top.generated_image_path,

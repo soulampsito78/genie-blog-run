@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from keysuri_news_contract import (
+    KEYSURI_TOP_NEWS_COUNT,
     KEYSURI_PROGRAM_IDS,
     SECTION_TOP5_GLOBAL,
     SECTION_TOP5_KOREA,
@@ -20,6 +21,8 @@ from keysuri_private_briefing import (
 )
 from keysuri_source_gate import GateResult, run_keysuri_source_gate
 from programs.registry import get_program
+from sent_news_dedup_gate import metadata_from_gate_result, run_sent_news_dedup_gate
+from sent_news_log_store import recent_sent_news_log
 
 OUTPUT_CONTRACT = "keysuri_private_briefing_v1"
 
@@ -176,5 +179,16 @@ def build_keysuri_prompt_input(
         raise ValueError(f"Unexpected TOP 5 selection verdict: {selection.get('verdict')!r}")
 
     base["prompt_status"] = "ready_for_generation"
-    base["top_5_news"] = selection["top_5_news"]
+    top_5_news = dict(selection["top_5_news"])
+    items = top_5_news.get("items") if isinstance(top_5_news.get("items"), list) else []
+    dedup_result = run_sent_news_dedup_gate(
+        briefing_type=pid,
+        candidates=[item for item in items if isinstance(item, dict)],
+        sent_log_last_5_days=recent_sent_news_log(pid),
+        required_count=KEYSURI_TOP_NEWS_COUNT,
+    )
+    dedup_meta = metadata_from_gate_result(dedup_result, required_count=KEYSURI_TOP_NEWS_COUNT)
+    top_5_news["items"] = dedup_meta["selected_items"]
+    base["top_5_news"] = top_5_news
+    base.update(dedup_meta)
     return base

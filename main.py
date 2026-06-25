@@ -36,6 +36,8 @@ from renderers import (
     render_web_html,
     today_genie_email_inline_cid_pair,
 )
+from sent_news_dedup_gate import metadata_from_gate_result, run_sent_news_dedup_gate
+from sent_news_log_store import recent_sent_news_log
 from validators import (
     NUMBER_TABLE_ACCURACY_STATUSES,
     validate_today_genie,
@@ -90,6 +92,7 @@ def _openweather_query_q() -> str:
     return OPENWEATHER_CITY.strip() or "Seoul,KR"
 
 SUPPORTED_MODES = ["today_genie", "tomorrow_genie"]
+TODAY_GENIE_REQUIRED_NEWS_COUNT = 3
 TODAY_GENIE_CORE_DATE_FEEDS = (
     "overnight_us_market",
     "korea_japan_indices",
@@ -591,6 +594,28 @@ def build_runtime_input(mode: str, controlled_test_target_date: Optional[str] = 
         }
 
     raise ValueError(f"Unsupported mode: {mode}")
+
+
+def apply_today_genie_sent_news_dedup(runtime_input: Dict[str, Any]) -> Dict[str, Any]:
+    """Filter today_genie news candidates before text generation and retain metadata."""
+    raw = runtime_input.get("top_market_news")
+    if not isinstance(raw, list):
+        return runtime_input
+    candidates = [item for item in raw if isinstance(item, dict)]
+    gate_result = run_sent_news_dedup_gate(
+        briefing_type="today_genie",
+        candidates=candidates,
+        sent_log_last_5_days=recent_sent_news_log("today_genie"),
+        required_count=TODAY_GENIE_REQUIRED_NEWS_COUNT,
+    )
+    meta = metadata_from_gate_result(
+        gate_result,
+        required_count=TODAY_GENIE_REQUIRED_NEWS_COUNT,
+    )
+    out = dict(runtime_input)
+    out["top_market_news"] = meta["selected_items"]
+    out["sent_news_dedup"] = meta
+    return out
 
 
 def extract_json_object(raw_text: str) -> str:
@@ -1332,6 +1357,9 @@ def generate(job: JobRequest) -> Dict[str, Any]:
             "runtime_validation_check": feed_runtime_check,
         }
         raise HTTPException(status_code=422, detail=detail)
+
+    if mode == "today_genie":
+        runtime_input = apply_today_genie_sent_news_dedup(runtime_input)
 
     if mode == "today_genie":
         data, raw_text, _layer_prof = run_today_genie_text_pipeline(runtime_input)

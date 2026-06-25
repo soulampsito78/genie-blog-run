@@ -129,6 +129,24 @@ def _runtime_check_from_api_payload(
     return out
 
 
+def _dedup_fields_from_api_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    runtime_input = payload.get("runtime_input") if isinstance(payload.get("runtime_input"), dict) else {}
+    dedup = runtime_input.get("sent_news_dedup") if isinstance(runtime_input, dict) else None
+    if not isinstance(dedup, dict) or not dedup.get("used_dedup_gate"):
+        return {}
+    selected = dedup.get("selected_items")
+    rejected = dedup.get("rejected_items")
+    summary = dedup.get("dedup_summary")
+    return {
+        "used_dedup_gate": True,
+        "selected_items": selected if isinstance(selected, list) else [],
+        "rejected_items": rejected if isinstance(rejected, list) else [],
+        "dedup_summary": summary if isinstance(summary, dict) else {},
+        "required_count": int(dedup.get("required_count") or 0),
+        "selected_count": int(dedup.get("selected_count") or 0),
+    }
+
+
 def run_genie_job(mode: str) -> OrchestrationResult:
     """
     Call the Genie API for the given mode, then apply publishing policy.
@@ -327,6 +345,9 @@ def build_run_artifact_metadata(
     }
     if not send_owner_email:
         meta["verification_mode"] = "no_send_verification"
+    dedup_fields = _dedup_fields_from_api_payload(payload)
+    if dedup_fields:
+        meta.update(dedup_fields)
     for key in (
         "today_genie_feed_source",
         "today_genie_feed_refresh_attempted",

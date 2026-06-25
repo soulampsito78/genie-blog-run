@@ -1082,6 +1082,22 @@ def _scope_delivery_reason_fields(regen_type: str) -> Dict[str, bool]:
     }
 
 
+def _dedup_artifact_fields_from_prompt_input(prompt_input: Dict[str, Any]) -> Dict[str, Any]:
+    if not prompt_input.get("used_dedup_gate"):
+        return {}
+    selected = prompt_input.get("selected_items")
+    rejected = prompt_input.get("rejected_items")
+    summary = prompt_input.get("dedup_summary")
+    return {
+        "used_dedup_gate": True,
+        "selected_items": selected if isinstance(selected, list) else [],
+        "rejected_items": rejected if isinstance(rejected, list) else [],
+        "dedup_summary": summary if isinstance(summary, dict) else {},
+        "required_count": int(prompt_input.get("required_count") or 0),
+        "selected_count": int(prompt_input.get("selected_count") or 0),
+    }
+
+
 def _owner_subject_for_regen(parent: Dict[str, Any], regenerated_subject: str, regen_type: str) -> str:
     prefix = _text_regen_subject_prefix(regen_type)
     if regen_type == "image_only":
@@ -1507,6 +1523,7 @@ def run_keysuri_text_only_reissue(
         artifact_storage_durable=_service_artifact_storage_durable(),
     )
     meta.update(subject_fields)
+    meta.update(_dedup_artifact_fields_from_prompt_input(prompt_input))
     meta.update(visible_text_quality_fields)
     meta.update(_scope_delivery_reason_fields("body_only"))
     meta.update(
@@ -1773,6 +1790,7 @@ def run_keysuri_text_and_image_reissue(
         artifact_storage_durable=_service_artifact_storage_durable(),
     )
     meta.update(subject_fields)
+    meta.update(_dedup_artifact_fields_from_prompt_input(prompt_input))
     meta.update(visible_text_quality_fields)
     meta.update(_scope_delivery_reason_fields("body_and_image"))
     meta.update(
@@ -2395,6 +2413,7 @@ def run_keysuri_service_full_run(
     )
     meta.update(owner_email_fields)
     meta.update(subject_fields)
+    meta.update(_dedup_artifact_fields_from_prompt_input(prompt_input))
     meta.update(visible_text_quality_fields)
     meta["owner_email_subject"] = subject
     _log_owner_email_delivery_event(program_id=pid, run_id=run_id, fields=owner_email_fields)

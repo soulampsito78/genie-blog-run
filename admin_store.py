@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from delivery_trace import build_customer_email_delivery_fields, sanitize_email_diagnostic
+from sent_news_log_store import append_or_upsert_sent_news
 
 _RUN_ID_MODES = (
     "today_genie",
@@ -899,6 +900,51 @@ def _record_customer_delivery_smtp_accepted(meta: Dict[str, Any], *, completed_a
     )
 
 
+def _update_sent_news_log_after_customer_success(meta: Dict[str, Any], *, sent_at: str) -> None:
+    run_id = str(meta.get("run_id") or "").strip()
+    briefing_type = str(meta.get("briefing_type") or meta.get("mode") or meta.get("program_id") or "").strip()
+    selected_items = meta.get("selected_items")
+    required_raw = meta.get("required_count")
+    if not isinstance(selected_items, list) or not selected_items:
+        meta["sent_log_updated"] = False
+        meta["sent_log_update_error"] = "selected_items_missing"
+        return
+    try:
+        required_count = int(required_raw)
+    except (TypeError, ValueError):
+        meta["sent_log_updated"] = False
+        meta["sent_log_update_error"] = "required_count_missing"
+        return
+    if required_count <= 0:
+        meta["sent_log_updated"] = False
+        meta["sent_log_update_error"] = "required_count_missing"
+        return
+    if len(selected_items) < required_count:
+        meta["sent_log_updated"] = False
+        meta["sent_log_update_error"] = "selected_items_below_required_count"
+        return
+    if not run_id or not briefing_type:
+        meta["sent_log_updated"] = False
+        meta["sent_log_update_error"] = "run_id_or_briefing_type_missing"
+        return
+    try:
+        result = append_or_upsert_sent_news(
+            run_id=run_id,
+            briefing_type=briefing_type,
+            selected_items=selected_items,
+            sent_at=sent_at,
+        )
+    except Exception as exc:  # noqa: BLE001 - customer send success must stand
+        meta["sent_log_updated"] = False
+        meta["sent_log_update_error"] = f"{type(exc).__name__}"
+        return
+    meta["sent_log_updated"] = bool(result.get("ok"))
+    meta["sent_log_pruned"] = int(result.get("pruned_count") or 0)
+    meta["sent_log_appended_count"] = int(result.get("appended_count") or 0)
+    meta["sent_log_updated_count"] = int(result.get("updated_count") or 0)
+    meta["sent_log_update_error"] = None
+
+
 def approve_run(
     run_id: str,
     note: str = "",
@@ -997,6 +1043,7 @@ def approve_run(
         m["customer_sent_at"] = sent_ts
         _record_customer_delivery_smtp_accepted(m, completed_at=sent_ts)
         m.update(delivery_fields)
+        _update_sent_news_log_after_customer_success(m, sent_at=sent_ts)
         if approval_audit:
             for key, value in approval_audit.items():
                 m[key] = value
