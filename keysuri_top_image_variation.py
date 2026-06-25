@@ -62,7 +62,7 @@ POSE_VARIANTS: Tuple[Tuple[str, str], ...] = (
     ("pose_relaxed_upright", "standing near the desk with a relaxed upright posture"),
     (
         "pose_assistant_side_table_seated",
-        "seated only at a small assistant-side briefing table, turned toward the viewer as if briefing one person, not behind the main desk and not in an executive chair",
+        "seated only at a small assistant-side briefing table beside briefing materials, prepared for an off-camera viewer, not behind the main desk and not in an executive chair",
     ),
     ("pose_side_on", "standing slightly side-on, attentively composed"),
 )

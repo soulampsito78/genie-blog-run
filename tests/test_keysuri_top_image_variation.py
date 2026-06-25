@@ -132,8 +132,21 @@ class IdentitySafetyTests(unittest.TestCase):
             self.assertIn("same person as the reference", pos)
             self.assertIn("sleek short bob", pos)
             self.assertIn("thin metal glasses", pos)
+            self.assertIn("viewer, who remains off-camera", pos)
+            self.assertIn("only visible human subject", pos)
             self.assertIn("private", pos)
             self.assertIn("briefing", pos)
+
+    def test_consultation_second_person_drift_phrase_absent(self) -> None:
+        forbidden = (
+            "private briefing to one person",
+            "briefing to one person",
+            "turned toward the viewer as if briefing one person",
+        )
+        for build in (_global, _korea):
+            pos = build()["positive_prompt"].lower()
+            for phrase in forbidden:
+                self.assertNotIn(phrase, pos)
 
     def test_no_wardrobe_drift_softened(self) -> None:
         self.assertNotIn("no wardrobe drift", [p.lower() for p in REQUIRED_NEGATIVE_PHRASES])
@@ -251,6 +264,7 @@ class ImageFamilyConsistencyTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, joined)
         self.assertIn("assistant-side briefing table", joined)
+        self.assertIn("prepared for an off-camera viewer", joined)
         self.assertIn("not behind the main desk", joined)
         self.assertIn("not in an executive chair", joined)
 
@@ -291,6 +305,24 @@ class ImageFamilyConsistencyTests(unittest.TestCase):
             "no weather app ui",
             "no meteorological dashboard",
             "no tomorrow genie weather mood",
+        )
+        for build in (_global, _korea):
+            neg = build()["negative_prompt"].lower()
+            for phrase in required:
+                self.assertIn(phrase, neg)
+
+    def test_consultation_negatives_required(self) -> None:
+        required = (
+            "no second person visible",
+            "no client consultation scene",
+            "no advisor-client meeting",
+            "no interview table composition",
+            "no customer sitting across from her",
+            "no over-the-shoulder attendee",
+            "no back of another person's head",
+            "no visible listener",
+            "no meeting counterpart",
+            "no counseling session mood",
         )
         for build in (_global, _korea):
             neg = build()["negative_prompt"].lower()
@@ -453,10 +485,12 @@ class FinalPromptGateSafetyTests(unittest.TestCase):
         issues = validate_keysuri_final_top_image_prompt(
             "keysuri_global_tech",
             "a woman in an office, global big-tech, no readable real text, "
-            "a charcoal fitted suit with an ivory blouse, one-person private "
+            "a charcoal fitted suit with an ivory blouse, private "
             "briefing, tech secretary",
             "no readable text overlay, no age label, not a public news anchor, "
-            "not a weathercaster, no fashion model styling",
+            "not a weathercaster, no fashion model styling, no second person visible, "
+            "no client consultation scene, no over-the-shoulder attendee, "
+            "no customer sitting across from her, no back of another person's head",
         )
         codes = {i["code"] for i in issues}
         # missing "same person as the reference" / "sleek short bob" / "thin metal glasses"
@@ -603,6 +637,18 @@ class FinalPromptGateSafetyTests(unittest.TestCase):
             self.assertEqual(meta["top_image_final_prompt_validation_status"], "pass")
             self.assertEqual(meta["top_image_final_prompt_validation_issues"], [])
 
+    def test_validator_blocks_consultation_second_person_drift(self) -> None:
+        built = _korea()
+        tampered = (
+            built["positive_prompt"]
+            + " She is turned toward the viewer as if briefing one person in a client consultation scene."
+        )
+        issues = validate_keysuri_final_top_image_prompt(
+            "keysuri_korea_tech", tampered, built["negative_prompt"]
+        )
+        codes = {i["code"] for i in issues}
+        self.assertIn("consultation_second_person_drift_present", codes)
+
 
 class HairTextureLockTests(unittest.TestCase):
     """Verify that the Hair + Texture Identity Lock patch phrases survive
@@ -619,6 +665,8 @@ class HairTextureLockTests(unittest.TestCase):
         for build in (_global, _korea):
             pos = build()["positive_prompt"].lower()
             self.assertIn("assistant-side composition", pos)
+            self.assertIn("viewer, who remains off-camera", pos)
+            self.assertIn("only visible human subject", pos)
 
     def test_hair_drift_guard_in_negative_prompt(self) -> None:
         for build in (_global, _korea):
@@ -632,6 +680,8 @@ class HairTextureLockTests(unittest.TestCase):
             neg = build()["negative_prompt"].lower()
             self.assertIn("no ceo office portrait", neg)
             self.assertIn("no boss desk composition", neg)
+            self.assertIn("no second person visible", neg)
+            self.assertIn("no client consultation scene", neg)
 
     def test_clean_final_prompt_passes_with_hair_lock(self) -> None:
         for build in (_global, _korea):

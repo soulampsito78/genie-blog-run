@@ -87,6 +87,16 @@ REQUIRED_NEGATIVE_PHRASES = (
     "no hairstyle change between top and bottom images",
     "no ceo office portrait",
     "no boss desk composition",
+    "no second person visible",
+    "no client consultation scene",
+    "no advisor-client meeting",
+    "no interview table composition",
+    "no customer sitting across from her",
+    "no over-the-shoulder attendee",
+    "no back of another person's head",
+    "no visible listener",
+    "no meeting counterpart",
+    "no counseling session mood",
 )
 
 KOREA_EXTRA_NEGATIVE_PHRASES = (
@@ -532,8 +542,11 @@ _PRODUCTION_TOP_IMAGE_IDENTITY = (
     "impression, sleek short bob, same sleek chin-length bob silhouette, "
     "same side-parted compact bob, jawline-length hair contour, smooth inward-folding ends, "
     "restrained and consistent hair volume, thin metal glasses, calm attentive intelligent "
-    "gaze. One-person private briefing mood — assistant-side composition, "
-    "standing beside or near the user, "
+    "gaze. Private briefing mood — assistant-side composition, "
+    "standing beside briefing material or near the user's position, "
+    "preparing a private briefing for the viewer, who remains off-camera. "
+    "She addresses the briefing to the viewer without showing the viewer. "
+    "Kee-Suri is the only visible human subject. "
     "quietly competent, composed, and helpful, in a premium private tech briefing "
     "atmosphere. Not a public news anchor, not a weathercaster, not a CEO or "
     "chairwoman or senior executive, not a fashion model, not a generic office "
@@ -604,6 +617,26 @@ _FINAL_FORBIDDEN_WEATHER_ICON_TOKENS = (
     "sun/rain/cloud forecast icon",
     "tomorrow genie weather mood",
 )
+_FINAL_FORBIDDEN_SECOND_PERSON_TOKENS = (
+    "private briefing to one person",
+    "briefing to one person",
+    "turned toward the viewer as if briefing one person",
+    "another person in frame",
+    "second person in frame",
+    "second visible person",
+    "consultation scene",
+    "advisor-client meeting",
+    "interview table composition",
+    "customer sitting across from her",
+    "over-the-shoulder attendee",
+    "back of another person's head",
+    "visible listener",
+    "meeting counterpart",
+    "counseling session mood",
+    "two-person meeting",
+    "interviewer/interviewee",
+    "client-facing consultation desk",
+)
 # Reference-continuity phrases that must NOT reappear in the final prompt.
 _FINAL_FORBIDDEN_CONTINUITY_TOKENS = (
     "wardrobe continuity",
@@ -643,10 +676,11 @@ _FINAL_REQUIRED_POSITIVE_PHRASES = (
     "same side-parted compact bob",
     "assistant-side composition",
     "thin metal glasses",
+    "viewer, who remains off-camera",
+    "only visible human subject",
     "private",
     "tech",
     "secretary",
-    "one-person private briefing",
     "no readable real",
     "consistent premium photorealistic editorial style",
     "natural realistic skin texture",
@@ -671,6 +705,11 @@ _FINAL_REQUIRED_NEGATIVE_PHRASES = (
     "no hairstyle change between top and bottom images",
     "no ceo office portrait",
     "no boss desk composition",
+    "no second person visible",
+    "no client consultation scene",
+    "no over-the-shoulder attendee",
+    "no customer sitting across from her",
+    "no back of another person's head",
 )
 _FINAL_PROGRAM_CONTEXT_MARKER = {
     "keysuri_global_tech": "global big-tech",
@@ -859,6 +898,17 @@ def validate_keysuri_final_top_image_prompt(
                 )
             )
 
+    # --- The viewer exists only off-camera; never render a consultation counterpart.
+    for token in _FINAL_FORBIDDEN_SECOND_PERSON_TOKENS:
+        if token in scan_lower:
+            issues.append(
+                _issue(
+                    "consultation_second_person_drift_present",
+                    f"final positive_prompt must keep the viewer off-camera and avoid visible counterpart drift ({token!r})",
+                    "positive_prompt",
+                )
+            )
+
     # --- Program-specific prop rule ---------------------------------------------
     if pid == "keysuri_global_tech":
         if "tablet" not in scan_lower and "ipad" not in scan_lower:
@@ -927,7 +977,7 @@ def build_keysuri_production_top_image_prompt(
         "varies by day and must not define her identity"
     )
     pose_prop = (
-        f"Calm one-person private briefing: {variation.pose_clause}, "
+        f"Calm private briefing prepared for the off-camera viewer: {variation.pose_clause}, "
         f"{variation.prop_clause}. Keep hands simple and natural with no pointing, "
         "tapping, stylus, or screen-covering gestures"
     )
