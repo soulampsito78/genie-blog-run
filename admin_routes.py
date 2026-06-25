@@ -45,7 +45,41 @@ from keysuri_service_full_run import (
 )
 from orchestrator import execute_orchestrator_run
 
+from admin_notice_store import (
+    NOTICE_STATUSES,
+    NOTICE_TEMPLATES,
+    NOTICE_TYPES,
+    VISIBLE_RECIPIENT_POLICY,
+    create_notice_draft,
+    list_notices,
+    load_notice,
+    mark_failed,
+    mark_previewed,
+    mark_sent,
+    validate_notice_id,
+)
+from admin_notice_delivery import (
+    notice_recipient_source_label,
+    render_notice_body_html,
+    send_admin_notice_email,
+)
+
 router = APIRouter(tags=["admin"])
+
+NOTICE_SEND_CONFIRM_PHRASE = "공지 발송에 동의합니다"
+NOTICE_PROGRAM_OPTIONS = (
+    ("keysuri_global_tech", "KeeSuri Global Tech"),
+    ("keysuri_korea_tech", "KeeSuri Korea Tech"),
+    ("today_genie", "Today Genie"),
+    ("all", "전체 프로그램"),
+)
+_NOTICE_TYPE_LABELS = {
+    "delay_notice": "발송 지연 안내",
+    "quality_check_notice": "품질 점검 안내",
+    "resolved_notice": "지연 해소 안내",
+    "incident_notice": "장애 안내",
+    "custom_notice": "자유 작성",
+}
 
 SESSION_COOKIE = "genie_admin_session"
 SESSION_SALT = b"genie-admin-session-v1"
@@ -1153,3 +1187,277 @@ def admin_customer_recipients_remove(
             request, error=_error_labels.get(err, f"삭제 실패: {err}")
         )
     return RedirectResponse(url="/admin/customer-recipients?removed=1", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Admin operational customer notices (separate from briefing approve_run)
+# ---------------------------------------------------------------------------
+
+_NOTICE_SEND_ERROR_MESSAGES = {
+    "not_found": "공지를 찾을 수 없습니다.",
+    "not_previewed": "미리보기를 먼저 완료해야 발송할 수 있습니다.",
+    "confirm_mismatch": "발송 확인 문구가 일치하지 않습니다.",
+}
+
+
+def _notice_status_label(status: str) -> str:
+    return {
+        "draft": "초안",
+        "previewed": "미리보기 완료",
+        "sent": "발송 완료",
+        "failed": "발송 실패",
+    }.get(status, status)
+
+
+@router.get("/admin/notices", response_class=HTMLResponse)
+def admin_notices_list(request: Request):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    notices = list_notices(limit=50)
+    rows = []
+    for n in notices:
+        nid = _esc(n.get("notice_id"))
+        rows.append(
+            "<tr>"
+            f"<td><a href=\"/admin/notices/{nid}\">{nid}</a></td>"
+            f"<td>{_esc(_NOTICE_TYPE_LABELS.get(n.get('notice_type'), n.get('notice_type')))}</td>"
+            f"<td>{_esc(n.get('program_id'))}</td>"
+            f"<td>{_esc(_notice_status_label(str(n.get('status') or '')))}</td>"
+            f"<td>{_esc(n.get('recipients_count'))}</td>"
+            f"<td>{_esc(n.get('created_at'))}</td>"
+            "</tr>"
+        )
+    table = (
+        "<table><thead><tr>"
+        "<th>notice_id</th><th>유형</th><th>프로그램</th><th>상태</th><th>수신자 수</th><th>생성 시각</th>"
+        "</tr></thead><tbody>"
+        + ("".join(rows) if rows else "<tr><td colspan=\"6\">저장된 공지가 없습니다.</td></tr>")
+        + "</tbody></table>"
+    )
+    inner = f"""
+<div class="page-head">
+<h1>운영 공지 관리</h1>
+<a href="/admin/notices/new" class="btn">새 공지 작성</a>
+</div>
+<p style="font-size:13px;color:#64748b;">브리핑 고객 최종 발송(approve)과 완전히 분리된 별도 기능입니다.</p>
+<div class="card"><div class="table-wrap">{table}</div></div>
+<p><a href="/admin/runs">← 실행 목록</a></p>
+"""
+    return HTMLResponse(_layout("운영 공지", inner))
+
+
+@router.get("/admin/notices/new", response_class=HTMLResponse)
+def admin_notice_new(request: Request):
+    need = _require_login(request)
+    if need is not None:
+        return need
+
+    selected_type = str(request.query_params.get("notice_type") or "quality_check_notice")
+    if selected_type not in NOTICE_TYPES:
+        selected_type = "quality_check_notice"
+    template = NOTICE_TEMPLATES.get(selected_type, {"subject": "", "body_text": ""})
+
+    type_links = " ".join(
+        f'<a class="btn" style="background:{"#0f172a" if t == selected_type else "#94a3b8"};" '
+        f'href="/admin/notices/new?notice_type={t}">{_esc(_NOTICE_TYPE_LABELS.get(t, t))}</a>'
+        for t in NOTICE_TYPES
+    )
+    type_options = "".join(
+        f'<option value="{t}" {"selected" if t == selected_type else ""}>'
+        f'{_esc(_NOTICE_TYPE_LABELS.get(t, t))}</option>'
+        for t in NOTICE_TYPES
+    )
+    program_options = "".join(
+        f'<option value="{pid}">{_esc(label)}</option>' for pid, label in NOTICE_PROGRAM_OPTIONS
+    )
+
+    inner = f"""
+<div class="page-head"><h1>새 운영 공지 작성</h1>
+<a href="/admin/notices" class="btn">← 공지 목록</a></div>
+<p style="font-size:13px;color:#64748b;">템플릿 선택:</p>
+<p>{type_links}</p>
+<div class="card">
+<form method="post" action="/admin/notices/preview">
+<label>공지 유형<br>
+<select name="notice_type">{type_options}</select>
+</label><br><br>
+<label>대상 프로그램<br>
+<select name="program_id">{program_options}</select>
+</label><br><br>
+<label>관련 run_id (선택)<br>
+<input type="text" name="related_run_id" maxlength="120" placeholder="20260625_..._keysuri_global_tech_xxxxxxxx">
+</label><br><br>
+<label>제목<br>
+<input type="text" name="subject" maxlength="200" value="{_esc(template['subject'])}" required>
+</label><br><br>
+<label>본문<br>
+<textarea name="body_text" rows="8" required>{_esc(template['body_text'])}</textarea>
+</label><br><br>
+<div class="form-actions"><button class="btn" type="submit">미리보기 생성</button></div>
+</form>
+</div>
+"""
+    return HTMLResponse(_layout("새 운영 공지", inner))
+
+
+@router.post("/admin/notices/preview", response_class=HTMLResponse)
+def admin_notice_preview(
+    request: Request,
+    notice_type: str = Form(""),
+    program_id: str = Form(""),
+    related_run_id: str = Form(""),
+    subject: str = Form(""),
+    body_text: str = Form(""),
+):
+    need = _require_login(request)
+    if need is not None:
+        return need
+
+    notice_type = str(notice_type or "").strip()
+    if notice_type not in NOTICE_TYPES:
+        return HTMLResponse(
+            _layout("Invalid notice_type", "<p>알 수 없는 공지 유형입니다.</p><p><a href=\"/admin/notices/new\">돌아가기</a></p>"),
+            status_code=400,
+        )
+    subject_clean = subject.strip()
+    body_clean = body_text.strip()
+    if not subject_clean or not body_clean:
+        return HTMLResponse(
+            _layout(
+                "Missing fields",
+                "<p>제목과 본문을 모두 입력하세요.</p><p><a href=\"/admin/notices/new\">돌아가기</a></p>",
+            ),
+            status_code=400,
+        )
+
+    body_html = render_notice_body_html(body_clean)
+    notice = create_notice_draft(
+        notice_type=notice_type,
+        program_id=program_id,
+        related_run_id=related_run_id.strip() or None,
+        subject=subject_clean,
+        body_text=body_clean,
+        body_html=body_html,
+    )
+
+    # Preview only computes recipients_count/recipient_source — never the address list,
+    # and never calls send_admin_notice_email().
+    recipients = resolve_customer_recipients()["final_recipients"]
+    notice = mark_previewed(
+        notice,
+        recipients_count=len(recipients),
+        recipient_source=notice_recipient_source_label(),
+    )
+
+    nid = _esc(notice["notice_id"])
+    inner = f"""
+<div class="page-head"><h1>공지 미리보기</h1>
+<a href="/admin/notices" class="btn">← 공지 목록</a></div>
+<div class="card warn">
+<p><strong>이 화면은 브리핑 발송이 아닙니다.</strong></p>
+<p>고객 최종 승인(브리핑 approve)이 아닙니다.</p>
+<p>수신자 이메일 주소는 visible MIME 헤더(To/Cc/Bcc)에 노출되지 않습니다.</p>
+</div>
+<div class="card">
+<p>notice_id: <code>{nid}</code></p>
+<p>유형: {_esc(_NOTICE_TYPE_LABELS.get(notice_type, notice_type))} &nbsp;|&nbsp; 프로그램: {_esc(program_id)}</p>
+<p>수신자 수: <strong>{notice['recipients_count']}</strong> &nbsp;|&nbsp; 수신자 출처: <code>{_esc(notice['recipient_source'])}</code></p>
+<p>수신자 공개 정책: <code>{_esc(notice['visible_recipient_policy'])}</code></p>
+</div>
+<div class="card">
+<h2 style="font-size:16px;margin:0 0 12px">제목</h2>
+<p>{_esc(notice['subject'])}</p>
+<h2 style="font-size:16px;margin:16px 0 12px">고객에게 보일 본문</h2>
+<div style="border:1px solid #e2e8f0;border-radius:8px;padding:12px;">{notice['body_html']}</div>
+</div>
+<div class="card">
+<form method="post" action="/admin/notices/send">
+<input type="hidden" name="notice_id" value="{nid}">
+<label>발송 확인 문구를 정확히 입력하세요: <code>{_esc(NOTICE_SEND_CONFIRM_PHRASE)}</code><br>
+<input type="text" name="confirm" required>
+</label><br><br>
+<div class="form-actions"><button class="btn" type="submit">실제 발송</button></div>
+</form>
+</div>
+"""
+    return HTMLResponse(_layout("공지 미리보기", inner))
+
+
+@router.post("/admin/notices/send")
+def admin_notice_send(
+    request: Request,
+    notice_id: str = Form(""),
+    confirm: str = Form(""),
+):
+    need = _require_login(request)
+    if need is not None:
+        return need
+
+    if not validate_notice_id(notice_id):
+        return RedirectResponse(url="/admin/notices?notice_error=not_found", status_code=303)
+    notice = load_notice(notice_id)
+    if not notice:
+        return RedirectResponse(url="/admin/notices?notice_error=not_found", status_code=303)
+    if notice.get("status") != "previewed":
+        return RedirectResponse(
+            url=f"/admin/notices/{notice_id}?notice_error=not_previewed", status_code=303
+        )
+    if confirm.strip() != NOTICE_SEND_CONFIRM_PHRASE:
+        return RedirectResponse(
+            url=f"/admin/notices/{notice_id}?notice_error=confirm_mismatch", status_code=303
+        )
+
+    sent_by = "admin"
+    sent = send_admin_notice_email(notice)
+    if sent:
+        mark_sent(notice, sent_by=sent_by)
+    else:
+        mark_failed(notice, send_error="smtp_send_failed", sent_by=sent_by)
+
+    return RedirectResponse(url=f"/admin/notices/{notice_id}", status_code=303)
+
+
+@router.get("/admin/notices/{notice_id}", response_class=HTMLResponse)
+def admin_notice_detail(request: Request, notice_id: str):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    if not validate_notice_id(notice_id):
+        return HTMLResponse(_layout("Not found", "<p>잘못된 notice_id</p>"), status_code=404)
+    notice = load_notice(notice_id)
+    if not notice:
+        return HTMLResponse(_layout("Not found", "<p>공지를 찾을 수 없습니다.</p>"), status_code=404)
+
+    error_code = str(request.query_params.get("notice_error") or "")
+    error_html = ""
+    if error_code:
+        msg = _NOTICE_SEND_ERROR_MESSAGES.get(error_code, error_code)
+        error_html = f"<div class='warn' style='margin:8px 0'>{_esc(msg)}</div>"
+
+    inner = f"""
+<div class="page-head"><h1>공지 상세</h1>
+<a href="/admin/notices" class="btn">← 공지 목록</a></div>
+{error_html}
+<div class="card">
+<p>notice_id: <code>{_esc(notice['notice_id'])}</code></p>
+<p>유형: {_esc(_NOTICE_TYPE_LABELS.get(notice.get('notice_type'), notice.get('notice_type')))}</p>
+<p>프로그램: {_esc(notice.get('program_id'))}</p>
+<p>관련 run_id: {_esc(notice.get('related_run_id') or '없음')}</p>
+<p>상태: <strong>{_esc(_notice_status_label(str(notice.get('status') or '')))}</strong></p>
+<p>생성 시각: {_esc(notice.get('created_at'))}</p>
+<p>미리보기 시각: {_esc(notice.get('previewed_at') or '—')}</p>
+<p>발송 시각: {_esc(notice.get('sent_at') or '—')}</p>
+<p>smtp_accepted: {_esc(notice.get('smtp_accepted'))}</p>
+<p>send_error: {_esc(notice.get('send_error') or '없음')}</p>
+<p>수신자 수: {_esc(notice.get('recipients_count'))} (실제 이메일 목록은 저장/표시하지 않음)</p>
+<p>수신자 공개 정책: <code>{_esc(notice.get('visible_recipient_policy'))}</code></p>
+</div>
+<div class="card">
+<h2 style="font-size:16px;margin:0 0 12px">제목</h2>
+<p>{_esc(notice.get('subject'))}</p>
+<h2 style="font-size:16px;margin:16px 0 12px">본문</h2>
+<div style="border:1px solid #e2e8f0;border-radius:8px;padding:12px;">{notice.get('body_html') or ''}</div>
+</div>
+"""
+    return HTMLResponse(_layout(f"Notice {notice_id}", inner))
