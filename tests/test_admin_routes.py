@@ -222,7 +222,7 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertNotRegex(resp.text, r'value="text_and_image"[^>]*\bdisabled\b')
         self.assertIn("중복·부적합 뉴스를 제외하고 후보군의 다음 순위 뉴스로 본문을 다시 생성합니다. 기존 이미지는 유지됩니다.", resp.text)
         self.assertIn("이미지 prompt와 이미지 산출물만 다시 생성합니다", resp.text)
-        self.assertIn("본문과 이미지를 모두 새로 생성합니다. 전체 방향이 틀렸을 때 사용합니다.", resp.text)
+        self.assertIn("뉴스 수집부터 다시 수행하고, 본문과 이미지 산출물을 모두 새로 생성합니다.", resp.text)
         self.assertIn("이미지 품질 이슈", resp.text)
         self.assertIn("reissue-reason-select", resp.text)
 
