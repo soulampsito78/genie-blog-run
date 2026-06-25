@@ -1062,9 +1062,9 @@ def _saved_korea_bottom_image_path(parent: Dict[str, Any]) -> Optional[Path]:
 
 
 def _text_regen_subject_prefix(regen_type: str) -> str:
-    if regen_type == "text_only":
+    if regen_type == "body_only":
         return "[본문 재발행]"
-    if regen_type == "text_and_image":
+    if regen_type == "body_and_image":
         return "[본문·이미지 재발행]"
     if regen_type == "image_only":
         return "[이미지 재발행]"
@@ -1073,12 +1073,12 @@ def _text_regen_subject_prefix(regen_type: str) -> str:
 
 def _scope_delivery_reason_fields(regen_type: str) -> Dict[str, bool]:
     return {
-        "regen_preserved_images": regen_type == "text_only",
-        "regen_regenerated_text": regen_type in ("text_only", "text_and_image"),
+        "regen_preserved_images": regen_type == "body_only",
+        "regen_regenerated_text": regen_type in ("body_only", "body_and_image"),
         "regen_preserved_text": regen_type == "image_only",
-        "regen_regenerated_images": regen_type in ("image_only", "text_and_image"),
-        "text_generation_called": regen_type in ("text_only", "text_and_image"),
-        "image_generation_called": regen_type in ("image_only", "text_and_image"),
+        "regen_regenerated_images": regen_type in ("image_only", "body_and_image"),
+        "text_generation_called": regen_type in ("body_only", "body_and_image"),
+        "image_generation_called": regen_type in ("image_only", "body_and_image"),
     }
 
 
@@ -1360,7 +1360,7 @@ def run_keysuri_text_only_reissue(
             "program_id": pid,
             "reissue_blocked_reason": (
                 "후보군 snapshot이 없어 본문만 재발행 불가. "
-                "본문·이미지 모두 재발행(text_and_image)을 사용하십시오."
+                "본문·이미지 모두 재발행(body_and_image)을 사용하십시오."
             ),
         }
 
@@ -1431,7 +1431,7 @@ def run_keysuri_text_only_reissue(
     contract_fixture_email["top_shot_image_src"] = f"cid:{top_cid}"
     if pid == PROGRAM_KOREA and bottom_image_path is not None:
         contract_fixture_email["bottom_shot_image_src"] = f"cid:{bottom_cid}" if bottom_cid else keysuri_korea_bottom_service_email_cid_src(parent_run_id)
-    owner_subject = _owner_subject_for_regen(parent, subject_fields["owner_email_subject"], "text_only")
+    owner_subject = _owner_subject_for_regen(parent, subject_fields["owner_email_subject"], "body_only")
     owner_review_url = build_owner_review_admin_url(child_run_id) or ""
     if pid == PROGRAM_GLOBAL:
         email_html = build_keysuri_global_gmail_owner_email_html(
@@ -1508,14 +1508,14 @@ def run_keysuri_text_only_reissue(
     )
     meta.update(subject_fields)
     meta.update(visible_text_quality_fields)
-    meta.update(_scope_delivery_reason_fields("text_only"))
+    meta.update(_scope_delivery_reason_fields("body_only"))
     meta.update(
         {
-            "regen_type": "text_only",
+            "regen_type": "body_only",
             "regen_parent_run_id": parent_run_id,
             "regen_requested_at_kst": now_kst_iso(),
             "regen_requested_by": "admin",
-            "reissue_scope": "text_only",
+            "reissue_scope": "body_only",
             "reissue_scope_supported": True,
             "reissue_scope_status": "executed",
             "reissue_reason_code": reissue_reason_code or None,
@@ -1563,7 +1563,7 @@ def run_keysuri_text_only_reissue(
         "ok": not send_owner_email or email_sent,
         "run_id": child_run_id,
         "program_id": pid,
-        "regen_type": "text_only",
+        "regen_type": "body_only",
         "email_sent": email_sent,
         "customer_delivery_status": "not_sent",
     }
@@ -1695,7 +1695,7 @@ def run_keysuri_text_and_image_reissue(
     html_path.write_text(preview_html, encoding="utf-8")
     html_rel = _repo_rel(html_path)
 
-    owner_subject = _owner_subject_for_regen(parent, subject_fields["owner_email_subject"], "text_and_image")
+    owner_subject = _owner_subject_for_regen(parent, subject_fields["owner_email_subject"], "body_and_image")
     owner_review_url = build_owner_review_admin_url(child_run_id) or ""
     if pid == PROGRAM_GLOBAL:
         contract_fixture_email = dict(contract_fixture_preview)
@@ -1774,14 +1774,14 @@ def run_keysuri_text_and_image_reissue(
     )
     meta.update(subject_fields)
     meta.update(visible_text_quality_fields)
-    meta.update(_scope_delivery_reason_fields("text_and_image"))
+    meta.update(_scope_delivery_reason_fields("body_and_image"))
     meta.update(
         {
-            "regen_type": "text_and_image",
+            "regen_type": "body_and_image",
             "regen_parent_run_id": parent_run_id,
             "regen_requested_at_kst": now_kst_iso(),
             "regen_requested_by": "admin",
-            "reissue_scope": "text_and_image",
+            "reissue_scope": "body_and_image",
             "reissue_scope_supported": True,
             "reissue_scope_status": "executed",
             "reissue_reason_code": reissue_reason_code or None,
@@ -1823,7 +1823,7 @@ def run_keysuri_text_and_image_reissue(
         "ok": image_outcome.ok and (not send_owner_email or email_sent),
         "run_id": child_run_id,
         "program_id": pid,
-        "regen_type": "text_and_image",
+        "regen_type": "body_and_image",
         "email_sent": email_sent,
         "customer_delivery_status": "not_sent",
     }

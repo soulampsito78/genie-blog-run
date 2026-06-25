@@ -27,6 +27,7 @@ from admin_store import (
     build_customer_delivery_admin_panel,
     can_approve_customer_send,
     load_beta_recipient_config,
+    normalize_reissue_scope,
     now_kst_iso,
     load_run_artifact,
     load_run_email_html,
@@ -54,7 +55,7 @@ APPROVE_NONCE_TTL_SECONDS = 900
 APPROVE_NONCE_FORM_FIELD = "approve_nonce"
 CUSTOMER_SEND_CONFIRM_FIELD = "customer_send_confirm"
 REISSUE_REASON_OPTIONS_BY_SCOPE = {
-    "text_only": (
+    "body_only": (
         "뉴스 중복 이슈",            # DEFAULT
         "오래된 뉴스 포함",
         "관련도 낮은 뉴스 포함",
@@ -70,7 +71,7 @@ REISSUE_REASON_OPTIONS_BY_SCOPE = {
         "장면/역할 불일치",
         "배경/아이콘 오염",
     ),
-    "text_and_image": (
+    "body_and_image": (
         "전체 방향 수정 요청",       # DEFAULT
         "뉴스 수집부터 재실행 필요",
         "이미지+본문 불일치",
@@ -80,10 +81,10 @@ REISSUE_REASON_OPTIONS_BY_SCOPE = {
 REISSUE_REASON_FALLBACKS = ("기타",)
 
 REISSUE_SCOPE_OPTIONS = (
-    ("text_only", "본문만 재발행", "중복·부적합 뉴스를 제외하고 후보군의 다음 순위 뉴스로 본문을 다시 생성합니다. 기존 이미지는 유지됩니다."),
+    ("body_only", "본문만 재발행", "중복·부적합 뉴스를 제외하고 후보군의 다음 순위 뉴스로 본문을 다시 생성합니다. 기존 이미지는 유지됩니다."),
     ("image_only", "이미지만 재발행", "이미지 prompt와 이미지 산출물만 다시 생성합니다. 본문은 유지됩니다."),
     (
-        "text_and_image",
+        "body_and_image",
         "본문·이미지 모두 재발행",
         "뉴스 수집부터 다시 수행하고, 본문과 이미지 산출물을 모두 새로 생성합니다.",
     ),
@@ -97,6 +98,41 @@ _REISSUE_ERROR_MESSAGES = {
         "화면에 표시된 실행 가능 범위를 확인하세요."
     ),
 }
+
+_REISSUE_MODE_LABELS = {
+    "today_genie": "Today Genie",
+    "tomorrow_genie": "Tomorrow Genie",
+    "keysuri_global_tech": "KeeSuri Global Tech",
+    "keysuri_korea_tech": "KeeSuri Korea Tech",
+}
+
+
+def _reissue_mode_label(mode: str) -> str:
+    mode = str(mode or "").strip()
+    return _REISSUE_MODE_LABELS.get(mode, f"알 수 없는 mode({mode or '없음'})")
+
+
+def _render_reissue_failure_page(
+    *,
+    title: str,
+    run_id: str,
+    mode: str,
+    failed_step: str,
+    safe_message: str,
+    status_code: int,
+) -> HTMLResponse:
+    """Render a reissue failure page without leaking raw exception text.
+
+    Always shows the actual requested mode, its label, the failed step, and a
+    pre-approved safe message — never a bare exception/ValueError message.
+    """
+    inner = (
+        f"<p>요청 mode: {_esc(mode or '(없음)')} ({_esc(_reissue_mode_label(mode))})</p>"
+        f"<p>실패 단계: {_esc(failed_step)}</p>"
+        f"<p>{_esc(safe_message)}</p>"
+        f"<p><a href=\"/admin/runs/{_esc(run_id)}\">돌아가기</a></p>"
+    )
+    return HTMLResponse(_layout(title, inner), status_code=status_code)
 
 _APPROVE_ERROR_MESSAGES = {
     "already_approved": "이미 승인된 실행입니다.",
@@ -282,11 +318,11 @@ def _mode_supports_image_only_reissue(mode: str) -> bool:
     return str(mode or "").strip() in ("keysuri_global_tech", "keysuri_korea_tech")
 
 
-def _mode_supports_text_only_reissue(mode: str) -> bool:
+def _mode_supports_body_only_reissue(mode: str) -> bool:
     return str(mode or "").strip() in ("keysuri_global_tech", "keysuri_korea_tech")
 
 
-def _mode_supports_text_and_image_reissue(mode: str) -> bool:
+def _mode_supports_body_and_image_reissue(mode: str) -> bool:
     return str(mode or "").strip() in (
         "today_genie",
         "tomorrow_genie",
@@ -297,10 +333,13 @@ def _mode_supports_text_and_image_reissue(mode: str) -> bool:
 
 def _render_reissue_scope_field(mode: str) -> str:
     mode = str(mode or "").strip()
-    text_only_enabled = _mode_supports_text_only_reissue(mode)
+    body_only_enabled = _mode_supports_body_only_reissue(mode)
     image_only_enabled = _mode_supports_image_only_reissue(mode)
-    text_and_image_enabled = _mode_supports_text_and_image_reissue(mode)
-    default_scope = "image_only" if image_only_enabled else EXECUTABLE_REISSUE_SCOPE
+    body_and_image_enabled = _mode_supports_body_and_image_reissue(mode)
+    # No image_only fallback: always default to the full (body_and_image)
+    # scope regardless of which partial scopes are available, so a partial
+    # reissue is always an explicit operator choice, never a pre-selected default.
+    default_scope = EXECUTABLE_REISSUE_SCOPE
     rows = [
         '<p style="margin:0 0 12px 0;font-size:12px;line-height:1.6;color:#9a3412;">'
         "선택한 범위만 서버에서 재발행합니다. 재발행 결과는 운영자 검토용 이메일로만 발송되며, 고객 최종 발송은 별도 승인 전까지 수행되지 않습니다."
@@ -309,13 +348,13 @@ def _render_reissue_scope_field(mode: str) -> str:
     for scope, label, helper in REISSUE_SCOPE_OPTIONS:
         scope_helper = helper
         disabled = False
-        if scope == "text_only" and not text_only_enabled:
+        if scope == "body_only" and not body_only_enabled:
             disabled = True
             scope_helper = "이 실행 mode에서는 아직 지원하지 않습니다."
         elif scope == "image_only" and not image_only_enabled:
             disabled = True
             scope_helper = "이 실행 mode에서는 아직 지원하지 않습니다."
-        elif scope == "text_and_image" and not text_and_image_enabled:
+        elif scope == "body_and_image" and not body_and_image_enabled:
             disabled = True
             scope_helper = "이 실행 mode에서는 아직 지원하지 않습니다."
         checked = " checked" if scope == default_scope and not disabled else ""
@@ -339,7 +378,7 @@ def _ordered_reissue_reasons_for_mode(mode: str) -> tuple[str, ...]:
     mode = str(mode or "").strip()
     if mode in ("keysuri_global_tech", "keysuri_korea_tech"):
         ordered: list[str] = []
-        for scope in ("image_only", "text_only", "text_and_image"):
+        for scope in ("image_only", "body_only", "body_and_image"):
             for reason in REISSUE_REASON_OPTIONS_BY_SCOPE.get(scope, ()):
                 if reason not in ordered:
                     ordered.append(reason)
@@ -347,7 +386,7 @@ def _ordered_reissue_reasons_for_mode(mode: str) -> tuple[str, ...]:
             if reason not in ordered:
                 ordered.append(reason)
         return tuple(ordered)
-    ordered = list(REISSUE_REASON_OPTIONS_BY_SCOPE["text_and_image"])
+    ordered = list(REISSUE_REASON_OPTIONS_BY_SCOPE["body_and_image"])
     for reason in (
         "제목 수정 요청",
         "요약 수정 요청",
@@ -805,18 +844,31 @@ def admin_run_reissue(
     if not parent:
         return HTMLResponse(_layout("Not found", "<p>원본 실행 기록을 찾을 수 없습니다.</p>"), status_code=404)
 
-    scope = str(reissue_scope or "").strip()
-    if not scope:
+    mode = str(parent.get("mode") or parent.get("program_id") or "").strip()
+    if mode not in ("today_genie", "tomorrow_genie", "keysuri_global_tech", "keysuri_korea_tech"):
+        return _render_reissue_failure_page(
+            title="Reissue failed",
+            run_id=run_id,
+            mode=mode,
+            failed_step="mode_validation",
+            safe_message="알 수 없는 mode로는 재발행을 실행할 수 없습니다.",
+            status_code=400,
+        )
+
+    raw_scope = str(reissue_scope or "").strip()
+    if not raw_scope:
         return RedirectResponse(
             url=f"/admin/runs/{run_id}?reissue_error=missing_reissue_scope",
             status_code=303,
         )
-    if scope not in REISSUE_SCOPES:
+    # Accept legacy text_only/text_and_image aliases for backward compatibility
+    # with stale forms/automation; canonicalize to body_only/body_and_image.
+    scope = normalize_reissue_scope(raw_scope)
+    if scope is None or scope not in REISSUE_SCOPES:
         return RedirectResponse(
             url=f"/admin/runs/{run_id}?reissue_error=invalid_reissue_scope",
             status_code=303,
         )
-    mode = str(parent.get("mode") or parent.get("program_id") or "").strip()
     if scope in UNSUPPORTED_REISSUE_SCOPES:
         return RedirectResponse(
             url=f"/admin/runs/{run_id}?reissue_error=unsupported_reissue_scope",
@@ -826,7 +878,7 @@ def admin_run_reissue(
     note = reason_note.strip()
 
     if mode in ("keysuri_global_tech", "keysuri_korea_tech"):
-        if scope == "text_only" and not _mode_supports_text_only_reissue(mode):
+        if scope == "body_only" and not _mode_supports_body_only_reissue(mode):
             return RedirectResponse(
                 url=f"/admin/runs/{run_id}?reissue_error=unsupported_reissue_scope",
                 status_code=303,
@@ -836,15 +888,15 @@ def admin_run_reissue(
                 url=f"/admin/runs/{run_id}?reissue_error=unsupported_reissue_scope",
                 status_code=303,
             )
-        if scope == "text_and_image" and not _mode_supports_text_and_image_reissue(mode):
+        if scope == "body_and_image" and not _mode_supports_body_and_image_reissue(mode):
             return RedirectResponse(
                 url=f"/admin/runs/{run_id}?reissue_error=unsupported_reissue_scope",
                 status_code=303,
             )
         runner = {
-            "text_only": run_keysuri_text_only_reissue,
+            "body_only": run_keysuri_text_only_reissue,
             "image_only": run_keysuri_image_only_reissue,
-            "text_and_image": run_keysuri_text_and_image_reissue,
+            "body_and_image": run_keysuri_text_and_image_reissue,
         }.get(scope)
         if runner is None:
             return RedirectResponse(
@@ -859,12 +911,14 @@ def admin_run_reissue(
                 reissue_reason_note=note,
             )
         except Exception as exc:  # noqa: BLE001
-            inner = (
-                f"<p>이미지만 재발행 실행 중 오류가 발생했습니다.</p>"
-                f"<p>{_esc(type(exc).__name__)}</p>"
-                f"<p><a href=\"/admin/runs/{_esc(run_id)}\">돌아가기</a></p>"
+            return _render_reissue_failure_page(
+                title="Reissue error",
+                run_id=run_id,
+                mode=mode,
+                failed_step="keysuri_reissue_execution",
+                safe_message=f"재발행 실행 중 오류가 발생했습니다 ({type(exc).__name__}).",
+                status_code=500,
             )
-            return HTMLResponse(_layout("Reissue error", inner), status_code=500)
         new_run_id = str(result.get("run_id") or "").strip()
         if new_run_id and not result.get("email_sent") and not result.get("error"):
             return RedirectResponse(
@@ -872,12 +926,15 @@ def admin_run_reissue(
                 status_code=303,
             )
         if not result.get("ok") or not new_run_id:
-            inner = (
-                f"<p>이미지만 재발행을 완료하지 못했습니다.</p>"
-                f"<p>{_esc(str(result.get('error') or 'image_only_reissue_failed'))}</p>"
-                f"<p><a href=\"/admin/runs/{_esc(run_id)}\">돌아가기</a></p>"
+            error_code = str(result.get("error") or "keysuri_reissue_failed")
+            return _render_reissue_failure_page(
+                title="Reissue failed",
+                run_id=run_id,
+                mode=mode,
+                failed_step="keysuri_reissue_result_validation",
+                safe_message=f"재발행을 완료하지 못했습니다 ({error_code}).",
+                status_code=500,
             )
-            return HTMLResponse(_layout("Reissue failed", inner), status_code=500)
         return RedirectResponse(url=f"/admin/runs/{new_run_id}", status_code=303)
 
     if scope != EXECUTABLE_REISSUE_SCOPE:
@@ -885,10 +942,6 @@ def admin_run_reissue(
             url=f"/admin/runs/{run_id}?reissue_error=invalid_reissue_scope",
             status_code=303,
         )
-
-    if mode not in ("today_genie", "tomorrow_genie"):
-        inner = f"<p>재발행할 수 없는 mode: {_esc(mode)}</p><p><a href=\"/admin/runs/{_esc(run_id)}\">돌아가기</a></p>"
-        return HTMLResponse(_layout("Reissue failed", inner), status_code=400)
 
     reason = reason_code
     if note:
@@ -902,19 +955,24 @@ def admin_run_reissue(
             admin_reissue=True,
         )
     except Exception as exc:  # noqa: BLE001
-        inner = (
-            f"<p>재발행 실행 중 오류가 발생했습니다.</p>"
-            f"<p>{_esc(type(exc).__name__)}</p>"
-            f"<p><a href=\"/admin/runs/{_esc(run_id)}\">돌아가기</a></p>"
+        return _render_reissue_failure_page(
+            title="Reissue error",
+            run_id=run_id,
+            mode=mode,
+            failed_step="orchestrator_reissue_execution",
+            safe_message=f"재발행 실행 중 오류가 발생했습니다 ({type(exc).__name__}).",
+            status_code=500,
         )
-        return HTMLResponse(_layout("Reissue error", inner), status_code=500)
 
     if not new_run_id:
-        inner = (
-            f"<p>재발행 아티팩트를 저장하지 못했습니다.</p>"
-            f"<p><a href=\"/admin/runs/{_esc(run_id)}\">돌아가기</a></p>"
+        return _render_reissue_failure_page(
+            title="Reissue failed",
+            run_id=run_id,
+            mode=mode,
+            failed_step="orchestrator_reissue_persist",
+            safe_message="재발행 아티팩트를 저장하지 못했습니다.",
+            status_code=500,
         )
-        return HTMLResponse(_layout("Reissue failed", inner), status_code=500)
 
     apply_reissue_child_metadata(
         new_run_id,

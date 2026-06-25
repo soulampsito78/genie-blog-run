@@ -26,9 +26,30 @@ OWNER_REVIEW_STATUSES = frozenset(
     {"pending_review", "approved", "reopened", "approval_expired_manual_required"}
 )
 LEGACY_OWNER_REVIEW_STATUSES = frozenset({"auto_sent_after_timeout"})
-REISSUE_SCOPES = frozenset({"text_only", "image_only", "text_and_image"})
-EXECUTABLE_REISSUE_SCOPE = "text_and_image"
+REISSUE_SCOPES = frozenset({"body_only", "image_only", "body_and_image"})
+EXECUTABLE_REISSUE_SCOPE = "body_and_image"
 UNSUPPORTED_REISSUE_SCOPES = frozenset()
+# Backward-compatibility aliases for the pre-rename scope vocabulary
+# (text_only/text_and_image). Past artifacts may still carry these legacy
+# values; new requests/artifacts must use body_only/image_only/body_and_image.
+LEGACY_REISSUE_SCOPE_ALIASES = {
+    "text_only": "body_only",
+    "text_and_image": "body_and_image",
+}
+
+
+def normalize_reissue_scope(raw_scope: str) -> Optional[str]:
+    """Map a raw scope string to the canonical contract, accepting legacy aliases.
+
+    Returns None if the value is empty or not recognized as either a current
+    canonical scope or a known legacy alias.
+    """
+    value = str(raw_scope or "").strip()
+    if not value:
+        return None
+    if value in REISSUE_SCOPES:
+        return value
+    return LEGACY_REISSUE_SCOPE_ALIASES.get(value)
 
 CUSTOMER_DELIVERY_STATUSES = frozenset(
     {

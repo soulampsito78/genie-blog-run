@@ -575,7 +575,7 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         self.assertIn(str(top_path.resolve()), inline_parts[0][0])
         self.assertIn(str(bottom_path.resolve()), inline_parts[1][0])
         child = load_run_artifact(child_id) or {}
-        self.assertEqual(child.get("regen_type"), "text_only")
+        self.assertEqual(child.get("regen_type"), "body_only")
         self.assertEqual(child.get("regen_parent_run_id"), parent_id)
         self.assertTrue(child.get("regen_preserved_images"))
         self.assertTrue(child.get("regen_regenerated_text"))
@@ -730,7 +730,7 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         mock_customer_final.assert_not_called()  # test 27: customer final blocked
         send_fn.assert_called_once()
         child = load_run_artifact(child_id) or {}
-        self.assertEqual(child.get("regen_type"), "text_and_image")
+        self.assertEqual(child.get("regen_type"), "body_and_image")
         self.assertEqual(child.get("regen_parent_run_id"), parent_id)
         self.assertTrue(child.get("source_fetch_called"))  # test 22
         self.assertTrue(child.get("candidate_pool_refreshed"))  # test 22
