@@ -508,6 +508,38 @@ class KeysuriDeliveryMergedRecipientsTests(unittest.TestCase):
         self.assertIn("env@example.com", to_addrs)
         self.assertIn("admin@example.com", to_addrs)
 
+    @patch("keysuri_customer_delivery.send_genie_email")
+    @patch("keysuri_customer_delivery.resolve_keysuri_inline_jpeg_parts")
+    def test_keysuri_korea_send_uses_merged_list(self, mock_parts, mock_send):
+        """Korea send passes merged recipient list to send_genie_email."""
+        mock_parts.return_value = [
+            ("top.jpg", "cid_top", b"\xff\xd8"),
+            ("bottom.jpg", "cid_bottom", b"\xff\xd8"),
+        ]
+        mock_send.return_value = True
+        save_beta_recipient_config(["admin@example.com"])
+
+        from keysuri_customer_delivery import send_keysuri_customer_final_email
+        from keysuri_live_source_smoke import PROGRAM_KOREA
+
+        meta = {
+            "program_id": PROGRAM_KOREA,
+            "mode": PROGRAM_KOREA,
+            "service_full_run": True,
+            "run_id": "20260623_120000_keysuri_korea_tech_aabbccdd",
+            "keysuri_korea_top_image_cid": "cid_top",
+            "korea_bottom_shot_cid": "cid_bottom",
+        }
+        send_keysuri_customer_final_email(
+            "<html><body>korea brief</body></html>",
+            meta,
+        )
+        mock_send.assert_called_once()
+        call_kwargs = mock_send.call_args.kwargs
+        to_addrs = call_kwargs.get("to_addrs_override", [])
+        self.assertIn("env@example.com", to_addrs)
+        self.assertIn("admin@example.com", to_addrs)
+
 
 # ---------------------------------------------------------------------------
 # Admin route — customer-recipients UI

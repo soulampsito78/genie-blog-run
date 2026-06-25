@@ -215,6 +215,11 @@ def _parse_test_recipients() -> list[str]:
     return uniq
 
 
+def _safe_to_header() -> str:
+    """Avoid exposing customer or owner-review recipient lists in MIME headers."""
+    return "undisclosed-recipients:;"
+
+
 def _read_jpeg_bytes(path: str) -> bytes:
     with open(path, "rb") as f:
         return f.read()
@@ -240,7 +245,7 @@ def _build_mime_multipart_inline_and_attach(
     root = MIMEMultipart("mixed")
     root["Subject"] = subject or "(Genie briefing)"
     root["From"] = from_addr
-    root["To"] = ", ".join(to_addrs)
+    root["To"] = _safe_to_header()
 
     related = MIMEMultipart("related")
     related.attach(MIMEText(html_body, "html", "utf-8"))
@@ -431,7 +436,7 @@ def send_genie_email(
             msg = MIMEMultipart("alternative")
             msg["Subject"] = subject or "(Genie briefing)"
             msg["From"] = from_addr
-            msg["To"] = ", ".join(to_addrs)
+            msg["To"] = _safe_to_header()
             msg.attach(MIMEText(html_body, "html", "utf-8"))
             payload = msg.as_string()
             inline_input_hashes = []
