@@ -393,6 +393,62 @@ class KeysuriNewsSelectionDiversityTests(unittest.TestCase):
         self.assertIn("c6", ids)
         self.assertEqual([it["rank"] for it in items], [1, 2, 3, 4, 5])
 
+    def test_non_nvidia_same_source_rejects_and_promotes_replacement(self) -> None:
+        pack = self._pack()
+        for src in pack["sources"]:
+            if src["source_id"] == "s-nvidia":
+                src["source_name"] = "OpenAI Blog"
+                src["source_url"] = "https://openai.com/blog/agent-platform/"
+        pack["claims"][0]["headline"] = "OpenAI ships new agent platform"
+        pack["claims"][0]["statement"] = "OpenAI ships new agent platform"
+        pack["claims"][2]["headline"] = "OpenAI updates developer model router"
+        pack["claims"][2]["statement"] = "OpenAI updates developer model router"
+        pack["claims"][3]["headline"] = "Datacenter firms expand AI chip design capacity"
+        pack["claims"][3]["statement"] = "Datacenter firms expand AI chip design capacity"
+
+        result = select_top_5_news(pack, GateResult(verdict="pass", issues=()))
+        items = result["top_5_news"]["items"]
+        ids = [it["news_id"] for it in items]
+        self.assertEqual(len(items), 5)
+        self.assertEqual([it for it in items if it["normalized_source"] == "openai blog"][0]["news_id"], "c1")
+        self.assertNotIn("c3", ids)
+        self.assertIn("c6", ids)
+        rejected = [r for r in result["diversity_rejected_items"] if r["news_id"] == "c3"]
+        self.assertEqual(rejected[0]["rejected_reason"], "same_source_cap")
+
+    def test_non_nvidia_entity_rejects_and_promotes_replacement(self) -> None:
+        pack = self._pack()
+        pack["sources"].append(
+            {
+                "source_id": "s-meta",
+                "source_name": "Meta AI Blog",
+                "source_url": "https://ai.meta.com/blog/dataset/",
+                "source_tier": "T2_TIER1_WIRE",
+            }
+        )
+        specs = [
+            ("c1", "s-tc", "OpenAI ships new agent platform"),
+            ("c2", "s-dc", "Open AI updates developer model router"),
+            ("c3", "s-goog", "Google Finance upgrades arrive with a new app"),
+            ("c4", "s-reuters", "Microsoft expands enterprise cloud security suite"),
+            ("c5", "s-nvidia", "Apple updates developer AI tools"),
+            ("c6", "s-meta", "Meta open-sources enterprise AI dataset"),
+        ]
+        for claim, (_cid, sid, headline) in zip(pack["claims"], specs):
+            claim["source_ids"] = [sid]
+            claim["headline"] = headline
+            claim["statement"] = headline
+
+        result = select_top_5_news(pack, GateResult(verdict="pass", issues=()))
+        ids = [it["news_id"] for it in result["top_5_news"]["items"]]
+        self.assertEqual(len(ids), 5)
+        self.assertIn("c1", ids)
+        self.assertNotIn("c2", ids)
+        self.assertIn("c6", ids)
+        rejected = [r for r in result["diversity_rejected_items"] if r["news_id"] == "c2"]
+        self.assertEqual(rejected[0]["rejected_reason"], "entity_cap")
+        self.assertEqual(rejected[0]["collided_entity"], "openai")
+
     def test_diversity_summary_recorded(self) -> None:
         result = select_top_5_news(self._pack(), GateResult(verdict="pass", issues=()))
         summary = result["diversity_summary"]

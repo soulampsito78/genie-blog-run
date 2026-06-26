@@ -146,12 +146,22 @@ class SentNewsDedupGateTests(unittest.TestCase):
         self.assertEqual(result["dedup_summary"]["reason"], "insufficient_fresh_candidates")
 
 
-def _div_item(news_id: str, title: str, *, source: str = "", source_ids=None, summary: str = ""):
+def _div_item(
+    news_id: str,
+    title: str,
+    *,
+    source: str = "",
+    source_ids=None,
+    summary: str = "",
+    source_domain: str = "",
+):
     item = {"news_id": news_id, "title": title, "headline": title, "summary": summary}
     if source:
         item["source"] = source
     if source_ids is not None:
         item["source_ids"] = source_ids
+    if source_domain:
+        item["source_domain"] = source_domain
     return item
 
 
@@ -181,6 +191,30 @@ class DiversityCapTests(unittest.TestCase):
         self.assertEqual(rej[0]["rejected_reason"], "same_source_cap")
         self.assertEqual(rej[0]["collided_with"]["news_id"], "n1")
 
+    def test_non_nvidia_same_source_cap_is_general(self) -> None:
+        cases = [
+            ("OpenAI Blog", {}, {}),
+            ("Google Blog", {}, {}),
+            ("TechCrunch", {}, {}),
+            ("", {"source_ids": ["live-unknown-publisher-a1b2c3d4"]}, {"source_ids": ["live-unknown-publisher-deadbeef"]}),
+            ("", {"source_domain": "example.com"}, {"source_domain": "example.com"}),
+        ]
+        for source, first_extra, second_extra in cases:
+            with self.subTest(source=source or first_extra):
+                candidates = [
+                    _div_item("a", "First AI platform update", source=source, **first_extra),
+                    _div_item("b", "Second AI platform update", source=source, **second_extra),
+                    _div_item("c", "Funding round closes", source="Wire C"),
+                    _div_item("d", "Cloud platform expands", source="Wire D"),
+                    _div_item("e", "Enterprise SaaS launch", source="Wire E"),
+                    _div_item("f", "Policy update lands", source="Wire F"),
+                ]
+                result = select_with_diversity_caps(candidates, required_count=5)
+                rejected = [r for r in result["rejected_items"] if r["news_id"] == "b"]
+                self.assertEqual(rejected[0]["rejected_reason"], "same_source_cap")
+                self.assertEqual(rejected[0]["collided_with"]["news_id"], "a")
+                self.assertIn("f", [it["news_id"] for it in result["selected_items"]])
+
     def test_entity_cap_rejects_second_same_company_even_with_different_source(self) -> None:
         candidates = [
             _div_item("a", "NVIDIA unveils new Blackwell GPU lineup", source="Wire A"),
@@ -197,6 +231,52 @@ class DiversityCapTests(unittest.TestCase):
         rej = [r for r in result["rejected_items"] if r["news_id"] == "b"]
         self.assertEqual(rej[0]["rejected_reason"], "entity_cap")
         self.assertEqual(rej[0]["collided_entity"], "nvidia")
+
+    def test_entity_cap_handles_non_nvidia_alias_variants(self) -> None:
+        cases = [
+            ("openai", "OpenAI ships new agent platform", "Open AI updates model router"),
+            ("microsoft", "Microsoft expands Copilot Studio", "MS adds enterprise agents"),
+            ("google", "Google launches Gemini workflow", "Alphabet updates AI research platform"),
+            ("aws", "AWS launches AI infrastructure", "Amazon Web Services expands inference"),
+            ("aws", "AWS launches AI infrastructure", "Amazon expands inference cloud"),
+            ("anthropic", "Anthropic launches Claude agents", "앤트로픽 enterprise AI update"),
+            ("databricks", "Databricks adds AI functions", "Databricks launches Lakebase"),
+        ]
+        for expected_entity, first_title, second_title in cases:
+            with self.subTest(expected_entity=expected_entity):
+                candidates = [
+                    _div_item("a", first_title, source="Wire A"),
+                    _div_item("b", second_title, source="Wire B"),
+                    _div_item("c", "Apple releases developer tools", source="Wire C"),
+                    _div_item("d", "Meta updates model platform", source="Wire D"),
+                    _div_item("e", "Oracle cloud policy update", source="Wire E"),
+                    _div_item("f", "Perplexity enterprise search launch", source="Wire F"),
+                ]
+                result = select_with_diversity_caps(candidates, required_count=5)
+                rejected = [r for r in result["rejected_items"] if r["news_id"] == "b"]
+                self.assertEqual(rejected[0]["rejected_reason"], "entity_cap")
+                self.assertEqual(rejected[0]["collided_entity"], expected_entity)
+
+    def test_added_company_aliases_are_extracted_without_broad_ms_false_positive(self) -> None:
+        expected = {
+            "Perplexity launches enterprise search": "perplexity",
+            "퍼플렉시티 browser update": "perplexity",
+            "Oracle expands cloud AI": "oracle",
+            "오라클 database AI 출시": "oracle",
+            "Salesforce updates CRM workflow": "salesforce",
+            "세일즈포스 productivity suite": "salesforce",
+            "Adobe ships creative AI tools": "adobe",
+            "어도비 business app update": "adobe",
+            "Broadcom announces VMware platform changes": "broadcom",
+            "브로드컴 chip software update": "broadcom",
+            "AMD releases AI accelerator": "amd",
+            "Intel updates server roadmap": "intel",
+            "인텔 launches inference chip": "intel",
+        }
+        for title, entity in expected.items():
+            with self.subTest(title=title):
+                self.assertIn(entity, extract_company_entities(_div_item("x", title)))
+        self.assertNotIn("microsoft", extract_company_entities(_div_item("ms", "latency is 10 ms lower")))
 
     def test_source_id_prefix_fallback_when_source_name_missing(self) -> None:
         # No source name; same-source cap must fall back to source_id prefix.
@@ -260,6 +340,19 @@ class DiversityCapTests(unittest.TestCase):
         self.assertIn("nvidia", extract_company_entities(item))
         self.assertIn("aws", extract_company_entities(item))
         self.assertEqual(editorial_cluster_key(item), "ai_infrastructure")
+
+    def test_editorial_cluster_key_generalized_topics(self) -> None:
+        cases = [
+            ("OpenAI updates safety policy for platform developers", "platform_policy"),
+            ("EU antitrust regulation changes app store rule", "platform_policy"),
+            ("Salesforce launches enterprise SaaS workflow suite", "enterprise_saas"),
+            ("Adobe adds productivity collaboration workspace", "enterprise_saas"),
+            ("AWS expands inference cloud compute capacity", "cloud_infrastructure"),
+            ("Oracle opens new cloud region and data center", "cloud_infrastructure"),
+        ]
+        for title, expected in cases:
+            with self.subTest(title=title):
+                self.assertEqual(editorial_cluster_key(_div_item("x", title)), expected)
 
 
 if __name__ == "__main__":

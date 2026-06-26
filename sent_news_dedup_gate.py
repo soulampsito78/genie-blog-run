@@ -282,13 +282,26 @@ def metadata_from_gate_result(result: Dict[str, Any], *, required_count: int) ->
 # as substrings.
 COMPANY_ENTITY_ALIASES: Dict[str, tuple] = {
     "nvidia": ("nvidia", "엔비디아"),
-    "aws": ("aws", "amazon web services", "아마존 웹 서비스"),
-    "amazon": ("amazon", "아마존"),
-    "openai": ("openai", "오픈ai", "오픈에이아이"),
+    "aws": ("aws", "amazon web services", "amazon", "아마존 웹 서비스", "아마존"),
+    "openai": ("openai", "open ai", "오픈ai", "오픈에이아이"),
     "google": ("google", "alphabet", "구글"),
     "microsoft": ("microsoft", "마이크로소프트"),
     "meta": ("meta", "facebook", "메타", "페이스북"),
     "apple": ("apple", "애플"),
+    "anthropic": ("anthropic", "앤트로픽"),
+    "perplexity": ("perplexity", "퍼플렉시티"),
+    "databricks": ("databricks",),
+    "oracle": ("oracle", "오라클"),
+    "salesforce": ("salesforce", "세일즈포스"),
+    "adobe": ("adobe", "어도비"),
+    "broadcom": ("broadcom", "브로드컴"),
+    "amd": ("amd",),
+    "intel": ("intel", "인텔"),
+}
+
+CASE_SENSITIVE_ENTITY_PATTERNS: Dict[str, tuple] = {
+    # Lowercase "ms" is too noisy; accept the common uppercase company shorthand.
+    "microsoft": (r"\bMS\b",),
 }
 
 # Editorial cluster keywords (first match in order wins). Broad category fields
@@ -297,6 +310,25 @@ COMPANY_ENTITY_ALIASES: Dict[str, tuple] = {
 _EDITORIAL_CLUSTER_KEYWORDS: tuple = (
     ("ai_chip_design", ("chip design", "semiconductor design", "칩 설계", "반도체 설계")),
     ("ai_agents", ("ai agent", "agentic", "agent toolkit", "에이전트")),
+    (
+        "cloud_infrastructure",
+        (
+            "cloud infrastructure",
+            "inference cloud",
+            "gpu cloud",
+            "cloud compute",
+            "cloud region",
+            "cloud platform",
+            "datacenter",
+            "data center",
+            "server",
+            "compute",
+            "클라우드",
+            "데이터센터",
+            "서버",
+            "컴퓨트",
+        ),
+    ),
     (
         "ai_infrastructure",
         (
@@ -312,16 +344,60 @@ _EDITORIAL_CLUSTER_KEYWORDS: tuple = (
     ),
     ("finance_app", ("finance app", "google finance", "stock app", "금융 앱", "증권 앱")),
     ("funding_round", ("raises $", "lands $", "series a", "series b", "투자 유치")),
+    (
+        "platform_policy",
+        (
+            "platform policy",
+            "platform rule",
+            "app store rule",
+            "content policy",
+            "safety policy",
+            "privacy policy",
+            "policy",
+            "regulation",
+            "antitrust",
+            "dma",
+            "privacy",
+            "moderation",
+            "정책",
+            "규제",
+            "반독점",
+            "개인정보",
+            "모더레이션",
+        ),
+    ),
+    (
+        "enterprise_saas",
+        (
+            "enterprise software",
+            "enterprise saas",
+            "saas",
+            "workflow",
+            "productivity",
+            "crm",
+            "collaboration",
+            "workspace",
+            "business app",
+            "업무 앱",
+            "협업",
+            "워크스페이스",
+            "생산성",
+        ),
+    ),
 )
 
 
 def _entity_text(item: Dict[str, Any]) -> str:
+    return _entity_text_raw(item).lower()
+
+
+def _entity_text_raw(item: Dict[str, Any]) -> str:
     parts = [
         _first_text(item, "title", "headline", "headline_ko", "statement"),
         _short_summary(item),
         _source_name(item),
     ]
-    return " ".join(p for p in parts if p).lower()
+    return " ".join(p for p in parts if p)
 
 
 def extract_company_entities(item: Dict[str, Any]) -> List[str]:
@@ -330,6 +406,10 @@ def extract_company_entities(item: Dict[str, Any]) -> List[str]:
     if not text:
         return []
     found: set[str] = set()
+    raw_text = _entity_text_raw(item)
+    for canon, patterns in CASE_SENSITIVE_ENTITY_PATTERNS.items():
+        if any(re.search(pattern, raw_text) for pattern in patterns):
+            found.add(canon)
     for canon, aliases in COMPANY_ENTITY_ALIASES.items():
         for alias in aliases:
             if alias.isascii():
