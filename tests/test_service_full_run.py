@@ -8,7 +8,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from admin_store import load_run_artifact, load_run_email_html, save_run_artifact
+from admin_store import (
+    artifact_email_path,
+    load_run_artifact,
+    load_run_email_html,
+    save_run_artifact,
+)
 from fastapi.testclient import TestClient
 from internal_jobs import create_keysuri_owner_review_job
 from keysuri_live_source_smoke import PROGRAM_GLOBAL, PROGRAM_KOREA, LiveSourceSmokeResult
@@ -271,8 +276,16 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
             },
         )
         parent_html = (
-            '<html><body><p id="brief">보존해야 하는 본문 텍스트입니다.</p>'
-            '<img src="cid:keysuri_topshot_korea_20260624"/>'
+            '<html><body>'
+            '<span style="display:none">국내 AI·테크 신호 검수 대기</span>'
+            '<table><tr><td style="padding:0 0 16px 0;">'
+            '<img src="cid:keysuri_topshot_korea_20260624" width="568" /></td></tr>'
+            '<tr><td><h1>키수리 국내 테크 브리핑</h1></td></tr></table>'
+            '<p id="brief">보존해야 하는 본문 텍스트입니다.</p>'
+            '<h2>국내 테크 TOP 5</h2>'
+            '<a href="https://www.etnews.com/1">출처1</a>'
+            '<h2>키수리의 딥-다이브</h2>'
+            '<a href="https://zdnet.co.kr/2">출처2</a>'
             '<img src="cid:keysuri_bottomshot_korea_20260624"/>'
             f'<a href="https://example.com/admin/runs/{parent_id}">review</a>'
             "</body></html>"
@@ -358,12 +371,27 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         self.assertEqual(child.get("reissue_reason_note"), "image only")
         self.assertNotIn("customer_email_subject", child)
 
+        # New: image_only reissue rebuilds the full email with a mobile-Gmail-safe
+        # run-unique marker so the body is shown instead of collapsed.
+        self.assertTrue(child.get("email_rebuilt_after_image_reissue"))
+        self.assertEqual(child.get("reused_body_from_run_id"), parent_id)
+        self.assertTrue(child.get("body_content_present"))
+        self.assertTrue(child.get("mobile_gmail_safe_layout"))
+        self.assertEqual(child.get("rebuilt_email_html_path"), str(artifact_email_path(child_id)))
+
         child_html = load_run_email_html(child_id) or ""
         self.assertIn("보존해야 하는 본문 텍스트입니다.", child_html)
         self.assertNotIn("cid:keysuri_topshot_korea_20260624\"", child_html)
         self.assertIn("cid:keysuri_topshot_korea_20260624_regen_11223344", child_html)
         self.assertIn("cid:keysuri_bottomshot_korea_20260624_regen_11223344", child_html)
         self.assertIn(child_id, child_html)
+        # Marker present and placed after the hero image but before the title.
+        self.assertIn("image-only-reissue-marker", child_html)
+        self.assertLess(
+            child_html.index("cid:keysuri_topshot_korea_20260624_regen_11223344"),
+            child_html.index("image-only-reissue-marker"),
+        )
+        self.assertLess(child_html.index("image-only-reissue-marker"), child_html.index("<h1"))
         parent = load_run_artifact(parent_id) or {}
         self.assertEqual(parent.get("reissue_count", 0), 0)
         self.assertNotIn("regen_type", parent)

@@ -2150,6 +2150,138 @@ def _owner_review_admin_email_block(*, admin_url: str, run_id: str) -> str:
 </div>"""
 
 
+IMAGE_ONLY_REISSUE_MARKER_ID = "image-only-reissue-marker"
+IMAGE_ONLY_REISSUE_MARKER_START = "<!--image-only-reissue-marker-start-->"
+IMAGE_ONLY_REISSUE_MARKER_END = "<!--image-only-reissue-marker-end-->"
+
+
+def _image_only_reissue_colors(program_id: str) -> Mapping[str, str]:
+    pid = str(program_id or "").strip()
+    if pid == PROGRAM_GLOBAL or pid.startswith("keysuri_global"):
+        return _GMAIL_GLOBAL_COLORS
+    return _GMAIL_KOREA_COLORS
+
+
+def _short_kst_label(reissued_at_kst: str) -> str:
+    text = str(reissued_at_kst or "").strip()
+    m = re.search(r"T(\d{2}:\d{2})", text)
+    if m:
+        return m.group(1)
+    return text[:16]
+
+
+def build_image_only_reissue_marker_block(
+    *,
+    child_run_id: str,
+    reissued_at_kst: str,
+    program_id: str = "",
+) -> str:
+    """A compact, run-unique banner shown right under the hero image.
+
+    The image_only reissue email intentionally reuses the previous owner-review
+    body verbatim. Because the body is byte-identical to the parent message in
+    the same Gmail thread, mobile Gmail folds it behind a "…" as quoted/duplicate
+    content, so the email looks like "only the image was delivered". This marker
+    adds a small block of run-unique visible text (timestamp + run suffix) at the
+    very top of the body so Gmail no longer treats the leading content as a
+    duplicate and shows the full briefing. It never regenerates body text.
+    """
+    c = _image_only_reissue_colors(program_id)
+    rid_suffix = str(child_run_id or "").rsplit("_", 1)[-1] or str(child_run_id or "")
+    when = _short_kst_label(reissued_at_kst)
+    note = "이미지만 새로 생성했습니다. 아래 본문 내용은 이전 검수본과 동일합니다."
+    return (
+        f'{IMAGE_ONLY_REISSUE_MARKER_START}'
+        f'<tr><td id="{IMAGE_ONLY_REISSUE_MARKER_ID}" style="padding:0 0 14px 0;">'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="background:{c["surface2"]};border:1px solid {c["line"]};'
+        f'border-left:3px solid {c["accent"]};border-radius:10px;">'
+        f'<tr><td style="padding:12px 14px;">'
+        f'<p style="margin:0;font-size:12px;font-weight:700;letter-spacing:0.03em;color:{c["accent"]};">'
+        f'이미지 재발행 · {_esc(when)} KST · {_esc(rid_suffix)}</p>'
+        f'<p style="margin:6px 0 0 0;font-size:13px;line-height:1.6;color:{c["dim"]};">{_esc(note)}</p>'
+        f'</td></tr></table>'
+        f'</td></tr>'
+        f'{IMAGE_ONLY_REISSUE_MARKER_END}'
+    )
+
+
+def image_only_reissue_email_has_body(html: str) -> bool:
+    """True when the assembled email still carries the full briefing body.
+
+    Guards against a regression where image_only ever produces an image-only
+    fragment. A complete owner-review email has multiple external source/news
+    links and at least one body section heading below the title.
+    """
+    h = str(html or "")
+    external_links = len(re.findall(r'href="https?://[^"]+"', h))
+    h2_count = len(re.findall(r"<h2\b", h, re.IGNORECASE))
+    return external_links >= 2 and h2_count >= 1
+
+
+def assemble_image_only_reissue_email_html(
+    preserved_email_html: str,
+    *,
+    child_run_id: str,
+    reissued_at_kst: str,
+    program_id: str = "",
+) -> str:
+    """Rebuild the image_only reissue email as a full, mobile-Gmail-safe message.
+
+    Reuses the preserved (CID-swapped) owner-review HTML verbatim — body text is
+    never regenerated — and injects a run-unique marker right after the hero
+    image (falling back to before the title, then to the start of the body) plus
+    a run-unique hidden preheader. Both changes break Gmail's duplicate-content
+    collapse so the existing body is shown instead of hidden behind "…".
+    """
+    html_text = str(preserved_email_html or "")
+    if not html_text.strip():
+        return html_text
+    if IMAGE_ONLY_REISSUE_MARKER_ID in html_text:
+        return html_text
+
+    marker_row = build_image_only_reissue_marker_block(
+        child_run_id=child_run_id,
+        reissued_at_kst=reissued_at_kst,
+        program_id=program_id,
+    )
+
+    # Primary anchor: insert immediately after the hero image's table row.
+    hero_pattern = re.compile(
+        r'(<tr>\s*<td[^>]*>\s*<img\s+src="cid:[^"]*topshot[^"]*"[^>]*/>\s*</td>\s*</tr>)',
+        re.IGNORECASE,
+    )
+    new_html, n = hero_pattern.subn(lambda m: m.group(1) + marker_row, html_text, count=1)
+    if n == 0:
+        # Fallback: place the marker as a block directly before the <h1> title.
+        h1_match = re.search(r"<h1\b", html_text, re.IGNORECASE)
+        if h1_match:
+            # Wrap as a standalone table so it is valid before an inline <h1>.
+            marker_block = (
+                '<table role="presentation" width="100%" cellpadding="0" '
+                'cellspacing="0" border="0">' + marker_row + "</table>"
+            )
+            idx = h1_match.start()
+            new_html = html_text[:idx] + marker_block + html_text[idx:]
+        else:
+            body_match = re.search(r"<body[^>]*>", html_text, re.IGNORECASE)
+            if body_match:
+                marker_block = (
+                    '<table role="presentation" width="100%" cellpadding="0" '
+                    'cellspacing="0" border="0">' + marker_row + "</table>"
+                )
+                idx = body_match.end()
+                new_html = html_text[:idx] + marker_block + html_text[idx:]
+            else:
+                new_html = marker_row + html_text
+
+    # The hidden preheader is intentionally left unchanged: it is reused for the
+    # customer-final email and must not carry the operator-only reissue note. The
+    # visible marker block above already makes the leading body content unique,
+    # which is what defeats Gmail's duplicate-content collapse.
+    return new_html
+
+
 def build_keysuri_owner_review_email_html(
     preview_html: str,
     *,

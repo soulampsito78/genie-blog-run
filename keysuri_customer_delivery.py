@@ -74,6 +74,12 @@ _INTERNAL_BLOCK_RE = re.compile(
     r'<(?:div|section)[^>]*\bid=["\'](?:operation-metadata|preview-metadata|validation-result-box|compliance-checklist)["\'][^>]*>.*?</(?:div|section)>',
     re.IGNORECASE | re.DOTALL,
 )
+# Owner-only "이미지 재발행" banner injected on image_only reissue. It is delimited
+# by HTML comment sentinels so it can be removed cleanly before customer send.
+_IMAGE_ONLY_REISSUE_MARKER_RE = re.compile(
+    r'<!--image-only-reissue-marker-start-->.*?<!--image-only-reissue-marker-end-->',
+    re.IGNORECASE | re.DOTALL,
+)
 _CID_SRC_RE = re.compile(r'src=["\']cid:([^"\']+)["\']', re.IGNORECASE)
 
 _last_delivery_result: Optional["KeysuriCustomerDeliveryResult"] = None
@@ -187,6 +193,7 @@ def strip_keysuri_owner_review_controls(html_body: str) -> str:
         return ""
     out = html_body
     out = _OWNER_ADMIN_ENTRY_RE.sub("", out)
+    out = _IMAGE_ONLY_REISSUE_MARKER_RE.sub("", out)
     out = _RUN_ID_ADMIN_LINE_RE.sub("", out)
     out = _ADMIN_RUN_URL_RE.sub("", out)
     out = _OWNER_REVIEW_BADGE_RE.sub("", out)

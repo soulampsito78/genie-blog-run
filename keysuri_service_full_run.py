@@ -32,9 +32,11 @@ from keysuri_contract_preview_fixture import build_contract_preview_fixture_from
 from keysuri_contract_preview_renderer import (
     IMAGE_MODE_EMAIL,
     IMAGE_MODE_PREVIEW,
+    assemble_image_only_reissue_email_html,
     build_keysuri_global_gmail_owner_email_html,
     build_keysuri_korea_gmail_owner_email_html,
     build_keysuri_owner_review_email_html,
+    image_only_reissue_email_has_body,
     prepare_contract_preview_fixture,
     render_keysuri_contract_preview_html,
 )
@@ -1216,6 +1218,18 @@ def run_keysuri_image_only_reissue(
         bottom_cid=bottom_cid,
     )
     email_html = email_html.replace(parent_run_id, child_run_id)
+    # Reuse the preserved body verbatim, but rebuild the full email so mobile
+    # Gmail shows the briefing instead of folding the (intentionally unchanged)
+    # body behind "…" as duplicate threaded content. This swaps in only the new
+    # images + a run-unique marker/preheader — it never regenerates body text.
+    reissued_at_kst = now_kst_iso()
+    email_html = assemble_image_only_reissue_email_html(
+        email_html,
+        child_run_id=child_run_id,
+        reissued_at_kst=reissued_at_kst,
+        program_id=pid,
+    )
+    body_content_present = image_only_reissue_email_has_body(email_html)
 
     old_subject = str(
         parent.get("owner_email_subject")
@@ -1279,11 +1293,16 @@ def run_keysuri_image_only_reissue(
         {
             "regen_type": "image_only",
             "regen_parent_run_id": parent_run_id,
-            "regen_requested_at_kst": now_kst_iso(),
+            "regen_requested_at_kst": reissued_at_kst,
             "regen_requested_by": "admin",
             "reissue_scope": "image_only",
             "reissue_scope_supported": True,
             "reissue_scope_status": "executed",
+            "email_rebuilt_after_image_reissue": True,
+            "reused_body_from_run_id": parent_run_id,
+            "rebuilt_email_html_path": str(artifact_email_path(child_run_id)),
+            "body_content_present": bool(body_content_present),
+            "mobile_gmail_safe_layout": True,
             "reissue_reason_code": reissue_reason_code or None,
             "reissue_reason_note": reissue_reason_note or None,
             "regen_preserved_text": True,
