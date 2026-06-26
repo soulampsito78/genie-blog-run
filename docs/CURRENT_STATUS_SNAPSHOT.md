@@ -1,10 +1,23 @@
 # Current Operational Status Snapshot
 
-**As of: 2026-06-23 (KST)**
+**As of: 2026-06-23 (KST) — full GCP audit**
+**Cloud Run / commit / health + Kee-Suri recovery: re-verified 2026-06-26 (KST)**
 **Basis: GCP audit — Cloud Scheduler, Cloud Run, GCS artifact inspection**
 **Service: `genie-blog-run`, region `asia-northeast3`**
 
 This document is the authoritative operational snapshot. Update it after each audit.
+
+> Scope of the 2026-06-26 re-verification: Cloud Run revision / commit / traffic /
+> health and the Kee-Suri owner-review exposure log runtime (Sections 1, 7, 8 and
+> the recovery closeout pointer below) were re-verified read-only on 2026-06-26.
+> The Scheduler (§2), Program Run (§3), PASS Criteria (§4), Key Config (§5), and
+> Secrets (§6) tables retain their **2026-06-23 audit basis** and were not
+> re-audited on 2026-06-26.
+
+> **Kee-Suri recovery closeout (2026-06-26):**
+> `CLOSED_FOR_VERIFIED_SCOPES` — verified scopes closed; remaining conditions held
+> as labels (not "전체 완료"). Full record:
+> [docs/keysuri/KEYSURI_RECOVERY_CLOSEOUT_2026_06_26.md](keysuri/KEYSURI_RECOVERY_CLOSEOUT_2026_06_26.md).
 
 ---
 
@@ -14,13 +27,15 @@ This document is the authoritative operational snapshot. Update it after each au
 |------|-------|
 | Service name | `genie-blog-run` |
 | Region | `asia-northeast3` |
-| Active revision | `genie-blog-run-00176-x7r` |
-| Image | `…/genie-blog-run@sha256:d5001ee7af3d2d9808d0e987dfa8b6c86fcb4fef85e4a5c1ff152403867b63e2` |
-| Commit SHA | `f08ad53` |
-| Health | `/health` → `{"status":"ok"}` ✅ |
+| Active revision | `genie-blog-run-00201-447` (100% traffic) — re-verified 2026-06-26 |
+| Commit SHA | `0ef8fb9` (`0ef8fb9cf873b1057cdc87f4eedb42298dc0f4ae`) — revision `commit-sha` label match |
+| Commit message | `fix(keysuri): track owner review exposures for cross-day dedup` |
+| Health | `/health` → HTTP 200 ✅ (re-verified 2026-06-26) |
 | Public URL | `https://genie-blog-run-2sftivmzga-du.a.run.app` |
 | Scheduler URL | `https://genie-blog-run-1055014091206.asia-northeast3.run.app` |
 | Architecture | **Single Cloud Run Service** (not API+Worker split) |
+| Deploy trigger | Cloud Build auto-deploys on `origin/main` push — **push is a deploy trigger** |
+| Prior revision (2026-06-23 audit) | `genie-blog-run-00176-x7r`, commit `f08ad53` |
 
 ---
 
@@ -99,17 +114,35 @@ This document is the authoritative operational snapshot. Update it after each au
 | P2 | Pending `pending_review` artifacts in GCS from 6/16–6/19 (not reviewed/expired) |
 | P2 | Two Cloud Run URL aliases in use (status.url vs legacy scheduler URL) |
 
+### Kee-Suri recovery — remaining items (2026-06-26, labels only)
+
+| Item | Status |
+|------|--------|
+| Admin notice auth smoke (needs auth/cookie/session; do not call `POST /admin/notices/send` without authorization) | `KNOWN_ISSUE_REMAINS` |
+| cross-day entity/editorial_cluster matching (exposure log is a minimal foundation feeding the existing dedup gate only) | `OUT_OF_SCOPE_DEFERRED` |
+| `sent_news_log_store.py` read fail-open improvement (existing store untouched this patch) | `OUT_OF_SCOPE_DEFERRED` |
+| internal job token rotation (recorded as status only; no Secret query/change) | `SECURITY_DECISION_REQUIRED` |
+
 ---
 
 ## 8. Recent Commits (production)
 
 | Commit | Message |
 |--------|---------|
+| `0ef8fb9` | fix(keysuri): track owner review exposures for cross-day dedup → rev `genie-blog-run-00201-447` (DEPLOYED_SMOKE_PASS) |
+| `8bb93a9` | fix(keysuri): preserve replacement pool for diversity selection → rev `genie-blog-run-00200-jbg` (DEPLOYED_SMOKE_PASS) |
+| `68cc152` | fix(keysuri): generalize diversity entity and cluster detection (DEPLOYED_SMOKE_PASS) |
+| `3fe4bc2` | fix(keysuri): apply diversity caps before top five selection (DEPLOYED_SMOKE_PASS) |
+| `2375d5f` | fix(keysuri): prefix owner reissue subjects for text regenerations (DEPLOYED_SMOKE_PASS) |
+| `e821095` | fix(keysuri): rebuild image-only reissue emails to avoid Gmail trimming (OPERATOR_QA_PASS) |
 | `f08ad53` | admin: link beta customer recipient manager |
 | `4237c5a` | admin: manage beta customer recipients |
 | `37c8b46` | admin: show customer email delivery status |
 | `980f400` | keysuri: clean korea preview numbering punctuation |
 | `9657498` | today: block scheduled weekend owner reviews |
+
+Recovery scope detail and runtime verification:
+[docs/keysuri/KEYSURI_RECOVERY_CLOSEOUT_2026_06_26.md](keysuri/KEYSURI_RECOVERY_CLOSEOUT_2026_06_26.md).
 
 ---
 

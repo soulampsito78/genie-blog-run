@@ -79,6 +79,53 @@ Incorrect framing:
 
 > OpenAI launched a major new product.
 
+## Same-run diversity, replacement pool, and cross-day exposure (2026-06-26)
+
+These layers were added/hardened in the 2026-06-26 Kee-Suri recovery. They are
+distinct: **same-run diversity** prevents repetition *within one briefing*, while
+**cross-day dedup** prevents repeating items already shown on earlier days. The
+first does not solve the second.
+
+### Same-run TOP5 diversity gate — `DEPLOYED_SMOKE_PASS` (`3fe4bc2`, `68cc152`)
+
+- same-source / entity / editorial_cluster diversity caps applied before final
+  TOP5 selection; relax-to-fill retained when caps would leave fewer than 5.
+- surfaced as `diversity_summary` / `diversity_rejected_items` in the prompt-input
+  artifact, separate from the cross-day `dedup_summary`.
+- entity/cluster detection is generalized (not NVIDIA-only): aliases such as
+  OpenAI/Open AI, Microsoft/MS, Google/Alphabet, AWS/Amazon; expanded entities
+  (Anthropic, Perplexity, Databricks, Oracle, Salesforce, Adobe, Broadcom, AMD,
+  Intel, …) and clusters (platform_policy, enterprise_saas, cloud_infrastructure, …).
+- the category classifier was **not** modified.
+
+### Replacement pool preservation — `DEPLOYED_SMOKE_PASS` (`8bb93a9`, rev `genie-blog-run-00200-jbg`)
+
+- preserves selected TOP5 + watchlist + safe rejected candidates so a duplicate
+  reject can be replaced rather than shrinking the briefing.
+- `downstream_candidate_source_ids` and `selection_pool` metadata exposed;
+  `pre_diversity_candidate_count` may exceed 5; `selected_count = 5` retained.
+- sufficient replacement → `relaxed = false`; insufficient → `diversity_relaxed = true`.
+- `source_pack_funnel_summary` / `candidate_funnel_summary` surfaced.
+
+### Cross-day owner-review exposure log — `DEPLOYED_SMOKE_PASS` (`0ef8fb9`, rev `genie-blog-run-00201-447`)
+
+- `owner_review_exposure_log.json` (via `owner_review_exposure_log_store.py`) is a
+  minimal foundation that feeds owner-review exposure rows into the existing
+  `run_sent_news_dedup_gate` (merged with `recent_sent_news_log`). The dedup gate
+  itself is unmodified.
+- records only on a real owner-review send (`email_sent=True` /
+  `artifact_status="emailed"`), and for body_only/body_and_image reissue only when
+  selection differs from parent; never for stored/no-send/smoke/dry-run or
+  image_only reissue. Reads fail-open.
+- **completely separated from `sent_news_log.json`** (customer final-send log). An
+  owner-review-only event must not pollute the customer final-send log.
+- **cross-day entity/editorial_cluster matching is `OUT_OF_SCOPE_DEFERRED`**: the
+  current pass only supplies exposure rows to the existing URL/title/source-title
+  dedup gate.
+
+Full recovery record:
+[KEYSURI_RECOVERY_CLOSEOUT_2026_06_26.md](KEYSURI_RECOVERY_CLOSEOUT_2026_06_26.md).
+
 ## Image pipeline status
 
 Image refresh is frozen. Rejected registry assets must not be used. Routine previews may use the approved canary fallback (`keysuri_global_hero_105936`) until owner approves a replacement.
