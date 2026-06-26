@@ -150,6 +150,63 @@ class KeysuriPromptInputComposerTests(unittest.TestCase):
         self.assertEqual(result["output_contract"], OUTPUT_CONTRACT)
         self.assertEqual(result["output_schema_summary"]["output_contract"], OUTPUT_CONTRACT)
 
+    def test_surfaces_candidate_funnel_summary(self) -> None:
+        sources = [
+            {
+                "source_id": f"s{i}",
+                "source_name": f"Source {i}",
+                "source_url": f"https://source-{i}.example.com/news",
+                "source_tier": "T2_TIER1_WIRE",
+                "fetched_at": "2026-06-04T10:00:00+09:00",
+            }
+            for i in range(1, 7)
+        ]
+        claims = [
+            {
+                "claim_id": f"c{i}",
+                "statement": f"Distinct global tech headline {i}",
+                "claim_type": "general",
+                "source_ids": [f"s{i}"],
+                "confidence_label": "reported",
+                "category": "policy",
+                "headline": f"Distinct global tech headline {i}",
+                "summary": f"Summary {i}",
+                "why_it_matters": f"Why {i}",
+                "business_implication": f"Business implication {i}",
+            }
+            for i in range(1, 7)
+        ]
+        pack = {
+            "program_id": "keysuri_global_tech",
+            "generated_at": "2026-06-04T10:00:00+09:00",
+            "sources": sources,
+            "claims": claims,
+            "global_top5_selection": {
+                "selected_source_ids": ["s1", "s2", "s3", "s4", "s5"],
+                "watchlist_source_ids": ["s6"],
+                "downstream_candidate_source_ids": ["s1", "s2", "s3", "s4", "s5", "s6"],
+            },
+            "source_pack_funnel_summary": {
+                "scored_candidate_count": 24,
+                "scored_selected_count": 5,
+                "scored_watchlist_count": 2,
+                "scored_rejected_count": 17,
+                "replacement_pool_count": 2,
+            },
+        }
+
+        result = build_keysuri_prompt_input(
+            "keysuri_global_tech",
+            pack,
+            gate_result=GateResult(verdict="pass", issues=()),
+        )
+
+        self.assertEqual(result["prompt_status"], "ready_for_generation")
+        summary = result["candidate_funnel_summary"]
+        self.assertEqual(summary["scored_candidate_count"], 24)
+        self.assertEqual(summary["pre_diversity_candidate_count"], 6)
+        self.assertEqual(summary["post_diversity_selected_count"], 5)
+
 
 class KeysuriPromptInputFixtureShapeTests(unittest.TestCase):
     def _assert_fixture_shape(self, fixture_name: str, program_id: str) -> None:

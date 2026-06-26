@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from keysuri_global_signal_scoring import (
     AI_PRIMARY_CATEGORY,
+    apply_scored_selection_to_source_pack,
     classify_endava_article_test_item,
     classify_global_tech_category,
     score_global_signal_candidates,
@@ -39,6 +40,39 @@ def _item(
         "category": category,
         "summary": summary or title,
     }
+
+
+def _source_pack_from_items(items: list[dict]) -> dict:
+    sources = []
+    claims = []
+    for item in items:
+        sid = item["source_id"]
+        sources.append(
+            {
+                "source_id": sid,
+                "source_name": item.get("source_name") or sid,
+                "source_url": item.get("link"),
+                "source_tier": item.get("source_tier") or "T3_QUALITY_PRESS",
+                "published_at": item.get("published_at"),
+                "title": item.get("title"),
+                "snippet": item.get("summary"),
+            }
+        )
+        claims.append(
+            {
+                "claim_id": f"claim-{sid}",
+                "statement": item.get("title"),
+                "claim_type": "general",
+                "source_ids": [sid],
+                "confidence_label": "reported",
+                "category": item.get("category") or "ai_product",
+                "headline": item.get("title"),
+                "summary": item.get("summary") or item.get("title"),
+                "why_it_matters": f"Why {sid}",
+                "business_implication": f"Business implication {sid}",
+            }
+        )
+    return {"program_id": "keysuri_global_tech", "sources": sources, "claims": claims}
 
 
 class KeysuriGlobalSignalScoringTests(unittest.TestCase):
@@ -406,6 +440,74 @@ class KeysuriGlobalSignalScoringTests(unittest.TestCase):
         self.assertIn("diversity_quota_decisions", payload)
         self.assertIn("summary", payload)
         self.assertIn("ai_count_in_top5", payload["summary"])
+
+    def test_apply_scored_selection_preserves_downstream_replacement_pool(self) -> None:
+        items = [
+            _item(
+                "nvidia-1",
+                "NVIDIA and AWS Collaborate to Bring AI to Production at Scale",
+                url="https://blogs.nvidia.com/blog/aws-scale/",
+                category="semiconductor_chip_infra",
+                summary="NVIDIA AWS GPU infrastructure enterprise AI at scale.",
+            ),
+            _item(
+                "tc-1",
+                "Patronus AI lands $50M to stress-test AI agents",
+                url="https://techcrunch.com/ai/patronus/",
+                category="ai_product",
+                summary="Funding round for AI agents enterprise platform workflow.",
+            ),
+            _item(
+                "nvidia-2",
+                "How Businesses Are Building Specialized AI They Can Trust",
+                url="https://blogs.nvidia.com/blog/specialized-ai/",
+                category="ai_product",
+                summary="NVIDIA enterprise AI platform customer workflow.",
+            ),
+            _item(
+                "dcd-1",
+                "OpenAI partners with semiconductor firms on chip design",
+                url="https://www.datacenterdynamics.com/openai-chip/",
+                category="semiconductor_chip_infra",
+                summary="OpenAI chip design semiconductor infrastructure.",
+            ),
+            _item(
+                "google-1",
+                "Our latest Google Finance upgrades, including a new app",
+                url="https://blog.google/products/search/google-finance-app/",
+                category="market_signal",
+                summary="Google Finance app product update and platform signal.",
+            ),
+            _item(
+                "ms-1",
+                "Microsoft expands enterprise cloud security suite",
+                url="https://blogs.microsoft.com/ai/cloud-security/",
+                category="ai_product",
+                summary="Microsoft enterprise cloud security platform workflow.",
+            ),
+            _item(
+                "aws-1",
+                "AWS expands AI infrastructure for enterprise inference",
+                url="https://aws.amazon.com/blogs/aws/inference/",
+                category="cybersecurity_cloud_datacenter",
+                summary="AWS cloud infrastructure inference deployment.",
+            ),
+        ]
+        source_pack = _source_pack_from_items(items)
+        selection = score_global_signal_candidates(items)
+        packed = apply_scored_selection_to_source_pack(source_pack, selection)
+
+        self.assertEqual(len(selection.selected_top5), 5)
+        self.assertGreater(len(selection.all_candidates), 5)
+        self.assertGreater(len(packed["claims"]), 5)
+        funnel = packed["source_pack_funnel_summary"]
+        self.assertGreater(funnel["pre_diversity_candidate_count"], 5)
+        self.assertEqual(funnel["scored_selected_count"], 5)
+        self.assertEqual(
+            packed["global_top5_selection"]["downstream_candidate_source_ids"],
+            [c.source_id for c in selection.selected_top5 + selection.watchlist]
+            + packed["global_top5_selection"]["replacement_source_ids"],
+        )
 
 
 if __name__ == "__main__":

@@ -197,6 +197,8 @@ _SPONSORED_MARKERS: Tuple[Tuple[str, str], ...] = (
 
 MAX_ITEMS_PER_SOURCE = 2
 SOURCE_CONCENTRATION_SCORE_GAP = 15
+REPLACEMENT_POOL_MAX_REJECTED = 12
+REPLACEMENT_POOL_MIN_BASE_SCORE = 45
 
 _GENERIC_MARKETING = (
     "ai adoption is accelerating",
@@ -418,6 +420,24 @@ def _source_key(item: ScoredGlobalSignal) -> str:
     if domain:
         return domain
     return (item.source_name or "").strip().lower() or "unknown"
+
+
+def _safe_source_key_from_raw(item: dict) -> str:
+    url = str(item.get("source_url") or item.get("link") or "").strip()
+    domain = _host(url)
+    if domain:
+        return domain
+    return str(item.get("source_name") or item.get("publisher") or "unknown").strip().lower() or "unknown"
+
+
+def _count_by_source_key(items: Sequence[dict]) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = _safe_source_key_from_raw(item)
+        out[key] = out.get(key, 0) + 1
+    return out
 
 
 def _normalize_title(title: str) -> str:
@@ -1053,10 +1073,27 @@ def apply_scored_selection_to_source_pack(
     source_pack: dict,
     selection: GlobalTop5SelectionResult,
 ) -> dict:
-    """Trim source_pack to scored TOP5 and attach selection metadata."""
+    """Preserve scored candidate pool for downstream TOP5 diversity selection.
+
+    The prompt/contract stage needs more than the initial scored TOP5 so it can
+    reject same-source/entity duplicates and promote the next distinct item.
+    """
     pack = dict(source_pack)
-    selected_ids = {s.source_id for s in selection.selected_top5 if s.source_id}
-    selected_urls = {s.url for s in selection.selected_top5}
+    replacement_from_rejected = [
+        s
+        for s in selection.rejected
+        if _is_qualifying_candidate(s)
+        and s.scores.base_total >= REPLACEMENT_POOL_MIN_BASE_SCORE
+        and s.source_tier not in {"T4_AGGREGATOR_BLOG", "T5_SOCIAL_UNVERIFIED"}
+    ][:REPLACEMENT_POOL_MAX_REJECTED]
+
+    candidate_order = (
+        list(selection.selected_top5)
+        + list(selection.watchlist)
+        + replacement_from_rejected
+    )
+    candidate_ids = {s.source_id for s in candidate_order if s.source_id}
+    candidate_urls = {s.url for s in candidate_order if s.url}
 
     sources = pack.get("sources") if isinstance(pack.get("sources"), list) else []
     claims = pack.get("claims") if isinstance(pack.get("claims"), list) else []
@@ -1066,18 +1103,21 @@ def apply_scored_selection_to_source_pack(
         for s in sources
         if isinstance(s, dict)
         and (
-            str(s.get("source_id") or "") in selected_ids
-            or str(s.get("source_url") or "") in selected_urls
+            str(s.get("source_id") or "") in candidate_ids
+            or str(s.get("source_url") or "") in candidate_urls
         )
     ]
     new_claims = [
         c
         for c in claims
         if isinstance(c, dict)
-        and any(str(sid) in selected_ids for sid in (c.get("source_ids") or []))
+        and any(str(sid) in candidate_ids for sid in (c.get("source_ids") or []))
     ]
 
-    score_by_sid = {s.source_id: s for s in selection.selected_top5}
+    score_by_sid = {s.source_id: s for s in candidate_order if s.source_id}
+    selected_ids = {s.source_id for s in selection.selected_top5 if s.source_id}
+    watchlist_ids = {s.source_id for s in selection.watchlist if s.source_id}
+    replacement_ids = {s.source_id for s in replacement_from_rejected if s.source_id}
     for claim in new_claims:
         sids = claim.get("source_ids") if isinstance(claim.get("source_ids"), list) else []
         for sid in sids:
@@ -1104,15 +1144,46 @@ def apply_scored_selection_to_source_pack(
                 claim["source_diversity_limited"] = scored.source_diversity_limited
                 claim["source_concentration_penalty"] = scored.source_concentration_penalty
                 claim["source_concentration_reason"] = scored.source_concentration_reason
+                if scored.source_id in selected_ids:
+                    claim["selection_pool"] = "selected_top5"
+                elif scored.source_id in watchlist_ids:
+                    claim["selection_pool"] = "watchlist"
+                elif scored.source_id in replacement_ids:
+                    claim["selection_pool"] = "replacement_candidate"
                 if scored.penalty_notes:
                     claim["penalty_notes"] = list(scored.penalty_notes)
 
     pack["sources"] = new_sources
     pack["claims"] = new_claims
+    downstream_ids = [s.source_id for s in candidate_order if s.source_id]
+    per_source_candidate_counts = _count_by_source_key(sources)
+    per_source_selected_counts = {
+        _source_key(s): sum(1 for x in selection.selected_top5 if _source_key(x) == _source_key(s))
+        for s in selection.selected_top5
+    }
+    funnel_summary = {
+        "source_fetch_count": len(sources),
+        "unique_source_count_before_scoring": len(per_source_candidate_counts),
+        "scored_candidate_count": len(selection.all_candidates),
+        "scored_selected_count": len(selection.selected_top5),
+        "scored_watchlist_count": len(selection.watchlist),
+        "scored_rejected_count": len(selection.rejected),
+        "replacement_pool_count": len(replacement_from_rejected) + len(selection.watchlist),
+        "pre_diversity_candidate_count": len(candidate_order),
+        "post_diversity_selected_count": len(selection.selected_top5),
+        "diversity_rejected_count": 0,
+        "relaxed_due_to_candidate_shortage": False,
+        "per_source_candidate_counts": per_source_candidate_counts,
+        "per_source_selected_counts": per_source_selected_counts,
+    }
+    pack["source_pack_funnel_summary"] = funnel_summary
     pack["global_top5_selection"] = {
         "generated_at": selection.generated_at,
         "policy": "keysuri_global_top5_selection_v2_diversity",
         "selected_source_ids": [s.source_id for s in selection.selected_top5],
+        "watchlist_source_ids": [s.source_id for s in selection.watchlist],
+        "replacement_source_ids": [s.source_id for s in replacement_from_rejected],
+        "downstream_candidate_source_ids": downstream_ids,
         "selected_scores": [s.scores.total for s in selection.selected_top5],
         "selected_scores_before_diversity": [s.scores.base_total for s in selection.selected_top5],
         "selected_primary_categories": [s.primary_category for s in selection.selected_top5],
@@ -1121,6 +1192,8 @@ def apply_scored_selection_to_source_pack(
         "diversity_quota_decisions": selection.diversity_quota_decisions,
         "watchlist_count": len(selection.watchlist),
         "rejected_count": len(selection.rejected),
+        "replacement_pool_count": funnel_summary["replacement_pool_count"],
+        "source_pack_funnel_summary": funnel_summary,
     }
     return pack
 

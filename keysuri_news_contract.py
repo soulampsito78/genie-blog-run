@@ -558,7 +558,7 @@ def select_top_5_news(source_pack: dict, gate_result: GateResult) -> dict:
 
     global_sel = source_pack.get("global_top5_selection")
     if program_id == "keysuri_global_tech" and isinstance(global_sel, dict):
-        order = global_sel.get("selected_source_ids")
+        order = global_sel.get("downstream_candidate_source_ids") or global_sel.get("selected_source_ids")
         if isinstance(order, list) and order:
             rank_map = {str(sid): idx for idx, sid in enumerate(order)}
             qualified.sort(
@@ -608,6 +608,21 @@ def select_top_5_news(source_pack: dict, gate_result: GateResult) -> dict:
     ]
     diversity = select_with_diversity_caps(hydrated, required_count=KEYSURI_TOP_NEWS_COUNT)
     selected = diversity["selected_items"]
+    diversity_summary = diversity["diversity_summary"]
+    source_pack_funnel = (
+        source_pack.get("source_pack_funnel_summary")
+        if isinstance(source_pack.get("source_pack_funnel_summary"), dict)
+        else {}
+    )
+    candidate_funnel_summary = {
+        **source_pack_funnel,
+        "pre_diversity_candidate_count": len(hydrated),
+        "post_diversity_selected_count": len(selected),
+        "diversity_rejected_count": len(diversity["rejected_items"]),
+        "relaxed_due_to_candidate_shortage": bool(
+            diversity_summary.get("relaxed_due_to_candidate_shortage")
+        ),
+    }
     top_5_news = {
         "news_scope": expected_news_scope_for_program(program_id),
         "section_heading": expected_top5_heading_for_program(program_id),
@@ -617,6 +632,7 @@ def select_top_5_news(source_pack: dict, gate_result: GateResult) -> dict:
         "verdict": "pass",
         "top_5_news": top_5_news,
         "issues": [],
-        "diversity_summary": diversity["diversity_summary"],
+        "diversity_summary": diversity_summary,
         "diversity_rejected_items": diversity["rejected_items"],
+        "candidate_funnel_summary": candidate_funnel_summary,
     }

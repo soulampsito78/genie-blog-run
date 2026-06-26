@@ -197,4 +197,6 @@ def build_keysuri_prompt_input(
     if isinstance(selection.get("diversity_summary"), dict):
         base["diversity_summary"] = selection["diversity_summary"]
         base["diversity_rejected_items"] = selection.get("diversity_rejected_items") or []
+    if isinstance(selection.get("candidate_funnel_summary"), dict):
+        base["candidate_funnel_summary"] = selection["candidate_funnel_summary"]
     return base

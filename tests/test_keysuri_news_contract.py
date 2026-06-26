@@ -461,6 +461,60 @@ class KeysuriNewsSelectionDiversityTests(unittest.TestCase):
         self.assertEqual(c3_rej[0]["rejected_reason"], "same_source_cap")
         self.assertEqual(c3_rej[0]["collided_with"]["news_id"], "c1")
 
+    def test_scored_downstream_pool_promotes_watchlist_replacement(self) -> None:
+        pack = self._pack()
+        pack["global_top5_selection"] = {
+            "selected_source_ids": ["s-nvidia", "s-tc", "s-nvidia", "s-dc", "s-goog"],
+            "watchlist_source_ids": ["s-reuters"],
+            "downstream_candidate_source_ids": [
+                "s-nvidia",
+                "s-tc",
+                "s-nvidia",
+                "s-dc",
+                "s-goog",
+                "s-reuters",
+            ],
+        }
+        pack["source_pack_funnel_summary"] = {
+            "scored_candidate_count": 24,
+            "scored_selected_count": 5,
+            "scored_watchlist_count": 2,
+            "scored_rejected_count": 17,
+            "replacement_pool_count": 2,
+        }
+
+        result = select_top_5_news(pack, GateResult(verdict="pass", issues=()))
+        items = result["top_5_news"]["items"]
+        ids = [it["news_id"] for it in items]
+
+        self.assertEqual(len(items), 5)
+        self.assertIn("c6", ids)
+        self.assertNotIn("c3", ids)
+        self.assertEqual(len([it for it in items if it["normalized_source"] == "nvidia blog"]), 1)
+        self.assertFalse(result["diversity_summary"]["relaxed_due_to_candidate_shortage"])
+        self.assertEqual(result["candidate_funnel_summary"]["scored_candidate_count"], 24)
+        self.assertGreater(result["candidate_funnel_summary"]["pre_diversity_candidate_count"], 5)
+        self.assertEqual(result["candidate_funnel_summary"]["post_diversity_selected_count"], 5)
+        self.assertEqual(result["candidate_funnel_summary"]["diversity_rejected_count"], 1)
+
+    def test_scored_downstream_pool_keeps_relax_visible_when_replacement_missing(self) -> None:
+        pack = self._pack()
+        pack["sources"] = pack["sources"][:5]
+        pack["claims"] = pack["claims"][:5]
+        pack["global_top5_selection"] = {
+            "selected_source_ids": ["s-nvidia", "s-tc", "s-nvidia", "s-dc", "s-goog"],
+            "downstream_candidate_source_ids": ["s-nvidia", "s-tc", "s-nvidia", "s-dc", "s-goog"],
+        }
+
+        result = select_top_5_news(pack, GateResult(verdict="pass", issues=()))
+        items = result["top_5_news"]["items"]
+
+        self.assertEqual(len(items), 5)
+        self.assertTrue(result["diversity_summary"]["relaxed_due_to_candidate_shortage"])
+        relaxed = [it for it in items if it.get("diversity_relaxed")]
+        self.assertEqual(relaxed[0]["news_id"], "c3")
+        self.assertEqual(relaxed[0]["diversity_relaxed_from"], "same_source_cap")
+
 
 if __name__ == "__main__":
     unittest.main()
