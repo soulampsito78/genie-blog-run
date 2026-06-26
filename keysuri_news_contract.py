@@ -2,9 +2,15 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from urllib.parse import urlsplit
 
 from keysuri_korea_signal_scoring import CATEGORY_KO_LABELS, KOREA_TECH_CATEGORIES
 from keysuri_source_gate import CONFIDENCE_LABELS, GateResult
+from sent_news_dedup_gate import (
+    canonicalize_url,
+    normalize_title,
+    select_with_diversity_caps,
+)
 
 KEYSURI_TOP_NEWS_COUNT = 5
 NEWS_SCOPE_GLOBAL = "global"
@@ -442,7 +448,48 @@ def _claim_is_qualified(
     return True, "ok"
 
 
-def _claim_to_news_item(claim: Dict[str, Any], rank: int) -> Dict[str, Any]:
+def _source_domain_from_url(url: str) -> str:
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    netloc = urlsplit(raw).netloc.lower()
+    return netloc[4:] if netloc.startswith("www.") else netloc
+
+
+def _resolve_claim_source(
+    claim: Dict[str, Any],
+    smap: Dict[str, Dict[str, Any]],
+) -> Dict[str, str]:
+    """Hydrate source/url metadata from the first resolvable source_id.
+
+    Without this the dedup gate sees empty source/url and its source/url layers
+    silently no-op (the root cause of same-outlet TOP5 duplicates).
+    """
+    source_name = ""
+    url = ""
+    for sid in claim.get("source_ids") or []:
+        src = smap.get(str(sid).strip())
+        if not isinstance(src, dict):
+            continue
+        source_name = str(src.get("source_name") or src.get("publisher") or src.get("name") or "").strip()
+        url = str(src.get("source_url") or src.get("url") or src.get("link") or "").strip()
+        if source_name or url:
+            break
+    return {
+        "source": source_name,
+        "source_name": source_name,
+        "url": url,
+        "canonical_url": canonicalize_url(url),
+        "normalized_source": normalize_title(source_name),
+        "source_domain": _source_domain_from_url(url),
+    }
+
+
+def _claim_to_news_item(
+    claim: Dict[str, Any],
+    rank: int,
+    smap: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     primary = str(claim.get("primary_category") or "").strip()
     category = primary or claim_to_news_category(claim) or "market_signal"
     claim_id = str(claim.get("claim_id") or f"news-{rank}").strip()
@@ -463,6 +510,7 @@ def _claim_to_news_item(claim: Dict[str, Any], rank: int) -> Dict[str, Any]:
         "source_ids": list(claim.get("source_ids") or []),
         "confidence_label": str(claim.get("confidence_label") or "reported").strip(),
     }
+    item.update(_resolve_claim_source(claim, smap or {}))
     risk = claim.get("risk_note")
     if _is_non_empty_str(risk):
         item["risk_note"] = str(risk).strip()
@@ -550,7 +598,16 @@ def select_top_5_news(source_pack: dict, gate_result: GateResult) -> dict:
             ],
         }
 
-    selected = [_claim_to_news_item(claim, rank=i + 1) for i, (_t, claim) in enumerate(qualified[:KEYSURI_TOP_NEWS_COUNT])]
+    # Hydrate the FULL qualified pool (not just the first 5), then apply the
+    # intra-briefing diversity caps over the priority-ordered candidates so a
+    # capped duplicate is replaced by the next distinct candidate instead of
+    # only shrinking the final five.
+    hydrated = [
+        _claim_to_news_item(claim, rank=i + 1, smap=smap)
+        for i, (_t, claim) in enumerate(qualified)
+    ]
+    diversity = select_with_diversity_caps(hydrated, required_count=KEYSURI_TOP_NEWS_COUNT)
+    selected = diversity["selected_items"]
     top_5_news = {
         "news_scope": expected_news_scope_for_program(program_id),
         "section_heading": expected_top5_heading_for_program(program_id),
@@ -560,4 +617,6 @@ def select_top_5_news(source_pack: dict, gate_result: GateResult) -> dict:
         "verdict": "pass",
         "top_5_news": top_5_news,
         "issues": [],
+        "diversity_summary": diversity["diversity_summary"],
+        "diversity_rejected_items": diversity["rejected_items"],
     }

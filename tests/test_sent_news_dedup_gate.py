@@ -4,8 +4,11 @@ import unittest
 
 from sent_news_dedup_gate import (
     canonicalize_url,
+    editorial_cluster_key,
+    extract_company_entities,
     normalize_title,
     run_sent_news_dedup_gate,
+    select_with_diversity_caps,
 )
 
 
@@ -141,6 +144,122 @@ class SentNewsDedupGateTests(unittest.TestCase):
         )
         self.assertEqual(result["dedup_summary"]["selected_count"], 1)
         self.assertEqual(result["dedup_summary"]["reason"], "insufficient_fresh_candidates")
+
+
+def _div_item(news_id: str, title: str, *, source: str = "", source_ids=None, summary: str = ""):
+    item = {"news_id": news_id, "title": title, "headline": title, "summary": summary}
+    if source:
+        item["source"] = source
+    if source_ids is not None:
+        item["source_ids"] = source_ids
+    return item
+
+
+class DiversityCapTests(unittest.TestCase):
+    """same-source / entity / editorial-cluster caps applied at TOP-N selection."""
+
+    def test_same_source_cap_replaces_with_next_distinct_candidate(self) -> None:
+        # Two NVIDIA Blog items + four other-source items; required 5.
+        candidates = [
+            _div_item("n1", "NVIDIA and AWS Collaborate to Bring AI to Production at Scale", source="NVIDIA Blog"),
+            _div_item("p1", "Patronus AI lands $50M for agent testing", source="TechCrunch"),
+            _div_item("n2", "How Businesses Build Specialized AI They Can Trust", source="NVIDIA Blog"),
+            _div_item("o1", "OpenAI partners with chip firms on design", source="Datacenter Dynamics"),
+            _div_item("g1", "Latest Google Finance upgrades, new app", source="Google AI Blog"),
+            _div_item("m1", "Microsoft expands cloud security offering", source="Reuters"),
+        ]
+        result = select_with_diversity_caps(candidates, required_count=5)
+        ids = [it["news_id"] for it in result["selected_items"]]
+        self.assertEqual(len(ids), 5)
+        # The second NVIDIA Blog item is replaced by the next distinct source (m1).
+        self.assertIn("n1", ids)
+        self.assertNotIn("n2", ids)
+        self.assertIn("m1", ids)
+        self.assertFalse(result["diversity_summary"]["relaxed_due_to_candidate_shortage"])
+        self.assertGreaterEqual(result["diversity_summary"]["same_source_reject_count"], 1)
+        rej = [r for r in result["rejected_items"] if r["news_id"] == "n2"]
+        self.assertEqual(rej[0]["rejected_reason"], "same_source_cap")
+        self.assertEqual(rej[0]["collided_with"]["news_id"], "n1")
+
+    def test_entity_cap_rejects_second_same_company_even_with_different_source(self) -> None:
+        candidates = [
+            _div_item("a", "NVIDIA unveils new Blackwell GPU lineup", source="Wire A"),
+            _div_item("b", "Why NVIDIA chips dominate AI training", source="Wire B"),  # diff source, same entity
+            _div_item("c", "Patronus AI raises funding", source="Wire C"),
+            _div_item("d", "OpenAI ships new model", source="Wire D"),
+            _div_item("e", "Apple updates developer tools", source="Wire E"),
+            _div_item("f", "Meta open-sources a dataset", source="Wire F"),
+        ]
+        result = select_with_diversity_caps(candidates, required_count=5)
+        ids = [it["news_id"] for it in result["selected_items"]]
+        self.assertIn("a", ids)
+        self.assertNotIn("b", ids)
+        rej = [r for r in result["rejected_items"] if r["news_id"] == "b"]
+        self.assertEqual(rej[0]["rejected_reason"], "entity_cap")
+        self.assertEqual(rej[0]["collided_entity"], "nvidia")
+
+    def test_source_id_prefix_fallback_when_source_name_missing(self) -> None:
+        # No source name; same-source cap must fall back to source_id prefix.
+        candidates = [
+            _div_item("x1", "NVIDIA AWS production scale", source_ids=["live-nvidia-blog-e7cad40fb5"]),
+            _div_item("x2", "Specialized enterprise AI trust", source_ids=["live-nvidia-blog-75c7b56bd5"]),
+            _div_item("x3", "Patronus funding", source_ids=["live-techcrunch-ai-9fde553dee"]),
+            _div_item("x4", "Datacenter chip design", source_ids=["live-datacenter-dynamics-f4e8437ee7"]),
+            _div_item("x5", "Korean robotics growth", source_ids=["live-etnews-korea-aaaa1111"]),
+        ]
+        result = select_with_diversity_caps(candidates, required_count=5)
+        # 5 candidates, two share the nvidia-blog prefix -> strict caps leave 4 ->
+        # relax fills to 5 with an explicit shortage flag (never a silent pass).
+        self.assertEqual(len(result["selected_items"]), 5)
+        self.assertTrue(result["diversity_summary"]["relaxed_due_to_candidate_shortage"])
+        self.assertGreaterEqual(result["diversity_summary"]["same_source_reject_count"], 1)
+        promoted = [it for it in result["selected_items"] if it.get("diversity_relaxed")]
+        self.assertEqual(len(promoted), 1)
+        self.assertEqual(promoted[0]["diversity_relaxed_from"], "same_source_cap")
+
+    def test_target_run_two_nvidia_only_one_survives_strict(self) -> None:
+        # Reproduces 20260626 global run: 5 candidates incl. 2 NVIDIA Blog.
+        candidates = [
+            _div_item("g", "Our latest Google Finance upgrades, including a new app", source="Google AI Blog"),
+            _div_item("p", "Patronus AI lands $50M to build digital worlds", source="TechCrunch AI"),
+            _div_item("n1", "NVIDIA and AWS Collaborate to Bring AI to Production at Scale", source="NVIDIA Blog"),
+            _div_item("n2", "How Businesses Are Building Specialized AI They Can Trust", source="NVIDIA Blog"),
+            _div_item("o", "OpenAI new bet to partner with semiconductor companies", source="Datacenter Dynamics"),
+        ]
+        result = select_with_diversity_caps(candidates, required_count=5)
+        # Only 5 candidates so 5 must be returned (contract), but the duplicate is
+        # surfaced loudly via same_source_reject_count + relaxed flag, not silent.
+        self.assertEqual(len(result["selected_items"]), 5)
+        self.assertEqual(result["diversity_summary"]["same_source_reject_count"], 1)
+        self.assertTrue(result["diversity_summary"]["relaxed_due_to_candidate_shortage"])
+        promoted = [it for it in result["selected_items"] if it.get("diversity_relaxed")]
+        self.assertEqual([it["news_id"] for it in promoted], ["n2"])
+
+    def test_no_shortfall_or_relax_when_all_distinct(self) -> None:
+        candidates = [
+            _div_item("a", "Chipmaker A expands fab", source="Src A"),
+            _div_item("b", "Cloud B launches region", source="Src B"),
+            _div_item("c", "Startup C raises seed", source="Src C"),
+            _div_item("d", "Platform D opens API", source="Src D"),
+            _div_item("e", "Policy E updates rules", source="Src E"),
+        ]
+        result = select_with_diversity_caps(candidates, required_count=5)
+        self.assertEqual(len(result["selected_items"]), 5)
+        self.assertFalse(result["diversity_summary"]["relaxed_due_to_candidate_shortage"])
+        self.assertEqual(result["diversity_summary"]["same_source_reject_count"], 0)
+        self.assertEqual(result["diversity_summary"]["entity_reject_count"], 0)
+        self.assertEqual(result["diversity_summary"]["shortfall"], 0)
+        self.assertEqual([it["rank"] for it in result["selected_items"]], [1, 2, 3, 4, 5])
+
+    def test_entity_extraction_and_cluster_key(self) -> None:
+        item = _div_item(
+            "z", "NVIDIA and AWS Collaborate to Bring AI to Production at Scale",
+            source="NVIDIA Blog",
+            summary="Low-latency inference and GPU infrastructure at scale across Amazon EC2.",
+        )
+        self.assertIn("nvidia", extract_company_entities(item))
+        self.assertIn("aws", extract_company_entities(item))
+        self.assertEqual(editorial_cluster_key(item), "ai_infrastructure")
 
 
 if __name__ == "__main__":

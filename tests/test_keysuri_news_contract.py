@@ -327,5 +327,84 @@ class KeysuriNewsSelectionTests(unittest.TestCase):
         self.assertEqual([item["rank"] for item in top5["items"]], [1, 2, 3, 4, 5])
 
 
+class KeysuriNewsSelectionDiversityTests(unittest.TestCase):
+    """Source/url hydration + intra-briefing same-source cap at selection."""
+
+    def _pack(self) -> dict:
+        sources = [
+            {"source_id": "s-nvidia", "source_name": "NVIDIA Blog",
+             "source_url": "https://blogs.nvidia.com/blog/aws-scale/", "source_tier": "T2_TIER1_WIRE"},
+            {"source_id": "s-tc", "source_name": "TechCrunch AI",
+             "source_url": "https://techcrunch.com/patronus/", "source_tier": "T2_TIER1_WIRE"},
+            {"source_id": "s-dc", "source_name": "Datacenter Dynamics",
+             "source_url": "https://www.datacenterdynamics.com/openai-chip/", "source_tier": "T2_TIER1_WIRE"},
+            {"source_id": "s-goog", "source_name": "Google AI Blog",
+             "source_url": "https://blog.google/finance-app/", "source_tier": "T2_TIER1_WIRE"},
+            {"source_id": "s-reuters", "source_name": "Reuters",
+             "source_url": "https://www.reuters.com/msft-cloud/", "source_tier": "T2_TIER1_WIRE"},
+        ]
+        specs = [
+            ("c1", "s-nvidia", "NVIDIA and AWS Collaborate to Bring AI to Production at Scale"),
+            ("c2", "s-tc", "Patronus AI lands $50M to stress-test AI agents"),
+            ("c3", "s-nvidia", "How Businesses Are Building Specialized AI They Can Trust"),
+            ("c4", "s-dc", "OpenAI partners with semiconductor firms on chip design"),
+            ("c5", "s-goog", "Our latest Google Finance upgrades, including a new app"),
+            ("c6", "s-reuters", "Microsoft expands enterprise cloud security suite"),
+        ]
+        claims = [
+            {
+                "claim_id": cid,
+                "headline": headline,
+                "statement": headline,
+                "claim_type": "general",
+                "source_ids": [sid],
+                "confidence_label": "reported",
+                "news_category": "startup",
+                "business_implication": f"Biz impl {cid}",
+            }
+            for cid, sid, headline in specs
+        ]
+        return {"program_id": "keysuri_global_tech", "sources": sources, "claims": claims}
+
+    def test_source_url_metadata_hydrated_onto_items(self) -> None:
+        result = select_top_5_news(self._pack(), GateResult(verdict="pass", issues=()))
+        items = result["top_5_news"]["items"]
+        for item in items:
+            self.assertTrue(item["source"], f"source empty for {item['news_id']}")
+            self.assertTrue(item["url"], f"url empty for {item['news_id']}")
+            self.assertTrue(item["canonical_url"], f"canonical_url empty for {item['news_id']}")
+            self.assertTrue(item["normalized_source"], f"normalized_source empty for {item['news_id']}")
+            self.assertNotEqual(item["source_domain"], "")
+        nvidia = next(it for it in items if it["news_id"] == "c1")
+        self.assertEqual(nvidia["source"], "NVIDIA Blog")
+        self.assertEqual(nvidia["normalized_source"], "nvidia blog")
+        self.assertEqual(nvidia["canonical_url"], "https://blogs.nvidia.com/blog/aws-scale")
+        self.assertEqual(nvidia["source_domain"], "blogs.nvidia.com")
+
+    def test_two_same_source_items_collapse_to_one_with_replacement(self) -> None:
+        result = select_top_5_news(self._pack(), GateResult(verdict="pass", issues=()))
+        items = result["top_5_news"]["items"]
+        ids = [it["news_id"] for it in items]
+        self.assertEqual(len(items), 5)
+        nvidia_items = [it for it in items if it["normalized_source"] == "nvidia blog"]
+        self.assertEqual(len(nvidia_items), 1)
+        self.assertIn("c1", ids)
+        self.assertNotIn("c3", ids)  # second NVIDIA Blog post replaced by c6
+        self.assertIn("c6", ids)
+        self.assertEqual([it["rank"] for it in items], [1, 2, 3, 4, 5])
+
+    def test_diversity_summary_recorded(self) -> None:
+        result = select_top_5_news(self._pack(), GateResult(verdict="pass", issues=()))
+        summary = result["diversity_summary"]
+        self.assertTrue(summary["selected_after_diversity_gate"])
+        self.assertEqual(summary["same_source_reject_count"], 1)
+        self.assertEqual(summary["selected_count"], 5)
+        self.assertFalse(summary["relaxed_due_to_candidate_shortage"])
+        rejected = result["diversity_rejected_items"]
+        c3_rej = [r for r in rejected if r["news_id"] == "c3"]
+        self.assertEqual(c3_rej[0]["rejected_reason"], "same_source_cap")
+        self.assertEqual(c3_rej[0]["collided_with"]["news_id"], "c1")
+
+
 if __name__ == "__main__":
     unittest.main()

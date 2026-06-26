@@ -191,4 +191,10 @@ def build_keysuri_prompt_input(
     top_5_news["items"] = dedup_meta["selected_items"]
     base["top_5_news"] = top_5_news
     base.update(dedup_meta)
+    # Surface the intra-briefing diversity gate (same-source / entity / cluster
+    # caps) applied during TOP5 selection, separate from the cross-day sent-log
+    # dedup_summary above, so both layers are auditable in the run artifact.
+    if isinstance(selection.get("diversity_summary"), dict):
+        base["diversity_summary"] = selection["diversity_summary"]
+        base["diversity_rejected_items"] = selection.get("diversity_rejected_items") or []
     return base
