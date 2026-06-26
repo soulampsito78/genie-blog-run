@@ -145,5 +145,28 @@ class AdminNoticeRoutesTests(unittest.TestCase):
         self.assertNotRegex(resp.text, r"[\w.+-]+@[\w-]+\.[\w.]+")
 
 
+class AdminNoticeDashboardEntryTests(unittest.TestCase):
+    """The notice workflow must be reachable from the admin dashboard, not only
+    by typing the URL directly."""
+
+    def setUp(self) -> None:
+        self._prev_pwd = os.environ.get("GENIE_ADMIN_PASSWORD")
+        os.environ["GENIE_ADMIN_PASSWORD"] = "test-admin-secret"
+        self.client = TestClient(app)
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+
+    def tearDown(self) -> None:
+        if self._prev_pwd is None:
+            os.environ.pop("GENIE_ADMIN_PASSWORD", None)
+        else:
+            os.environ["GENIE_ADMIN_PASSWORD"] = self._prev_pwd
+
+    def test_runs_dashboard_links_to_notices(self) -> None:
+        resp = self.client.get("/admin/runs")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('href="/admin/notices"', resp.text)
+        self.assertIn("공지 메일 관리", resp.text)
+
+
 if __name__ == "__main__":
     unittest.main()

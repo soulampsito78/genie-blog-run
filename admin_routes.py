@@ -632,6 +632,7 @@ def admin_runs_list(request: Request):
 <div class="page-head">
 <h1>최근 실행 기록</h1>
 <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+<a href="/admin/notices" class="btn" style="background:#0f172a;">공지 메일 관리</a>
 <a href="/admin/customer-recipients" class="btn" style="background:#0f172a;">베타 고객 수신자 관리</a>
 <form method="post" action="/admin/logout" style="margin:0;"><button class="btn" type="submit">로그아웃</button></form>
 </div>
@@ -698,6 +699,7 @@ def admin_run_detail(request: Request, run_id: str):
 <h1>실행 상세</h1>
 <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
 <a href="/admin/runs" class="btn" style="background:#475569;">← 목록</a>
+<a href="/admin/notices" class="btn" style="background:#0f172a;">공지 메일 관리</a>
 <a href="/admin/customer-recipients" class="btn" style="background:#0f172a;">베타 고객 수신자 관리</a>
 </div>
 </div>
