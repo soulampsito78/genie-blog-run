@@ -2359,5 +2359,168 @@ class ServiceFullRunInternalEndpointTests(unittest.TestCase):
         self.assertTrue(body.get("service_full_run"))
 
 
+class OwnerReviewExposureLogWriteTriggerTests(unittest.TestCase):
+    """Unit coverage for the owner-review exposure log gate helpers added to
+    keysuri_service_full_run.py: write-trigger gating on email_sent, and
+    reissue same-selection dedup (image_only must never even be offered the
+    chance to double-count; body_only/body_and_image only write on a real
+    selection change).
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.env = patch.dict(
+            os.environ,
+            {"GENIE_OWNER_REVIEW_EXPOSURE_LOG_PATH": str(Path(self.tmp.name) / "owner_review_exposure_log.json")},
+            clear=False,
+        )
+        self.env.start()
+
+    def tearDown(self) -> None:
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def _item(self, title: str, url: str) -> dict:
+        return {"title": title, "url": url, "source": "Example", "normalized_source": "example"}
+
+    def test_selection_item_key_prefers_canonical_url(self) -> None:
+        from keysuri_service_full_run import _selection_item_key
+
+        self.assertEqual(
+            _selection_item_key({"canonical_url": "https://x.com/a", "url": "https://x.com/a?utm=1"}),
+            "https://x.com/a",
+        )
+
+    def test_selection_item_key_falls_back_to_source_and_title(self) -> None:
+        from keysuri_service_full_run import _selection_item_key
+
+        self.assertEqual(
+            _selection_item_key({"normalized_source": "example", "normalized_title": "Headline"}),
+            "example|headline",
+        )
+
+    def test_selection_key_set_ignores_non_dict_items(self) -> None:
+        from keysuri_service_full_run import _selection_key_set
+
+        self.assertEqual(_selection_key_set([{"canonical_url": "https://x.com/a"}, "not-a-dict", None]), {"https://x.com/a"})
+
+    def test_write_skipped_when_email_not_sent(self) -> None:
+        from keysuri_service_full_run import _maybe_write_owner_review_exposure_log
+        from owner_review_exposure_log_store import load_owner_review_exposure_log
+
+        meta = {
+            "program_id": PROGRAM_GLOBAL,
+            "run_id": "r1",
+            "selected_items": [self._item("Title", "https://x.com/a")],
+        }
+        _maybe_write_owner_review_exposure_log(meta, email_sent=False, exposure_kind="owner_review_email")
+        self.assertFalse(meta["exposure_log_updated"])
+        self.assertEqual(meta["exposure_log_update_error"], "email_not_sent")
+        self.assertEqual(load_owner_review_exposure_log(), [])
+
+    def test_write_succeeds_on_real_owner_review_email(self) -> None:
+        from keysuri_service_full_run import _maybe_write_owner_review_exposure_log
+        from owner_review_exposure_log_store import load_owner_review_exposure_log
+
+        meta = {
+            "program_id": PROGRAM_GLOBAL,
+            "run_id": "r1",
+            "selected_items": [self._item("Title", "https://x.com/a")],
+        }
+        _maybe_write_owner_review_exposure_log(meta, email_sent=True, exposure_kind="owner_review_email")
+        self.assertTrue(meta["exposure_log_updated"])
+        self.assertEqual(meta["exposure_log_written_count"], 1)
+        self.assertIn("exposure_log_path", meta)
+        self.assertIsNone(meta["exposure_log_update_error"])
+        self.assertEqual(len(load_owner_review_exposure_log()), 1)
+
+    def test_missing_selected_items_does_not_crash_and_skips_write(self) -> None:
+        from keysuri_service_full_run import _maybe_write_owner_review_exposure_log
+        from owner_review_exposure_log_store import load_owner_review_exposure_log
+
+        meta = {"program_id": PROGRAM_GLOBAL, "run_id": "r1"}
+        _maybe_write_owner_review_exposure_log(meta, email_sent=True, exposure_kind="owner_review_email")
+        self.assertFalse(meta["exposure_log_updated"])
+        self.assertEqual(meta["exposure_log_update_error"], "selected_items_missing")
+        self.assertEqual(load_owner_review_exposure_log(), [])
+
+    def test_reissue_body_only_same_selection_is_skipped(self) -> None:
+        from keysuri_service_full_run import _maybe_write_owner_review_exposure_log
+        from owner_review_exposure_log_store import load_owner_review_exposure_log
+
+        selected = [self._item("Title", "https://x.com/a")]
+        parent = {"selected_items": selected}
+        meta = {"program_id": PROGRAM_GLOBAL, "run_id": "r2", "selected_items": selected}
+        _maybe_write_owner_review_exposure_log(
+            meta, email_sent=True, exposure_kind="owner_review_reissue_body", parent=parent
+        )
+        self.assertEqual(meta["exposure_log_reissue_compare_status"], "same_selection_skipped")
+        self.assertFalse(meta["exposure_log_updated"])
+        self.assertIsNone(meta["exposure_log_update_error"])
+        self.assertEqual(load_owner_review_exposure_log(), [])
+
+    def test_reissue_body_only_changed_selection_is_written(self) -> None:
+        from keysuri_service_full_run import _maybe_write_owner_review_exposure_log
+        from owner_review_exposure_log_store import load_owner_review_exposure_log
+
+        parent = {"selected_items": [self._item("Old", "https://x.com/old")]}
+        meta = {
+            "program_id": PROGRAM_GLOBAL,
+            "run_id": "r3",
+            "selected_items": [self._item("New", "https://x.com/new")],
+        }
+        _maybe_write_owner_review_exposure_log(
+            meta, email_sent=True, exposure_kind="owner_review_reissue_body", parent=parent
+        )
+        self.assertEqual(meta["exposure_log_reissue_compare_status"], "selection_changed_written")
+        self.assertTrue(meta["exposure_log_updated"])
+        self.assertEqual(len(load_owner_review_exposure_log()), 1)
+
+    def test_reissue_body_and_image_changed_selection_is_written(self) -> None:
+        from keysuri_service_full_run import _maybe_write_owner_review_exposure_log
+        from owner_review_exposure_log_store import load_owner_review_exposure_log
+
+        parent = {"selected_items": [self._item("Old", "https://x.com/old")]}
+        meta = {
+            "program_id": PROGRAM_GLOBAL,
+            "run_id": "r4",
+            "selected_items": [self._item("New", "https://x.com/new")],
+        }
+        _maybe_write_owner_review_exposure_log(
+            meta, email_sent=True, exposure_kind="owner_review_reissue_body_and_image", parent=parent
+        )
+        self.assertTrue(meta["exposure_log_updated"])
+        self.assertEqual(len(load_owner_review_exposure_log()), 1)
+
+    def test_reissue_missing_parent_selection_fails_safe_without_writing(self) -> None:
+        from keysuri_service_full_run import _maybe_write_owner_review_exposure_log
+        from owner_review_exposure_log_store import load_owner_review_exposure_log
+
+        meta = {
+            "program_id": PROGRAM_GLOBAL,
+            "run_id": "r5",
+            "selected_items": [self._item("New", "https://x.com/new")],
+        }
+        _maybe_write_owner_review_exposure_log(
+            meta, email_sent=True, exposure_kind="owner_review_reissue_body", parent=None
+        )
+        self.assertEqual(meta["exposure_log_reissue_compare_status"], "parent_selection_unavailable")
+        self.assertFalse(meta["exposure_log_updated"])
+        self.assertEqual(load_owner_review_exposure_log(), [])
+
+    def test_image_only_reissue_never_calls_exposure_log_writer(self) -> None:
+        """run_keysuri_image_only_reissue must not reference the exposure-log
+        write helpers at all -- image_only reuses the parent body verbatim, so
+        any call here would risk double-counting. Source-level guard.
+        """
+        import inspect
+
+        import keysuri_service_full_run as mod
+
+        source = inspect.getsource(mod.run_keysuri_image_only_reissue)
+        self.assertNotIn("_write_owner_review_exposure_log", source)
+        self.assertNotIn("_maybe_write_owner_review_exposure_log", source)
+
+
 if __name__ == "__main__":
     unittest.main()

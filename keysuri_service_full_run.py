@@ -1100,6 +1100,105 @@ def _dedup_artifact_fields_from_prompt_input(prompt_input: Dict[str, Any]) -> Di
     }
 
 
+def _selection_item_key(item: Dict[str, Any]) -> str:
+    if not isinstance(item, dict):
+        return ""
+    canonical_url = str(item.get("canonical_url") or "").strip()
+    if canonical_url:
+        return canonical_url
+    norm_source = str(item.get("normalized_source") or item.get("source") or "").strip().lower()
+    norm_title = str(item.get("normalized_title") or item.get("title") or item.get("headline") or "").strip().lower()
+    if norm_source or norm_title:
+        return f"{norm_source}|{norm_title}"
+    return str(item.get("news_id") or item.get("claim_id") or "").strip()
+
+
+def _selection_key_set(items: Any) -> Set[str]:
+    if not isinstance(items, list):
+        return set()
+    return {k for k in (_selection_item_key(it) for it in items if isinstance(it, dict)) if k}
+
+
+def _write_owner_review_exposure_log(meta: Dict[str, Any], *, exposure_kind: str) -> None:
+    """Append owner-review exposure rows for cross-day dedup memory.
+
+    Separate from sent_news_log (customer-send-only). Gated by the caller on
+    artifact_status == "emailed" so previews/no-send/smoke never write. A write
+    failure here must never roll back or fail the already-sent owner-review
+    email — mirrors the sent_news_log write-failure handling in
+    admin_store._update_sent_news_log_after_customer_success.
+    """
+    pid = str(meta.get("program_id") or meta.get("mode") or "").strip()
+    run_id = str(meta.get("run_id") or "").strip()
+    selected_items = meta.get("selected_items")
+    if not isinstance(selected_items, list) or not selected_items:
+        meta["exposure_log_updated"] = False
+        meta["exposure_log_update_error"] = "selected_items_missing"
+        return
+    if not run_id or not pid:
+        meta["exposure_log_updated"] = False
+        meta["exposure_log_update_error"] = "run_id_or_program_id_missing"
+        return
+    try:
+        from owner_review_exposure_log_store import append_owner_review_exposure
+
+        result = append_owner_review_exposure(
+            run_id=run_id,
+            program_id=pid,
+            exposure_kind=exposure_kind,
+            selected_items=[it for it in selected_items if isinstance(it, dict)],
+        )
+    except Exception as exc:  # noqa: BLE001 - exposure log write must never block owner-review send
+        meta["exposure_log_updated"] = False
+        meta["exposure_log_update_error"] = f"{type(exc).__name__}"
+        return
+    meta["exposure_log_updated"] = bool(result.get("ok"))
+    meta["exposure_log_written_count"] = int(result.get("appended_count") or 0) + int(result.get("updated_count") or 0)
+    meta["exposure_log_path"] = result.get("logical_path") or ""
+    meta["exposure_log_update_error"] = None
+
+
+def _maybe_write_owner_review_exposure_log(
+    meta: Dict[str, Any],
+    *,
+    email_sent: bool,
+    exposure_kind: str,
+    parent: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Gate exposure-log writes by delivery + (for reissues) selection-change.
+
+    image_only reissue must never call this (parent body/selection reused
+    verbatim — would double-count). body_only/body_and_image reissue writes
+    only when the regenerated selection differs from the parent run's
+    recorded selection, so a same-selection reissue is not counted twice.
+    """
+    if not email_sent:
+        meta["exposure_log_updated"] = False
+        meta["exposure_log_update_error"] = "email_not_sent"
+        return
+    if exposure_kind != "owner_review_email":
+        parent_selected = parent.get("selected_items") if isinstance(parent, dict) else None
+        if not isinstance(parent_selected, list) or not parent_selected:
+            meta["exposure_log_reissue_compare_status"] = "parent_selection_unavailable"
+            meta["exposure_log_updated"] = False
+            meta["exposure_log_update_error"] = "parent_selection_unavailable"
+            return
+        parent_keys = _selection_key_set(parent_selected)
+        child_keys = _selection_key_set(meta.get("selected_items"))
+        if not child_keys:
+            meta["exposure_log_reissue_compare_status"] = "child_selection_unavailable"
+            meta["exposure_log_updated"] = False
+            meta["exposure_log_update_error"] = "child_selection_unavailable"
+            return
+        if child_keys == parent_keys:
+            meta["exposure_log_reissue_compare_status"] = "same_selection_skipped"
+            meta["exposure_log_updated"] = False
+            meta["exposure_log_update_error"] = None
+            return
+        meta["exposure_log_reissue_compare_status"] = "selection_changed_written"
+    _write_owner_review_exposure_log(meta, exposure_kind=exposure_kind)
+
+
 def _owner_subject_for_regen(parent: Dict[str, Any], regenerated_subject: str, regen_type: str) -> str:
     prefix = _text_regen_subject_prefix(regen_type)
     if regen_type == "image_only":
@@ -1597,6 +1696,9 @@ def run_keysuri_text_only_reissue(
     )
     meta.update(owner_email_fields)
     meta["owner_email_subject"] = owner_subject
+    _maybe_write_owner_review_exposure_log(
+        meta, email_sent=email_sent, exposure_kind="owner_review_reissue_body", parent=parent
+    )
     save_run_artifact(meta, email_html=email_html)
     return {
         "ok": not send_owner_email or email_sent,
@@ -1858,6 +1960,9 @@ def run_keysuri_text_and_image_reissue(
     )
     meta.update(owner_email_fields)
     meta["owner_email_subject"] = owner_subject
+    _maybe_write_owner_review_exposure_log(
+        meta, email_sent=email_sent, exposure_kind="owner_review_reissue_body_and_image", parent=parent
+    )
     save_run_artifact(meta, email_html=email_html)
     return {
         "ok": image_outcome.ok and (not send_owner_email or email_sent),
@@ -2440,6 +2545,7 @@ def run_keysuri_service_full_run(
     meta["owner_email_subject"] = subject
     _log_owner_email_delivery_event(program_id=pid, run_id=run_id, fields=owner_email_fields)
     meta["artifact_status"] = "emailed" if email_sent else "stored"
+    _maybe_write_owner_review_exposure_log(meta, email_sent=email_sent, exposure_kind="owner_review_email")
     meta["generated_image_path_raw"] = raw_generated_image_path
     meta["generated_image_path_watermarked"] = watermarked_generated_image_path
     meta["top_shot_watermark_status"] = "applied"

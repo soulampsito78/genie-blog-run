@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from keysuri_news_contract import NEWS_SCOPE_GLOBAL, NEWS_SCOPE_KOREA, SECTION_TOP5_GLOBAL, SECTION_TOP5_KOREA
 from keysuri_prompt_input import OUTPUT_CONTRACT, build_keysuri_prompt_input
 from keysuri_source_gate import GateResult, GateIssue
+from owner_review_exposure_log_store import append_owner_review_exposure
 
 _REPO = Path(__file__).resolve().parent.parent
 
@@ -206,6 +210,99 @@ class KeysuriPromptInputComposerTests(unittest.TestCase):
         self.assertEqual(summary["scored_candidate_count"], 24)
         self.assertEqual(summary["pre_diversity_candidate_count"], 6)
         self.assertEqual(summary["post_diversity_selected_count"], 5)
+
+
+class KeysuriPromptInputExposureLogMergeTests(unittest.TestCase):
+    """Owner-review exposure log must merge into the cross-day dedup read path
+    alongside sent_news_log, without modifying run_sent_news_dedup_gate itself.
+    """
+
+    def setUp(self) -> None:
+        self.sent_tmp = tempfile.TemporaryDirectory()
+        self.exposure_tmp = tempfile.TemporaryDirectory()
+        self.env = mock.patch.dict(
+            os.environ,
+            {
+                "GENIE_SENT_NEWS_LOG_PATH": str(Path(self.sent_tmp.name) / "sent_news_log.json"),
+                "GENIE_OWNER_REVIEW_EXPOSURE_LOG_PATH": str(
+                    Path(self.exposure_tmp.name) / "owner_review_exposure_log.json"
+                ),
+            },
+            clear=False,
+        )
+        self.env.start()
+
+    def tearDown(self) -> None:
+        self.env.stop()
+        self.sent_tmp.cleanup()
+        self.exposure_tmp.cleanup()
+
+    def test_surfaces_log_read_counters_when_both_logs_empty(self) -> None:
+        pack = _load_pack("keysuri_global_sources.sample.json")
+        result = build_keysuri_prompt_input("keysuri_global_tech", pack)
+        self.assertEqual(result["sent_log_read_count"], 0)
+        self.assertEqual(result["exposure_log_read_count"], 0)
+        self.assertTrue(result["exposure_log_read_ok"])
+        self.assertEqual(result["combined_recent_log_count"], 0)
+        self.assertNotIn("exposure_log_read_error_code", result)
+
+    def test_exposure_log_only_entry_excludes_matching_candidate(self) -> None:
+        pack = _load_pack("keysuri_global_sources.sample.json")
+        baseline = build_keysuri_prompt_input("keysuri_global_tech", pack)
+        first_item = baseline["top_5_news"]["items"][0]
+        append_owner_review_exposure(
+            run_id="prior-run",
+            program_id="keysuri_global_tech",
+            exposure_kind="owner_review_email",
+            selected_items=[first_item],
+        )
+        result = build_keysuri_prompt_input("keysuri_global_tech", pack)
+        self.assertEqual(result["exposure_log_read_count"], 1)
+        self.assertEqual(result["combined_recent_log_count"], result["sent_log_read_count"] + 1)
+        selected_urls = {
+            it.get("canonical_url") or it.get("url") for it in result["top_5_news"]["items"]
+        }
+        self.assertNotIn(first_item.get("canonical_url") or first_item.get("url"), selected_urls)
+
+    def test_combined_count_sums_both_logs(self) -> None:
+        pack = _load_pack("keysuri_global_sources.sample.json")
+        baseline = build_keysuri_prompt_input("keysuri_global_tech", pack)
+        items = baseline["top_5_news"]["items"]
+        append_owner_review_exposure(
+            run_id="prior-run",
+            program_id="keysuri_global_tech",
+            exposure_kind="owner_review_email",
+            selected_items=[items[0]],
+        )
+        result = build_keysuri_prompt_input("keysuri_global_tech", pack)
+        self.assertEqual(
+            result["combined_recent_log_count"],
+            result["sent_log_read_count"] + result["exposure_log_read_count"],
+        )
+
+    def test_read_failure_surfaces_error_code_but_does_not_crash(self) -> None:
+        exposure_path = Path(os.environ["GENIE_OWNER_REVIEW_EXPOSURE_LOG_PATH"])
+        exposure_path.parent.mkdir(parents=True, exist_ok=True)
+        exposure_path.write_text("{not valid json", encoding="utf-8")
+        pack = _load_pack("keysuri_global_sources.sample.json")
+        result = build_keysuri_prompt_input("keysuri_global_tech", pack)
+        self.assertFalse(result["exposure_log_read_ok"])
+        self.assertEqual(result["exposure_log_read_error_code"], "JSONDecodeError")
+        self.assertEqual(result["exposure_log_read_count"], 0)
+        self.assertEqual(result["prompt_status"], "ready_for_generation")
+
+    def test_korea_and_global_exposure_logs_do_not_cross_contaminate(self) -> None:
+        global_pack = _load_pack("keysuri_global_sources.sample.json")
+        global_items = build_keysuri_prompt_input("keysuri_global_tech", global_pack)["top_5_news"]["items"]
+        append_owner_review_exposure(
+            run_id="prior-global-run",
+            program_id="keysuri_global_tech",
+            exposure_kind="owner_review_email",
+            selected_items=[global_items[0]],
+        )
+        korea_pack = _load_pack("keysuri_korea_sources.sample.json")
+        korea_result = build_keysuri_prompt_input("keysuri_korea_tech", korea_pack)
+        self.assertEqual(korea_result["exposure_log_read_count"], 0)
 
 
 class KeysuriPromptInputFixtureShapeTests(unittest.TestCase):
