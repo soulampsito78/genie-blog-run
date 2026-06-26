@@ -1109,7 +1109,10 @@ def _owner_subject_for_regen(parent: Dict[str, Any], regenerated_subject: str, r
             or regenerated_subject
         ).strip()
         return old_subject if old_subject.startswith(prefix) else f"{prefix}{old_subject}"
-    return str(regenerated_subject or "").strip()
+    new_subject = str(regenerated_subject or "").strip()
+    if not prefix:
+        return new_subject
+    return new_subject if new_subject.startswith(prefix) else f"{prefix}{new_subject}"
 
 
 def run_keysuri_image_only_reissue(

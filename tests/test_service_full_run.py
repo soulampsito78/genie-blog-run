@@ -621,6 +621,13 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         self.assertTrue(child.get("candidate_pool_reused"))
         self.assertIn("excluded_signal_ids", child)
         self.assertIn("replacement_signal_ids", child)
+        # body_only reissue subject must carry the [본문 재발행] prefix exactly once,
+        # so Gmail does not thread it against the parent owner-review by subject match.
+        owner_subject = str(child.get("owner_email_subject") or "")
+        self.assertTrue(owner_subject.startswith("[본문 재발행]"))
+        self.assertEqual(owner_subject.count("[본문 재발행]"), 1)
+        sent_subject = send_fn.call_args.args[1]
+        self.assertEqual(sent_subject, owner_subject)
         parent = load_run_artifact(parent_id) or {}
         self.assertEqual(parent.get("generated_image_path_watermarked"), str(top_path.relative_to(repo)))
         self.assertNotIn("regen_type", parent)
@@ -772,6 +779,13 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         self.assertEqual(child.get("bottom_shot_image_path"), str(bottom_path.relative_to(repo)))
         self.assertEqual(child.get("generated_image_path_raw"), str(raw_top.relative_to(repo)))
         self.assertEqual(child.get("artifact_status"), "emailed")
+        # body_and_image reissue subject must carry the [본문·이미지 재발행] prefix
+        # exactly once, distinguishing it from the parent owner-review subject.
+        owner_subject = str(child.get("owner_email_subject") or "")
+        self.assertTrue(owner_subject.startswith("[본문·이미지 재발행]"))
+        self.assertEqual(owner_subject.count("[본문·이미지 재발행]"), 1)
+        sent_subject = send_fn.call_args.args[1]
+        self.assertEqual(sent_subject, owner_subject)
         parent = load_run_artifact(parent_id) or {}
         self.assertNotIn("regen_type", parent)  # test 28: parent artifact not overwritten
 
@@ -924,6 +938,94 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         self.assertIn("old_claim_02", excluded)
         replacement = child.get("replacement_signal_ids") or []
         self.assertIn("new_claim_03", replacement)
+
+
+class KeysuriReissueSubjectPrefixTests(unittest.TestCase):
+    """Defense-in-depth: distinct subject prefixes per reissue scope so Gmail
+    never threads a reissue owner-review against its parent by subject match."""
+
+    def test_body_only_prefix_applied(self) -> None:
+        from keysuri_service_full_run import _owner_subject_for_regen
+
+        out = _owner_subject_for_regen(
+            {}, "[운영자 검토] 새 헤드라인: 6월 26일 국내 테크 브리핑", "body_only"
+        )
+        self.assertTrue(out.startswith("[본문 재발행]"))
+        self.assertEqual(out.count("[본문 재발행]"), 1)
+
+    def test_body_and_image_prefix_applied(self) -> None:
+        from keysuri_service_full_run import _owner_subject_for_regen
+
+        out = _owner_subject_for_regen(
+            {}, "[운영자 검토] 새 헤드라인: 6월 26일 글로벌 테크 브리핑", "body_and_image"
+        )
+        self.assertTrue(out.startswith("[본문·이미지 재발행]"))
+        self.assertEqual(out.count("[본문·이미지 재발행]"), 1)
+
+    def test_body_only_prefix_not_duplicated_if_already_present(self) -> None:
+        from keysuri_service_full_run import _owner_subject_for_regen
+
+        already_prefixed = "[본문 재발행][운영자 검토] 헤드라인"
+        out = _owner_subject_for_regen({}, already_prefixed, "body_only")
+        self.assertEqual(out, already_prefixed)
+        self.assertEqual(out.count("[본문 재발행]"), 1)
+
+    def test_body_and_image_prefix_not_duplicated_if_already_present(self) -> None:
+        from keysuri_service_full_run import _owner_subject_for_regen
+
+        already_prefixed = "[본문·이미지 재발행][운영자 검토] 헤드라인"
+        out = _owner_subject_for_regen({}, already_prefixed, "body_and_image")
+        self.assertEqual(out, already_prefixed)
+        self.assertEqual(out.count("[본문·이미지 재발행]"), 1)
+
+    def test_image_only_policy_unchanged(self) -> None:
+        from keysuri_service_full_run import _owner_subject_for_regen
+
+        parent = {"owner_email_subject": "[운영자 검토] 기존 헤드라인"}
+        out = _owner_subject_for_regen(parent, "ignored_for_image_only", "image_only")
+        self.assertEqual(out, "[이미지 재발행][운영자 검토] 기존 헤드라인")
+
+    def test_image_only_prefix_not_duplicated(self) -> None:
+        from keysuri_service_full_run import _owner_subject_for_regen
+
+        parent = {"owner_email_subject": "[이미지 재발행][운영자 검토] 기존 헤드라인"}
+        out = _owner_subject_for_regen(parent, "ignored", "image_only")
+        self.assertEqual(out, "[이미지 재발행][운영자 검토] 기존 헤드라인")
+        self.assertEqual(out.count("[이미지 재발행]"), 1)
+
+    def test_customer_subject_strips_owner_only_reissue_prefixes(self) -> None:
+        # Owner-only reissue prefixes must never leak into the customer-final subject.
+        from keysuri_email_identity import build_keysuri_customer_subject
+
+        for owner_subject in (
+            "[본문 재발행][운영자 검토] 헤드라인: 6월 26일 국내 테크 브리핑",
+            "[본문·이미지 재발행][운영자 검토] 헤드라인: 6월 26일 글로벌 테크 브리핑",
+            "[이미지 재발행][운영자 검토] 헤드라인: 6월 26일 국내 테크 브리핑",
+        ):
+            customer_subject = build_keysuri_customer_subject(
+                "keysuri_korea_tech",
+                meta={"owner_email_subject": owner_subject},
+            )
+            self.assertNotIn("[본문 재발행]", customer_subject)
+            self.assertNotIn("[본문·이미지 재발행]", customer_subject)
+            self.assertNotIn("[이미지 재발행]", customer_subject)
+            self.assertNotIn("[운영자 검토]", customer_subject)
+            self.assertIn("헤드라인", customer_subject)
+
+    def test_customer_subject_unaffected_when_editorial_subject_present(self) -> None:
+        # In real runs, meta["email_subject"]/["editorial_subject"] are set from the
+        # editorial subject (built before any owner reissue prefix is applied), so
+        # the customer path never even reaches the owner_email_subject fallback.
+        from keysuri_email_identity import build_keysuri_customer_subject
+
+        customer_subject = build_keysuri_customer_subject(
+            "keysuri_korea_tech",
+            meta={
+                "email_subject": "헤드라인: 6월 26일 국내 테크 브리핑",
+                "owner_email_subject": "[본문 재발행][운영자 검토] 헤드라인: 6월 26일 국내 테크 브리핑",
+            },
+        )
+        self.assertEqual(customer_subject, "헤드라인: 6월 26일 국내 테크 브리핑")
 
 
 class ServiceFullRunContractTests(unittest.TestCase):
