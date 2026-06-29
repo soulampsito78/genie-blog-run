@@ -914,6 +914,12 @@ def _parent_selected_items_for_reissue(
 ) -> Optional[List[Dict[str, Any]]]:
     raw_items = parent.get("selected_items")
     if not isinstance(raw_items, list) or len(raw_items) != KEYSURI_TOP_NEWS_COUNT:
+        # Successful parent runs persist the validated briefing here; its top_5_news
+        # items are the authoritative selection when selected_items is unavailable.
+        briefing_snapshot = parent.get("regen_generated_briefing_snapshot")
+        top_5 = briefing_snapshot.get("top_5_news") if isinstance(briefing_snapshot, dict) else None
+        raw_items = top_5.get("items") if isinstance(top_5, dict) else None
+    if not isinstance(raw_items, list) or len(raw_items) != KEYSURI_TOP_NEWS_COUNT:
         prompt_snapshot = parent.get("regen_prompt_input_snapshot")
         top_5 = prompt_snapshot.get("top_5_news") if isinstance(prompt_snapshot, dict) else None
         raw_items = top_5.get("items") if isinstance(top_5, dict) else None
@@ -979,32 +985,50 @@ def _parent_selected_items_for_reissue(
     return repaired
 
 
-def _repair_reissue_top5_from_parent_selection(
-    *,
-    generated_briefing: Dict[str, Any],
-    prompt_input: Dict[str, Any],
-    parent: Dict[str, Any],
-    program_id: str,
-) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any], Optional[str]]:
-    parent_items = _parent_selected_items_for_reissue(parent, program_id)
-    if parent_items is None:
-        return None, None, {}, "reissue_parent_selected_items_missing_or_invalid"
+_REISSUE_BASE_REQUIRED_SECTIONS = ("top_5_news", "deep_dive", "one_line_checkpoint", "closing_sources")
 
-    original_top = generated_briefing.get("top_5_news")
-    original_items = original_top.get("items") if isinstance(original_top, dict) else []
-    original_count = len(original_items) if isinstance(original_items, list) else 0
+
+def _parent_base_briefing_for_reissue(parent: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return the parent run's previously validated briefing snapshot, if usable.
+
+    A successful parent run persists its contract-valid generated briefing under
+    ``regen_generated_briefing_snapshot``. Every section there is grounded in the
+    parent's own source set, so it is a self-consistent fallback base when the
+    fresh Gemini output cannot be validated even after the TOP5 is replaced.
+    """
+    snapshot = parent.get("regen_generated_briefing_snapshot")
+    if not isinstance(snapshot, dict):
+        return None
+    if not all(isinstance(snapshot.get(section), dict) for section in _REISSUE_BASE_REQUIRED_SECTIONS):
+        return None
+    return copy.deepcopy(snapshot)
+
+
+def _build_repaired_reissue_payload(
+    *,
+    base_briefing: Dict[str, Any],
+    top5_items: List[Dict[str, Any]],
+    prompt_input: Dict[str, Any],
+    program_id: str,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], List[str]]:
+    """Graft the authoritative parent TOP5 onto a base briefing and validate.
+
+    Returns ``(prompt_input, generated_briefing, issue_codes)``. ``issue_codes`` is
+    empty on success and otherwise holds safe contract issue codes (never raw
+    detail) so callers can record an internal failure summary.
+    """
     top_5_news = {
         "news_scope": expected_news_scope_for_program(program_id),
         "section_heading": expected_top5_heading_for_program(program_id),
-        "items": copy.deepcopy(parent_items),
+        "items": copy.deepcopy(top5_items),
     }
     repaired_prompt_input = copy.deepcopy(prompt_input)
     repaired_prompt_input["top_5_news"] = copy.deepcopy(top_5_news)
-    repaired_prompt_input["selected_items"] = copy.deepcopy(parent_items)
+    repaired_prompt_input["selected_items"] = copy.deepcopy(top5_items)
     repaired_prompt_input["required_count"] = KEYSURI_TOP_NEWS_COUNT
     repaired_prompt_input["selected_count"] = KEYSURI_TOP_NEWS_COUNT
 
-    repaired_briefing = copy.deepcopy(generated_briefing)
+    repaired_briefing = copy.deepcopy(base_briefing)
     repaired_briefing["program_id"] = program_id
     repaired_briefing["news_scope"] = expected_news_scope_for_program(program_id)
     repaired_briefing["section_heading"] = expected_top5_heading_for_program(program_id)
@@ -1015,14 +1039,84 @@ def _repair_reissue_top5_from_parent_selection(
         repaired_prompt_input,
     )
     if str(parse_result.get("parse_status") or "") != "parsed_valid":
-        return None, None, {}, "reissue_top5_parent_repair_validation_failed"
+        codes = sorted({str(i.get("code") or "unknown") for i in parse_result.get("issues") or []})
+        return None, None, codes
+    return repaired_prompt_input, parse_result.get("generated_briefing"), []
+
+
+def _repair_reissue_top5_from_parent_selection(
+    *,
+    generated_briefing: Dict[str, Any],
+    prompt_input: Dict[str, Any],
+    parent: Dict[str, Any],
+    program_id: str,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any], Optional[str]]:
+    """Force the reissue TOP5 to the parent's authoritative selection.
+
+    Parent ``selected_items`` (or its validated briefing snapshot) are the source
+    of truth for TOP5; the fresh Gemini output is trusted only for prose. We first
+    try grafting the parent TOP5 onto the Gemini output, and if that still fails
+    the contract we fall back to the parent's validated briefing snapshot, which is
+    self-consistent by construction. Only when no parent base can yield a
+    contract-valid payload do we surface a safe failure.
+    """
+    parent_items = _parent_selected_items_for_reissue(parent, program_id)
+    if parent_items is None:
+        return (
+            None,
+            None,
+            {"reissue_top5_repair_attempted": True, "reissue_top5_repaired_from_parent": False},
+            "reissue_parent_selected_items_missing_or_invalid",
+        )
+
+    original_top = generated_briefing.get("top_5_news") if isinstance(generated_briefing, dict) else None
+    original_items = original_top.get("items") if isinstance(original_top, dict) else []
+    original_count = len(original_items) if isinstance(original_items, list) else 0
+
+    # Base candidates in priority order: fresh Gemini prose first (keeps the
+    # regenerated body), parent validated snapshot as the guaranteed-valid fallback.
+    attempts: List[Tuple[str, Dict[str, Any], List[Dict[str, Any]]]] = []
+    if isinstance(generated_briefing, dict) and generated_briefing:
+        attempts.append(("gemini_output_with_parent_top5", generated_briefing, parent_items))
+    parent_base = _parent_base_briefing_for_reissue(parent)
+    if parent_base is not None:
+        snap_top5 = parent_base.get("top_5_news")
+        snap_items = snap_top5.get("items") if isinstance(snap_top5, dict) else None
+        # Prefer the snapshot's own (field-complete) TOP5 items; they already match
+        # the parent selection by rank/news_id and render with full display fields.
+        base_items = (
+            snap_items
+            if isinstance(snap_items, list) and len(snap_items) == KEYSURI_TOP_NEWS_COUNT
+            else parent_items
+        )
+        attempts.append(("parent_generated_briefing_snapshot", parent_base, base_items))
+
+    last_issue_codes: List[str] = []
+    for repair_source, base_briefing, top5_items in attempts:
+        repaired_prompt_input, repaired_briefing, issue_codes = _build_repaired_reissue_payload(
+            base_briefing=base_briefing,
+            top5_items=top5_items,
+            prompt_input=prompt_input,
+            program_id=program_id,
+        )
+        if repaired_prompt_input is not None and repaired_briefing is not None:
+            fields = {
+                "reissue_top5_repair_attempted": True,
+                "reissue_top5_repaired_from_parent": True,
+                "reissue_top5_original_count": original_count,
+                "reissue_top5_repaired_count": KEYSURI_TOP_NEWS_COUNT,
+                "reissue_top5_repair_source": repair_source,
+            }
+            return repaired_prompt_input, repaired_briefing, fields, None
+        last_issue_codes = issue_codes
 
     fields = {
-        "reissue_top5_repaired_from_parent": True,
+        "reissue_top5_repair_attempted": True,
+        "reissue_top5_repaired_from_parent": False,
         "reissue_top5_original_count": original_count,
-        "reissue_top5_repaired_count": KEYSURI_TOP_NEWS_COUNT,
+        "reissue_top5_repair_failed_sections": last_issue_codes,
     }
-    return repaired_prompt_input, parse_result.get("generated_briefing"), fields, None
+    return None, None, fields, "reissue_top5_parent_repair_validation_failed"
 
 
 def _repair_reissue_top5_from_raw_text(
@@ -1036,7 +1130,15 @@ def _repair_reissue_top5_from_raw_text(
         candidates = extract_json_candidates_from_model_text(raw_text)
     except ValueError:
         candidates = []
-    for candidate in candidates:
+    # Append an empty base so the parent-snapshot fallback still runs when the raw
+    # Gemini text is unparseable or yields no usable candidate.
+    attempts: List[Dict[str, Any]] = list(candidates) + [{}]
+    last_fields: Dict[str, Any] = {
+        "reissue_top5_repair_attempted": True,
+        "reissue_top5_repaired_from_parent": False,
+    }
+    last_err: Optional[str] = "reissue_top5_parent_repair_failed"
+    for candidate in attempts:
         repaired_prompt, repaired_briefing, fields, err = _repair_reissue_top5_from_parent_selection(
             generated_briefing=candidate,
             prompt_input=prompt_input,
@@ -1045,7 +1147,8 @@ def _repair_reissue_top5_from_raw_text(
         )
         if err is None and repaired_prompt is not None and repaired_briefing is not None:
             return repaired_prompt, repaired_briefing, fields, None
-    return None, None, {}, "reissue_top5_parent_repair_failed"
+        last_fields, last_err = fields, err
+    return None, None, last_fields, last_err
 
 
 # ---------------------------------------------------------------------------
@@ -1165,16 +1268,17 @@ def _regenerate_keysuri_text_from_source_pack(
     raw_text = caller(prompt_text)
     parse_result = parse_keysuri_generated_response(raw_text, program_id, prompt_input)
     if str(parse_result.get("parse_status") or "") != "parsed_valid":
+        parse_repair_fields: Dict[str, Any] = {}
         if parent is not None:
-            repaired_prompt, repaired_briefing, repair_fields, repair_err = _repair_reissue_top5_from_raw_text(
+            repaired_prompt, repaired_briefing, parse_repair_fields, repair_err = _repair_reissue_top5_from_raw_text(
                 raw_text=raw_text,
                 prompt_input=prompt_input,
                 parent=parent,
                 program_id=program_id,
             )
             if repair_err is None and repaired_prompt is not None and repaired_briefing is not None:
-                return repaired_prompt, repaired_briefing, repair_fields, None
-        return None, None, {}, "generated_briefing_regen_parse_failed"
+                return repaired_prompt, repaired_briefing, parse_repair_fields, None
+        return None, None, parse_repair_fields, "generated_briefing_regen_parse_failed"
     generated_briefing = parse_result.get("generated_briefing")
     if not isinstance(generated_briefing, dict):
         return None, None, {}, "generated_briefing_regen_missing"
@@ -1938,9 +2042,16 @@ def run_keysuri_text_and_image_reissue(
                 parent=parent,
                 program_id=pid,
             )
-            if repair_err is not None:
-                generated_briefing = None
         else:
+            # No raw text to salvage prose from: repair straight off the parent
+            # validated snapshot so a recoverable parent still completes the reissue.
+            prompt_input, generated_briefing, repair_fields, repair_err = _repair_reissue_top5_from_parent_selection(
+                generated_briefing={},
+                prompt_input=prompt_input,
+                parent=parent,
+                program_id=pid,
+            )
+        if repair_err is not None:
             generated_briefing = None
     elif not smoke.ok:
         return {
@@ -1962,11 +2073,14 @@ def run_keysuri_text_and_image_reissue(
             generated_briefing = None
 
     if not isinstance(generated_briefing, dict):
-        return {
+        failure = {
             "ok": False,
             "error": "text_and_image_reissue_result_validation_failed",
             "program_id": pid,
         }
+        # Safe internal repair summary (codes only, no raw parser detail) for tracing.
+        failure.update(repair_fields)
+        return failure
     generated_briefing = enrich_generated_briefing_content(generated_briefing, pid, prompt_input)
     generated_briefing, _visible_fresh = validate_and_repair_keysuri_visible_text_quality(
         generated_briefing,

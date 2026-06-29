@@ -379,8 +379,106 @@ class KeysuriReissueTop5RepairTests(unittest.TestCase):
 
         self.assertIsNone(repaired_prompt)
         self.assertIsNone(repaired_briefing)
-        self.assertEqual(fields, {})
-        self.assertEqual(err, "reissue_top5_parent_repair_failed")
+        # Parent cannot supply 5 authoritative items and has no validated snapshot:
+        # safe failure, but the attempt is still recorded for internal tracing.
+        self.assertTrue(fields["reissue_top5_repair_attempted"])
+        self.assertFalse(fields["reissue_top5_repaired_from_parent"])
+        self.assertEqual(err, "reissue_parent_selected_items_missing_or_invalid")
+
+    def test_body_and_image_repair_falls_back_to_parent_snapshot(self) -> None:
+        """Real-artifact shape: broken Gemini output but parent has a validated
+        snapshot → repair must complete from the parent snapshot, not safe-fail."""
+        from keysuri_service_full_run import _repair_reissue_top5_from_raw_text
+
+        parent_items = _reissue_parent_top5_items()
+        # Parent persists both selected_items and the previously validated briefing.
+        snapshot = _generated_briefing_with_top_count(parent_items)
+        parent = {
+            "selected_items": parent_items,
+            "regen_generated_briefing_snapshot": snapshot,
+        }
+        # Gemini returned only 2 items AND an invalid generated_status, so grafting
+        # the parent TOP5 onto the Gemini output still fails the contract.
+        broken_gemini = _generated_briefing_with_top_count(parent_items[:2])
+        broken_gemini["generated_status"] = "WRONG_STATUS"
+        prompt_input = {
+            "program_id": PROGRAM_GLOBAL,
+            "source_pack": {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []},
+        }
+
+        repaired_prompt, repaired_briefing, fields, err = _repair_reissue_top5_from_raw_text(
+            raw_text=json.dumps(broken_gemini, ensure_ascii=False),
+            prompt_input=prompt_input,
+            parent=parent,
+            program_id=PROGRAM_GLOBAL,
+        )
+
+        self.assertIsNone(err)
+        self.assertTrue(fields["reissue_top5_repaired_from_parent"])
+        self.assertEqual(fields["reissue_top5_original_count"], 2)
+        self.assertEqual(fields["reissue_top5_repaired_count"], 5)
+        self.assertEqual(fields["reissue_top5_repair_source"], "parent_generated_briefing_snapshot")
+        repaired_items = repaired_briefing["top_5_news"]["items"]
+        self.assertEqual(len(repaired_items), 5)
+        self.assertEqual([it["news_id"] for it in repaired_items], [it["news_id"] for it in parent_items])
+        # Snapshot items carry the full display fields (korean_title) for rendering.
+        self.assertTrue(all("korean_title" in it for it in repaired_items))
+
+    def test_repair_unparseable_raw_recovers_from_parent_snapshot(self) -> None:
+        """Even when the raw Gemini text is unparseable, a parent with a validated
+        snapshot must still complete the reissue."""
+        from keysuri_service_full_run import _repair_reissue_top5_from_raw_text
+
+        parent_items = _reissue_parent_top5_items()
+        parent = {
+            "selected_items": parent_items,
+            "regen_generated_briefing_snapshot": _generated_briefing_with_top_count(parent_items),
+        }
+        prompt_input = {
+            "program_id": PROGRAM_GLOBAL,
+            "source_pack": {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []},
+        }
+
+        repaired_prompt, repaired_briefing, fields, err = _repair_reissue_top5_from_raw_text(
+            raw_text="this is not json at all",
+            prompt_input=prompt_input,
+            parent=parent,
+            program_id=PROGRAM_GLOBAL,
+        )
+
+        self.assertIsNone(err)
+        self.assertEqual(len(repaired_briefing["top_5_news"]["items"]), 5)
+        self.assertEqual(fields["reissue_top5_repair_source"], "parent_generated_briefing_snapshot")
+
+    def test_repair_records_diagnostics_when_no_parent_base_validates(self) -> None:
+        """Parent has 5 selected_items but no validated snapshot and the Gemini
+        output cannot be salvaged → safe failure with traceable repair metadata."""
+        from keysuri_service_full_run import _repair_reissue_top5_from_parent_selection
+
+        parent_items = _reissue_parent_top5_items()
+        parent = {"selected_items": parent_items}  # no regen_generated_briefing_snapshot
+        broken_gemini = _generated_briefing_with_top_count(parent_items[:2])
+        # deep_dive references a source absent from both the pack and the parent TOP5.
+        broken_gemini["deep_dive"]["source_ids"] = ["unknown-orphan-source"]
+        prompt_input = {
+            "program_id": PROGRAM_GLOBAL,
+            "source_pack": {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []},
+        }
+
+        repaired_prompt, repaired_briefing, fields, err = _repair_reissue_top5_from_parent_selection(
+            generated_briefing=broken_gemini,
+            prompt_input=prompt_input,
+            parent=parent,
+            program_id=PROGRAM_GLOBAL,
+        )
+
+        self.assertIsNone(repaired_prompt)
+        self.assertIsNone(repaired_briefing)
+        self.assertEqual(err, "reissue_top5_parent_repair_validation_failed")
+        self.assertTrue(fields["reissue_top5_repair_attempted"])
+        self.assertFalse(fields["reissue_top5_repaired_from_parent"])
+        self.assertEqual(fields["reissue_top5_original_count"], 2)
+        self.assertTrue(fields["reissue_top5_repair_failed_sections"])  # safe issue codes recorded
 
 
 class KeysuriImageOnlyReissueTests(unittest.TestCase):
@@ -953,6 +1051,159 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         self.assertEqual(sent_subject, owner_subject)
         parent = load_run_artifact(parent_id) or {}
         self.assertNotIn("regen_type", parent)  # test 28: parent artifact not overwritten
+
+    @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
+    @patch("keysuri_service_full_run.generate_run_id")
+    @patch("keysuri_service_full_run.build_keysuri_prompt_input")
+    @patch("keysuri_service_full_run.enrich_generated_briefing_content")
+    @patch("keysuri_service_full_run.validate_and_repair_keysuri_visible_text_quality")
+    @patch("keysuri_service_full_run.build_keysuri_subject_artifact_fields")
+    @patch("keysuri_service_full_run.render_keysuri_contract_preview_html")
+    @patch("keysuri_service_full_run.build_keysuri_korea_gmail_owner_email_html")
+    @patch("keysuri_service_full_run.validate_keysuri_html_visible_text_quality")
+    @patch("keysuri_service_full_run.resolve_korea_bottom_email_image_path")
+    @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
+    def test_text_and_image_reissue_recovers_from_parent_snapshot_when_gemini_invalid(
+        self,
+        mock_watermark: MagicMock,
+        mock_bottom: MagicMock,
+        mock_validate_html: MagicMock,
+        mock_email_html: MagicMock,
+        mock_render_preview: MagicMock,
+        mock_subject_fields: MagicMock,
+        mock_validate_visible: MagicMock,
+        mock_enrich: MagicMock,
+        mock_build_input: MagicMock,
+        mock_run_id: MagicMock,
+        mock_customer_final: MagicMock,
+    ) -> None:
+        """Mirror of the 20260629 production failure: live smoke returns an invalid
+        Gemini briefing, but the parent run has a validated snapshot. The reissue
+        must complete (new run artifact) from the parent snapshot rather than
+        safe-fail, with traceable repair metadata, and must not send to customers."""
+        from keysuri_service_full_run import run_keysuri_text_and_image_reissue
+
+        repo = Path(__file__).resolve().parents[1]
+        parent_id = "20260629_120000_keysuri_korea_tech_deadbeef"
+        child_id = "20260629_193000_keysuri_korea_tech_55667788"
+        mock_run_id.return_value = child_id
+        raw_top = repo / "output" / "images" / "snapshot_recover_top_raw.jpg"
+        raw_top.parent.mkdir(parents=True, exist_ok=True)
+        raw_top.write_bytes(b"\xff\xd8\xff" + b"\x73" * 128)
+        mock_watermark.side_effect = _mock_keysuri_watermark
+        bottom_path = repo / "output" / "images" / "snapshot_recover_bottom.jpg"
+        bottom_path.write_bytes(b"\xff\xd8\xff" + b"\x74" * 128)
+        mock_bottom.return_value = (
+            bottom_path,
+            [],
+            {
+                "bottom_shot_source": "test_generated",
+                "bottom_shot_generation_status": "generated",
+                "bottom_shot_image_path": str(bottom_path.relative_to(repo)),
+            },
+        )
+
+        parent_items = _reissue_parent_top5_items()
+        parent_snapshot = _generated_briefing_with_top_count(parent_items, program_id=PROGRAM_KOREA)
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_korea_tech",
+                "program_id": "keysuri_korea_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+                "selected_items": parent_items,
+                "regen_generated_briefing_snapshot": parent_snapshot,
+            },
+            email_html="<html><body><p>parent body</p></body></html>",
+        )
+
+        fresh_source_pack = {"program_id": "keysuri_korea_tech", "sources": [], "claims": []}
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as _sp_file:
+            json.dump(fresh_source_pack, _sp_file)
+            _sp_path = _sp_file.name
+        # Live smoke produced an invalid briefing: only 2 TOP5 items + bad status.
+        broken_gemini = _generated_briefing_with_top_count(parent_items[:2], program_id=PROGRAM_KOREA)
+        broken_gemini["generated_status"] = "WRONG_STATUS"
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as _raw_file:
+            _raw_file.write(json.dumps(broken_gemini, ensure_ascii=False))
+            _raw_path = _raw_file.name
+        smoke_result = LiveSourceSmokeResult(
+            ok=True,
+            program_id="keysuri_korea_tech",
+            source_pack_path=_sp_path,
+            html_path="",
+            fetched_item_count=5,
+            feed_urls_used=[],
+            sample_marker_pass=True,
+            called_gemini=True,
+            parse_status="parsed_invalid",
+            generated_briefing=None,
+            raw_response_path=_raw_path,
+        )
+        smoke_runner_mock = MagicMock(return_value=smoke_result)
+
+        mock_build_input.return_value = {"target_date": "2026-06-29"}
+        mock_enrich.side_effect = lambda briefing, *_args: briefing
+        mock_validate_visible.side_effect = lambda payload, **_kwargs: (payload, {"visible_text_ellipsis_blocked": False})
+        mock_subject_fields.return_value = {
+            "editorial_subject": "스냅샷 복구: 6월 29일 국내 테크 브리핑",
+            "email_subject": "스냅샷 복구: 6월 29일 국내 테크 브리핑",
+            "owner_email_subject": "[운영자 검토] 스냅샷 복구: 6월 29일 국내 테크 브리핑",
+            "email_preheader": "국내 AI·테크 신호 검수 대기",
+            "owner_email_preheader": "국내 AI·테크 신호 검수 대기",
+            "subject_top_headline": "스냅샷 복구",
+            "subject_source": "top_signal_1_headline",
+            "subject_kst_date": "20260629",
+            "subject_kst_label": "6월 29일",
+            "subject_program_label": "국내 테크 브리핑",
+            "subject_trigger_label": "admin_text_and_image_reissue",
+        }
+        mock_render_preview.return_value = "<html><body><p>복구 본문</p></body></html>"
+        mock_email_html.return_value = (
+            "<html><body><p>복구 본문</p>"
+            '<img src="cid:keysuri_topshot_korea_20260629_regen_55667788"/>'
+            '<img src="cid:keysuri_bottomshot_korea_20260629_regen_55667788"/>'
+            "</body></html>"
+        )
+        mock_validate_html.return_value = {}
+        send_fn = MagicMock(return_value=True)
+        image_runner = MagicMock(
+            return_value=ServiceImageOutcome(
+                called_image_api=True,
+                image_generation_status="generated",
+                image_source=IMAGE_SOURCE_GENERATED,
+                generated_image_path=str(raw_top.relative_to(repo)),
+            )
+        )
+
+        result = run_keysuri_text_and_image_reissue(
+            parent_id,
+            smoke_runner=smoke_runner_mock,
+            image_canary_runner=image_runner,
+            send_fn=send_fn,
+            reissue_reason_code="뉴스 중복 이슈",
+            reissue_reason_note="recover from snapshot",
+        )
+
+        self.assertTrue(result["ok"])
+        mock_customer_final.assert_not_called()  # customer final never sent
+        child = load_run_artifact(child_id) or {}
+        self.assertEqual(child.get("customer_delivery_status"), "not_sent")
+        self.assertTrue(child.get("reissue_top5_repaired_from_parent"))
+        self.assertEqual(child.get("reissue_top5_original_count"), 2)
+        self.assertEqual(child.get("reissue_top5_repaired_count"), 5)
+        self.assertEqual(child.get("reissue_top5_repair_source"), "parent_generated_briefing_snapshot")
+        self.assertEqual(child.get("artifact_status"), "emailed")
+        parent = load_run_artifact(parent_id) or {}
+        self.assertNotIn("regen_type", parent)  # parent artifact not overwritten
 
     def test_text_only_reissue_missing_candidate_pool_fails(self) -> None:
         """Parent has no regen_source_pack_snapshot → must fail with missing_candidate_pool error."""
