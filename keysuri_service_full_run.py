@@ -8,6 +8,7 @@ import os
 import hashlib
 import re
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
@@ -107,6 +108,8 @@ KEYSURI_KOREA_BOTTOM_REFERENCE_DIRECTION = "offduty_02C"
 
 _KOREAN_TEXT_RE = re.compile(r"[가-힣]")
 _REISSUE_RAW_VISIBLE_ELLIPSIS_RE = re.compile(r"…|\.{2,}")
+_REISSUE_HARD_TITLE_SIMILARITY_THRESHOLD = 0.88
+_REISSUE_HARD_TITLE_CROSS_SOURCE_THRESHOLD = 0.96
 _REISSUE_VISIBLE_TOP5_FIELDS = (
     "headline",
     "korean_title",
@@ -1211,9 +1214,44 @@ def _keysuri_reissue_exclusion_rows(parent: Dict[str, Any]) -> List[Dict[str, An
                 "canonical_url": item.get("canonical_url") or item.get("url") or item.get("source_url"),
                 "source": item.get("source_name") or item.get("source") or item.get("normalized_source"),
                 "topic_key": item.get("topic_key") or item.get("editorial_cluster_key"),
+                "_reissue_exclusion_source": "parent",
             }
         )
     return rows
+
+
+def _reissue_source_map(source_pack: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    for src in source_pack.get("sources") or []:
+        if not isinstance(src, dict):
+            continue
+        sid = str(src.get("source_id") or "").strip()
+        if sid:
+            out[sid] = src
+    return out
+
+
+def _claim_with_source_metadata(claim: Dict[str, Any], source_map: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    hydrated = dict(claim)
+    for sid in claim.get("source_ids") or []:
+        src = source_map.get(str(sid).strip())
+        if not isinstance(src, dict):
+            continue
+        source_name = str(src.get("source_name") or src.get("publisher") or src.get("name") or "").strip()
+        source_url = str(src.get("source_url") or src.get("url") or src.get("link") or "").strip()
+        source_title = str(src.get("title") or src.get("headline") or "").strip()
+        if source_name:
+            hydrated.setdefault("source", source_name)
+            hydrated.setdefault("source_name", source_name)
+        if source_url:
+            hydrated.setdefault("url", source_url)
+            hydrated.setdefault("canonical_url", source_url)
+            hydrated.setdefault("source_url", source_url)
+        if source_title:
+            hydrated.setdefault("title", source_title)
+            hydrated.setdefault("headline", source_title)
+        break
+    return hydrated
 
 
 def _reissue_hard_exclusion_index(
@@ -1237,38 +1275,166 @@ def _reissue_hard_exclusion_index(
     return canon, titles
 
 
-def _filter_hard_duplicate_claims(
+def _reissue_exclusion_indexes_by_source(exclusion_rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    indexes: Dict[str, Dict[str, Any]] = {}
+    for row in exclusion_rows or []:
+        if not isinstance(row, dict):
+            continue
+        source = str(row.get("_reissue_exclusion_source") or "recent").strip() or "recent"
+        if source not in {"parent", "sent", "exposure"}:
+            source = "recent"
+        bucket = indexes.setdefault(
+            source,
+            {
+                "canonical_urls": set(),
+                "normalized_titles": set(),
+                "source_titles": set(),
+                "rows": [],
+            },
+        )
+        norm = normalize_candidate(row)
+        if norm.get("canonical_url"):
+            bucket["canonical_urls"].add(norm["canonical_url"])
+        if norm.get("normalized_title"):
+            bucket["normalized_titles"].add(norm["normalized_title"])
+        if norm.get("normalized_source") and norm.get("normalized_title"):
+            bucket["source_titles"].add(f"{norm['normalized_source']}|{norm['normalized_title']}")
+        bucket["rows"].append(norm)
+    return indexes
+
+
+def _reissue_title_similarity(left: str, right: str) -> float:
+    if not left or not right:
+        return 0.0
+    if left == right:
+        return 1.0
+    return SequenceMatcher(None, left, right).ratio()
+
+
+def _reissue_hard_duplicate_match(
+    normalized_claim: Dict[str, Any],
+    indexes: Dict[str, Dict[str, Any]],
+) -> Tuple[str, str]:
+    canonical_url = str(normalized_claim.get("canonical_url") or "").strip()
+    title = str(normalized_claim.get("normalized_title") or "").strip()
+    source = str(normalized_claim.get("normalized_source") or "").strip()
+    source_title = f"{source}|{title}" if source and title else ""
+
+    for group in ("parent", "sent", "exposure", "recent"):
+        bucket = indexes.get(group)
+        if not bucket:
+            continue
+        if canonical_url and canonical_url in bucket["canonical_urls"]:
+            return group, "canonical_url"
+        if title and title in bucket["normalized_titles"]:
+            return group, "normalized_title"
+        if source_title and source_title in bucket["source_titles"]:
+            return group, "source_title"
+        if title:
+            for row in bucket["rows"]:
+                other_title = str(row.get("normalized_title") or "").strip()
+                if not other_title:
+                    continue
+                other_source = str(row.get("normalized_source") or "").strip()
+                similarity = _reissue_title_similarity(title, other_title)
+                if source and source == other_source and similarity >= _REISSUE_HARD_TITLE_SIMILARITY_THRESHOLD:
+                    return group, "source_similar_title"
+                if similarity >= _REISSUE_HARD_TITLE_CROSS_SOURCE_THRESHOLD:
+                    return group, "cross_source_similar_title"
+    return "", ""
+
+
+def _filter_global_selection_ids(filtered: Dict[str, Any], kept_claims: List[Dict[str, Any]]) -> None:
+    global_sel = filtered.get("global_top5_selection")
+    if not isinstance(global_sel, dict):
+        return
+    kept_ids: Set[str] = set()
+    for claim in kept_claims:
+        if not isinstance(claim, dict):
+            continue
+        cid = str(claim.get("claim_id") or "").strip()
+        if cid:
+            kept_ids.add(cid)
+        for sid in claim.get("source_ids") or []:
+            s = str(sid or "").strip()
+            if s:
+                kept_ids.add(s)
+    if not kept_ids:
+        return
+    for key in (
+        "selected_source_ids",
+        "downstream_candidate_source_ids",
+        "replacement_source_ids",
+        "watchlist_source_ids",
+    ):
+        raw = global_sel.get(key)
+        if isinstance(raw, list):
+            global_sel[key] = [sid for sid in raw if str(sid or "").strip() in kept_ids]
+
+
+def _filter_hard_duplicate_claims_with_stats(
     source_pack: Dict[str, Any],
     exclusion_rows: List[Dict[str, Any]],
-) -> Tuple[Dict[str, Any], int]:
-    """Drop source_pack claims that are the *same article* as a hard-excluded item
-    (parent selected_items / recent sent / recent exposure), matched by canonical
-    URL or exact normalized title.
+) -> Tuple[Dict[str, Any], int, Dict[str, Any]]:
+    """Drop hard-duplicate claims before scoring/TOP5 selection.
 
-    This must run BEFORE TOP5 selection: the diversity gate picks exactly 5 from
-    the qualified pool, so if hard-duplicates are only removed afterwards the slots
-    they consumed cannot be backfilled from the fresh replacement pool. Only HARD
-    duplicates are removed here — soft diversity (same source / entity / cluster)
-    is left to the diversity gate and its shortage relaxation.
+    Parent selected_items, customer sent log, and owner-review exposure log items
+    are treated as non-reentrant hard exclusions. Soft diversity constraints such
+    as same source/domain/entity remain the later diversity gate's responsibility.
     """
-    canon, titles = _reissue_hard_exclusion_index(exclusion_rows)
     claims = source_pack.get("claims") if isinstance(source_pack.get("claims"), list) else []
-    if not canon and not titles:
-        return source_pack, len(claims)
+    indexes = _reissue_exclusion_indexes_by_source(exclusion_rows)
+    stats: Dict[str, Any] = {
+        "reissue_hard_exclude_before_scoring": True,
+        "reissue_hard_excluded_parent_count": 0,
+        "reissue_hard_excluded_sent_count": 0,
+        "reissue_hard_excluded_exposure_count": 0,
+        "reissue_hard_excluded_total_count": 0,
+        "reissue_hard_exclude_reinsertion_blocked": True,
+    }
+    if not indexes:
+        return source_pack, len(claims), stats
+
+    source_map = _reissue_source_map(source_pack)
     kept: List[Dict[str, Any]] = []
+    excluded: List[Dict[str, Any]] = []
     for claim in claims:
         if not isinstance(claim, dict):
             kept.append(claim)
             continue
-        norm = normalize_candidate(claim)
-        c = norm.get("canonical_url")
-        t = norm.get("normalized_title")
-        if (c and c in canon) or (t and t in titles):
+        norm = normalize_candidate(_claim_with_source_metadata(claim, source_map))
+        group, reason = _reissue_hard_duplicate_match(norm, indexes)
+        if group:
+            source_key = group if group in {"parent", "sent", "exposure"} else "sent"
+            stats[f"reissue_hard_excluded_{source_key}_count"] += 1
+            excluded.append(
+                {
+                    "claim_id": claim.get("claim_id"),
+                    "source_ids": claim.get("source_ids") or [],
+                    "canonical_url": norm.get("canonical_url"),
+                    "normalized_title": norm.get("normalized_title"),
+                    "matched_source": group,
+                    "matched_reason": reason,
+                }
+            )
             continue
         kept.append(claim)
-    filtered = dict(source_pack)
+
+    filtered = copy.deepcopy(source_pack)
     filtered["claims"] = kept
-    return filtered, len(kept)
+    _filter_global_selection_ids(filtered, kept)
+    total = len(excluded)
+    stats["reissue_hard_excluded_total_count"] = total
+    stats["reissue_hard_excluded_items"] = excluded[:25]
+    return filtered, len(kept), stats
+
+
+def _filter_hard_duplicate_claims(
+    source_pack: Dict[str, Any],
+    exclusion_rows: List[Dict[str, Any]],
+) -> Tuple[Dict[str, Any], int]:
+    filtered, kept, _stats = _filter_hard_duplicate_claims_with_stats(source_pack, exclusion_rows)
+    return filtered, kept
 
 
 def _prepare_keysuri_reissue_prompt_input(
@@ -1284,18 +1450,26 @@ def _prepare_keysuri_reissue_prompt_input(
     """
     parent_rows = _keysuri_reissue_exclusion_rows(parent)
     try:
-        sent_rows = [r for r in (recent_sent_news_log(program_id) or []) if isinstance(r, dict)]
+        sent_rows = [
+            {**r, "_reissue_exclusion_source": "sent"}
+            for r in (recent_sent_news_log(program_id) or [])
+            if isinstance(r, dict)
+        ]
     except Exception:  # noqa: BLE001 — log read failures must not break reissue
         sent_rows = []
     try:
         exposure_status = recent_owner_review_exposure_log_with_status(program_id, days=5)
-        exposure_rows = [r for r in (exposure_status.get("items") or []) if isinstance(r, dict)]
+        exposure_rows = [
+            {**r, "_reissue_exclusion_source": "exposure"}
+            for r in (exposure_status.get("items") or [])
+            if isinstance(r, dict)
+        ]
     except Exception:  # noqa: BLE001
         exposure_rows = []
     hard_rows = list(parent_rows) + sent_rows + exposure_rows
     raw_claims = source_pack.get("claims") if isinstance(source_pack.get("claims"), list) else []
     raw_count = len(raw_claims)
-    filtered_pack, kept_count = _filter_hard_duplicate_claims(source_pack, hard_rows)
+    filtered_pack, kept_count, hard_stats = _filter_hard_duplicate_claims_with_stats(source_pack, hard_rows)
     diagnostics: Dict[str, Any] = {
         "reissue_candidate_raw_count": raw_count,
         "reissue_candidate_after_hard_exclusion_count": kept_count,
@@ -1303,6 +1477,7 @@ def _prepare_keysuri_reissue_prompt_input(
         "reissue_recent_sent_log_count": len(sent_rows),
         "reissue_recent_exposure_log_count": len(exposure_rows),
     }
+    diagnostics.update(hard_stats)
     try:
         prompt_input = build_keysuri_prompt_input(
             program_id, filtered_pack, extra_recent_log=parent_rows
@@ -1943,14 +2118,102 @@ def _resolve_saved_artifact_path(parent: Dict[str, Any], *keys: str) -> Optional
     return None
 
 
-def _saved_top_image_path(parent: Dict[str, Any]) -> Optional[Path]:
-    return _resolve_saved_artifact_path(
-        parent,
+def _path_from_parent_image_reference(raw: Any) -> Optional[Path]:
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    if value.startswith(("http://", "https://", "gs://", "cid:", "data:image/")):
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        path = _REPO / path
+    return path
+
+
+def _saved_top_image_reference(parent: Dict[str, Any]) -> Tuple[Optional[Path], Dict[str, Any]]:
+    """Resolve a parent top-image reference for body_only reissue.
+
+    GCS-backed parent artifacts often retain the image path/hash metadata but the
+    ephemeral Cloud Run file is gone by the time an operator does a dry-run
+    body_only reissue. For no-send QA we can still render the child with the
+    preserved CID/reference; actual owner email send still requires a local file.
+    """
+    candidates: List[Tuple[Path, str, str]] = []
+
+    def consider(raw: Any, source: str) -> None:
+        path = _path_from_parent_image_reference(raw)
+        if path is not None:
+            candidates.append((path, source, str(raw or "").strip()))
+
+    for key in (
         "generated_image_path_watermarked",
         "generated_image_path",
         "top_image_path",
         "top_shot_image_path",
-    )
+        "customer_top_image_path",
+    ):
+        consider(parent.get(key), key)
+
+    for idx, item in enumerate(parent.get("owner_email_inline_image_hashes") or []):
+        if not isinstance(item, dict):
+            continue
+        cid = str(item.get("cid") or "").lower()
+        filename = str(item.get("filename") or "").lower()
+        raw_path = item.get("path") or item.get("file_path")
+        if "topshot" in cid or "top" in filename or raw_path:
+            consider(raw_path, f"owner_email_inline_image_hashes[{idx}].path")
+
+    for key in ("top_image", "image_artifacts", "generated_images"):
+        raw = parent.get(key)
+        if isinstance(raw, dict):
+            for subkey in (
+                "watermarked_path",
+                "generated_image_path_watermarked",
+                "generated_image_path",
+                "file_path",
+                "path",
+            ):
+                consider(raw.get(subkey), f"{key}.{subkey}")
+        elif isinstance(raw, list):
+            for idx, item in enumerate(raw):
+                if not isinstance(item, dict):
+                    continue
+                role = str(item.get("role") or item.get("image_role") or item.get("kind") or "").lower()
+                if role and "top" not in role:
+                    continue
+                for subkey in ("watermarked_path", "file_path", "path"):
+                    consider(item.get(subkey), f"{key}[{idx}].{subkey}")
+        else:
+            consider(raw, key)
+
+    selected: Optional[Tuple[Path, str, str]] = None
+    for candidate in candidates:
+        if candidate[0].is_file():
+            selected = candidate
+            break
+    if selected is None and candidates:
+        selected = candidates[0]
+    if selected is None:
+        return None, {
+            "reissue_body_only_image_reused": False,
+            "reissue_body_only_image_url_present": False,
+            "reissue_body_only_image_local_file_present": False,
+        }
+    path, source, raw = selected
+    return path, {
+        "reissue_body_only_image_reused": True,
+        "reissue_body_only_image_source": source,
+        "reissue_body_only_image_reference": raw,
+        "reissue_body_only_image_url_present": True,
+        "reissue_body_only_image_local_file_present": path.is_file(),
+    }
+
+
+def _saved_top_image_path(parent: Dict[str, Any]) -> Optional[Path]:
+    path, meta = _saved_top_image_reference(parent)
+    if path is not None and meta.get("reissue_body_only_image_local_file_present"):
+        return path
+    return None
 
 
 def _saved_korea_bottom_image_path(parent: Dict[str, Any]) -> Optional[Path]:
@@ -2436,9 +2699,16 @@ def run_keysuri_text_only_reissue(
     selected_count_after = len(replacement_signal_ids)
 
     child_run_id = generate_run_id(pid)
-    top_image_path = _saved_top_image_path(parent)
+    top_image_path, top_image_reuse_fields = _saved_top_image_reference(parent)
     if top_image_path is None:
         return {"ok": False, "error": "text_only_reissue_missing_saved_top_image", "program_id": pid}
+    if send_owner_email and not top_image_path.is_file():
+        return {
+            "ok": False,
+            "error": "text_only_reissue_missing_saved_top_image",
+            "program_id": pid,
+            **top_image_reuse_fields,
+        }
     bottom_image_path = _saved_korea_bottom_image_path(parent) if pid == PROGRAM_KOREA else None
 
     contract_fixture_preview = _build_service_contract_fixture(
@@ -2563,6 +2833,7 @@ def run_keysuri_text_only_reissue(
     meta.update(repair_fields)
     meta.update(visible_text_quality_fields)
     meta.update(_scope_delivery_reason_fields("body_only"))
+    meta.update(top_image_reuse_fields)
     meta.update(
         {
             "regen_type": "body_only",

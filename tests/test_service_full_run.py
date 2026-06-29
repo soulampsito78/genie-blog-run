@@ -861,6 +861,154 @@ class KeysuriReissueCandidateExpansionTests(unittest.TestCase):
         self.assertEqual(diag["reissue_candidate_after_hard_exclusion_count"], 7)
         self.assertEqual(diag["reissue_excluded_parent_items_count"], 5)
         self.assertEqual(diag["reissue_candidate_final_count"], 5)
+        self.assertTrue(diag["reissue_hard_exclude_before_scoring"])
+        self.assertTrue(diag["reissue_hard_exclude_reinsertion_blocked"])
+        self.assertEqual(diag["reissue_hard_excluded_parent_count"], 3)
+        self.assertEqual(diag["reissue_hard_excluded_total_count"], 3)
+
+    def test_prepare_reissue_prefilters_source_map_url_before_selection(self) -> None:
+        from keysuri_service_full_run import _prepare_keysuri_reissue_prompt_input
+
+        parent_url = "https://openai.com/index/how-agents-are-transforming-work"
+        parent = {
+            "selected_items": [
+                {
+                    "headline": "How agents are transforming work",
+                    "canonical_url": parent_url,
+                    "source_name": "OpenAI News",
+                }
+            ]
+        }
+        pack = {
+            "program_id": PROGRAM_GLOBAL,
+            "sources": [
+                {
+                    "source_id": "dup-src",
+                    "source_name": "OpenAI News",
+                    "source_url": parent_url + "?utm_source=rss",
+                    "title": "How agents are transforming work",
+                },
+                *[
+                    {
+                        "source_id": f"fresh-src-{i}",
+                        "source_name": "Fresh Source",
+                        "source_url": f"https://fresh.example.com/{i}",
+                        "title": f"Fresh story {i}",
+                    }
+                    for i in range(6)
+                ],
+            ],
+            "claims": [
+                {
+                    "claim_id": "dup-claim",
+                    "headline": "How agents are transforming work",
+                    "statement": "How agents are transforming work",
+                    "source_ids": ["dup-src"],
+                },
+                *[
+                    {
+                        "claim_id": f"fresh-claim-{i}",
+                        "headline": f"Fresh story {i}",
+                        "statement": f"Fresh story {i}",
+                        "source_ids": [f"fresh-src-{i}"],
+                    }
+                    for i in range(6)
+                ],
+            ],
+            "global_top5_selection": {
+                "selected_source_ids": ["dup-src", "fresh-src-0", "fresh-src-1"],
+                "downstream_candidate_source_ids": [
+                    "dup-src",
+                    "fresh-src-0",
+                    "fresh-src-1",
+                    "fresh-src-2",
+                    "fresh-src-3",
+                    "fresh-src-4",
+                ],
+                "replacement_source_ids": ["dup-src", "fresh-src-5"],
+            },
+        }
+        captured = {}
+
+        def _fake_build(pid, sp, extra_recent_log=None):
+            captured["pack"] = sp
+            return {
+                "program_id": PROGRAM_GLOBAL,
+                "source_pack": sp,
+                "top_5_news": {"items": _live_reselection_items()},
+                "sent_log_read_count": 0,
+                "exposure_log_read_count": 0,
+            }
+
+        with patch("keysuri_service_full_run.build_keysuri_prompt_input", side_effect=_fake_build), patch(
+            "keysuri_service_full_run.recent_sent_news_log", return_value=[]
+        ), patch(
+            "keysuri_service_full_run.recent_owner_review_exposure_log_with_status",
+            return_value={"items": [], "read_ok": True},
+        ):
+            prompt_input, _parent_rows, diag, err = _prepare_keysuri_reissue_prompt_input(
+                PROGRAM_GLOBAL, pack, parent
+            )
+
+        self.assertIsNone(err)
+        self.assertIsNotNone(prompt_input)
+        kept_claim_ids = [c["claim_id"] for c in captured["pack"]["claims"]]
+        self.assertNotIn("dup-claim", kept_claim_ids)
+        selection = captured["pack"]["global_top5_selection"]
+        self.assertNotIn("dup-src", selection["selected_source_ids"])
+        self.assertNotIn("dup-src", selection["downstream_candidate_source_ids"])
+        self.assertNotIn("dup-src", selection["replacement_source_ids"])
+        self.assertEqual(diag["reissue_candidate_raw_count"], 7)
+        self.assertEqual(diag["reissue_candidate_after_hard_exclusion_count"], 6)
+        self.assertEqual(diag["reissue_hard_excluded_parent_count"], 1)
+
+    def test_prepare_reissue_hard_excludes_sent_and_exposure_before_selection(self) -> None:
+        from keysuri_service_full_run import _prepare_keysuri_reissue_prompt_input
+
+        sent_url = "https://sent.example.com/story"
+        exposure_url = "https://exposure.example.com/story"
+        pack = {
+            "program_id": PROGRAM_GLOBAL,
+            "claims": [
+                self._claim("sent-dup", sent_url, "Sent story"),
+                self._claim("exposure-dup", exposure_url, "Exposure story"),
+                *[self._claim(f"fresh-{i}", f"https://fresh.example.com/{i}", f"Fresh story {i}") for i in range(6)],
+            ],
+        }
+        captured = {}
+
+        def _fake_build(pid, sp, extra_recent_log=None):
+            captured["pack"] = sp
+            return {
+                "program_id": PROGRAM_GLOBAL,
+                "source_pack": sp,
+                "top_5_news": {"items": _live_reselection_items()},
+                "sent_log_read_count": 1,
+                "exposure_log_read_count": 1,
+            }
+
+        with patch("keysuri_service_full_run.build_keysuri_prompt_input", side_effect=_fake_build), patch(
+            "keysuri_service_full_run.recent_sent_news_log",
+            return_value=[{"canonical_url": sent_url, "title": "Sent story", "source": "Sent Source"}],
+        ), patch(
+            "keysuri_service_full_run.recent_owner_review_exposure_log_with_status",
+            return_value={
+                "items": [{"canonical_url": exposure_url, "title": "Exposure story", "source": "Exposure Source"}],
+                "read_ok": True,
+            },
+        ):
+            prompt_input, _parent_rows, diag, err = _prepare_keysuri_reissue_prompt_input(
+                PROGRAM_GLOBAL, pack, {"selected_items": []}
+            )
+
+        self.assertIsNone(err)
+        self.assertIsNotNone(prompt_input)
+        kept_ids = [c["claim_id"] for c in captured["pack"]["claims"]]
+        self.assertNotIn("sent-dup", kept_ids)
+        self.assertNotIn("exposure-dup", kept_ids)
+        self.assertEqual(diag["reissue_hard_excluded_sent_count"], 1)
+        self.assertEqual(diag["reissue_hard_excluded_exposure_count"], 1)
+        self.assertEqual(diag["reissue_hard_excluded_total_count"], 2)
 
     def test_prepare_reissue_insufficient_after_prefilter_safe_fail(self) -> None:
         from keysuri_service_full_run import _prepare_keysuri_reissue_prompt_input
@@ -1010,6 +1158,152 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         self.assertNotIn("…", rendered)
         self.assertNotIn("..", rendered)
         self.assertNotIn("report maps how AI could reshape jobs", rendered)
+
+    def test_text_only_reissue_dry_run_reuses_missing_local_parent_image_reference(self) -> None:
+        from keysuri_service_full_run import run_keysuri_text_only_reissue
+
+        repo = Path(__file__).resolve().parents[1]
+        parent_id = "20260629_123001_keysuri_global_tech_e70f6567"
+        child_id = "20260629_130003_keysuri_global_tech_d0b0d003"
+        missing_rel = "output/keysuri_preview/image_canary/missing_parent_top_mirai_on_watermarked.jpg"
+        missing_abs = repo / missing_rel
+        if missing_abs.exists():
+            missing_abs.unlink()
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": PROGRAM_GLOBAL,
+                "program_id": PROGRAM_GLOBAL,
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+                "generated_image_path_watermarked": missing_rel,
+                "top_image_cid": "keysuri_topshot_global_parent",
+                "selected_items": _reissue_parent_top5_items(),
+            },
+            email_html="<html><body><p>parent body</p></body></html>",
+        )
+        source_pack = {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as sp_file:
+            json.dump(source_pack, sp_file)
+            source_pack_path = sp_file.name
+        live_items = _live_reselection_items(prefix="dry-body-missing-image")
+        prompt_input = {
+            "program_id": PROGRAM_GLOBAL,
+            "source_pack": source_pack,
+            "top_5_news": {"news_scope": "global", "section_heading": "글로벌 테크 TOP 5", "items": live_items},
+            "sent_log_read_count": 0,
+            "exposure_log_read_count": 0,
+        }
+        send_fn = MagicMock(return_value=True)
+
+        with patch("keysuri_service_full_run.generate_run_id", return_value=child_id), patch(
+            "keysuri_service_full_run.build_keysuri_prompt_input", return_value=json.loads(json.dumps(prompt_input))
+        ), patch(
+            "keysuri_service_full_run.build_keysuri_generation_prompt", return_value="PROMPT"
+        ), patch(
+            "keysuri_service_full_run.parse_keysuri_generated_response",
+            return_value={"parse_status": "parsed_valid", "generated_briefing": _briefing_for_live_items(live_items)},
+        ), patch(
+            "keysuri_service_full_run.enrich_generated_briefing_content",
+            side_effect=lambda briefing, *_args: briefing,
+        ), patch(
+            "keysuri_service_full_run.build_keysuri_subject_artifact_fields",
+            return_value={
+                "editorial_subject": "라이브 재발행 검증",
+                "email_subject": "라이브 재발행 검증",
+                "owner_email_subject": "[운영자 검토] 라이브 재발행 검증",
+                "email_preheader": "글로벌 AI·테크 신호 검수 대기",
+                "owner_email_preheader": "글로벌 AI·테크 신호 검수 대기",
+                "subject_top_headline": "라이브 재발행 검증",
+                "subject_source": "top_signal_1_headline",
+                "subject_kst_date": "20260629",
+                "subject_kst_label": "6월 29일",
+                "subject_program_label": "글로벌 테크 브리핑",
+                "subject_trigger_label": "admin_text_only_reissue",
+            },
+        ), patch(
+            "keysuri_service_full_run._build_service_contract_fixture",
+            return_value={"selected_subject": "라이브 재발행 검증", "preheader": "검수 대기"},
+        ), patch(
+            "keysuri_service_full_run.render_keysuri_contract_preview_html",
+            return_value="<html><body><p>재발행 검수 본문</p></body></html>",
+        ), patch(
+            "keysuri_service_full_run.build_keysuri_global_gmail_owner_email_html",
+            return_value='<html><body><p>재발행 검수 본문</p><img src="cid:keysuri_topshot_global_parent"/></body></html>',
+        ):
+            result = run_keysuri_text_only_reissue(
+                parent_id,
+                trigger_source="admin_text_only_reissue",
+                text_caller=MagicMock(return_value="RAW"),
+                send_owner_email=False,
+                send_fn=send_fn,
+                smoke_runner=lambda **_kw: _live_smoke_result_for_pack(source_pack_path),
+            )
+
+        self.assertTrue(result["ok"], result)
+        send_fn.assert_not_called()
+        child = load_run_artifact(child_id) or {}
+        self.assertEqual(child.get("generated_image_path_watermarked"), missing_rel)
+        self.assertTrue(child.get("reissue_body_only_image_reused"))
+        self.assertEqual(child.get("reissue_body_only_image_source"), "generated_image_path_watermarked")
+        self.assertTrue(child.get("reissue_body_only_image_url_present"))
+        self.assertFalse(child.get("reissue_body_only_image_local_file_present"))
+        self.assertEqual(child.get("customer_delivery_status"), "not_sent")
+        self.assertFalse(child.get("email_sent"))
+
+    def test_text_only_reissue_missing_parent_image_reference_remains_safe_failure(self) -> None:
+        from keysuri_service_full_run import run_keysuri_text_only_reissue
+
+        parent_id = "20260629_123001_keysuri_global_tech_00000000"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": PROGRAM_GLOBAL,
+                "program_id": PROGRAM_GLOBAL,
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+                "selected_items": _reissue_parent_top5_items(),
+            },
+            email_html="<html><body><p>parent body</p></body></html>",
+        )
+        source_pack = {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as sp_file:
+            json.dump(source_pack, sp_file)
+            source_pack_path = sp_file.name
+        live_items = _live_reselection_items(prefix="dry-body-no-image")
+        prompt_input = {
+            "program_id": PROGRAM_GLOBAL,
+            "source_pack": source_pack,
+            "top_5_news": {"news_scope": "global", "section_heading": "글로벌 테크 TOP 5", "items": live_items},
+            "sent_log_read_count": 0,
+            "exposure_log_read_count": 0,
+        }
+
+        with patch("keysuri_service_full_run.build_keysuri_prompt_input", return_value=json.loads(json.dumps(prompt_input))), patch(
+            "keysuri_service_full_run.build_keysuri_generation_prompt", return_value="PROMPT"
+        ), patch(
+            "keysuri_service_full_run.parse_keysuri_generated_response",
+            return_value={"parse_status": "parsed_valid", "generated_briefing": _briefing_for_live_items(live_items)},
+        ), patch(
+            "keysuri_service_full_run.enrich_generated_briefing_content",
+            side_effect=lambda briefing, *_args: briefing,
+        ):
+            result = run_keysuri_text_only_reissue(
+                parent_id,
+                text_caller=MagicMock(return_value="RAW"),
+                send_owner_email=False,
+                send_fn=MagicMock(return_value=True),
+                smoke_runner=lambda **_kw: _live_smoke_result_for_pack(source_pack_path),
+            )
+
+        self.assertFalse(result.get("ok"))
+        self.assertEqual(result.get("error"), "text_only_reissue_missing_saved_top_image")
 
     def test_text_and_image_reissue_dry_run_creates_child_with_sanitized_live_top5(self) -> None:
         from keysuri_service_full_run import run_keysuri_text_and_image_reissue
