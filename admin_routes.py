@@ -953,7 +953,7 @@ def admin_run_reissue(
                 mode=mode,
                 failed_step="keysuri_reissue_execution",
                 safe_message=f"재발행 실행 중 오류가 발생했습니다 ({type(exc).__name__}).",
-                status_code=500,
+                status_code=200,
             )
         new_run_id = str(result.get("run_id") or "").strip()
         if new_run_id and not result.get("email_sent") and not result.get("error"):
