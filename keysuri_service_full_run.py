@@ -295,6 +295,147 @@ def _persist_korea_generated_images(
     return fields
 
 
+def _global_top_image_gcs_object(run_id: str) -> str:
+    """Durable GCS object key for a Global run's generated top image."""
+    return f"{admin_artifact_gcs_prefix()}/{run_id}.images/global_top.jpg"
+
+
+def _persist_global_generated_top_image(
+    run_id: str,
+    top_path: Optional[Path],
+    *,
+    upload_fn=None,
+) -> Dict[str, Any]:
+    """Upload a freshly generated Kee-Suri Global top image to GCS.
+
+    The Global hero/top image is generated on the ephemeral Cloud Run instance
+    that runs the job; unlike Korea's generated images it was never persisted, so
+    a later body_only reissue on another instance could not find the saved file
+    (``text_only_reissue_missing_saved_top_image``). Persisting it durably to GCS
+    lets reissue restore the parent image cross-instance. Returns metadata fields
+    to merge into the run artifact. Local path fields are left untouched by the
+    caller for backward compatibility.
+    """
+    bucket_name = admin_artifact_bucket_name()
+    if not bucket_name:
+        return {
+            "top_image_persistence_status": "local_only",
+            "top_image_persistence_reason": "artifact_bucket_not_configured",
+        }
+    if top_path is None or not Path(top_path).is_file():
+        return {
+            "top_image_persistence_status": "local_only",
+            "top_image_persistence_reason": "top_image_local_file_missing",
+        }
+    uploader = upload_fn or _upload_keysuri_image
+    object_name = _global_top_image_gcs_object(run_id)
+    try:
+        uploader(bucket_name, object_name, Path(top_path))
+    except Exception as exc:  # noqa: BLE001 — persistence failure must not break the run
+        logger.warning("keysuri Global Top GCS upload failed: %s", type(exc).__name__)
+        return {
+            "top_image_persistence_status": "failed",
+            "top_image_persistence_reason": "gcs_upload_failed",
+        }
+    gcs_uri = f"gs://{bucket_name}/{object_name}"
+    return {
+        "top_image_persistence_status": "persisted",
+        "top_image_gcs_object": object_name,
+        "top_image_gcs_uri": gcs_uri,
+        "generated_image_gcs_uri": gcs_uri,
+        "generated_image_watermarked_gcs_uri": gcs_uri,
+        "generated_image_gcs_bucket": bucket_name,
+    }
+
+
+def _split_gcs_uri(uri: Any) -> Optional[Tuple[str, str]]:
+    """Split a ``gs://bucket/object`` URI into ``(bucket, object)``."""
+    raw = str(uri or "").strip()
+    if not raw.startswith("gs://"):
+        return None
+    rest = raw[len("gs://"):]
+    bucket, _, obj = rest.partition("/")
+    bucket = bucket.strip()
+    obj = obj.strip()
+    if not bucket or not obj:
+        return None
+    return bucket, obj
+
+
+def _download_keysuri_top_image_from_gcs(
+    dest: Path,
+    *,
+    bucket_name: str,
+    object_name: str,
+) -> Optional[str]:
+    """Download a persisted top image from GCS to ``dest``.
+
+    Returns ``None`` on success or a stable issue code on failure (mirrors
+    ``_download_korea_bottom_asset_from_gcs``). Never raises.
+    """
+    if not bucket_name:
+        return "top_image_gcs_bucket_not_configured"
+    if not object_name:
+        return "top_image_gcs_object_not_configured"
+    try:
+        from google.cloud import storage
+
+        blob = storage.Client().bucket(bucket_name).blob(object_name)
+        if not blob.exists():
+            return "top_image_gcs_missing"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        blob.download_to_filename(str(dest))
+    except Exception as exc:  # noqa: BLE001 — restore failure must degrade to safe-fail
+        logger.warning("keysuri top image GCS download failed: %s", type(exc).__name__)
+        return "top_image_gcs_download_failed"
+    return None
+
+
+def _parent_top_image_gcs_refs(parent: Dict[str, Any]) -> List[Tuple[str, str, str]]:
+    """Collect durable ``(bucket, object, source_label)`` top-image GCS refs.
+
+    Looks at explicit GCS-uri / object-key fields persisted by
+    ``_persist_global_generated_top_image`` and any ``gs://`` value that may be
+    stored in the legacy local-path fields. De-duplicated, order preserved.
+    """
+    default_bucket = (
+        str(parent.get("generated_image_gcs_bucket") or "").strip()
+        or (admin_artifact_bucket_name() or "")
+    )
+    refs: List[Tuple[str, str, str]] = []
+    for key in (
+        "top_image_gcs_uri",
+        "generated_image_watermarked_gcs_uri",
+        "generated_image_gcs_uri",
+    ):
+        parsed = _split_gcs_uri(parent.get(key))
+        if parsed:
+            refs.append((parsed[0], parsed[1], key))
+    for key in ("top_image_gcs_object", "generated_image_watermarked_gcs_object"):
+        obj = str(parent.get(key) or "").strip()
+        if obj and default_bucket:
+            refs.append((default_bucket, obj, key))
+    for key in (
+        "generated_image_path_watermarked",
+        "generated_image_path",
+        "top_image_path",
+        "top_shot_image_path",
+        "customer_top_image_path",
+    ):
+        parsed = _split_gcs_uri(parent.get(key))
+        if parsed:
+            refs.append((parsed[0], parsed[1], key))
+    seen: Set[Tuple[str, str]] = set()
+    out: List[Tuple[str, str, str]] = []
+    for bucket, obj, label in refs:
+        dedup_key = (bucket, obj)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+        out.append((bucket, obj, label))
+    return out
+
+
 def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -2186,27 +2327,70 @@ def _saved_top_image_reference(parent: Dict[str, Any]) -> Tuple[Optional[Path], 
         else:
             consider(raw, key)
 
-    selected: Optional[Tuple[Path, str, str]] = None
-    for candidate in candidates:
-        if candidate[0].is_file():
-            selected = candidate
-            break
-    if selected is None and candidates:
-        selected = candidates[0]
-    if selected is None:
-        return None, {
-            "reissue_body_only_image_reused": False,
-            "reissue_body_only_image_url_present": False,
-            "reissue_body_only_image_local_file_present": False,
+    # 1) Prefer an existing local file (unchanged behavior).
+    local_selected = next((c for c in candidates if c[0].is_file()), None)
+    if local_selected is not None:
+        path, source, raw = local_selected
+        return path, {
+            "reissue_body_only_image_reused": True,
+            "reissue_body_only_image_source": source,
+            "reissue_body_only_image_reference": raw,
+            "reissue_body_only_image_url_present": True,
+            "reissue_body_only_image_local_file_present": True,
+            "reissue_body_only_image_gcs_restored": False,
         }
-    path, source, raw = selected
-    return path, {
-        "reissue_body_only_image_reused": True,
-        "reissue_body_only_image_source": source,
-        "reissue_body_only_image_reference": raw,
-        "reissue_body_only_image_url_present": True,
-        "reissue_body_only_image_local_file_present": path.is_file(),
+
+    # 2) No local file present: restore from a durable GCS reference if the parent
+    #    artifact carries one (persisted by _persist_global_generated_top_image).
+    gcs_refs = _parent_top_image_gcs_refs(parent)
+    gcs_fail_fields: Dict[str, Any] = {}
+    if gcs_refs:
+        token = re.sub(r"[^A-Za-z0-9_]", "", str(parent.get("run_id") or "")) or hashlib.sha256(
+            f"{gcs_refs[0][0]}/{gcs_refs[0][1]}".encode("utf-8")
+        ).hexdigest()[:16]
+        dest = _REPO / "output" / "admin_runs" / "keysuri_service_assets" / f"{token}_restored_top.jpg"
+        last_issue = ""
+        for bucket, obj, label in gcs_refs:
+            issue = _download_keysuri_top_image_from_gcs(dest, bucket_name=bucket, object_name=obj)
+            if issue is None and dest.is_file():
+                return dest, {
+                    "reissue_body_only_image_reused": True,
+                    "reissue_body_only_image_source": label,
+                    "reissue_body_only_image_reference": f"gs://{bucket}/{obj}",
+                    "reissue_body_only_image_url_present": True,
+                    "reissue_body_only_image_local_file_present": True,
+                    "reissue_body_only_image_gcs_restored": True,
+                    "reissue_body_only_image_gcs_object": obj,
+                    "reissue_body_only_image_gcs_bucket": bucket,
+                }
+            last_issue = issue or "top_image_gcs_restore_no_file"
+        gcs_fail_fields = {
+            "reissue_body_only_image_gcs_restore_attempted": True,
+            "reissue_body_only_image_gcs_restore_status": last_issue or "failed",
+        }
+
+    # 3) Fall back to a stale local reference (dry-run still renders; the live-send
+    #    path is guarded by the caller) or safe-fail when nothing is available.
+    if candidates:
+        path, source, raw = candidates[0]
+        fields = {
+            "reissue_body_only_image_reused": True,
+            "reissue_body_only_image_source": source,
+            "reissue_body_only_image_reference": raw,
+            "reissue_body_only_image_url_present": True,
+            "reissue_body_only_image_local_file_present": False,
+            "reissue_body_only_image_gcs_restored": False,
+        }
+        fields.update(gcs_fail_fields)
+        return path, fields
+    fields = {
+        "reissue_body_only_image_reused": False,
+        "reissue_body_only_image_url_present": False,
+        "reissue_body_only_image_local_file_present": False,
+        "reissue_body_only_image_gcs_restored": False,
     }
+    fields.update(gcs_fail_fields)
+    return None, fields
 
 
 def _saved_top_image_path(parent: Dict[str, Any]) -> Optional[Path]:
@@ -2446,6 +2630,14 @@ def run_keysuri_image_only_reissue(
     watermarked_generated_image_path = _repo_rel(gen_image_abs)
     image_outcome.generated_image_path = watermarked_generated_image_path
 
+    # Persist the freshly generated Global top image to GCS so a later body_only
+    # reissue can restore it cross-instance (Korea persists via its own helper).
+    top_image_persist_fields: Dict[str, Any] = {}
+    if pid == PROGRAM_GLOBAL:
+        top_image_persist_fields = _persist_global_generated_top_image(
+            child_run_id, gen_image_abs, upload_fn=image_upload_fn,
+        )
+
     issue_codes: List[str] = []
     bottom_image_path: Optional[Path] = None
     bottom_image_status = "not_applicable"
@@ -2589,6 +2781,7 @@ def run_keysuri_image_only_reissue(
             "email_preheader": meta.get("email_preheader") or preheader,
         }
     )
+    meta.update(top_image_persist_fields)
     if top_variation_fields:
         meta.update(top_variation_fields)
     if pid == PROGRAM_KOREA:
@@ -3033,6 +3226,14 @@ def run_keysuri_text_and_image_reissue(
     gen_image_abs = _watermarked_top_shot_path(gen_image_raw_abs)
     image_outcome.generated_image_path = _repo_rel(gen_image_abs)
 
+    # Persist the freshly generated Global top image to GCS for cross-instance
+    # reissue restore (Korea persists via _persist_korea_generated_images below).
+    top_image_persist_fields: Dict[str, Any] = {}
+    if pid == PROGRAM_GLOBAL:
+        top_image_persist_fields = _persist_global_generated_top_image(
+            child_run_id, gen_image_abs, upload_fn=image_upload_fn,
+        )
+
     bottom_image_path: Optional[Path] = None
     bottom_image_meta: Dict[str, Any] = {}
     bottom_image_status = "not_applicable"
@@ -3196,6 +3397,7 @@ def run_keysuri_text_and_image_reissue(
             "email_preheader": subject_fields.get("email_preheader") or owner_preheader,
         }
     )
+    meta.update(top_image_persist_fields)
     if top_variation_fields:
         meta.update(top_variation_fields)
     if pid == PROGRAM_KOREA:
@@ -3531,6 +3733,13 @@ def run_keysuri_service_full_run(
     # can embed the actual bottom image (data-URI) instead of the placeholder.
     owner_review_url = build_owner_review_admin_url(run_id) or ""
     storage_durable = _service_artifact_storage_durable()
+    # Persist the freshly generated Global top image to GCS so a later body_only
+    # reissue can restore it cross-instance (Korea persists via its own helper).
+    top_image_persist_fields: Dict[str, Any] = {}
+    if pid == PROGRAM_GLOBAL:
+        top_image_persist_fields = _persist_global_generated_top_image(
+            run_id, gen_image_abs, upload_fn=image_upload_fn,
+        )
     bottom_image_path: Optional[Path] = None
     bottom_image_status = "not_applicable"
     bottom_image_source = ""
@@ -3798,6 +4007,7 @@ def run_keysuri_service_full_run(
     _maybe_write_owner_review_exposure_log(meta, email_sent=email_sent, exposure_kind="owner_review_email")
     meta["generated_image_path_raw"] = raw_generated_image_path
     meta["generated_image_path_watermarked"] = watermarked_generated_image_path
+    meta.update(top_image_persist_fields)
     meta["top_shot_watermark_status"] = "applied"
     meta["top_shot_watermark_text"] = "MirAI:ON"
     # Image CID tracking for owner/customer email alignment validation.

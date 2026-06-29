@@ -1035,6 +1035,431 @@ class KeysuriReissueCandidateExpansionTests(unittest.TestCase):
         self.assertEqual(diag["reissue_candidate_final_count"], 3)
 
 
+class KeysuriTopImageGcsPersistenceTests(unittest.TestCase):
+    """Global top image is persisted to GCS on generation and restored on reissue."""
+
+    def setUp(self) -> None:
+        self._env = patch.dict(
+            os.environ,
+            {
+                "GENIE_OWNER_REVIEW_SEND": "1",
+                "GENIE_ADMIN_PUBLIC_BASE_URL": "https://example.com",
+                # Keep the *artifact* store local so save/load_run_artifact do not
+                # touch real GCS; the persist helper's bucket is patched per-test.
+                "GENIE_ADMIN_ARTIFACT_BUCKET": "",
+                "GENIE_ARTIFACT_BUCKET": "",
+            },
+            clear=False,
+        )
+        self._env.start()
+
+    def tearDown(self) -> None:
+        self._env.stop()
+
+    def test_persist_global_top_image_uploads_and_reports_gcs_fields(self) -> None:
+        import keysuri_service_full_run as svc
+
+        repo = Path(__file__).resolve().parents[1]
+        top = repo / "output" / "images" / "persist_global_top.jpg"
+        top.parent.mkdir(parents=True, exist_ok=True)
+        top.write_bytes(b"\xff\xd8\xff" + b"\x10" * 64)
+        run_id = "20260630_010101_keysuri_global_tech_aabbccdd"
+        uploads: list[tuple] = []
+
+        def _uploader(bucket: str, obj: str, src) -> None:
+            uploads.append((bucket, obj, str(src)))
+
+        with patch("keysuri_service_full_run.admin_artifact_bucket_name", return_value="test-bkt"):
+            expected_obj = f"{svc.admin_artifact_gcs_prefix()}/{run_id}.images/global_top.jpg"
+            fields = svc._persist_global_generated_top_image(run_id, top, upload_fn=_uploader)
+
+        self.assertEqual(fields["top_image_persistence_status"], "persisted")
+        self.assertEqual(fields["top_image_gcs_object"], expected_obj)
+        self.assertEqual(fields["top_image_gcs_uri"], f"gs://test-bkt/{expected_obj}")
+        self.assertEqual(fields["generated_image_watermarked_gcs_uri"], fields["top_image_gcs_uri"])
+        self.assertEqual(fields["generated_image_gcs_uri"], fields["top_image_gcs_uri"])
+        self.assertEqual(fields["generated_image_gcs_bucket"], "test-bkt")
+        self.assertEqual(len(uploads), 1)
+        self.assertEqual(uploads[0][0], "test-bkt")
+        self.assertEqual(uploads[0][1], expected_obj)
+        self.assertEqual(uploads[0][2], str(top))
+
+    def test_persist_global_top_image_local_only_without_bucket(self) -> None:
+        import keysuri_service_full_run as svc
+
+        repo = Path(__file__).resolve().parents[1]
+        top = repo / "output" / "images" / "persist_global_top_nobucket.jpg"
+        top.parent.mkdir(parents=True, exist_ok=True)
+        top.write_bytes(b"\xff\xd8\xff" + b"\x11" * 64)
+        with patch("keysuri_service_full_run.admin_artifact_bucket_name", return_value=None):
+            fields = svc._persist_global_generated_top_image("20260630_010101_keysuri_global_tech_aabbccdd", top)
+        self.assertEqual(fields["top_image_persistence_status"], "local_only")
+        self.assertEqual(fields["top_image_persistence_reason"], "artifact_bucket_not_configured")
+        self.assertNotIn("top_image_gcs_uri", fields)
+
+    def test_persist_global_top_image_local_only_when_file_missing(self) -> None:
+        import keysuri_service_full_run as svc
+
+        repo = Path(__file__).resolve().parents[1]
+        missing = repo / "output" / "images" / "persist_global_top_missing.jpg"
+        if missing.exists():
+            missing.unlink()
+        with patch("keysuri_service_full_run.admin_artifact_bucket_name", return_value="test-bkt"):
+            fields = svc._persist_global_generated_top_image("20260630_010101_keysuri_global_tech_aabbccdd", missing)
+        self.assertEqual(fields["top_image_persistence_status"], "local_only")
+        self.assertEqual(fields["top_image_persistence_reason"], "top_image_local_file_missing")
+
+    def test_saved_top_image_reference_restores_from_gcs_when_local_missing(self) -> None:
+        import keysuri_service_full_run as svc
+
+        repo = Path(__file__).resolve().parents[1]
+        parent = {
+            "run_id": "20260630_010102_keysuri_global_tech_deadbeef",
+            "generated_image_path_watermarked": "output/keysuri_preview/image_canary/missing_restore_x.jpg",
+            "top_image_gcs_uri": "gs://test-bkt/admin_runs/parent.images/global_top.jpg",
+        }
+        missing_abs = repo / parent["generated_image_path_watermarked"]
+        if missing_abs.exists():
+            missing_abs.unlink()
+        captured: dict = {}
+
+        def _fake_download(dest, *, bucket_name, object_name):
+            captured["bucket"] = bucket_name
+            captured["object"] = object_name
+            Path(dest).parent.mkdir(parents=True, exist_ok=True)
+            Path(dest).write_bytes(b"\xff\xd8\xffrestored")
+            return None
+
+        with patch("keysuri_service_full_run._download_keysuri_top_image_from_gcs", side_effect=_fake_download):
+            path, fields = svc._saved_top_image_reference(parent)
+
+        self.assertIsNotNone(path)
+        self.assertTrue(path.is_file())
+        self.assertTrue(fields["reissue_body_only_image_gcs_restored"])
+        self.assertTrue(fields["reissue_body_only_image_local_file_present"])
+        self.assertEqual(fields["reissue_body_only_image_gcs_object"], "admin_runs/parent.images/global_top.jpg")
+        self.assertEqual(captured["bucket"], "test-bkt")
+        self.assertEqual(captured["object"], "admin_runs/parent.images/global_top.jpg")
+        if path is not None and path.exists():
+            path.unlink()
+
+    def test_saved_top_image_reference_safe_fail_when_local_and_gcs_missing(self) -> None:
+        import keysuri_service_full_run as svc
+
+        repo = Path(__file__).resolve().parents[1]
+        # Stale local reference, no GCS reference: dry-run still renders (non-file
+        # path returned) but the caller's live-send guard safe-fails.
+        stale = {
+            "run_id": "20260630_010103_keysuri_global_tech_cafebabe",
+            "generated_image_path_watermarked": "output/keysuri_preview/image_canary/missing_restore_y.jpg",
+        }
+        stale_abs = repo / stale["generated_image_path_watermarked"]
+        if stale_abs.exists():
+            stale_abs.unlink()
+        path, fields = svc._saved_top_image_reference(stale)
+        self.assertIsNotNone(path)
+        self.assertFalse(fields["reissue_body_only_image_local_file_present"])
+        self.assertFalse(fields["reissue_body_only_image_gcs_restored"])
+
+        # No image reference at all: hard safe-fail (None).
+        path2, fields2 = svc._saved_top_image_reference(
+            {"run_id": "20260630_010104_keysuri_global_tech_0badf00d"}
+        )
+        self.assertIsNone(path2)
+        self.assertFalse(fields2["reissue_body_only_image_reused"])
+
+    def test_saved_top_image_reference_safe_fail_when_gcs_download_fails(self) -> None:
+        import keysuri_service_full_run as svc
+
+        repo = Path(__file__).resolve().parents[1]
+        parent = {
+            "run_id": "20260630_010105_keysuri_global_tech_feedface",
+            "generated_image_path_watermarked": "output/keysuri_preview/image_canary/missing_restore_z.jpg",
+            "top_image_gcs_uri": "gs://test-bkt/admin_runs/parent.images/global_top.jpg",
+        }
+        missing_abs = repo / parent["generated_image_path_watermarked"]
+        if missing_abs.exists():
+            missing_abs.unlink()
+        with patch(
+            "keysuri_service_full_run._download_keysuri_top_image_from_gcs",
+            return_value="top_image_gcs_missing",
+        ):
+            path, fields = svc._saved_top_image_reference(parent)
+        # Falls back to the stale (non-file) reference; live-send guard still fails.
+        self.assertFalse(fields["reissue_body_only_image_local_file_present"])
+        self.assertFalse(fields["reissue_body_only_image_gcs_restored"])
+        self.assertTrue(fields.get("reissue_body_only_image_gcs_restore_attempted"))
+        self.assertEqual(fields.get("reissue_body_only_image_gcs_restore_status"), "top_image_gcs_missing")
+
+    def test_body_only_live_send_succeeds_with_gcs_restored_image(self) -> None:
+        from keysuri_service_full_run import run_keysuri_text_only_reissue
+
+        repo = Path(__file__).resolve().parents[1]
+        parent_id = "20260629_123001_keysuri_global_tech_e70f6567"
+        child_id = "20260630_010201_keysuri_global_tech_d0b0d201"
+        missing_rel = "output/keysuri_preview/image_canary/gcs_restore_parent_top.jpg"
+        missing_abs = repo / missing_rel
+        if missing_abs.exists():
+            missing_abs.unlink()
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": PROGRAM_GLOBAL,
+                "program_id": PROGRAM_GLOBAL,
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+                "generated_image_path_watermarked": missing_rel,
+                "top_image_gcs_uri": "gs://test-bkt/admin_runs/20260629_123001_keysuri_global_tech_e70f6567.images/global_top.jpg",
+                "top_image_cid": "keysuri_topshot_global_parent",
+                "selected_items": _reissue_parent_top5_items(),
+            },
+            email_html="<html><body><p>parent body</p></body></html>",
+        )
+        source_pack = {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as sp_file:
+            json.dump(source_pack, sp_file)
+            source_pack_path = sp_file.name
+        live_items = _live_reselection_items(prefix="gcs-restore-body")
+        prompt_input = {
+            "program_id": PROGRAM_GLOBAL,
+            "source_pack": source_pack,
+            "top_5_news": {"news_scope": "global", "section_heading": "글로벌 테크 TOP 5", "items": live_items},
+            "sent_log_read_count": 0,
+            "exposure_log_read_count": 0,
+        }
+        send_fn = MagicMock(return_value=True)
+        restored_dest = repo / "output" / "admin_runs" / "keysuri_service_assets" / f"{parent_id}_restored_top.jpg"
+        if restored_dest.exists():
+            restored_dest.unlink()
+
+        def _fake_download(dest, *, bucket_name, object_name):
+            Path(dest).parent.mkdir(parents=True, exist_ok=True)
+            Path(dest).write_bytes(b"\xff\xd8\xffrestored-top")
+            return None
+
+        with patch("keysuri_service_full_run.generate_run_id", return_value=child_id), patch(
+            "keysuri_service_full_run._download_keysuri_top_image_from_gcs", side_effect=_fake_download
+        ), patch(
+            "keysuri_service_full_run.build_keysuri_prompt_input", return_value=json.loads(json.dumps(prompt_input))
+        ), patch(
+            "keysuri_service_full_run.build_keysuri_generation_prompt", return_value="PROMPT"
+        ), patch(
+            "keysuri_service_full_run.parse_keysuri_generated_response",
+            return_value={"parse_status": "parsed_valid", "generated_briefing": _briefing_for_live_items(live_items)},
+        ), patch(
+            "keysuri_service_full_run.enrich_generated_briefing_content",
+            side_effect=lambda briefing, *_args: briefing,
+        ), patch(
+            "keysuri_service_full_run.build_keysuri_subject_artifact_fields",
+            return_value={
+                "editorial_subject": "라이브 재발행 검증",
+                "email_subject": "라이브 재발행 검증",
+                "owner_email_subject": "[운영자 검토] 라이브 재발행 검증",
+                "email_preheader": "글로벌 AI·테크 신호 검수 대기",
+                "owner_email_preheader": "글로벌 AI·테크 신호 검수 대기",
+                "subject_top_headline": "라이브 재발행 검증",
+                "subject_source": "top_signal_1_headline",
+                "subject_kst_date": "20260629",
+                "subject_kst_label": "6월 29일",
+                "subject_program_label": "글로벌 테크 브리핑",
+                "subject_trigger_label": "admin_text_only_reissue",
+            },
+        ), patch(
+            "keysuri_service_full_run._build_service_contract_fixture",
+            return_value={"selected_subject": "라이브 재발행 검증", "preheader": "검수 대기"},
+        ), patch(
+            "keysuri_service_full_run.render_keysuri_contract_preview_html",
+            return_value="<html><body><p>재발행 검수 본문</p></body></html>",
+        ), patch(
+            "keysuri_service_full_run.build_keysuri_global_gmail_owner_email_html",
+            return_value='<html><body><p>재발행 검수 본문</p><img src="cid:keysuri_topshot_global_parent"/></body></html>',
+        ), patch(
+            "keysuri_service_full_run.email_sender.last_send_trace", return_value={}
+        ), patch(
+            "keysuri_service_full_run.email_sender.last_send_diagnostic", return_value=""
+        ):
+            result = run_keysuri_text_only_reissue(
+                parent_id,
+                trigger_source="admin_text_only_reissue",
+                text_caller=MagicMock(return_value="RAW"),
+                send_owner_email=True,
+                send_fn=send_fn,
+                smoke_runner=lambda **_kw: _live_smoke_result_for_pack(source_pack_path),
+            )
+
+        self.assertNotEqual(result.get("error"), "text_only_reissue_missing_saved_top_image")
+        self.assertTrue(result.get("ok"), result)
+        self.assertTrue(result.get("email_sent"))
+        send_fn.assert_called_once()
+        inline_parts = send_fn.call_args.kwargs["inline_jpeg_parts"]
+        self.assertEqual(len(inline_parts), 1)
+        self.assertEqual(inline_parts[0][0], str(restored_dest.resolve()))
+        child = load_run_artifact(child_id) or {}
+        self.assertTrue(child.get("reissue_body_only_image_gcs_restored"))
+        self.assertTrue(child.get("reissue_body_only_image_local_file_present"))
+        self.assertTrue(child.get("email_sent"))
+        self.assertEqual(child.get("customer_delivery_status"), "not_sent")
+        if restored_dest.exists():
+            restored_dest.unlink()
+
+    def test_body_only_live_send_safe_fails_when_local_and_gcs_missing(self) -> None:
+        from keysuri_service_full_run import run_keysuri_text_only_reissue
+
+        repo = Path(__file__).resolve().parents[1]
+        parent_id = "20260629_123001_keysuri_global_tech_e70f6567"
+        child_id = "20260630_010202_keysuri_global_tech_d0b0d202"
+        missing_rel = "output/keysuri_preview/image_canary/no_gcs_parent_top.jpg"
+        missing_abs = repo / missing_rel
+        if missing_abs.exists():
+            missing_abs.unlink()
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": PROGRAM_GLOBAL,
+                "program_id": PROGRAM_GLOBAL,
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+                "generated_image_path_watermarked": missing_rel,
+                "top_image_cid": "keysuri_topshot_global_parent",
+                "selected_items": _reissue_parent_top5_items(),
+            },
+            email_html="<html><body><p>parent body</p></body></html>",
+        )
+        source_pack = {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as sp_file:
+            json.dump(source_pack, sp_file)
+            source_pack_path = sp_file.name
+        live_items = _live_reselection_items(prefix="no-gcs-body")
+        prompt_input = {
+            "program_id": PROGRAM_GLOBAL,
+            "source_pack": source_pack,
+            "top_5_news": {"news_scope": "global", "section_heading": "글로벌 테크 TOP 5", "items": live_items},
+            "sent_log_read_count": 0,
+            "exposure_log_read_count": 0,
+        }
+        send_fn = MagicMock(return_value=True)
+
+        with patch("keysuri_service_full_run.generate_run_id", return_value=child_id), patch(
+            "keysuri_service_full_run.build_keysuri_prompt_input", return_value=json.loads(json.dumps(prompt_input))
+        ), patch(
+            "keysuri_service_full_run.build_keysuri_generation_prompt", return_value="PROMPT"
+        ), patch(
+            "keysuri_service_full_run.parse_keysuri_generated_response",
+            return_value={"parse_status": "parsed_valid", "generated_briefing": _briefing_for_live_items(live_items)},
+        ), patch(
+            "keysuri_service_full_run.enrich_generated_briefing_content",
+            side_effect=lambda briefing, *_args: briefing,
+        ):
+            result = run_keysuri_text_only_reissue(
+                parent_id,
+                trigger_source="admin_text_only_reissue",
+                text_caller=MagicMock(return_value="RAW"),
+                send_owner_email=True,
+                send_fn=send_fn,
+                smoke_runner=lambda **_kw: _live_smoke_result_for_pack(source_pack_path),
+            )
+
+        self.assertFalse(result.get("ok"))
+        self.assertEqual(result.get("error"), "text_only_reissue_missing_saved_top_image")
+        send_fn.assert_not_called()
+
+    @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
+    @patch("keysuri_service_full_run.resolve_korea_bottom_email_image_path")
+    @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
+    @patch("keysuri_service_full_run.generate_run_id")
+    def test_image_only_reissue_regenerates_and_persists_global_top_to_gcs(
+        self,
+        mock_run_id: MagicMock,
+        mock_watermark: MagicMock,
+        mock_bottom: MagicMock,
+        mock_customer_final: MagicMock,
+    ) -> None:
+        from keysuri_service_full_run import run_keysuri_image_only_reissue
+
+        repo = Path(__file__).resolve().parents[1]
+        parent_id = "20260624_183003_keysuri_global_tech_eeff0011"
+        child_id = "20260630_010301_keysuri_global_tech_11ab22cd"
+        mock_run_id.return_value = child_id
+        raw_top = repo / "output" / "images" / "image_only_persist_global_top_raw.jpg"
+        raw_top.parent.mkdir(parents=True, exist_ok=True)
+        raw_top.write_bytes(b"\xff\xd8\xff" + b"\x47" * 128)
+        mock_watermark.side_effect = _mock_keysuri_watermark
+        # Parent has NO local top image file — image_only regenerates fresh, so it
+        # must not depend on the parent's ephemeral local image.
+        parent_html = (
+            '<html><body><p id="brief">글로벌 본문 텍스트입니다.</p>'
+            '<img src="cid:keysuri_topshot_global_20260624"/>'
+            f'<a href="https://example.com/admin/runs/{parent_id}">review</a>'
+            "</body></html>"
+        )
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_global_tech",
+                "program_id": "keysuri_global_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+                "generated_image_path_watermarked": "output/keysuri_preview/image_canary/parent_gone.jpg",
+                "owner_email_subject": "[운영자 검토] 클라우드 반도체 공급망 신호: 6월 24일 글로벌 테크 브리핑",
+                "owner_email_preheader": "글로벌 AI·테크 신호 검수 대기",
+                "email_subject": "클라우드 반도체 공급망 신호: 6월 24일 글로벌 테크 브리핑",
+                "subject_top_headline": "클라우드 반도체 공급망 신호",
+                "reissue_count": 0,
+            },
+            email_html=parent_html,
+        )
+
+        def _image_runner(program_id: str, **kwargs):
+            return ServiceImageOutcome(
+                called_image_api=True,
+                image_generation_status="generated",
+                image_source=IMAGE_SOURCE_GENERATED,
+                generated_image_path=str(raw_top.relative_to(repo)),
+            )
+
+        send_fn = MagicMock(return_value=True)
+        uploads: list[tuple] = []
+
+        def _uploader(bucket: str, obj: str, src) -> None:
+            uploads.append((bucket, obj, str(src)))
+
+        with patch("keysuri_service_full_run.admin_artifact_bucket_name", return_value="test-bkt"), patch(
+            "keysuri_service_full_run.email_sender.last_send_trace", return_value={}
+        ), patch(
+            "keysuri_service_full_run.email_sender.last_send_diagnostic", return_value=""
+        ):
+            result = run_keysuri_image_only_reissue(
+                parent_id,
+                image_canary_runner=_image_runner,
+                send_fn=send_fn,
+                image_upload_fn=_uploader,
+                reissue_reason_code="이미지 품질 이슈",
+                reissue_reason_note="global image only",
+            )
+
+        self.assertTrue(result["ok"], result)
+        mock_bottom.assert_not_called()
+        mock_customer_final.assert_not_called()
+        child = load_run_artifact(child_id) or {}
+        self.assertEqual(child.get("regen_type"), "image_only")
+        self.assertEqual(child.get("program_id"), "keysuri_global_tech")
+        self.assertEqual(child.get("top_image_persistence_status"), "persisted")
+        expected_obj = f"admin_runs/{child_id}.images/global_top.jpg"
+        self.assertEqual(child.get("top_image_gcs_object"), expected_obj)
+        self.assertEqual(child.get("top_image_gcs_uri"), f"gs://test-bkt/{expected_obj}")
+        self.assertEqual(len(uploads), 1)
+        self.assertEqual(uploads[0][1], expected_obj)
+
+
 class KeysuriImageOnlyReissueTests(unittest.TestCase):
     def setUp(self) -> None:
         self._env = patch.dict(
