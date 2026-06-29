@@ -154,7 +154,20 @@ def build_keysuri_prompt_input(
         messages = "; ".join(issue.message for issue in gate_result.issues[:5])
         raise ValueError(f"Kee-Suri source gate blocked for {pid}: {messages}")
 
-    selection = select_top_5_news(source_pack, gate_result)
+    # Read cross-day dedup history (recent sent-news + owner-review exposure +
+    # caller-supplied extra rows) BEFORE the top-5 selection so duplicates are
+    # removed from the FULL candidate pool prior to selection. Selecting five
+    # first and deduping them afterwards can shrink the list to four with no
+    # replacement pool left (root cause of top_5_news_items_too_few).
+    sent_log_rows = recent_sent_news_log(pid)
+    exposure_log_status = recent_owner_review_exposure_log_with_status(pid, days=5)
+    exposure_log_rows = exposure_log_status["items"]
+    extra_rows = [row for row in (extra_recent_log or []) if isinstance(row, dict)]
+    combined_recent_log = list(sent_log_rows) + list(exposure_log_rows) + extra_rows
+
+    selection = select_top_5_news(
+        source_pack, gate_result, recent_dedup_rows=combined_recent_log
+    )
     spec = get_program(pid)
     news_scope = expected_news_scope_for_program(pid)
     section_heading = expected_top5_heading_for_program(pid)
@@ -177,9 +190,30 @@ def build_keysuri_prompt_input(
         "operational_status": REQUIRED_OPERATIONAL_STATUS,
     }
 
+    def _attach_recent_log_fields() -> None:
+        base["sent_log_read_count"] = len(sent_log_rows)
+        base["exposure_log_read_count"] = len(exposure_log_rows)
+        base["exposure_log_read_ok"] = exposure_log_status["read_ok"]
+        base["combined_recent_log_count"] = len(combined_recent_log)
+        base["extra_recent_log_count"] = len(extra_rows)
+        if not exposure_log_status["read_ok"]:
+            base["exposure_log_read_error_code"] = exposure_log_status["error_code"]
+
     if selection.get("verdict") == "hold":
         base["prompt_status"] = "hold_review_required"
         base["top_5_news"] = None
+        _attach_recent_log_fields()
+        if isinstance(selection.get("candidate_funnel_summary"), dict):
+            base["candidate_funnel_summary"] = selection["candidate_funnel_summary"]
+        if selection.get("cross_day_dedup_removed_count") is not None:
+            base["cross_day_dedup_removed_count"] = selection["cross_day_dedup_removed_count"]
+        hold_codes = [
+            str(issue.get("code") or "")
+            for issue in (selection.get("issues") or [])
+            if isinstance(issue, dict) and issue.get("code")
+        ]
+        if hold_codes:
+            base["prompt_hold_reason_codes"] = hold_codes
         return base
 
     if selection.get("verdict") != "pass":
@@ -188,11 +222,10 @@ def build_keysuri_prompt_input(
     base["prompt_status"] = "ready_for_generation"
     top_5_news = dict(selection["top_5_news"])
     items = top_5_news.get("items") if isinstance(top_5_news.get("items"), list) else []
-    sent_log_rows = recent_sent_news_log(pid)
-    exposure_log_status = recent_owner_review_exposure_log_with_status(pid, days=5)
-    exposure_log_rows = exposure_log_status["items"]
-    extra_rows = [row for row in (extra_recent_log or []) if isinstance(row, dict)]
-    combined_recent_log = list(sent_log_rows) + list(exposure_log_rows) + extra_rows
+    # Safety-net cross-day dedup over the already-deduped, diversity-selected five.
+    # The candidate pool was filtered against ``combined_recent_log`` BEFORE the
+    # selection above, so this should be a no-op; it stays to emit the
+    # dedup_summary metadata and as a second line of defense.
     dedup_result = run_sent_news_dedup_gate(
         briefing_type=pid,
         candidates=[item for item in items if isinstance(item, dict)],
@@ -200,16 +233,8 @@ def build_keysuri_prompt_input(
         required_count=KEYSURI_TOP_NEWS_COUNT,
     )
     dedup_meta = metadata_from_gate_result(dedup_result, required_count=KEYSURI_TOP_NEWS_COUNT)
-    top_5_news["items"] = dedup_meta["selected_items"]
-    base["top_5_news"] = top_5_news
-    base.update(dedup_meta)
-    base["sent_log_read_count"] = len(sent_log_rows)
-    base["exposure_log_read_count"] = len(exposure_log_rows)
-    base["exposure_log_read_ok"] = exposure_log_status["read_ok"]
-    base["combined_recent_log_count"] = len(combined_recent_log)
-    base["extra_recent_log_count"] = len(extra_rows)
-    if not exposure_log_status["read_ok"]:
-        base["exposure_log_read_error_code"] = exposure_log_status["error_code"]
+    deduped_items = dedup_meta["selected_items"]
+    _attach_recent_log_fields()
     # Surface the intra-briefing diversity gate (same-source / entity / cluster
     # caps) applied during TOP5 selection, separate from the cross-day sent-log
     # dedup_summary above, so both layers are auditable in the run artifact.
@@ -218,4 +243,21 @@ def build_keysuri_prompt_input(
         base["diversity_rejected_items"] = selection.get("diversity_rejected_items") or []
     if isinstance(selection.get("candidate_funnel_summary"), dict):
         base["candidate_funnel_summary"] = selection["candidate_funnel_summary"]
+    if selection.get("cross_day_dedup_removed_count") is not None:
+        base["cross_day_dedup_removed_count"] = selection["cross_day_dedup_removed_count"]
+
+    # Final exactly-5 contract guard: never emit an under-count TOP5 to the
+    # generation prompt. If the safety-net gate (defensively) reduced the count
+    # below the required five, hold for review instead of prompting Gemini.
+    if len(deduped_items) != KEYSURI_TOP_NEWS_COUNT:
+        base["prompt_status"] = "hold_review_required"
+        base["top_5_news"] = None
+        base.update(dedup_meta)
+        base["prompt_hold_reason_codes"] = ["insufficient_fresh_candidates_after_dedup"]
+        base["top5_undercount_after_safety_dedup"] = len(deduped_items)
+        return base
+
+    top_5_news["items"] = deduped_items
+    base["top_5_news"] = top_5_news
+    base.update(dedup_meta)
     return base

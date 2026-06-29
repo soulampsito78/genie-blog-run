@@ -54,6 +54,46 @@ def _minimal_pack(program_id: str, claims: list[dict]) -> dict:
     }
 
 
+def _distinct_global_pack(num: int) -> dict:
+    """A global pack of ``num`` distinct sources/claims, ranked c1..cN, so cross-day
+    dedup-then-replace behaviour is deterministic (no diversity caps triggered)."""
+    sources = [
+        {
+            "source_id": f"s{i}",
+            "source_name": f"Source {i}",
+            "source_url": f"https://source-{i}.example.com/news/{i}",
+            "source_tier": "T2_TIER1_WIRE",
+            "fetched_at": "2026-06-04T10:00:00+09:00",
+        }
+        for i in range(1, num + 1)
+    ]
+    claims = [
+        {
+            "claim_id": f"c{i}",
+            "statement": f"Distinct global tech headline {i}",
+            "claim_type": "general",
+            "source_ids": [f"s{i}"],
+            "confidence_label": "reported",
+            "category": "policy",
+            "headline": f"Distinct global tech headline {i}",
+            "summary": f"Summary {i}",
+            "why_it_matters": f"Why {i}",
+            "business_implication": f"Business implication {i}",
+        }
+        for i in range(1, num + 1)
+    ]
+    return {
+        "program_id": "keysuri_global_tech",
+        "generated_at": "2026-06-04T10:00:00+09:00",
+        "sources": sources,
+        "claims": claims,
+        "global_top5_selection": {
+            "selected_source_ids": [f"s{i}" for i in range(1, 6)],
+            "downstream_candidate_source_ids": [f"s{i}" for i in range(1, num + 1)],
+        },
+    }
+
+
 class KeysuriPromptInputComposerTests(unittest.TestCase):
     def test_global_source_pack_ready_for_generation(self) -> None:
         pack = _load_pack("keysuri_global_sources.sample.json")
@@ -303,6 +343,97 @@ class KeysuriPromptInputExposureLogMergeTests(unittest.TestCase):
         korea_pack = _load_pack("keysuri_korea_sources.sample.json")
         korea_result = build_keysuri_prompt_input("keysuri_korea_tech", korea_pack)
         self.assertEqual(korea_result["exposure_log_read_count"], 0)
+
+    def test_top_ranked_dup_in_log_is_replaced_and_top5_stays_exactly_five(self) -> None:
+        """A top-ranked selected candidate that matches the recent log is removed
+        from the FULL pool before selection and backfilled from candidate #6, so
+        the TOP5 stays exactly 5 (regression for top_5_news_items_too_few=4)."""
+        gate = GateResult(verdict="pass", issues=())
+        pack = _distinct_global_pack(7)
+        baseline = build_keysuri_prompt_input("keysuri_global_tech", pack, gate_result=gate)
+        items = baseline["top_5_news"]["items"]
+        self.assertEqual([it["news_id"] for it in items], ["c1", "c2", "c3", "c4", "c5"])
+
+        append_owner_review_exposure(
+            run_id="prior-run-1",
+            program_id="keysuri_global_tech",
+            exposure_kind="owner_review_email",
+            selected_items=[items[0]],  # c1 is now a recent-log duplicate
+        )
+        result = build_keysuri_prompt_input("keysuri_global_tech", pack, gate_result=gate)
+
+        self.assertEqual(result["prompt_status"], "ready_for_generation")
+        out = result["top_5_news"]["items"]
+        ids = [it["news_id"] for it in out]
+        self.assertEqual(len(out), 5)
+        self.assertNotIn("c1", ids)
+        self.assertIn("c6", ids)  # 6th-ranked candidate pulled in as replacement
+        funnel = result["candidate_funnel_summary"]
+        self.assertEqual(funnel["candidate_count_before_dedup"], 7)
+        self.assertEqual(funnel["cross_day_dedup_removed_count"], 1)
+        self.assertEqual(funnel["candidate_count_after_dedup"], 6)
+        self.assertEqual(funnel["post_diversity_selected_count"], 5)
+
+    def test_two_top_dups_in_log_replaced_from_candidate_six_and_seven(self) -> None:
+        gate = GateResult(verdict="pass", issues=())
+        pack = _distinct_global_pack(7)
+        baseline = build_keysuri_prompt_input("keysuri_global_tech", pack, gate_result=gate)
+        items = baseline["top_5_news"]["items"]
+
+        append_owner_review_exposure(
+            run_id="prior-run-2a",
+            program_id="keysuri_global_tech",
+            exposure_kind="owner_review_email",
+            selected_items=[items[0]],  # c1
+        )
+        append_owner_review_exposure(
+            run_id="prior-run-2b",
+            program_id="keysuri_global_tech",
+            exposure_kind="owner_review_email",
+            selected_items=[items[1]],  # c2
+        )
+        result = build_keysuri_prompt_input("keysuri_global_tech", pack, gate_result=gate)
+
+        self.assertEqual(result["prompt_status"], "ready_for_generation")
+        out = result["top_5_news"]["items"]
+        ids = [it["news_id"] for it in out]
+        self.assertEqual(len(out), 5)
+        self.assertNotIn("c1", ids)
+        self.assertNotIn("c2", ids)
+        self.assertIn("c6", ids)
+        self.assertIn("c7", ids)
+        self.assertEqual(result["candidate_funnel_summary"]["cross_day_dedup_removed_count"], 2)
+
+    def test_insufficient_fresh_pool_after_dedup_holds_without_prompting(self) -> None:
+        """When hard dedup leaves fewer than 5 fresh candidates, the composer must
+        hold (top_5_news=None, ready_for_generation NOT set) so the caller safe-fails
+        before prompting Gemini — never emitting an under-count TOP5."""
+        gate = GateResult(verdict="pass", issues=())
+        pack = _distinct_global_pack(6)
+        baseline = build_keysuri_prompt_input("keysuri_global_tech", pack, gate_result=gate)
+        items = baseline["top_5_news"]["items"]
+
+        append_owner_review_exposure(
+            run_id="prior-run-3a",
+            program_id="keysuri_global_tech",
+            exposure_kind="owner_review_email",
+            selected_items=[items[0]],  # c1
+        )
+        append_owner_review_exposure(
+            run_id="prior-run-3b",
+            program_id="keysuri_global_tech",
+            exposure_kind="owner_review_email",
+            selected_items=[items[1]],  # c2
+        )
+        result = build_keysuri_prompt_input("keysuri_global_tech", pack, gate_result=gate)
+
+        self.assertEqual(result["prompt_status"], "hold_review_required")
+        self.assertIsNone(result["top_5_news"])
+        self.assertIn(
+            "insufficient_fresh_candidates_after_dedup",
+            result.get("prompt_hold_reason_codes", []),
+        )
+        self.assertEqual(result["candidate_funnel_summary"]["candidate_count_after_dedup"], 4)
 
 
 class KeysuriPromptInputFixtureShapeTests(unittest.TestCase):

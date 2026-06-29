@@ -9,6 +9,7 @@ from keysuri_source_gate import CONFIDENCE_LABELS, GateResult
 from sent_news_dedup_gate import (
     canonicalize_url,
     normalize_title,
+    recent_log_duplicate_reason,
     select_with_diversity_caps,
 )
 
@@ -517,11 +518,23 @@ def _claim_to_news_item(
     return item
 
 
-def select_top_5_news(source_pack: dict, gate_result: GateResult) -> dict:
+def select_top_5_news(
+    source_pack: dict,
+    gate_result: GateResult,
+    recent_dedup_rows: Optional[List[Dict[str, Any]]] = None,
+) -> dict:
     """
     Select TOP 5 news items from staged source_pack.claims (no live fetch).
 
     Returns dict with verdict pass|hold|block and optional top_5_news / issues.
+
+    ``recent_dedup_rows`` (recent sent-news + owner-review-exposure log rows) are
+    hard-removed from the FULL hydrated candidate pool BEFORE the intra-briefing
+    diversity selection. This guarantees the final five are both diverse and free
+    of cross-day duplicates — doing the cross-day dedup *after* selection could
+    shrink the five to four with no replacement pool left (invalid TOP5). When
+    fewer than five fresh candidates remain, a ``hold`` verdict is returned so the
+    caller safe-fails instead of emitting an under-count briefing.
     """
     if gate_result.verdict == "block":
         raise ValueError("source gate blocked; cannot select top news")
@@ -606,7 +619,50 @@ def select_top_5_news(source_pack: dict, gate_result: GateResult) -> dict:
         _claim_to_news_item(claim, rank=i + 1, smap=smap)
         for i, (_t, claim) in enumerate(qualified)
     ]
-    diversity = select_with_diversity_caps(hydrated, required_count=KEYSURI_TOP_NEWS_COUNT)
+
+    # Cross-day sent/owner-review-exposure dedup over the FULL hydrated pool,
+    # applied BEFORE the diversity caps so a recent-log duplicate is dropped and
+    # backfilled from the next fresh candidate instead of shrinking the final
+    # five. (Running this after selection is the root cause of 4-item TOP5.)
+    recent_rows = [row for row in (recent_dedup_rows or []) if isinstance(row, dict)]
+    candidate_count_before_dedup = len(hydrated)
+    cross_day_rejected: List[Dict[str, Any]] = []
+    if recent_rows:
+        deduped_pool: List[Dict[str, Any]] = []
+        for item in hydrated:
+            reason = recent_log_duplicate_reason(item, recent_rows)
+            if reason:
+                cross_day_rejected.append({**item, "rejected_reason": reason})
+            else:
+                deduped_pool.append(item)
+    else:
+        deduped_pool = hydrated
+    candidate_count_after_dedup = len(deduped_pool)
+    cross_day_dedup_removed_count = len(cross_day_rejected)
+
+    if candidate_count_after_dedup < KEYSURI_TOP_NEWS_COUNT:
+        return {
+            "verdict": "hold",
+            "issues": [
+                _issue(
+                    "insufficient_fresh_candidates_after_dedup",
+                    f"Need {KEYSURI_TOP_NEWS_COUNT} candidates after cross-day dedup, "
+                    f"have {candidate_count_after_dedup} "
+                    f"(removed {cross_day_dedup_removed_count} recent-log duplicate(s) "
+                    f"from {candidate_count_before_dedup})",
+                )
+            ],
+            "candidate_funnel_summary": {
+                "candidate_count_before_dedup": candidate_count_before_dedup,
+                "cross_day_dedup_removed_count": cross_day_dedup_removed_count,
+                "candidate_count_after_dedup": candidate_count_after_dedup,
+                "selected_count": 0,
+            },
+            "cross_day_dedup_removed_count": cross_day_dedup_removed_count,
+            "cross_day_dedup_rejected_items": cross_day_rejected,
+        }
+
+    diversity = select_with_diversity_caps(deduped_pool, required_count=KEYSURI_TOP_NEWS_COUNT)
     selected = diversity["selected_items"]
     diversity_summary = diversity["diversity_summary"]
     source_pack_funnel = (
@@ -616,8 +672,12 @@ def select_top_5_news(source_pack: dict, gate_result: GateResult) -> dict:
     )
     candidate_funnel_summary = {
         **source_pack_funnel,
-        "pre_diversity_candidate_count": len(hydrated),
+        "candidate_count_before_dedup": candidate_count_before_dedup,
+        "cross_day_dedup_removed_count": cross_day_dedup_removed_count,
+        "candidate_count_after_dedup": candidate_count_after_dedup,
+        "pre_diversity_candidate_count": len(deduped_pool),
         "post_diversity_selected_count": len(selected),
+        "selected_count": len(selected),
         "diversity_rejected_count": len(diversity["rejected_items"]),
         "relaxed_due_to_candidate_shortage": bool(
             diversity_summary.get("relaxed_due_to_candidate_shortage")
@@ -635,4 +695,6 @@ def select_top_5_news(source_pack: dict, gate_result: GateResult) -> dict:
         "diversity_summary": diversity_summary,
         "diversity_rejected_items": diversity["rejected_items"],
         "candidate_funnel_summary": candidate_funnel_summary,
+        "cross_day_dedup_removed_count": cross_day_dedup_removed_count,
+        "cross_day_dedup_rejected_items": cross_day_rejected,
     }

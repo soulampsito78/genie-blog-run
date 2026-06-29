@@ -207,6 +207,24 @@ def _duplicate_reason(
     return ""
 
 
+def recent_log_duplicate_reason(
+    candidate: Dict[str, Any],
+    recent_log: List[Dict[str, Any]],
+) -> str:
+    """Return the cross-day dedup reason if ``candidate`` matches the recent log, else ``""``.
+
+    This exposes only the recent sent/owner-review-exposure-log layer of
+    :func:`_duplicate_reason` (it ignores any in-progress selection), so callers
+    can hard-filter a *full* candidate pool against the cross-day history BEFORE a
+    downstream top-N selection runs. Removing duplicates up front prevents the
+    selected set from later shrinking below the required count with no replacement
+    pool left.
+    """
+    if not isinstance(candidate, dict):
+        return ""
+    return _duplicate_reason(candidate, recent_log or [], [])
+
+
 def run_sent_news_dedup_gate(
     *,
     briefing_type: str,
