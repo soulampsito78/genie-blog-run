@@ -701,6 +701,271 @@ class AdminRoutesTests(unittest.TestCase):
         mock_text_and_image.assert_called_once()
         mock_exec.assert_not_called()
 
+    def test_reissue_form_shows_dry_run_checkbox_for_keysuri(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120210_keysuri_global_tech_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_global_tech",
+                "program_id": "keysuri_global_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+                "reason_summary": "ok",
+            }
+        )
+        resp = self.client.get(f"/admin/runs/{parent_id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('name="dry_run_no_send"', resp.text)
+        self.assertIn("owner-review", resp.text)
+        self.assertIn("발송하지 않습니다", resp.text)
+
+    def test_reissue_form_hides_dry_run_checkbox_for_today_genie(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120211_today_genie_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "today_genie",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+                "reason_summary": "ok",
+            }
+        )
+        resp = self.client.get(f"/admin/runs/{parent_id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn('name="dry_run_no_send"', resp.text)
+
+    @patch("admin_routes.execute_orchestrator_run")
+    @patch("admin_routes.run_keysuri_text_and_image_reissue")
+    def test_body_and_image_dry_run_skips_owner_email(self, mock_text_and_image, mock_exec) -> None:
+        child_id = "20260530_130200_keysuri_global_tech_11223344"
+        mock_text_and_image.return_value = {
+            "ok": True,
+            "run_id": child_id,
+            "regen_type": "body_and_image",
+            "email_sent": False,
+            "reissue_top5_repaired_from_parent": True,
+            "reissue_top5_repair_source": "parent_generated_briefing_snapshot",
+        }
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120212_keysuri_global_tech_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_global_tech",
+                "program_id": "keysuri_global_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+                "reason_summary": "ok",
+            },
+            email_html="<html><body><p>original body</p></body></html>",
+        )
+        # The runner is mocked, so pre-save the child the dry-run markers attach to.
+        save_run_artifact(
+            {
+                "run_id": child_id,
+                "mode": "keysuri_global_tech",
+                "program_id": "keysuri_global_tech",
+                "validation_result": "pass",
+                "workflow_status": "review_required",
+                "email_sent": False,
+                "customer_delivery_status": "not_sent",
+                "response_status": 200,
+                "reissue_top5_repaired_from_parent": True,
+                "reissue_top5_repair_source": "parent_generated_briefing_snapshot",
+            },
+            email_html="<html><body><p>dry-run body</p></body></html>",
+        )
+        resp = self.client.post(
+            f"/admin/runs/{parent_id}/reissue",
+            data={
+                "reason_option": "뉴스 중복 이슈",
+                "reason_note": "",
+                "reissue_scope": "body_and_image",
+                "dry_run_no_send": "1",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        self.assertIn("reissue_dry_run=1", resp.headers.get("location", ""))
+        self.assertIn(child_id, resp.headers.get("location", ""))
+        mock_text_and_image.assert_called_once()
+        self.assertEqual(mock_text_and_image.call_args.kwargs["send_owner_email"], False)
+        mock_exec.assert_not_called()
+        child = load_run_artifact(child_id) or {}
+        self.assertTrue(child.get("admin_reissue_dry_run"))
+        self.assertEqual(child.get("send_owner_email"), False)
+        self.assertEqual(child.get("owner_review_email_sent"), False)
+        self.assertEqual(child.get("customer_send"), False)
+        self.assertEqual(child.get("approve_customer_final_send"), False)
+        self.assertEqual(child.get("customer_delivery_status"), "not_sent")
+        # repair metadata stays visible on the dry-run child
+        self.assertTrue(child.get("reissue_top5_repaired_from_parent"))
+        # dry-run result page banner is visible after the redirect
+        detail = self.client.get(f"/admin/runs/{child_id}?reissue_dry_run=1")
+        self.assertIn("dry-run", detail.text)
+        self.assertIn("admin_reissue_dry_run", detail.text)
+
+    @patch("admin_routes.execute_orchestrator_run")
+    @patch("admin_routes.run_keysuri_text_only_reissue")
+    def test_body_only_dry_run_skips_owner_email(self, mock_text_only, mock_exec) -> None:
+        child_id = "20260530_130201_keysuri_korea_tech_11223344"
+        mock_text_only.return_value = {
+            "ok": True,
+            "run_id": child_id,
+            "regen_type": "body_only",
+            "email_sent": False,
+        }
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120213_keysuri_korea_tech_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_korea_tech",
+                "program_id": "keysuri_korea_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+                "reason_summary": "ok",
+            },
+            email_html="<html><body><p>original body</p></body></html>",
+        )
+        save_run_artifact(
+            {
+                "run_id": child_id,
+                "mode": "keysuri_korea_tech",
+                "program_id": "keysuri_korea_tech",
+                "validation_result": "pass",
+                "workflow_status": "review_required",
+                "email_sent": False,
+                "customer_delivery_status": "not_sent",
+                "response_status": 200,
+            },
+            email_html="<html><body><p>dry-run body</p></body></html>",
+        )
+        resp = self.client.post(
+            f"/admin/runs/{parent_id}/reissue",
+            data={
+                "reason_option": "제목 수정 요청",
+                "reason_note": "",
+                "reissue_scope": "body_only",
+                "dry_run_no_send": "1",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        self.assertIn("reissue_dry_run=1", resp.headers.get("location", ""))
+        self.assertEqual(mock_text_only.call_args.kwargs["send_owner_email"], False)
+        mock_exec.assert_not_called()
+        child = load_run_artifact(child_id) or {}
+        self.assertTrue(child.get("admin_reissue_dry_run"))
+        self.assertEqual(child.get("send_owner_email"), False)
+
+    @patch("admin_routes.execute_orchestrator_run")
+    @patch("admin_routes.run_keysuri_text_and_image_reissue")
+    def test_default_reissue_keeps_owner_email_send(self, mock_text_and_image, mock_exec) -> None:
+        child_id = "20260530_130202_keysuri_global_tech_11223344"
+        mock_text_and_image.return_value = {
+            "ok": True,
+            "run_id": child_id,
+            "regen_type": "body_and_image",
+            "email_sent": True,
+        }
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120214_keysuri_global_tech_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_global_tech",
+                "program_id": "keysuri_global_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+                "reason_summary": "ok",
+            },
+            email_html="<html><body><p>original body</p></body></html>",
+        )
+        save_run_artifact(
+            {
+                "run_id": child_id,
+                "mode": "keysuri_global_tech",
+                "program_id": "keysuri_global_tech",
+                "validation_result": "pass",
+                "workflow_status": "review_required",
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+                "response_status": 200,
+            },
+            email_html="<html><body><p>regen body</p></body></html>",
+        )
+        resp = self.client.post(
+            f"/admin/runs/{parent_id}/reissue",
+            data={
+                "reason_option": "뉴스 중복 이슈",
+                "reason_note": "",
+                "reissue_scope": "body_and_image",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        # default (no dry-run) → normal send path, no dry-run query param
+        self.assertNotIn("reissue_dry_run", resp.headers.get("location", ""))
+        self.assertEqual(mock_text_and_image.call_args.kwargs["send_owner_email"], True)
+        child = load_run_artifact(child_id) or {}
+        self.assertFalse(child.get("admin_reissue_dry_run"))
+
+    @patch("admin_routes.execute_orchestrator_run")
+    @patch("admin_routes.run_keysuri_text_and_image_reissue")
+    def test_dry_run_safe_failure_shows_no_send_note(self, mock_text_and_image, mock_exec) -> None:
+        mock_text_and_image.return_value = {
+            "ok": False,
+            "program_id": "keysuri_global_tech",
+            "error": (
+                "Gemini parse failed (parsed_invalid): "
+                "top_5_news.items must contain exactly 5 entries, got 2"
+            ),
+        }
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120215_keysuri_global_tech_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_global_tech",
+                "program_id": "keysuri_global_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+            },
+            email_html="<html><body><p>original body</p></body></html>",
+        )
+        resp = self.client.post(
+            f"/admin/runs/{parent_id}/reissue",
+            data={
+                "reason_option": "뉴스 중복 이슈",
+                "reason_note": "",
+                "reissue_scope": "body_and_image",
+                "dry_run_no_send": "1",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(mock_text_and_image.call_args.kwargs["send_owner_email"], False)
+        self.assertIn("safe_error_code=generated_briefing_contract_invalid", resp.text)
+        self.assertIn("dry-run", resp.text)
+        self.assertNotIn("Gemini parse failed", resp.text)
+        self.assertNotIn("Traceback", resp.text)
+        mock_exec.assert_not_called()
+
     @patch("admin_routes.execute_orchestrator_run")
     def test_reissue_unknown_mode_returns_400_with_safe_error_fields(self, mock_exec) -> None:
         self.client.post("/admin/login", data={"password": "test-admin-secret"})

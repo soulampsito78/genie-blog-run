@@ -10,7 +10,7 @@ import os
 import re
 import secrets
 import time
-from typing import Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,7 @@ from admin_store import (
     record_parent_reissue_audit,
     remove_beta_recipient,
     resolve_customer_recipients,
+    update_run_artifact,
     validate_run_id,
 )
 from keysuri_service_full_run import (
@@ -147,6 +148,45 @@ def _reissue_mode_label(mode: str) -> str:
     return _REISSUE_MODE_LABELS.get(mode, f"알 수 없는 mode({mode or '없음'})")
 
 
+# keysuri reissue runners support send_owner_email=False; other modes do not, so
+# the QA dry-run (no owner-review send) option is only offered for these modes.
+_KEYSURI_DRY_RUN_MODES = frozenset({"keysuri_global_tech", "keysuri_korea_tech"})
+
+# Markers recorded on a dry-run child artifact so operators (and tests) can see
+# the reissue pipeline ran without dispatching the owner-review email.
+_DRY_RUN_REISSUE_META = {
+    "admin_reissue_dry_run": True,
+    "send_owner_email": False,
+    "owner_review_email_sent": False,
+    "customer_send": False,
+    "approve_customer_final_send": False,
+}
+
+
+def _is_dry_run_no_send(raw: str) -> bool:
+    return str(raw or "").strip().lower() in ("1", "true", "on", "yes")
+
+
+def _apply_dry_run_reissue_metadata(child_run_id: str) -> None:
+    """Record dry-run / no-send markers on the freshly created child artifact."""
+    def _mut(child: Dict[str, Any]) -> None:
+        child.update(_DRY_RUN_REISSUE_META)
+
+    update_run_artifact(child_run_id, _mut)
+
+
+def _render_reissue_dry_run_field(mode: str) -> str:
+    """QA dry-run toggle: runs the real reissue pipeline but skips owner-review send."""
+    if mode not in _KEYSURI_DRY_RUN_MODES:
+        return ""
+    return (
+        '<label style="display:block;margin:8px 0;">'
+        '<input type="checkbox" name="dry_run_no_send" value="1"> '
+        "QA dry-run으로 실행 — 운영자 검토(owner-review) 이메일을 발송하지 않습니다"
+        "</label>"
+    )
+
+
 def _render_reissue_failure_page(
     *,
     title: str,
@@ -155,16 +195,23 @@ def _render_reissue_failure_page(
     failed_step: str,
     safe_message: str,
     status_code: int,
+    dry_run: bool = False,
 ) -> HTMLResponse:
     """Render a reissue failure page without leaking raw exception text.
 
     Always shows the actual requested mode, its label, the failed step, and a
     pre-approved safe message — never a bare exception/ValueError message.
     """
+    dry_run_note = (
+        "<p>QA dry-run(no-send) 실행이었습니다. 운영자 검토 이메일/고객 발송 모두 수행하지 않았습니다.</p>"
+        if dry_run
+        else ""
+    )
     inner = (
         f"<p>요청 mode: {_esc(mode or '(없음)')} ({_esc(_reissue_mode_label(mode))})</p>"
         f"<p>실패 단계: {_esc(failed_step)}</p>"
         f"<p>{_esc(safe_message)}</p>"
+        f"{dry_run_note}"
         f"<p><a href=\"/admin/runs/{_esc(run_id)}\">돌아가기</a></p>"
     )
     return HTMLResponse(_layout(title, inner), status_code=status_code)
@@ -668,8 +715,15 @@ def admin_run_detail(request: Request, run_id: str):
     if not meta:
         return HTMLResponse(_layout("Not found", "<p>실행 기록을 찾을 수 없습니다.</p>"), status_code=404)
     warn = ""
+    if request.query_params.get("reissue_dry_run") == "1":
+        warn += (
+            '<div class="warn">QA dry-run(no-send) 재발행이 완료되었습니다. '
+            "이 실행은 실제 reissue 파이프라인을 수행했지만 운영자 검토(owner-review) 이메일과 "
+            "고객 발송은 하지 않았습니다. 아래 메타에서 reissue repair 결과를 확인하세요 "
+            "(admin_reissue_dry_run / reissue_top5_repair_source 등).</div>"
+        )
     if request.query_params.get("reissue_warn") == "email_not_sent":
-        warn = (
+        warn += (
             '<div class="warn">재발행 실행은 완료되었지만 운영자 검토용 이메일은 발송되지 않았습니다. '
             "SMTP 설정, EMAIL_TO(소유자 계정), 정책/이미지 자산을 확인하세요.</div>"
         )
@@ -741,6 +795,7 @@ def admin_run_detail(request: Request, run_id: str):
 <label>추가 메모 (선택)<br>
 <input type="text" name="reason_note" maxlength="500" placeholder="선택 사유 보완">
 </label><br><br>
+{_render_reissue_dry_run_field(mode)}
 <div class="form-actions"><button class="btn" type="submit">재발행 실행</button></div>
 </form>
 </div>
@@ -884,6 +939,7 @@ def admin_run_reissue(
     reason_option: str = Form(...),
     reason_note: str = Form(""),
     reissue_scope: str = Form(""),
+    dry_run_no_send: str = Form(""),
 ):
     need = _require_login(request)
     if need is not None:
@@ -926,6 +982,7 @@ def admin_run_reissue(
         )
     reason_code = reason_option.strip()
     note = reason_note.strip()
+    dry_run = _is_dry_run_no_send(dry_run_no_send)
 
     if mode in ("keysuri_global_tech", "keysuri_korea_tech"):
         if scope == "body_only" and not _mode_supports_body_only_reissue(mode):
@@ -959,6 +1016,7 @@ def admin_run_reissue(
                 parent_meta=parent,
                 reissue_reason_code=reason_code,
                 reissue_reason_note=note,
+                send_owner_email=not dry_run,
             )
         except Exception as exc:  # noqa: BLE001
             return _render_reissue_failure_page(
@@ -968,8 +1026,17 @@ def admin_run_reissue(
                 failed_step="keysuri_reissue_execution",
                 safe_message=f"재발행 실행 중 오류가 발생했습니다 ({type(exc).__name__}).",
                 status_code=200,
+                dry_run=dry_run,
             )
         new_run_id = str(result.get("run_id") or "").strip()
+        # QA dry-run: the pipeline ran without dispatching the owner-review email.
+        # Record the no-send markers on the new child and surface a dry-run page.
+        if dry_run and new_run_id and not result.get("error"):
+            _apply_dry_run_reissue_metadata(new_run_id)
+            return RedirectResponse(
+                url=f"/admin/runs/{new_run_id}?reissue_dry_run=1",
+                status_code=303,
+            )
         if new_run_id and not result.get("email_sent") and not result.get("error"):
             return RedirectResponse(
                 url=f"/admin/runs/{new_run_id}?reissue_warn=email_not_sent",
@@ -988,6 +1055,7 @@ def admin_run_reissue(
                     f"safe_error_code={safe_code}"
                 ),
                 status_code=200,
+                dry_run=dry_run,
             )
         return RedirectResponse(url=f"/admin/runs/{new_run_id}", status_code=303)
 
