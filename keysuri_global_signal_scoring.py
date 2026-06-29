@@ -198,7 +198,7 @@ _SPONSORED_MARKERS: Tuple[Tuple[str, str], ...] = (
 MAX_ITEMS_PER_SOURCE = 2
 SOURCE_CONCENTRATION_SCORE_GAP = 15
 REPLACEMENT_POOL_MAX_REJECTED = 12
-REPLACEMENT_POOL_MIN_BASE_SCORE = 45
+REPLACEMENT_POOL_MIN_BASE_SCORE = 30
 
 _GENERIC_MARKETING = (
     "ai adoption is accelerating",
@@ -1069,6 +1069,27 @@ def score_candidates_from_source_pack(source_pack: dict) -> GlobalTop5SelectionR
     return score_global_signal_candidates(_candidate_dict_from_source_pack(source_pack))
 
 
+def _is_safe_replacement_candidate(item: ScoredGlobalSignal) -> bool:
+    """Allow non-top5 scored items as duplicate replacements, not as primary picks.
+
+    Operationally, a lower-scoring but valid distinct item is better than
+    silently keeping a same-source duplicate in the final TOP5. Still exclude
+    validation failures, untrusted tiers, sponsored/advertorial items, and rows
+    without basic source/title grounding.
+    """
+    if item.classification == "hard_reject" or item.hard_reject_reason:
+        return False
+    if item.source_tier in {"T4_AGGREGATOR_BLOG", "T5_SOCIAL_UNVERIFIED"}:
+        return False
+    if item.is_sponsored:
+        return False
+    if item.scores.base_total < REPLACEMENT_POOL_MIN_BASE_SCORE:
+        return False
+    if not item.source_id or not item.title or not item.url.startswith("http"):
+        return False
+    return True
+
+
 def apply_scored_selection_to_source_pack(
     source_pack: dict,
     selection: GlobalTop5SelectionResult,
@@ -1079,13 +1100,10 @@ def apply_scored_selection_to_source_pack(
     reject same-source/entity duplicates and promote the next distinct item.
     """
     pack = dict(source_pack)
-    replacement_from_rejected = [
-        s
-        for s in selection.rejected
-        if _is_qualifying_candidate(s)
-        and s.scores.base_total >= REPLACEMENT_POOL_MIN_BASE_SCORE
-        and s.source_tier not in {"T4_AGGREGATOR_BLOG", "T5_SOCIAL_UNVERIFIED"}
-    ][:REPLACEMENT_POOL_MAX_REJECTED]
+    replacement_from_rejected = sorted(
+        [s for s in selection.rejected if _is_safe_replacement_candidate(s)],
+        key=lambda s: (-s.scores.base_total, s.title),
+    )[:REPLACEMENT_POOL_MAX_REJECTED]
 
     candidate_order = (
         list(selection.selected_top5)

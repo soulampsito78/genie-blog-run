@@ -12,6 +12,8 @@ from keysuri_global_signal_scoring import (
     score_global_signal_candidates,
     score_global_signal_item,
 )
+from keysuri_news_contract import select_top_5_news
+from keysuri_source_gate import GateResult
 from zoneinfo import ZoneInfo
 
 KST = ZoneInfo("Asia/Seoul")
@@ -493,6 +495,17 @@ class KeysuriGlobalSignalScoringTests(unittest.TestCase):
                 summary="AWS cloud infrastructure inference deployment.",
             ),
         ]
+        for item in items:
+            if item["source_id"].startswith("nvidia"):
+                item["source_name"] = "NVIDIA Blog"
+            elif item["source_id"].startswith("openai"):
+                item["source_name"] = "OpenAI News"
+            elif item["source_id"].startswith("google"):
+                item["source_name"] = "Google AI Blog"
+            elif item["source_id"].startswith("tc"):
+                item["source_name"] = "TechCrunch AI"
+            elif item["source_id"].startswith("ars"):
+                item["source_name"] = "Ars Technica"
         source_pack = _source_pack_from_items(items)
         selection = score_global_signal_candidates(items)
         packed = apply_scored_selection_to_source_pack(source_pack, selection)
@@ -508,6 +521,85 @@ class KeysuriGlobalSignalScoringTests(unittest.TestCase):
             [c.source_id for c in selection.selected_top5 + selection.watchlist]
             + packed["global_top5_selection"]["replacement_source_ids"],
         )
+
+    def test_low_scoring_safe_rejected_items_can_replace_same_source_duplicates(self) -> None:
+        items = [
+            _item(
+                "nvidia-1",
+                "NVIDIA AWS AI production GPU chip enterprise platform",
+                url="https://blogs.nvidia.com/blog/a/",
+                category="semiconductor_chip_infra",
+                summary="NVIDIA AWS GPU infrastructure enterprise AI at scale.",
+            ),
+            _item(
+                "openai-1",
+                "OpenAI HP frontier partnership enterprise AI workflow",
+                url="https://openai.com/index/hp/",
+                summary="OpenAI enterprise AI workflow platform.",
+            ),
+            _item(
+                "nvidia-2",
+                "NVIDIA specialized AI trust tools secure runtime",
+                url="https://blogs.nvidia.com/blog/b/",
+                summary="NVIDIA enterprise AI platform customer workflow.",
+            ),
+            _item(
+                "openai-2",
+                "OpenAI agents transforming work enterprise workflow",
+                url="https://openai.com/index/agents/",
+                summary="OpenAI agents enterprise workflow.",
+            ),
+            _item(
+                "google-1",
+                "Google Finance upgrades include new app platform",
+                url="https://blog.google/finance/",
+                summary="Google Finance app product update.",
+            ),
+            _item(
+                "tc-1",
+                "TechCrunch reports quiet startup tooling update",
+                url="https://techcrunch.com/quiet/",
+                summary="A startup tooling update for founders.",
+            ),
+            _item(
+                "ars-1",
+                "Ars Technica notes hardware maintenance update",
+                url="https://arstechnica.com/hw/",
+                summary="Hardware maintenance update.",
+            ),
+        ]
+        for item in items:
+            if item["source_id"].startswith("nvidia"):
+                item["source_name"] = "NVIDIA Blog"
+            elif item["source_id"].startswith("openai"):
+                item["source_name"] = "OpenAI News"
+            elif item["source_id"].startswith("google"):
+                item["source_name"] = "Google AI Blog"
+            elif item["source_id"].startswith("tc"):
+                item["source_name"] = "TechCrunch AI"
+            elif item["source_id"].startswith("ars"):
+                item["source_name"] = "Ars Technica"
+        source_pack = _source_pack_from_items(items)
+        selection = score_global_signal_candidates(items)
+        self.assertEqual(len(selection.watchlist), 0)
+
+        packed = apply_scored_selection_to_source_pack(source_pack, selection)
+        self.assertGreater(packed["source_pack_funnel_summary"]["replacement_pool_count"], 0)
+        self.assertGreater(packed["source_pack_funnel_summary"]["pre_diversity_candidate_count"], 5)
+        self.assertIn("tc-1", packed["global_top5_selection"]["replacement_source_ids"])
+
+        result = select_top_5_news(packed, GateResult(verdict="pass", issues=()))
+        items_after = result["top_5_news"]["items"]
+        source_counts = {}
+        for item in items_after:
+            source_counts[item["normalized_source"]] = source_counts.get(item["normalized_source"], 0) + 1
+
+        self.assertEqual(len(items_after), 5)
+        self.assertEqual(source_counts.get("nvidia blog"), 1)
+        self.assertEqual(source_counts.get("openai news"), 1)
+        self.assertFalse(result["diversity_summary"]["relaxed_due_to_candidate_shortage"])
+        self.assertGreaterEqual(result["diversity_summary"]["same_source_reject_count"], 2)
+        self.assertEqual(result["candidate_funnel_summary"]["post_diversity_selected_count"], 5)
 
 
 if __name__ == "__main__":
