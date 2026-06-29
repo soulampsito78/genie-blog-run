@@ -105,6 +105,41 @@ KEYSURI_KOREA_BOTTOM_WATERMARKED_SHA256 = (
 KEYSURI_KOREA_BOTTOM_VARIATION_ENV = "KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED"
 KEYSURI_KOREA_BOTTOM_REFERENCE_DIRECTION = "offduty_02C"
 
+_KOREAN_TEXT_RE = re.compile(r"[가-힣]")
+_REISSUE_RAW_VISIBLE_ELLIPSIS_RE = re.compile(r"…|\.{2,}")
+_REISSUE_VISIBLE_TOP5_FIELDS = (
+    "headline",
+    "korean_title",
+    "title",
+    "display_title",
+    "summary",
+    "why_it_matters",
+    "business_implication",
+    "reason",
+    "judgment",
+    "keysuri_judgment",
+    "owner_angle",
+    "selection_reason",
+    "next_day_impact_line",
+)
+_REISSUE_VISIBLE_GROUNDING_KEYS = (
+    "news_id",
+    "source_ids",
+    "source_id",
+    "source",
+    "source_name",
+    "source_url",
+    "url",
+    "canonical_url",
+    "normalized_source",
+    "source_domain",
+    "published_at",
+    "published_date",
+    "claim_id",
+    "topic_key",
+    "editorial_cluster_key",
+)
+
 
 def _kst_date_from_run_id(run_id: str) -> str:
     rid = str(run_id or "").strip()
@@ -1337,6 +1372,259 @@ def _rewrite_briefing_sources_to_items(
     return briefing
 
 
+def _reissue_visible_text_is_clean_korean(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(text and _KOREAN_TEXT_RE.search(text) and not _REISSUE_RAW_VISIBLE_ELLIPSIS_RE.search(text))
+
+
+def _reissue_source_label(item: Dict[str, Any], rank: int) -> str:
+    for key in ("source_name", "source", "normalized_source", "source_domain"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return f"{rank}번 출처"
+
+
+def _first_clean_korean_value(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if _reissue_visible_text_is_clean_korean(text):
+            return text
+    return ""
+
+
+def _reissue_clean_fallback_templates(
+    *,
+    item: Dict[str, Any],
+    rank: int,
+) -> Dict[str, str]:
+    source_label = _reissue_source_label(item, rank)
+    return {
+        "headline": f"{source_label} 기반 AI·테크 신호 {rank}",
+        "summary": (
+            f"{source_label}의 최신 발표를 바탕으로 AI·테크 업계에 영향을 줄 수 있는 "
+            "변화로 선별했습니다."
+        ),
+        "why_it_matters": (
+            "해당 이슈는 플랫폼, 인프라, AI 활용 흐름에 영향을 줄 수 있어 주요 뉴스로 "
+            "정리했습니다."
+        ),
+        "business_implication": (
+            "주인님은 이 신호가 사업 운영, 파트너십, 기술 도입 우선순위에 주는 변화를 "
+            "점검하면 좋겠습니다."
+        ),
+    }
+
+
+def _reissue_pick_visible_value(
+    *,
+    field: str,
+    live_item: Dict[str, Any],
+    visible_seed: Optional[Dict[str, Any]],
+    templates: Dict[str, str],
+) -> Tuple[str, bool]:
+    seed = visible_seed or {}
+    if field == "headline":
+        value = _first_clean_korean_value(
+            seed.get("headline"),
+            seed.get("korean_title"),
+            seed.get("title_ko"),
+            seed.get("headline_ko"),
+            seed.get("display_title"),
+            live_item.get("korean_title"),
+            live_item.get("title_ko"),
+            live_item.get("headline_ko"),
+            live_item.get("display_title"),
+            live_item.get("headline"),
+            live_item.get("title"),
+        )
+    elif field == "summary":
+        value = _first_clean_korean_value(
+            seed.get("summary"),
+            seed.get("summary_ko"),
+            seed.get("korean_summary"),
+            seed.get("description_ko"),
+            live_item.get("summary_ko"),
+            live_item.get("korean_summary"),
+            live_item.get("description_ko"),
+            live_item.get("summary"),
+        )
+    elif field == "why_it_matters":
+        value = _first_clean_korean_value(
+            seed.get("why_it_matters"),
+            seed.get("why_it_matters_ko"),
+            seed.get("selection_reason"),
+            seed.get("reason_for_selection"),
+            seed.get("owner_angle"),
+            live_item.get("why_it_matters_ko"),
+            live_item.get("selection_reason"),
+            live_item.get("reason_for_selection"),
+            live_item.get("owner_angle"),
+            live_item.get("why_it_matters"),
+        )
+    elif field == "business_implication":
+        value = _first_clean_korean_value(
+            seed.get("business_implication"),
+            seed.get("business_implication_ko"),
+            seed.get("keysuri_judgment"),
+            seed.get("next_day_impact_line"),
+            live_item.get("business_implication_ko"),
+            live_item.get("keysuri_judgment"),
+            live_item.get("next_day_impact_line"),
+            live_item.get("business_implication"),
+        )
+    else:
+        value = _first_clean_korean_value(seed.get(field), live_item.get(field))
+    if value:
+        return value, False
+    fallback_key = field if field in templates else "summary"
+    return templates[fallback_key], True
+
+
+def _normalize_reissue_visible_top5_item(
+    live_item: Dict[str, Any],
+    *,
+    rank: int,
+    visible_seed: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, Any], List[str], bool]:
+    """Return a contract-ready TOP5 item with live grounding and clean Korean prose.
+
+    Live selected_items are authoritative for source grounding, but their raw
+    claim prose can be English/truncated. Gemini-visible text is preserved when
+    it is clean Korean and keyed to the same live ``news_id``; otherwise visible
+    fields fall back to short Korean templates.
+    """
+    item = copy.deepcopy(live_item)
+    seed = visible_seed if isinstance(visible_seed, dict) else {}
+    templates = _reissue_clean_fallback_templates(item=item, rank=rank)
+    sanitized_fields: List[str] = []
+    fallback_used = False
+
+    for key in _REISSUE_VISIBLE_GROUNDING_KEYS:
+        if key in live_item:
+            item[key] = copy.deepcopy(live_item[key])
+
+    title, used_title_fallback = _reissue_pick_visible_value(
+        field="headline",
+        live_item=live_item,
+        visible_seed=seed,
+        templates=templates,
+    )
+    summary, used_summary_fallback = _reissue_pick_visible_value(
+        field="summary",
+        live_item=live_item,
+        visible_seed=seed,
+        templates=templates,
+    )
+    why, used_why_fallback = _reissue_pick_visible_value(
+        field="why_it_matters",
+        live_item=live_item,
+        visible_seed=seed,
+        templates=templates,
+    )
+    biz, used_biz_fallback = _reissue_pick_visible_value(
+        field="business_implication",
+        live_item=live_item,
+        visible_seed=seed,
+        templates=templates,
+    )
+    fallback_used = used_title_fallback or used_summary_fallback or used_why_fallback or used_biz_fallback
+
+    item["rank"] = rank
+    item["headline"] = title
+    item["korean_title"] = title
+    if "title" in item or "title" in seed:
+        item["title"] = title
+    item["summary"] = summary
+    item["why_it_matters"] = why
+    item["business_implication"] = biz
+
+    for field, value in (
+        ("headline", title),
+        ("summary", summary),
+        ("why_it_matters", why),
+        ("business_implication", biz),
+    ):
+        original = str(seed.get(field) or live_item.get(field) or "").strip()
+        if original and original != value and not _reissue_visible_text_is_clean_korean(original):
+            sanitized_fields.append(f"top_5_news.items[{rank - 1}].{field}")
+
+    for field in _REISSUE_VISIBLE_TOP5_FIELDS:
+        if field in item and isinstance(item.get(field), str):
+            value = str(item.get(field) or "").strip()
+            if not _reissue_visible_text_is_clean_korean(value):
+                replacement, used_fallback = _reissue_pick_visible_value(
+                    field=field,
+                    live_item=live_item,
+                    visible_seed=seed,
+                    templates=templates,
+                )
+                item[field] = replacement
+                fallback_used = fallback_used or used_fallback
+                path = f"top_5_news.items[{rank - 1}].{field}"
+                if path not in sanitized_fields:
+                    sanitized_fields.append(path)
+
+    source_ids = live_item.get("source_ids") if isinstance(live_item.get("source_ids"), list) else []
+    if not source_ids:
+        sid = str(live_item.get("news_id") or live_item.get("source_id") or "").strip()
+        source_ids = [sid] if sid else []
+    item["source_ids"] = [str(sid).strip() for sid in source_ids if str(sid).strip()]
+    if not str(item.get("news_id") or "").strip():
+        item["news_id"] = item["source_ids"][0] if item["source_ids"] else f"live-reissue-{rank}"
+    category = str(live_item.get("category") or seed.get("category") or "").strip()
+    allowed_categories = get_news_categories_for_program(PROGRAM_GLOBAL) | get_news_categories_for_program(PROGRAM_KOREA)
+    if category not in allowed_categories:
+        category = "market_signal"
+    item["category"] = category
+    confidence = str(live_item.get("confidence_label") or seed.get("confidence_label") or "").strip()
+    if confidence not in {"confirmed", "reported", "claimed", "estimated", "unverified"}:
+        confidence = "reported"
+    item["confidence_label"] = confidence
+    return item, sanitized_fields, fallback_used
+
+
+def _compose_reissue_top5_visible_items(
+    *,
+    live_items: List[Dict[str, Any]],
+    base_items: Any,
+) -> Tuple[List[Dict[str, Any]], List[str], bool]:
+    seed_by_news_id: Dict[str, Dict[str, Any]] = {}
+    if isinstance(base_items, list):
+        for item in base_items:
+            if not isinstance(item, dict):
+                continue
+            news_id = str(item.get("news_id") or "").strip()
+            if news_id:
+                seed_by_news_id[news_id] = item
+
+    normalized: List[Dict[str, Any]] = []
+    sanitized_fields: List[str] = []
+    fallback_used = False
+    for idx, live_item in enumerate(live_items, start=1):
+        news_id = str(live_item.get("news_id") or "").strip()
+        seed = seed_by_news_id.get(news_id)
+        item, fields, used_fallback = _normalize_reissue_visible_top5_item(
+            live_item,
+            rank=idx,
+            visible_seed=seed,
+        )
+        normalized.append(item)
+        for field in fields:
+            if field not in sanitized_fields:
+                sanitized_fields.append(field)
+        fallback_used = fallback_used or used_fallback
+    return normalized, sanitized_fields, fallback_used
+
+
+def _reissue_visible_quality_status(payload: Dict[str, Any]) -> str:
+    _repaired, fields = validate_and_repair_keysuri_visible_text_quality(
+        payload,
+        root_path="generated_briefing",
+    )
+    return str(fields.get("visible_text_quality_status") or "pass")
+
+
 def _repair_reissue_top5_from_live_selection(
     *,
     generated_briefing: Dict[str, Any],
@@ -1365,8 +1653,6 @@ def _repair_reissue_top5_from_live_selection(
     original_items = original_top.get("items") if isinstance(original_top, dict) else []
     original_count = len(original_items) if isinstance(original_items, list) else 0
 
-    live_ids = sorted(str(it.get("news_id") or "").strip() for it in live_items)
-
     bases: List[Tuple[str, Dict[str, Any], bool]] = []
     if isinstance(generated_briefing, dict) and generated_briefing:
         bases.append(("gemini_output", copy.deepcopy(generated_briefing), False))
@@ -1375,21 +1661,24 @@ def _repair_reissue_top5_from_live_selection(
         bases.append(("parent_scaffold", parent_base, True))
 
     last_codes: List[str] = []
-    for label, base_briefing, rewrite_sources in bases:
+    for _label, base_briefing, rewrite_sources in bases:
         base = copy.deepcopy(base_briefing)
-        # Prefer the base briefing's OWN top5 items when they already cover exactly
-        # the live selection (Gemini was prompted with the live selection, so a
-        # valid Gemini briefing carries clean Korean items for those 5). Only fall
-        # back to the raw selection items (claim text) when the base's items don't
-        # match — avoids replacing polished prose with raw source snippets that
-        # would trip the visible-text-quality gate.
-        top5_for_base = live_items
+        # Prefer matching Gemini-visible prose, but never graft raw live claim
+        # prose directly into the rendered TOP5. The live selection remains the
+        # source of truth for grounding fields (news_id/source_ids/URLs).
         base_top = base.get("top_5_news") if isinstance(base, dict) else None
         base_items = base_top.get("items") if isinstance(base_top, dict) else None
-        if isinstance(base_items, list) and len(base_items) == KEYSURI_TOP_NEWS_COUNT:
-            base_ids = sorted(str(it.get("news_id") or "").strip() for it in base_items if isinstance(it, dict))
-            if base_ids == live_ids:
-                top5_for_base = base_items
+        pre_sanitize_base = copy.deepcopy(base)
+        pre_sanitize_base["top_5_news"] = {
+            "news_scope": expected_news_scope_for_program(program_id),
+            "section_heading": expected_top5_heading_for_program(program_id),
+            "items": copy.deepcopy(live_items),
+        }
+        before_status = _reissue_visible_quality_status(pre_sanitize_base)
+        top5_for_base, sanitized_fields, fallback_used = _compose_reissue_top5_visible_items(
+            live_items=live_items,
+            base_items=base_items,
+        )
         if rewrite_sources:
             base = _rewrite_briefing_sources_to_items(base, top5_for_base)
         repaired_prompt, repaired_briefing, issue_codes = _build_repaired_reissue_payload(
@@ -1399,6 +1688,14 @@ def _repair_reissue_top5_from_live_selection(
             program_id=program_id,
         )
         if repaired_prompt is not None and repaired_briefing is not None:
+            repaired_briefing, after_quality_fields = validate_and_repair_keysuri_visible_text_quality(
+                repaired_briefing,
+                root_path="generated_briefing",
+            )
+            after_status = str(after_quality_fields.get("visible_text_quality_status") or "pass")
+            if after_quality_fields.get("visible_text_ellipsis_blocked"):
+                last_codes = [KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED]
+                continue
             fields = {
                 "reissue_reselection_enabled": True,
                 "reissue_reselection_source": "live_candidate_pool",
@@ -1408,7 +1705,13 @@ def _repair_reissue_top5_from_live_selection(
                 "reissue_top5_repaired_count": KEYSURI_TOP_NEWS_COUNT,
                 "reissue_top5_repair_source": "reissue_live_selected_items",
                 "reissue_selected_items_count": KEYSURI_TOP_NEWS_COUNT,
+                "reissue_visible_text_sanitized": bool(sanitized_fields),
+                "reissue_visible_text_sanitized_fields": sanitized_fields,
+                "reissue_top5_clean_korean_fallback_used": bool(fallback_used),
+                "reissue_text_quality_gate_before": before_status,
+                "reissue_text_quality_gate_after": after_status,
             }
+            fields.update(after_quality_fields)
             return repaired_prompt, repaired_briefing, fields, None
         last_codes = issue_codes
 
@@ -1603,8 +1906,12 @@ def _regenerate_keysuri_text_from_source_pack(
             generated_briefing,
             root_path="generated_briefing",
         )
+        repair_fields.update(visible_text_quality_fields)
+        repair_fields["reissue_text_quality_gate_after_enrich"] = str(
+            visible_text_quality_fields.get("visible_text_quality_status") or "pass"
+        )
         if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
-            return None, None, {}, KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED
+            return None, None, repair_fields, KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED
         return prompt_input, generated_briefing, repair_fields, None
 
     # Legacy (non-reissue) path retained for compatibility.
@@ -2424,8 +2731,14 @@ def run_keysuri_text_and_image_reissue(
         generated_briefing,
         root_path="generated_briefing",
     )
+    repair_fields.update(_visible_fresh)
+    repair_fields["reissue_text_quality_gate_after_enrich"] = str(
+        _visible_fresh.get("visible_text_quality_status") or "pass"
+    )
     if _visible_fresh.get("visible_text_ellipsis_blocked"):
-        return {"ok": False, "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED, "program_id": pid}
+        failure = {"ok": False, "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED, "program_id": pid}
+        failure.update(repair_fields)
+        return failure
 
     child_run_id = generate_run_id(pid)
     subject_fields = build_keysuri_subject_artifact_fields(

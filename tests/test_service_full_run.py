@@ -217,6 +217,16 @@ def _live_reselection_items(prefix: str = "live") -> list[dict]:
     return out
 
 
+def _live_reselection_items_with_raw_english_ellipsis(prefix: str = "live-raw") -> list[dict]:
+    live_items = _live_reselection_items(prefix=prefix)
+    for idx, item in enumerate(live_items, start=1):
+        item["headline"] = f"AI labor report maps job shifts {idx}"
+        item["summary"] = "…report maps how AI could reshape jobs across the EU.. highlighting…"
+        item["why_it_matters"] = "Operators should read the raw claim.. before market open…"
+        item["business_implication"] = "This affects enterprise AI planning across several teams."
+    return live_items
+
+
 def _briefing_for_live_items(items: list[dict], program_id: str = PROGRAM_GLOBAL) -> dict:
     """A contract-valid briefing whose deep_dive/closing reference the given items'
     sources, so grafting these items as TOP5 validates."""
@@ -365,6 +375,126 @@ class KeysuriOwnerEmailDeliveryFieldsTests(unittest.TestCase):
 
 
 class KeysuriReissueTop5RepairTests(unittest.TestCase):
+    def _live_items_with_raw_english_ellipsis(self) -> list[dict]:
+        return _live_reselection_items_with_raw_english_ellipsis()
+
+    def test_live_reissue_raw_english_ellipsis_fallback_is_sanitized(self) -> None:
+        from keysuri_service_full_run import _repair_reissue_top5_from_live_selection
+        from keysuri_visible_text_quality import validate_and_repair_keysuri_visible_text_quality
+
+        live_items = self._live_items_with_raw_english_ellipsis()
+        prompt_input = {
+            "program_id": PROGRAM_GLOBAL,
+            "source_pack": {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []},
+            "top_5_news": {"news_scope": "global", "section_heading": "글로벌 테크 TOP 5", "items": live_items},
+        }
+        # Gemini returns only a partial TOP5; the remaining visible prose must be
+        # clean Korean fallback, never raw claim snippets.
+        partial_gemini = _briefing_for_live_items(live_items[:2])
+
+        repaired_prompt, repaired_briefing, fields, err = _repair_reissue_top5_from_live_selection(
+            generated_briefing=partial_gemini,
+            prompt_input=prompt_input,
+            program_id=PROGRAM_GLOBAL,
+            parent={},
+        )
+
+        self.assertIsNone(err)
+        self.assertIsNotNone(repaired_prompt)
+        self.assertEqual(fields["reissue_top5_repair_source"], "reissue_live_selected_items")
+        self.assertTrue(fields["reissue_visible_text_sanitized"])
+        self.assertTrue(fields["reissue_top5_clean_korean_fallback_used"])
+        self.assertEqual(fields["reissue_text_quality_gate_before"], "block")
+        self.assertEqual(fields["reissue_text_quality_gate_after"], "pass")
+        repaired_items = repaired_briefing["top_5_news"]["items"]
+        self.assertEqual(len(repaired_items), 5)
+        rendered = json.dumps(repaired_items, ensure_ascii=False)
+        self.assertNotIn("…", rendered)
+        self.assertNotIn("..", rendered)
+        self.assertNotIn("report maps how AI could reshape jobs", rendered)
+        _payload, quality = validate_and_repair_keysuri_visible_text_quality(repaired_briefing)
+        self.assertFalse(quality.get("visible_text_ellipsis_blocked"))
+
+    def test_live_reissue_valid_gemini_korean_is_preserved(self) -> None:
+        from keysuri_service_full_run import _repair_reissue_top5_from_live_selection
+
+        live_items = self._live_items_with_raw_english_ellipsis()
+        gemini_items = []
+        for idx, live in enumerate(live_items, start=1):
+            item = dict(live)
+            item["headline"] = f"제미나이 한국어 제목 {idx}"
+            item["korean_title"] = f"제미나이 한국어 제목 {idx}"
+            item["summary"] = f"제미나이가 정리한 한국어 요약 {idx}입니다."
+            item["why_it_matters"] = f"주요 시장 흐름을 판단하는 데 필요한 한국어 이유 {idx}입니다."
+            item["business_implication"] = f"주인님이 점검할 실행 포인트 {idx}입니다."
+            gemini_items.append(item)
+        gemini_briefing = _briefing_for_live_items(gemini_items)
+        prompt_input = {
+            "program_id": PROGRAM_GLOBAL,
+            "source_pack": {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []},
+            "top_5_news": {"news_scope": "global", "section_heading": "글로벌 테크 TOP 5", "items": live_items},
+        }
+
+        repaired_prompt, repaired_briefing, fields, err = _repair_reissue_top5_from_live_selection(
+            generated_briefing=gemini_briefing,
+            prompt_input=prompt_input,
+            program_id=PROGRAM_GLOBAL,
+            parent={},
+        )
+
+        self.assertIsNone(err)
+        self.assertIsNotNone(repaired_prompt)
+        repaired_items = repaired_briefing["top_5_news"]["items"]
+        self.assertEqual([it["summary"] for it in repaired_items], [it["summary"] for it in gemini_items])
+        self.assertEqual([it["why_it_matters"] for it in repaired_items], [it["why_it_matters"] for it in gemini_items])
+        self.assertFalse(fields["reissue_visible_text_sanitized"])
+        self.assertFalse(fields["reissue_top5_clean_korean_fallback_used"])
+        # Grounding still comes from the live selection.
+        self.assertEqual(
+            [it["canonical_url"] for it in repaired_items],
+            [it["canonical_url"] for it in live_items],
+        )
+        self.assertEqual(
+            [it["source_ids"] for it in repaired_items],
+            [it["source_ids"] for it in live_items],
+        )
+
+    def test_live_reissue_partial_gemini_preserves_clean_items_and_fills_fallback(self) -> None:
+        from keysuri_service_full_run import _repair_reissue_top5_from_live_selection
+
+        live_items = self._live_items_with_raw_english_ellipsis()
+        partial_items = []
+        for idx, live in enumerate(live_items[:2], start=1):
+            item = dict(live)
+            item["headline"] = f"부분 제미나이 제목 {idx}"
+            item["summary"] = f"부분 제미나이 요약 {idx}입니다."
+            item["why_it_matters"] = f"부분 제미나이 이유 {idx}입니다."
+            item["business_implication"] = f"부분 제미나이 실행 포인트 {idx}입니다."
+            partial_items.append(item)
+        partial_gemini = _briefing_for_live_items(partial_items)
+        prompt_input = {
+            "program_id": PROGRAM_GLOBAL,
+            "source_pack": {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []},
+            "top_5_news": {"news_scope": "global", "section_heading": "글로벌 테크 TOP 5", "items": live_items},
+        }
+
+        _repaired_prompt, repaired_briefing, fields, err = _repair_reissue_top5_from_live_selection(
+            generated_briefing=partial_gemini,
+            prompt_input=prompt_input,
+            program_id=PROGRAM_GLOBAL,
+            parent={},
+        )
+
+        self.assertIsNone(err)
+        repaired_items = repaired_briefing["top_5_news"]["items"]
+        self.assertEqual(repaired_items[0]["summary"], "부분 제미나이 요약 1입니다.")
+        self.assertEqual(repaired_items[1]["summary"], "부분 제미나이 요약 2입니다.")
+        self.assertIn("최신 발표를 바탕으로", repaired_items[2]["summary"])
+        self.assertTrue(fields["reissue_top5_clean_korean_fallback_used"])
+        self.assertTrue(fields["reissue_visible_text_sanitized"])
+        self.assertEqual([it["news_id"] for it in repaired_items], [it["news_id"] for it in live_items])
+        self.assertEqual([it["canonical_url"] for it in repaired_items], [it["canonical_url"] for it in live_items])
+
     def test_body_and_image_reissue_repairs_top5_from_parent_selection(self) -> None:
         from keysuri_service_full_run import _repair_reissue_top5_from_raw_text
 
@@ -773,6 +903,232 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self._env.stop()
+
+    def test_text_only_reissue_dry_run_creates_child_with_sanitized_live_top5(self) -> None:
+        from keysuri_service_full_run import run_keysuri_text_only_reissue
+        from keysuri_generation_prompt import parse_keysuri_generated_response as real_parse_keysuri_response
+
+        repo = Path(__file__).resolve().parents[1]
+        parent_id = "20260629_123001_keysuri_global_tech_e70f6567"
+        child_id = "20260629_130001_keysuri_global_tech_d0b0d001"
+        top_path = repo / "output" / "images" / "body_only_dry_run_top.jpg"
+        top_path.parent.mkdir(parents=True, exist_ok=True)
+        top_path.write_bytes(b"\xff\xd8\xff" + b"\x83" * 128)
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": PROGRAM_GLOBAL,
+                "program_id": PROGRAM_GLOBAL,
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+                "generated_image_path_watermarked": str(top_path.relative_to(repo)),
+                "top_image_cid": "keysuri_topshot_global_parent",
+                "selected_items": _reissue_parent_top5_items(),
+            },
+            email_html="<html><body><p>parent body</p></body></html>",
+        )
+        source_pack = {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as sp_file:
+            json.dump(source_pack, sp_file)
+            source_pack_path = sp_file.name
+        live_items = _live_reselection_items_with_raw_english_ellipsis(prefix="dry-body")
+        partial_gemini = _briefing_for_live_items(live_items[:2], program_id=PROGRAM_GLOBAL)
+        prompt_input = {
+            "program_id": PROGRAM_GLOBAL,
+            "source_pack": source_pack,
+            "top_5_news": {"news_scope": "global", "section_heading": "글로벌 테크 TOP 5", "items": live_items},
+            "sent_log_read_count": 0,
+            "exposure_log_read_count": 0,
+        }
+        send_fn = MagicMock(return_value=True)
+
+        def _parse_reissue_text(raw_text, program_id, parsed_prompt_input):
+            if raw_text == "RAW":
+                return {"parse_status": "parsed_valid", "generated_briefing": partial_gemini}
+            return real_parse_keysuri_response(raw_text, program_id, parsed_prompt_input)
+
+        with patch("keysuri_service_full_run.generate_run_id", return_value=child_id), patch(
+            "keysuri_service_full_run.build_keysuri_prompt_input", return_value=json.loads(json.dumps(prompt_input))
+        ), patch(
+            "keysuri_service_full_run.build_keysuri_generation_prompt", return_value="PROMPT"
+        ), patch(
+            "keysuri_service_full_run.parse_keysuri_generated_response",
+            side_effect=_parse_reissue_text,
+        ), patch(
+            "keysuri_service_full_run.enrich_generated_briefing_content",
+            side_effect=lambda briefing, *_args: briefing,
+        ), patch(
+            "keysuri_service_full_run.build_keysuri_subject_artifact_fields",
+            return_value={
+                "editorial_subject": "라이브 재발행 검증",
+                "email_subject": "라이브 재발행 검증",
+                "owner_email_subject": "[운영자 검토] 라이브 재발행 검증",
+                "email_preheader": "글로벌 AI·테크 신호 검수 대기",
+                "owner_email_preheader": "글로벌 AI·테크 신호 검수 대기",
+                "subject_top_headline": "라이브 재발행 검증",
+                "subject_source": "top_signal_1_headline",
+                "subject_kst_date": "20260629",
+                "subject_kst_label": "6월 29일",
+                "subject_program_label": "글로벌 테크 브리핑",
+                "subject_trigger_label": "admin_text_only_reissue",
+            },
+        ), patch(
+            "keysuri_service_full_run._build_service_contract_fixture",
+            return_value={"selected_subject": "라이브 재발행 검증", "preheader": "검수 대기"},
+        ), patch(
+            "keysuri_service_full_run.render_keysuri_contract_preview_html",
+            return_value="<html><body><p>재발행 검수 본문</p></body></html>",
+        ), patch(
+            "keysuri_service_full_run.build_keysuri_global_gmail_owner_email_html",
+            return_value='<html><body><p>재발행 검수 본문</p><img src="cid:keysuri_topshot_global_parent"/></body></html>',
+        ):
+            result = run_keysuri_text_only_reissue(
+                parent_id,
+                trigger_source="admin_text_only_reissue",
+                text_caller=MagicMock(return_value="RAW"),
+                send_owner_email=False,
+                send_fn=send_fn,
+                smoke_runner=lambda **_kw: _live_smoke_result_for_pack(source_pack_path),
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["email_sent"])
+        send_fn.assert_not_called()
+        child = load_run_artifact(child_id) or {}
+        self.assertEqual(child.get("customer_delivery_status"), "not_sent")
+        self.assertTrue(child.get("reissue_visible_text_sanitized"))
+        self.assertTrue(child.get("reissue_top5_clean_korean_fallback_used"))
+        self.assertEqual(child.get("reissue_text_quality_gate_after_enrich"), "pass")
+        snap = child.get("regen_generated_briefing_snapshot") or {}
+        items = (snap.get("top_5_news") or {}).get("items") or []
+        self.assertEqual(len(items), 5)
+        self.assertEqual([it.get("news_id") for it in items], [it["news_id"] for it in live_items])
+        rendered = json.dumps(items, ensure_ascii=False)
+        self.assertNotIn("…", rendered)
+        self.assertNotIn("..", rendered)
+        self.assertNotIn("report maps how AI could reshape jobs", rendered)
+
+    def test_text_and_image_reissue_dry_run_creates_child_with_sanitized_live_top5(self) -> None:
+        from keysuri_service_full_run import run_keysuri_text_and_image_reissue
+
+        repo = Path(__file__).resolve().parents[1]
+        parent_id = "20260629_123001_keysuri_global_tech_e70f6568"
+        child_id = "20260629_130002_keysuri_global_tech_d0b00002"
+        raw_top = repo / "output" / "images" / "body_and_image_dry_run_top_raw.jpg"
+        raw_top.parent.mkdir(parents=True, exist_ok=True)
+        raw_top.write_bytes(b"\xff\xd8\xff" + b"\x84" * 128)
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": PROGRAM_GLOBAL,
+                "program_id": PROGRAM_GLOBAL,
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "response_status": 200,
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+                "selected_items": _reissue_parent_top5_items(),
+            },
+            email_html="<html><body><p>parent body</p></body></html>",
+        )
+        source_pack = {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as sp_file:
+            json.dump(source_pack, sp_file)
+            source_pack_path = sp_file.name
+        live_items = _live_reselection_items_with_raw_english_ellipsis(prefix="dry-both")
+        partial_gemini = _briefing_for_live_items(live_items[:2], program_id=PROGRAM_GLOBAL)
+        smoke_result = LiveSourceSmokeResult(
+            ok=True,
+            program_id=PROGRAM_GLOBAL,
+            source_pack_path=source_pack_path,
+            html_path="",
+            fetched_item_count=7,
+            feed_urls_used=[],
+            sample_marker_pass=True,
+            called_gemini=True,
+            parse_status="parsed_valid",
+            generated_briefing=partial_gemini,
+        )
+        prompt_input = {
+            "program_id": PROGRAM_GLOBAL,
+            "source_pack": source_pack,
+            "top_5_news": {"news_scope": "global", "section_heading": "글로벌 테크 TOP 5", "items": live_items},
+            "sent_log_read_count": 0,
+            "exposure_log_read_count": 0,
+        }
+        image_runner = MagicMock(
+            return_value=ServiceImageOutcome(
+                called_image_api=True,
+                image_generation_status="generated",
+                image_source=IMAGE_SOURCE_GENERATED,
+                generated_image_path=str(raw_top.relative_to(repo)),
+            )
+        )
+        send_fn = MagicMock(return_value=True)
+
+        with patch("keysuri_service_full_run.generate_run_id", return_value=child_id), patch(
+            "keysuri_service_full_run.build_keysuri_prompt_input", return_value=json.loads(json.dumps(prompt_input))
+        ), patch(
+            "keysuri_service_full_run.enrich_generated_briefing_content",
+            side_effect=lambda briefing, *_args: briefing,
+        ), patch(
+            "keysuri_service_full_run.apply_keysuri_mirai_on_watermark",
+            side_effect=_mock_keysuri_watermark,
+        ), patch(
+            "keysuri_service_full_run.build_keysuri_subject_artifact_fields",
+            return_value={
+                "editorial_subject": "라이브 전체 재발행 검증",
+                "email_subject": "라이브 전체 재발행 검증",
+                "owner_email_subject": "[운영자 검토] 라이브 전체 재발행 검증",
+                "email_preheader": "글로벌 AI·테크 신호 검수 대기",
+                "owner_email_preheader": "글로벌 AI·테크 신호 검수 대기",
+                "subject_top_headline": "라이브 전체 재발행 검증",
+                "subject_source": "top_signal_1_headline",
+                "subject_kst_date": "20260629",
+                "subject_kst_label": "6월 29일",
+                "subject_program_label": "글로벌 테크 브리핑",
+                "subject_trigger_label": "admin_text_and_image_reissue",
+            },
+        ), patch(
+            "keysuri_service_full_run._build_service_contract_fixture",
+            return_value={"selected_subject": "라이브 전체 재발행 검증", "preheader": "검수 대기"},
+        ), patch(
+            "keysuri_service_full_run.render_keysuri_contract_preview_html",
+            return_value="<html><body><p>전체 재발행 검수 본문</p></body></html>",
+        ), patch(
+            "keysuri_service_full_run.build_keysuri_global_gmail_owner_email_html",
+            return_value="<html><body><p>전체 재발행 검수 본문</p></body></html>",
+        ):
+            result = run_keysuri_text_and_image_reissue(
+                parent_id,
+                smoke_runner=MagicMock(return_value=smoke_result),
+                image_canary_runner=image_runner,
+                send_owner_email=False,
+                send_fn=send_fn,
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["email_sent"])
+        send_fn.assert_not_called()
+        image_runner.assert_called_once()
+        child = load_run_artifact(child_id) or {}
+        self.assertEqual(child.get("customer_delivery_status"), "not_sent")
+        self.assertTrue(child.get("image_generation_called"))
+        self.assertTrue(child.get("reissue_visible_text_sanitized"))
+        self.assertTrue(child.get("reissue_top5_clean_korean_fallback_used"))
+        self.assertEqual(child.get("reissue_text_quality_gate_after_enrich"), "pass")
+        self.assertNotIn("bottom_image_cid", child)
+        snap = child.get("regen_generated_briefing_snapshot") or {}
+        items = (snap.get("top_5_news") or {}).get("items") or []
+        self.assertEqual(len(items), 5)
+        self.assertEqual([it.get("news_id") for it in items], [it["news_id"] for it in live_items])
+        rendered = json.dumps(items, ensure_ascii=False)
+        self.assertNotIn("…", rendered)
+        self.assertNotIn("..", rendered)
+        self.assertNotIn("report maps how AI could reshape jobs", rendered)
 
     @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
     @patch("keysuri_service_full_run.run_keysuri_live_source_smoke")
