@@ -1262,6 +1262,18 @@ def _regenerate_keysuri_text_from_source_pack(
         prompt_input = build_keysuri_prompt_input(program_id, source_pack)
     except (ValueError, KeyError) as exc:
         return None, None, {}, f"text_only_reselect_candidate_pool_exhausted: {exc}"
+    # When the reselect pool has no candidates left (e.g. every parent-selected
+    # source was excluded for body_only), build_keysuri_prompt_input returns a
+    # prompt_input whose top_5_news is None. build_keysuri_generation_prompt
+    # requires top_5_news and would otherwise raise an uncaught ValueError that
+    # surfaces as a raw "keysuri_reissue_execution (ValueError)" failure. Treat
+    # this as the graceful candidate-pool-exhausted path instead.
+    if not isinstance(prompt_input, dict):
+        return None, None, {}, "text_only_reselect_candidate_pool_exhausted"
+    _top5 = prompt_input.get("top_5_news")
+    _top5_items = _top5.get("items") if isinstance(_top5, dict) else None
+    if not isinstance(_top5_items, list) or not _top5_items:
+        return None, None, {}, "text_only_reselect_candidate_pool_exhausted"
     prompt_input["source_pack"] = source_pack
     prompt_text = build_keysuri_generation_prompt(prompt_input)
     caller = text_caller or call_keysuri_gemini_text

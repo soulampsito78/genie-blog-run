@@ -1018,13 +1018,24 @@ def admin_run_reissue(
                 reissue_reason_note=note,
                 send_owner_email=not dry_run,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
+            # Log the full traceback server-side for diagnosis; never surface the
+            # raw exception type/message on the operator screen.
+            logger.exception(
+                "keysuri reissue execution failed: run_id=%s scope=%s dry_run=%s",
+                run_id,
+                scope,
+                dry_run,
+            )
             return _render_reissue_failure_page(
                 title="Reissue error",
                 run_id=run_id,
                 mode=mode,
                 failed_step="keysuri_reissue_execution",
-                safe_message=f"재발행 실행 중 오류가 발생했습니다 ({type(exc).__name__}).",
+                safe_message=(
+                    "재발행 실행 중 오류가 발생했습니다. "
+                    "safe_error_code=keysuri_reissue_execution_error"
+                ),
                 status_code=200,
                 dry_run=dry_run,
             )

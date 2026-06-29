@@ -651,7 +651,10 @@ class AdminRoutesTests(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertIn("keysuri_reissue_execution", resp.text)
-        self.assertIn("ValueError", resp.text)
+        # Raw exception type/message must not surface on the operator screen;
+        # only a generic safe code is shown.
+        self.assertIn("safe_error_code=keysuri_reissue_execution_error", resp.text)
+        self.assertNotIn("ValueError", resp.text)
         self.assertNotIn("raw internal detail", resp.text)
         mock_text_and_image.assert_called_once()
         mock_exec.assert_not_called()
@@ -963,6 +966,84 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("safe_error_code=generated_briefing_contract_invalid", resp.text)
         self.assertIn("dry-run", resp.text)
         self.assertNotIn("Gemini parse failed", resp.text)
+        self.assertNotIn("Traceback", resp.text)
+        mock_exec.assert_not_called()
+
+    @patch("admin_routes.execute_orchestrator_run")
+    @patch("admin_routes.run_keysuri_text_only_reissue")
+    def test_body_only_exhausted_pool_renders_safe_panel(self, mock_text_only, mock_exec) -> None:
+        # body_only with no reselect candidates left → graceful safe error, HTTP 200.
+        mock_text_only.return_value = {
+            "ok": False,
+            "program_id": "keysuri_global_tech",
+            "error": "text_only_reselect_candidate_pool_exhausted",
+        }
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120220_keysuri_global_tech_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_global_tech",
+                "program_id": "keysuri_global_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+            },
+            email_html="<html><body><p>original body</p></body></html>",
+        )
+        resp = self.client.post(
+            f"/admin/runs/{parent_id}/reissue",
+            data={
+                "reason_option": "뉴스 중복 이슈",
+                "reason_note": "",
+                "reissue_scope": "body_only",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("safe_error_code=text_only_reselect_candidate_pool_exhausted", resp.text)
+        self.assertNotIn("Traceback", resp.text)
+        self.assertNotIn("ValueError", resp.text)
+        mock_text_only.assert_called_once()
+        mock_exec.assert_not_called()
+
+    @patch("admin_routes.execute_orchestrator_run")
+    @patch("admin_routes.run_keysuri_text_only_reissue")
+    def test_reissue_unexpected_exception_hides_raw_type(self, mock_text_only, mock_exec) -> None:
+        # An unexpected exception inside the runner must not leak the raw type
+        # (e.g. "ValueError") or a traceback to the operator screen.
+        mock_text_only.side_effect = ValueError(
+            "prompt_input.top_5_news is required for generation prompt"
+        )
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120221_keysuri_global_tech_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_global_tech",
+                "program_id": "keysuri_global_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+            },
+            email_html="<html><body><p>original body</p></body></html>",
+        )
+        resp = self.client.post(
+            f"/admin/runs/{parent_id}/reissue",
+            data={
+                "reason_option": "뉴스 중복 이슈",
+                "reason_note": "",
+                "reissue_scope": "body_only",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("keysuri_reissue_execution", resp.text)
+        self.assertIn("safe_error_code=keysuri_reissue_execution_error", resp.text)
+        self.assertNotIn("ValueError", resp.text)
+        self.assertNotIn("top_5_news is required", resp.text)
         self.assertNotIn("Traceback", resp.text)
         mock_exec.assert_not_called()
 

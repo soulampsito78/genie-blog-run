@@ -481,6 +481,65 @@ class KeysuriReissueTop5RepairTests(unittest.TestCase):
         self.assertTrue(fields["reissue_top5_repair_failed_sections"])  # safe issue codes recorded
 
 
+class KeysuriBodyOnlyReissueExhaustedPoolTests(unittest.TestCase):
+    """body_only reissue must not raise an uncaught ValueError when the reselect
+    candidate pool is exhausted (every parent-selected source excluded)."""
+
+    def test_regen_from_source_pack_exhausted_pool_returns_safe_error(self) -> None:
+        from keysuri_service_full_run import _regenerate_keysuri_text_from_source_pack
+
+        source_pack = {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []}
+        # Depleted pool: build_keysuri_prompt_input returns top_5_news=None.
+        depleted = {"program_id": PROGRAM_GLOBAL, "top_5_news": None}
+        with patch("keysuri_service_full_run.build_keysuri_prompt_input", return_value=dict(depleted)):
+            prompt_input, briefing, fields, err = _regenerate_keysuri_text_from_source_pack(
+                PROGRAM_GLOBAL,
+                source_pack,
+                parent={"selected_items": _reissue_parent_top5_items()},
+                text_caller=MagicMock(return_value="{}"),
+            )
+        self.assertIsNone(prompt_input)
+        self.assertIsNone(briefing)
+        self.assertEqual(err, "text_only_reselect_candidate_pool_exhausted")
+
+    def test_regen_from_source_pack_empty_top5_items_returns_safe_error(self) -> None:
+        from keysuri_service_full_run import _regenerate_keysuri_text_from_source_pack
+
+        source_pack = {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []}
+        depleted = {"program_id": PROGRAM_GLOBAL, "top_5_news": {"items": []}}
+        with patch("keysuri_service_full_run.build_keysuri_prompt_input", return_value=dict(depleted)):
+            prompt_input, briefing, fields, err = _regenerate_keysuri_text_from_source_pack(
+                PROGRAM_GLOBAL,
+                source_pack,
+                parent={"selected_items": _reissue_parent_top5_items()},
+                text_caller=MagicMock(return_value="{}"),
+            )
+        self.assertIsNone(prompt_input)
+        self.assertEqual(err, "text_only_reselect_candidate_pool_exhausted")
+
+    def test_text_only_reissue_exhausted_pool_does_not_raise(self) -> None:
+        from keysuri_service_full_run import run_keysuri_text_only_reissue
+
+        parent = {
+            "program_id": PROGRAM_GLOBAL,
+            "mode": "keysuri_global_tech",
+            "selected_items": _reissue_parent_top5_items(),
+            "regen_source_pack_snapshot": {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []},
+        }
+        depleted = {"program_id": PROGRAM_GLOBAL, "top_5_news": None}
+        with patch("keysuri_service_full_run.build_keysuri_prompt_input", return_value=dict(depleted)):
+            result = run_keysuri_text_only_reissue(
+                "20260629_120000_keysuri_global_tech_deadbeef",
+                parent_meta=parent,
+                send_owner_email=True,
+                text_caller=MagicMock(return_value="{}"),
+                send_fn=MagicMock(return_value=True),
+            )
+        # Graceful dict error (ok=False), never a raised ValueError.
+        self.assertFalse(result.get("ok"))
+        self.assertEqual(result.get("error"), "text_only_reselect_candidate_pool_exhausted")
+
+
 class KeysuriImageOnlyReissueTests(unittest.TestCase):
     def setUp(self) -> None:
         self._env = patch.dict(
@@ -808,7 +867,10 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
             email_html="<html><body><p>parent body</p></body></html>",
         )
 
-        mock_build_input.return_value = {"target_date": "2026-06-24"}
+        mock_build_input.return_value = {
+            "target_date": "2026-06-24",
+            "top_5_news": {"items": [{"rank": 1, "news_id": "reselect-1"}]},
+        }
         mock_build_prompt.return_value = "PROMPT-BODY"
         text_caller = MagicMock(return_value="RAW-TEXT")
         generated_briefing = {"summary": "재생성 본문", "briefing_title": "새 제목"}
