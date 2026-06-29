@@ -1365,6 +1365,8 @@ def _repair_reissue_top5_from_live_selection(
     original_items = original_top.get("items") if isinstance(original_top, dict) else []
     original_count = len(original_items) if isinstance(original_items, list) else 0
 
+    live_ids = sorted(str(it.get("news_id") or "").strip() for it in live_items)
+
     bases: List[Tuple[str, Dict[str, Any], bool]] = []
     if isinstance(generated_briefing, dict) and generated_briefing:
         bases.append(("gemini_output", copy.deepcopy(generated_briefing), False))
@@ -1373,13 +1375,26 @@ def _repair_reissue_top5_from_live_selection(
         bases.append(("parent_scaffold", parent_base, True))
 
     last_codes: List[str] = []
-    for _label, base_briefing, rewrite_sources in bases:
+    for label, base_briefing, rewrite_sources in bases:
         base = copy.deepcopy(base_briefing)
+        # Prefer the base briefing's OWN top5 items when they already cover exactly
+        # the live selection (Gemini was prompted with the live selection, so a
+        # valid Gemini briefing carries clean Korean items for those 5). Only fall
+        # back to the raw selection items (claim text) when the base's items don't
+        # match — avoids replacing polished prose with raw source snippets that
+        # would trip the visible-text-quality gate.
+        top5_for_base = live_items
+        base_top = base.get("top_5_news") if isinstance(base, dict) else None
+        base_items = base_top.get("items") if isinstance(base_top, dict) else None
+        if isinstance(base_items, list) and len(base_items) == KEYSURI_TOP_NEWS_COUNT:
+            base_ids = sorted(str(it.get("news_id") or "").strip() for it in base_items if isinstance(it, dict))
+            if base_ids == live_ids:
+                top5_for_base = base_items
         if rewrite_sources:
-            base = _rewrite_briefing_sources_to_items(base, live_items)
+            base = _rewrite_briefing_sources_to_items(base, top5_for_base)
         repaired_prompt, repaired_briefing, issue_codes = _build_repaired_reissue_payload(
             base_briefing=base,
-            top5_items=live_items,
+            top5_items=top5_for_base,
             prompt_input=prompt_input,
             program_id=program_id,
         )
