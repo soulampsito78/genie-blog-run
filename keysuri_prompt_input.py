@@ -120,11 +120,17 @@ def build_keysuri_prompt_input(
     program_id: str,
     source_pack: dict,
     gate_result: Optional[GateResult] = None,
+    extra_recent_log: Optional[list] = None,
 ) -> dict:
     """
     Build staged Kee-Suri prompt input from a source pack (offline; no LLM call).
 
     Runs source gate (unless gate_result provided) and TOP 5 selection.
+
+    ``extra_recent_log`` adds extra rows to the cross-day dedup exclusion set on
+    top of the recent sent-news / owner-review exposure logs. Reissue uses this to
+    exclude the parent run's selected_items so the regenerated TOP5 picks fresh,
+    non-duplicate news instead of re-selecting the parent's items.
     """
     pid = (program_id or "").strip()
     if pid not in KEYSURI_PROGRAM_IDS:
@@ -185,7 +191,8 @@ def build_keysuri_prompt_input(
     sent_log_rows = recent_sent_news_log(pid)
     exposure_log_status = recent_owner_review_exposure_log_with_status(pid, days=5)
     exposure_log_rows = exposure_log_status["items"]
-    combined_recent_log = list(sent_log_rows) + list(exposure_log_rows)
+    extra_rows = [row for row in (extra_recent_log or []) if isinstance(row, dict)]
+    combined_recent_log = list(sent_log_rows) + list(exposure_log_rows) + extra_rows
     dedup_result = run_sent_news_dedup_gate(
         briefing_type=pid,
         candidates=[item for item in items if isinstance(item, dict)],
@@ -200,6 +207,7 @@ def build_keysuri_prompt_input(
     base["exposure_log_read_count"] = len(exposure_log_rows)
     base["exposure_log_read_ok"] = exposure_log_status["read_ok"]
     base["combined_recent_log_count"] = len(combined_recent_log)
+    base["extra_recent_log_count"] = len(extra_rows)
     if not exposure_log_status["read_ok"]:
         base["exposure_log_read_error_code"] = exposure_log_status["error_code"]
     # Surface the intra-briefing diversity gate (same-source / entity / cluster

@@ -1152,6 +1152,155 @@ def _repair_reissue_top5_from_raw_text(
 
 
 # ---------------------------------------------------------------------------
+# reissue live reselection (fresh, parent-excluded TOP5) helpers
+# ---------------------------------------------------------------------------
+
+
+def _keysuri_reissue_exclusion_rows(parent: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Parent selected_items as cross-day dedup exclusion rows so a reissue never
+    re-selects the parent run's own TOP5 news."""
+    rows: List[Dict[str, Any]] = []
+    raw = parent.get("selected_items") if isinstance(parent, dict) else None
+    if not isinstance(raw, list):
+        return rows
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "title": item.get("headline") or item.get("title") or item.get("korean_title"),
+                "url": item.get("canonical_url") or item.get("url") or item.get("source_url"),
+                "canonical_url": item.get("canonical_url") or item.get("url") or item.get("source_url"),
+                "source": item.get("source_name") or item.get("source") or item.get("normalized_source"),
+                "topic_key": item.get("topic_key") or item.get("editorial_cluster_key"),
+            }
+        )
+    return rows
+
+
+def _live_selection_items_from_prompt_input(
+    prompt_input: Dict[str, Any],
+) -> Optional[List[Dict[str, Any]]]:
+    """The freshly selected, parent-excluded TOP5 items the reissue must use."""
+    top_5 = prompt_input.get("top_5_news") if isinstance(prompt_input, dict) else None
+    items = top_5.get("items") if isinstance(top_5, dict) else None
+    if isinstance(items, list) and len(items) == KEYSURI_TOP_NEWS_COUNT:
+        return copy.deepcopy(items)
+    return None
+
+
+def _rewrite_briefing_sources_to_items(
+    briefing: Dict[str, Any],
+    items: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Repoint deep_dive / closing_sources source references at the given TOP5
+    items so a grafted text scaffold stays contract-consistent with the live
+    selection (all source_ids resolve within the live pool)."""
+    source_ids: List[str] = []
+    source_list: List[Dict[str, Any]] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        sids = it.get("source_ids") if isinstance(it.get("source_ids"), list) else []
+        primary = ""
+        for sid in sids:
+            s = str(sid).strip()
+            if not s:
+                continue
+            if not primary:
+                primary = s
+            if s not in source_ids:
+                source_ids.append(s)
+        if not primary:
+            continue
+        label = str(
+            it.get("source_name") or it.get("source") or it.get("headline") or primary
+        ).strip() or primary
+        entry = {"source_id": primary, "label": label}
+        url = str(it.get("canonical_url") or it.get("source_url") or it.get("url") or "").strip()
+        if url:
+            entry["url"] = url
+        source_list.append(entry)
+    deep = briefing.get("deep_dive")
+    if isinstance(deep, dict) and source_ids:
+        deep["source_ids"] = list(source_ids)
+    closing = briefing.get("closing_sources")
+    if isinstance(closing, dict) and source_list:
+        closing["source_list"] = source_list
+    return briefing
+
+
+def _repair_reissue_top5_from_live_selection(
+    *,
+    generated_briefing: Dict[str, Any],
+    prompt_input: Dict[str, Any],
+    program_id: str,
+    parent: Optional[Dict[str, Any]] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any], Optional[str]]:
+    """Force the reissue TOP5 to the freshly selected, parent-excluded live items.
+
+    The authoritative TOP5 is the live candidate-pool selection (prompt_input),
+    never the parent snapshot. Gemini output is used only as prose; if it cannot
+    yield a contract-valid briefing, fall back to the parent snapshot as a *text
+    scaffold* but with its source references rewritten to the live selection, so
+    the final news is always the fresh selection.
+    """
+    live_items = _live_selection_items_from_prompt_input(prompt_input)
+    if live_items is None:
+        return (
+            None,
+            None,
+            {"reissue_reselection_enabled": True, "reissue_top5_repair_attempted": True},
+            "reissue_live_candidate_pool_insufficient",
+        )
+
+    original_top = generated_briefing.get("top_5_news") if isinstance(generated_briefing, dict) else None
+    original_items = original_top.get("items") if isinstance(original_top, dict) else []
+    original_count = len(original_items) if isinstance(original_items, list) else 0
+
+    bases: List[Tuple[str, Dict[str, Any], bool]] = []
+    if isinstance(generated_briefing, dict) and generated_briefing:
+        bases.append(("gemini_output", copy.deepcopy(generated_briefing), False))
+    parent_base = _parent_base_briefing_for_reissue(parent or {})
+    if parent_base is not None:
+        bases.append(("parent_scaffold", parent_base, True))
+
+    last_codes: List[str] = []
+    for _label, base_briefing, rewrite_sources in bases:
+        base = copy.deepcopy(base_briefing)
+        if rewrite_sources:
+            base = _rewrite_briefing_sources_to_items(base, live_items)
+        repaired_prompt, repaired_briefing, issue_codes = _build_repaired_reissue_payload(
+            base_briefing=base,
+            top5_items=live_items,
+            prompt_input=prompt_input,
+            program_id=program_id,
+        )
+        if repaired_prompt is not None and repaired_briefing is not None:
+            fields = {
+                "reissue_reselection_enabled": True,
+                "reissue_reselection_source": "live_candidate_pool",
+                "reissue_top5_repair_attempted": True,
+                "reissue_top5_repaired_from_parent": False,
+                "reissue_top5_original_count": original_count,
+                "reissue_top5_repaired_count": KEYSURI_TOP_NEWS_COUNT,
+                "reissue_top5_repair_source": "reissue_live_selected_items",
+                "reissue_selected_items_count": KEYSURI_TOP_NEWS_COUNT,
+            }
+            return repaired_prompt, repaired_briefing, fields, None
+        last_codes = issue_codes
+
+    fields = {
+        "reissue_reselection_enabled": True,
+        "reissue_top5_repair_attempted": True,
+        "reissue_top5_repaired_from_parent": False,
+        "reissue_top5_original_count": original_count,
+        "reissue_top5_repair_failed_sections": last_codes,
+    }
+    return None, None, fields, "reissue_top5_live_repair_validation_failed"
+
+
+# ---------------------------------------------------------------------------
 # text_only reselect helpers
 # ---------------------------------------------------------------------------
 
@@ -1252,58 +1401,84 @@ def _regenerate_keysuri_text_from_source_pack(
     *,
     parent: Optional[Dict[str, Any]] = None,
     text_caller: Optional[Callable[..., str]] = None,
+    extra_recent_log: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any], Optional[str]]:
-    """Build prompt_input from a given source_pack and regenerate text via Gemini.
+    """Build prompt_input from a fresh source_pack and regenerate text via Gemini.
 
-    Like _regenerate_keysuri_text_from_snapshot but takes source_pack directly,
-    used for text_only reselect (candidate pool filtering already applied).
+    Reissue reselection: ``extra_recent_log`` (the parent run's selected_items)
+    is added to the cross-day dedup exclusion so the regenerated TOP5 is a fresh,
+    non-duplicate selection from the live candidate pool. The final TOP5 is always
+    forced to that live selection (never the parent snapshot); Gemini output is
+    used only for prose. If the live pool cannot fill 5 items, returns the safe
+    ``reissue_live_candidate_pool_insufficient`` error rather than reusing parent
+    news.
     """
+    is_reissue = extra_recent_log is not None
+    insufficient_err = (
+        "reissue_live_candidate_pool_insufficient"
+        if is_reissue
+        else "text_only_reselect_candidate_pool_exhausted"
+    )
     try:
-        prompt_input = build_keysuri_prompt_input(program_id, source_pack)
+        prompt_input = build_keysuri_prompt_input(
+            program_id, source_pack, extra_recent_log=extra_recent_log
+        )
     except (ValueError, KeyError) as exc:
-        return None, None, {}, f"text_only_reselect_candidate_pool_exhausted: {exc}"
-    # When the reselect pool has no candidates left (e.g. every parent-selected
-    # source was excluded for body_only), build_keysuri_prompt_input returns a
-    # prompt_input whose top_5_news is None. build_keysuri_generation_prompt
-    # requires top_5_news and would otherwise raise an uncaught ValueError that
-    # surfaces as a raw "keysuri_reissue_execution (ValueError)" failure. Treat
-    # this as the graceful candidate-pool-exhausted path instead.
+        suffix = "" if is_reissue else f": {exc}"
+        return None, None, {}, f"{insufficient_err}{suffix}"
     if not isinstance(prompt_input, dict):
-        return None, None, {}, "text_only_reselect_candidate_pool_exhausted"
+        return None, None, {}, insufficient_err
     _top5 = prompt_input.get("top_5_news")
     _top5_items = _top5.get("items") if isinstance(_top5, dict) else None
+    # Reissue requires a full fresh TOP5; legacy callers accept any non-empty set.
     if not isinstance(_top5_items, list) or not _top5_items:
-        return None, None, {}, "text_only_reselect_candidate_pool_exhausted"
+        return None, None, {}, insufficient_err
+    if is_reissue and len(_top5_items) < KEYSURI_TOP_NEWS_COUNT:
+        return None, None, {}, insufficient_err
     prompt_input["source_pack"] = source_pack
     prompt_text = build_keysuri_generation_prompt(prompt_input)
     caller = text_caller or call_keysuri_gemini_text
     raw_text = caller(prompt_text)
     parse_result = parse_keysuri_generated_response(raw_text, program_id, prompt_input)
+
+    if is_reissue:
+        # Authoritative TOP5 = fresh live selection. Use Gemini prose when valid,
+        # else salvage a candidate from raw text, else fall back to a rewritten
+        # parent scaffold. The final news always comes from the live selection.
+        base_briefing = parse_result.get("generated_briefing")
+        if not isinstance(base_briefing, dict):
+            base_briefing = {}
+            try:
+                candidates = extract_json_candidates_from_model_text(raw_text)
+            except ValueError:
+                candidates = []
+            if candidates:
+                base_briefing = candidates[0]
+        repaired_prompt, repaired_briefing, repair_fields, repair_err = _repair_reissue_top5_from_live_selection(
+            generated_briefing=base_briefing,
+            prompt_input=prompt_input,
+            program_id=program_id,
+            parent=parent,
+        )
+        if repair_err is not None or repaired_prompt is None or repaired_briefing is None:
+            return None, None, repair_fields, repair_err or "reissue_top5_live_repair_validation_failed"
+        prompt_input = repaired_prompt
+        generated_briefing = repaired_briefing
+        generated_briefing = enrich_generated_briefing_content(generated_briefing, program_id, prompt_input)
+        generated_briefing, visible_text_quality_fields = validate_and_repair_keysuri_visible_text_quality(
+            generated_briefing,
+            root_path="generated_briefing",
+        )
+        if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
+            return None, None, {}, KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED
+        return prompt_input, generated_briefing, repair_fields, None
+
+    # Legacy (non-reissue) path retained for compatibility.
     if str(parse_result.get("parse_status") or "") != "parsed_valid":
-        parse_repair_fields: Dict[str, Any] = {}
-        if parent is not None:
-            repaired_prompt, repaired_briefing, parse_repair_fields, repair_err = _repair_reissue_top5_from_raw_text(
-                raw_text=raw_text,
-                prompt_input=prompt_input,
-                parent=parent,
-                program_id=program_id,
-            )
-            if repair_err is None and repaired_prompt is not None and repaired_briefing is not None:
-                return repaired_prompt, repaired_briefing, parse_repair_fields, None
-        return None, None, parse_repair_fields, "generated_briefing_regen_parse_failed"
+        return None, None, {}, "generated_briefing_regen_parse_failed"
     generated_briefing = parse_result.get("generated_briefing")
     if not isinstance(generated_briefing, dict):
         return None, None, {}, "generated_briefing_regen_missing"
-    repair_fields: Dict[str, Any] = {}
-    repaired_prompt, repaired_briefing, repair_fields, repair_err = _repair_reissue_top5_from_parent_selection(
-        generated_briefing=generated_briefing,
-        prompt_input=prompt_input,
-        parent=parent or {},
-        program_id=program_id,
-    )
-    if repair_err is None and repaired_prompt is not None and repaired_briefing is not None:
-        prompt_input = repaired_prompt
-        generated_briefing = repaired_briefing
     generated_briefing = enrich_generated_briefing_content(generated_briefing, program_id, prompt_input)
     generated_briefing, visible_text_quality_fields = validate_and_repair_keysuri_visible_text_quality(
         generated_briefing,
@@ -1311,7 +1486,7 @@ def _regenerate_keysuri_text_from_source_pack(
     )
     if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
         return None, None, {}, KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED
-    return prompt_input, generated_briefing, repair_fields, None
+    return prompt_input, generated_briefing, {}, None
 
 
 def _resolve_saved_artifact_path(parent: Dict[str, Any], *keys: str) -> Optional[Path]:
@@ -1765,37 +1940,53 @@ def run_keysuri_text_only_reissue(
     send_owner_email: bool = True,
     text_caller: Optional[Callable[..., str]] = None,
     send_fn: Optional[Callable[..., bool]] = None,
+    smoke_runner=None,
 ) -> Dict[str, Any]:
     parent = dict(parent_meta or load_run_artifact(parent_run_id, normalize=False) or {})
     pid = str(parent.get("program_id") or parent.get("mode") or "").strip()
     if pid not in _KEYSURI_PROGRAMS:
         return {"ok": False, "error": "text_only_reissue_unsupported_mode", "program_id": pid}
 
-    # text_only: must use parent candidate pool — never start fresh
-    source_pack = _regen_source_pack_snapshot(parent)
-    if not isinstance(source_pack, dict):
-        return {
-            "ok": False,
-            "error": "text_only_reselect_failed_missing_candidate_pool",
-            "program_id": pid,
-            "reissue_blocked_reason": (
-                "후보군 snapshot이 없어 본문만 재발행 불가. "
-                "본문·이미지 모두 재발행(body_and_image)을 사용하십시오."
-            ),
-        }
-
+    # body_only reissue: collect a FRESH live candidate pool (not the parent
+    # snapshot) and exclude the parent's own selected_items plus recent
+    # sent/exposure logs, so the regenerated TOP5 is fresh, deduped news. The
+    # existing top image is reused (body_only keeps the parent image).
     exclude_source_ids, exclude_urls, exclude_fps = _build_text_only_exclude_identifiers(parent)
     selected_count_before = len(exclude_source_ids)
+    excluded_ids = list(exclude_source_ids)
+    excluded_fps_applied = list(exclude_fps)
 
-    filtered_source_pack, excluded_ids, excluded_fps_applied = _filter_source_pack_for_reselect(
-        source_pack, exclude_source_ids, exclude_urls, exclude_fps
+    _smoke_runner = smoke_runner or run_keysuri_live_source_smoke
+    smoke = _smoke_runner(
+        program_id=pid,
+        use_gemini=False,
+        contract_preview=False,
+        send=False,
     )
+    try:
+        fresh_source_pack = json.loads(Path(smoke.source_pack_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        return {
+            "ok": False,
+            "error": "text_only_reissue_source_collection_failed",
+            "program_id": pid,
+            "error_code_detail": type(exc).__name__,
+        }
 
+    exclusion_rows = _keysuri_reissue_exclusion_rows(parent)
     prompt_input, generated_briefing, repair_fields, regen_error = _regenerate_keysuri_text_from_source_pack(
-        pid, filtered_source_pack, parent=parent, text_caller=text_caller,
+        pid,
+        fresh_source_pack,
+        parent=parent,
+        text_caller=text_caller,
+        extra_recent_log=exclusion_rows,
     )
     if regen_error or prompt_input is None or generated_briefing is None:
         return {"ok": False, "error": regen_error or "text_regeneration_failed", "program_id": pid}
+    repair_fields = dict(repair_fields or {})
+    repair_fields.setdefault("reissue_recent_sent_log_count", int(prompt_input.get("sent_log_read_count") or 0))
+    repair_fields.setdefault("reissue_recent_exposure_log_count", int(prompt_input.get("exposure_log_read_count") or 0))
+    repair_fields.setdefault("reissue_excluded_parent_items_count", len(exclusion_rows))
 
     _new_top_5 = prompt_input.get("top_5_news") if isinstance(prompt_input.get("top_5_news"), dict) else {}
     _new_items = _new_top_5.get("items") if isinstance(_new_top_5.get("items"), list) else []
@@ -2029,9 +2220,16 @@ def run_keysuri_text_and_image_reissue(
             "program_id": pid,
         }
 
+    # Reissue reselection: build a FRESH, parent-excluded TOP5 from the live pool.
+    # The parent's selected_items + recent sent/exposure logs are excluded so the
+    # regenerated news is fresh and deduped; the parent snapshot is never the final
+    # TOP5 source.
+    exclusion_rows = _keysuri_reissue_exclusion_rows(parent)
     try:
         fresh_source_pack = json.loads(Path(smoke.source_pack_path).read_text(encoding="utf-8"))
-        prompt_input = build_keysuri_prompt_input(pid, fresh_source_pack)
+        prompt_input = build_keysuri_prompt_input(
+            pid, fresh_source_pack, extra_recent_log=exclusion_rows
+        )
     except (OSError, ValueError, KeyError) as exc:
         return {
             "ok": False,
@@ -2041,58 +2239,52 @@ def run_keysuri_text_and_image_reissue(
         }
     prompt_input["source_pack"] = fresh_source_pack
 
-    repair_fields: Dict[str, Any] = {}
-    parse_status = str(smoke.parse_status or "")
-    generated_briefing = smoke.generated_briefing if isinstance(smoke.generated_briefing, dict) else None
-    if parse_status != "parsed_valid":
-        raw_path = Path(str(smoke.raw_response_path or ""))
-        raw_text = raw_path.read_text(encoding="utf-8") if raw_path.is_file() else ""
-        if raw_text:
-            prompt_input, generated_briefing, repair_fields, repair_err = _repair_reissue_top5_from_raw_text(
-                raw_text=raw_text,
-                prompt_input=prompt_input,
-                parent=parent,
-                program_id=pid,
-            )
-        else:
-            # No raw text to salvage prose from: repair straight off the parent
-            # validated snapshot so a recoverable parent still completes the reissue.
-            prompt_input, generated_briefing, repair_fields, repair_err = _repair_reissue_top5_from_parent_selection(
-                generated_briefing={},
-                prompt_input=prompt_input,
-                parent=parent,
-                program_id=pid,
-            )
-        if repair_err is not None:
-            generated_briefing = None
-    elif not smoke.ok:
+    # Insufficient fresh candidates after exclusion → safe failure (never fall back
+    # to the parent's duplicate TOP5).
+    if _live_selection_items_from_prompt_input(prompt_input) is None:
         return {
             "ok": False,
-            "error": "text_and_image_reissue_source_collection_failed",
+            "error": "reissue_live_candidate_pool_insufficient",
             "program_id": pid,
+            "reissue_reselection_enabled": True,
         }
-    elif generated_briefing is not None:
-        repaired_prompt, repaired_briefing, repair_fields, repair_err = _repair_reissue_top5_from_parent_selection(
-            generated_briefing=generated_briefing,
-            prompt_input=prompt_input,
-            parent=parent,
-            program_id=pid,
-        )
-        if repair_err is None and repaired_prompt is not None and repaired_briefing is not None:
-            prompt_input = repaired_prompt
-            generated_briefing = repaired_briefing
-        else:
-            generated_briefing = None
 
-    if not isinstance(generated_briefing, dict):
+    # Prose base: Gemini output when valid, else a salvaged candidate, else empty.
+    parse_status = str(smoke.parse_status or "")
+    base_briefing = smoke.generated_briefing if isinstance(smoke.generated_briefing, dict) else None
+    if parse_status != "parsed_valid" or not isinstance(base_briefing, dict):
+        raw_path = Path(str(smoke.raw_response_path or ""))
+        raw_text = raw_path.read_text(encoding="utf-8") if raw_path.is_file() else ""
+        base_briefing = {}
+        if raw_text:
+            try:
+                candidates = extract_json_candidates_from_model_text(raw_text)
+            except ValueError:
+                candidates = []
+            if candidates:
+                base_briefing = candidates[0]
+
+    repaired_prompt, repaired_briefing, repair_fields, repair_err = _repair_reissue_top5_from_live_selection(
+        generated_briefing=base_briefing,
+        prompt_input=prompt_input,
+        program_id=pid,
+        parent=parent,
+    )
+    repair_fields = dict(repair_fields or {})
+    repair_fields.setdefault("reissue_recent_sent_log_count", int(prompt_input.get("sent_log_read_count") or 0))
+    repair_fields.setdefault("reissue_recent_exposure_log_count", int(prompt_input.get("exposure_log_read_count") or 0))
+    repair_fields.setdefault("reissue_excluded_parent_items_count", len(exclusion_rows))
+    if repair_err is not None or repaired_prompt is None or repaired_briefing is None:
         failure = {
             "ok": False,
-            "error": "text_and_image_reissue_result_validation_failed",
+            "error": repair_err or "text_and_image_reissue_result_validation_failed",
             "program_id": pid,
         }
         # Safe internal repair summary (codes only, no raw parser detail) for tracing.
         failure.update(repair_fields)
         return failure
+    prompt_input = repaired_prompt
+    generated_briefing = repaired_briefing
     generated_briefing = enrich_generated_briefing_content(generated_briefing, pid, prompt_input)
     generated_briefing, _visible_fresh = validate_and_repair_keysuri_visible_text_quality(
         generated_briefing,

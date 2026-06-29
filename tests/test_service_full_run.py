@@ -193,6 +193,81 @@ def _generated_briefing_with_top_count(items: list[dict], program_id: str = PROG
     }
 
 
+def _live_reselection_items(prefix: str = "live") -> list[dict]:
+    """Fresh, parent-disjoint candidate selection for reissue reselection tests."""
+    out = []
+    for idx in range(1, 6):
+        out.append(
+            {
+                "rank": idx,
+                "news_id": f"{prefix}-{idx}",
+                "headline": f"Live Signal {idx}",
+                "korean_title": f"라이브 신호 {idx}",
+                "category": "market_signal",
+                "summary": f"Live summary {idx}",
+                "why_it_matters": f"Live why {idx}",
+                "business_implication": f"Live business implication {idx}",
+                "source_ids": [f"{prefix}-src-{idx}"],
+                "source_name": f"Live Source {idx}",
+                "source_url": f"https://example.com/{prefix}-{idx}",
+                "canonical_url": f"https://example.com/{prefix}-{idx}",
+                "confidence_label": "reported",
+            }
+        )
+    return out
+
+
+def _briefing_for_live_items(items: list[dict], program_id: str = PROGRAM_GLOBAL) -> dict:
+    """A contract-valid briefing whose deep_dive/closing reference the given items'
+    sources, so grafting these items as TOP5 validates."""
+    news_scope = "korea" if program_id == PROGRAM_KOREA else "global"
+    section_heading = "국내 테크 TOP 5" if program_id == PROGRAM_KOREA else "글로벌 테크 TOP 5"
+    sids = [it["source_ids"][0] for it in items]
+    return {
+        "program_id": program_id,
+        "operational_status": "review_required",
+        "generated_status": "generated_review_required",
+        "news_scope": news_scope,
+        "section_heading": section_heading,
+        "top_5_news": {"news_scope": news_scope, "section_heading": section_heading, "items": items},
+        "deep_dive": {
+            "section_heading": "키수리의 딥-다이브",
+            "body": "Live operators should watch fresh infrastructure and platform signals.",
+            "key_implications": ["Fresh signal", "Platform pressure"],
+            "source_ids": sids,
+            "confidence_label": "reported",
+        },
+        "one_line_checkpoint": {
+            "section_heading": "원-라인 체크포인트",
+            "body": "Watch the freshly reselected signals.",
+        },
+        "closing_sources": {
+            "section_heading": "마무리 및 출처 리스트",
+            "closing_message": "Source list grounded in the fresh live selection.",
+            "source_list": [{"source_id": s, "label": f"Live Source {i+1}", "url": items[i]["canonical_url"]} for i, s in enumerate(sids)],
+        },
+        "briefing_display": {
+            "opening_lead": "주인님, 오늘은 새로 수집한 신호를 기준으로 재발행합니다.",
+            "closing_message": "오늘 신호는 여기까지 정리했습니다.",
+        },
+    }
+
+
+def _live_smoke_result_for_pack(source_pack_path: str, program_id: str = PROGRAM_GLOBAL):
+    return LiveSourceSmokeResult(
+        ok=True,
+        program_id=program_id,
+        source_pack_path=source_pack_path,
+        html_path="",
+        fetched_item_count=7,
+        feed_urls_used=[],
+        sample_marker_pass=True,
+        called_gemini=False,
+        parse_status=None,
+        generated_briefing=None,
+    )
+
+
 class KeysuriOwnerEmailDeliveryFieldsTests(unittest.TestCase):
     def test_success_masks_recipients_and_keeps_domains_and_hashes(self) -> None:
         from keysuri_service_full_run import _owner_email_delivery_fields
@@ -325,40 +400,59 @@ class KeysuriReissueTop5RepairTests(unittest.TestCase):
             [it["news_id"] for it in parent_items],
         )
 
-    def test_body_only_reissue_regen_repairs_top5_from_parent_selection(self) -> None:
+    def test_body_only_reissue_regen_uses_live_selection_not_parent(self) -> None:
         from keysuri_service_full_run import _regenerate_keysuri_text_from_source_pack
 
         parent_items = _reissue_parent_top5_items()
         parent = {"selected_items": parent_items}
-        generated = _generated_briefing_with_top_count(parent_items[:2])
+        live_items = _live_reselection_items()
         source_pack = {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []}
-        prompt_input = {
+        live_prompt_input = {
             "program_id": PROGRAM_GLOBAL,
             "source_pack": source_pack,
-            "top_5_news": generated["top_5_news"],
+            "top_5_news": {
+                "news_scope": "global",
+                "section_heading": "글로벌 테크 TOP 5",
+                "items": live_items,
+            },
+            "sent_log_read_count": 3,
+            "exposure_log_read_count": 2,
         }
+        # Gemini truncates TOP5 to 2 — final must still be the fresh live 5.
+        gemini_short = _briefing_for_live_items(live_items[:2])
 
-        with patch("keysuri_service_full_run.build_keysuri_prompt_input", return_value=dict(prompt_input)), patch(
+        with patch(
+            "keysuri_service_full_run.build_keysuri_prompt_input",
+            return_value=json.loads(json.dumps(live_prompt_input)),
+        ), patch(
             "keysuri_service_full_run.build_keysuri_generation_prompt", return_value="PROMPT"
+        ), patch(
+            "keysuri_service_full_run.enrich_generated_briefing_content",
+            side_effect=lambda briefing, *_a, **_k: briefing,
+        ), patch(
+            "keysuri_service_full_run.validate_and_repair_keysuri_visible_text_quality",
+            side_effect=lambda payload, **_k: (payload, {"visible_text_ellipsis_blocked": False}),
         ):
             repaired_prompt, repaired_briefing, fields, err = _regenerate_keysuri_text_from_source_pack(
                 PROGRAM_GLOBAL,
                 source_pack,
                 parent=parent,
-                text_caller=MagicMock(return_value=json.dumps(generated, ensure_ascii=False)),
+                text_caller=MagicMock(return_value=json.dumps(gemini_short, ensure_ascii=False)),
+                extra_recent_log=[{"canonical_url": parent_items[0]["canonical_url"]}],
             )
 
         self.assertIsNone(err)
-        self.assertTrue(fields["reissue_top5_repaired_from_parent"])
-        self.assertEqual(len(repaired_briefing["top_5_news"]["items"]), 5)
-        self.assertEqual(
-            [it["source_url"] for it in repaired_briefing["top_5_news"]["items"]],
-            [it["source_url"] for it in parent_items],
-        )
-        self.assertEqual(
-            [it["news_id"] for it in repaired_prompt["top_5_news"]["items"]],
-            [it["news_id"] for it in parent_items],
-        )
+        self.assertTrue(fields["reissue_reselection_enabled"])
+        self.assertEqual(fields["reissue_top5_repair_source"], "reissue_live_selected_items")
+        self.assertFalse(fields["reissue_top5_repaired_from_parent"])
+        self.assertEqual(fields["reissue_top5_original_count"], 2)
+        self.assertEqual(fields["reissue_top5_repaired_count"], 5)
+        items = repaired_briefing["top_5_news"]["items"]
+        self.assertEqual(len(items), 5)
+        self.assertEqual([it["news_id"] for it in items], [it["news_id"] for it in live_items])
+        # Final selection must NOT overlap the parent run's items.
+        parent_urls = {it["canonical_url"] for it in parent_items}
+        self.assertTrue(all(it["canonical_url"] not in parent_urls for it in items))
 
     def test_reissue_top5_repair_requires_parent_selection(self) -> None:
         from keysuri_service_full_run import _repair_reissue_top5_from_raw_text
@@ -517,27 +611,35 @@ class KeysuriBodyOnlyReissueExhaustedPoolTests(unittest.TestCase):
         self.assertIsNone(prompt_input)
         self.assertEqual(err, "text_only_reselect_candidate_pool_exhausted")
 
-    def test_text_only_reissue_exhausted_pool_does_not_raise(self) -> None:
+    def test_text_only_reissue_insufficient_live_pool_does_not_raise(self) -> None:
         from keysuri_service_full_run import run_keysuri_text_only_reissue
 
         parent = {
             "program_id": PROGRAM_GLOBAL,
             "mode": "keysuri_global_tech",
             "selected_items": _reissue_parent_top5_items(),
-            "regen_source_pack_snapshot": {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []},
         }
-        depleted = {"program_id": PROGRAM_GLOBAL, "top_5_news": None}
-        with patch("keysuri_service_full_run.build_keysuri_prompt_input", return_value=dict(depleted)):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as _sp:
+            json.dump({"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []}, _sp)
+            sp_path = _sp.name
+        # Live pool yields fewer than 5 fresh candidates after exclusion.
+        depleted = {"program_id": PROGRAM_GLOBAL, "top_5_news": {"items": _live_reselection_items()[:3]}}
+        with patch(
+            "keysuri_service_full_run.build_keysuri_prompt_input", return_value=dict(depleted)
+        ):
             result = run_keysuri_text_only_reissue(
                 "20260629_120000_keysuri_global_tech_deadbeef",
                 parent_meta=parent,
                 send_owner_email=True,
                 text_caller=MagicMock(return_value="{}"),
                 send_fn=MagicMock(return_value=True),
+                smoke_runner=lambda **_kw: _live_smoke_result_for_pack(sp_path),
             )
-        # Graceful dict error (ok=False), never a raised ValueError.
+        # Graceful safe failure (ok=False), never a raised ValueError, never parent reuse.
         self.assertFalse(result.get("ok"))
-        self.assertEqual(result.get("error"), "text_only_reselect_candidate_pool_exhausted")
+        self.assertEqual(result.get("error"), "reissue_live_candidate_pool_insufficient")
 
 
 class KeysuriImageOnlyReissueTests(unittest.TestCase):
@@ -807,6 +909,7 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         self.assertNotIn("korea_bottom_shot_path", child)
 
     @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
+    @patch("keysuri_service_full_run.run_keysuri_live_source_smoke")
     @patch("keysuri_service_full_run.generate_run_id")
     @patch("keysuri_service_full_run.build_keysuri_prompt_input")
     @patch("keysuri_service_full_run.build_keysuri_generation_prompt")
@@ -831,6 +934,7 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         mock_build_prompt: MagicMock,
         mock_build_input: MagicMock,
         mock_run_id: MagicMock,
+        mock_smoke: MagicMock,
         mock_customer_final: MagicMock,
     ) -> None:
         from keysuri_service_full_run import run_keysuri_text_only_reissue
@@ -839,6 +943,10 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         parent_id = "20260624_183004_keysuri_korea_tech_aabbccdd"
         child_id = "20260624_190002_keysuri_korea_tech_11223344"
         mock_run_id.return_value = child_id
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as _sp:
+            json.dump({"program_id": "keysuri_korea_tech", "sources": [], "claims": []}, _sp)
+            _sp_path = _sp.name
+        mock_smoke.return_value = _live_smoke_result_for_pack(_sp_path, program_id=PROGRAM_KOREA)
         top_path = repo / "output" / "images" / "text_only_saved_top.jpg"
         bottom_path = repo / "output" / "images" / "text_only_saved_bottom.jpg"
         top_path.parent.mkdir(parents=True, exist_ok=True)
@@ -867,13 +975,18 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
             email_html="<html><body><p>parent body</p></body></html>",
         )
 
+        live_items = _live_reselection_items(prefix="korea-live")
         mock_build_input.return_value = {
+            "program_id": "keysuri_korea_tech",
             "target_date": "2026-06-24",
-            "top_5_news": {"items": [{"rank": 1, "news_id": "reselect-1"}]},
+            "source_pack": {"program_id": "keysuri_korea_tech", "sources": [], "claims": []},
+            "top_5_news": {"news_scope": "korea", "section_heading": "국내 테크 TOP 5", "items": live_items},
+            "sent_log_read_count": 1,
+            "exposure_log_read_count": 1,
         }
         mock_build_prompt.return_value = "PROMPT-BODY"
         text_caller = MagicMock(return_value="RAW-TEXT")
-        generated_briefing = {"summary": "재생성 본문", "briefing_title": "새 제목"}
+        generated_briefing = _briefing_for_live_items(live_items, program_id=PROGRAM_KOREA)
         mock_parse.return_value = {
             "parse_status": "parsed_valid",
             "generated_briefing": generated_briefing,
@@ -1021,16 +1134,14 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         ) as _sp_file:
             json.dump(fresh_source_pack, _sp_file)
             _sp_path = _sp_file.name
-        fresh_briefing = _generated_briefing_with_top_count(
-            _reissue_parent_top5_items(),
-            program_id=PROGRAM_KOREA,
-        )
+        live_items = _live_reselection_items(prefix="korea-live")
+        fresh_briefing = _briefing_for_live_items(live_items, program_id=PROGRAM_KOREA)
         smoke_result = LiveSourceSmokeResult(
             ok=True,
             program_id="keysuri_korea_tech",
             source_pack_path=_sp_path,
             html_path="",
-            fetched_item_count=5,
+            fetched_item_count=7,
             feed_urls_used=[],
             sample_marker_pass=True,
             called_gemini=True,
@@ -1039,7 +1150,14 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         )
         smoke_runner_mock = MagicMock(return_value=smoke_result)
 
-        mock_build_input.return_value = {"target_date": "2026-06-24"}
+        mock_build_input.return_value = {
+            "program_id": "keysuri_korea_tech",
+            "target_date": "2026-06-24",
+            "source_pack": fresh_source_pack,
+            "top_5_news": {"news_scope": "korea", "section_heading": "국내 테크 TOP 5", "items": live_items},
+            "sent_log_read_count": 1,
+            "exposure_log_read_count": 1,
+        }
         mock_enrich.side_effect = lambda briefing, *_args: briefing
         mock_validate_visible.side_effect = lambda payload, **_kwargs: (payload, {"visible_text_ellipsis_blocked": False})
         mock_subject_fields.return_value = {
@@ -1212,7 +1330,15 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         )
         smoke_runner_mock = MagicMock(return_value=smoke_result)
 
-        mock_build_input.return_value = {"target_date": "2026-06-29"}
+        live_items = _live_reselection_items(prefix="korea-live")
+        mock_build_input.return_value = {
+            "program_id": "keysuri_korea_tech",
+            "target_date": "2026-06-29",
+            "source_pack": fresh_source_pack,
+            "top_5_news": {"news_scope": "korea", "section_heading": "국내 테크 TOP 5", "items": live_items},
+            "sent_log_read_count": 1,
+            "exposure_log_read_count": 1,
+        }
         mock_enrich.side_effect = lambda briefing, *_args: briefing
         mock_validate_visible.side_effect = lambda payload, **_kwargs: (payload, {"visible_text_ellipsis_blocked": False})
         mock_subject_fields.return_value = {
@@ -1259,16 +1385,26 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         mock_customer_final.assert_not_called()  # customer final never sent
         child = load_run_artifact(child_id) or {}
         self.assertEqual(child.get("customer_delivery_status"), "not_sent")
-        self.assertTrue(child.get("reissue_top5_repaired_from_parent"))
+        self.assertTrue(child.get("reissue_reselection_enabled"))
+        self.assertFalse(child.get("reissue_top5_repaired_from_parent"))
         self.assertEqual(child.get("reissue_top5_original_count"), 2)
         self.assertEqual(child.get("reissue_top5_repaired_count"), 5)
-        self.assertEqual(child.get("reissue_top5_repair_source"), "parent_generated_briefing_snapshot")
+        # Final TOP5 comes from the fresh live selection, never the parent snapshot.
+        self.assertEqual(child.get("reissue_top5_repair_source"), "reissue_live_selected_items")
         self.assertEqual(child.get("artifact_status"), "emailed")
+        snap = child.get("regen_generated_briefing_snapshot") or {}
+        child_items = (snap.get("top_5_news") or {}).get("items") or []
+        self.assertEqual([it.get("news_id") for it in child_items], [it["news_id"] for it in live_items])
+        parent_urls = {it["canonical_url"] for it in parent_items}
+        self.assertTrue(all(it.get("canonical_url") not in parent_urls for it in child_items))
         parent = load_run_artifact(parent_id) or {}
         self.assertNotIn("regen_type", parent)  # parent artifact not overwritten
 
-    def test_text_only_reissue_missing_candidate_pool_fails(self) -> None:
-        """Parent has no regen_source_pack_snapshot → must fail with missing_candidate_pool error."""
+    def test_text_only_reissue_no_parent_snapshot_uses_fresh_live_pool(self) -> None:
+        """body_only no longer depends on the parent source-pack snapshot; it
+        collects a fresh live pool. With an insufficient fresh pool it returns the
+        live-pool safe failure (never the old missing_candidate_pool error, and
+        never the parent's duplicate news)."""
         from keysuri_service_full_run import run_keysuri_text_only_reissue
 
         parent_id = "20260624_200000_keysuri_korea_tech_00000000"
@@ -1282,15 +1418,25 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
                 "response_status": 200,
                 "email_sent": True,
                 "customer_delivery_status": "not_sent",
+                "selected_items": _reissue_parent_top5_items(),
                 # deliberately no regen_source_pack_snapshot
             }
         )
-
-        result = run_keysuri_text_only_reissue(parent_id)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as _sp:
+            json.dump({"program_id": "keysuri_korea_tech", "sources": [], "claims": []}, _sp)
+            sp_path = _sp.name
+        depleted = {"program_id": "keysuri_korea_tech", "top_5_news": {"items": _live_reselection_items()[:2]}}
+        with patch("keysuri_service_full_run.build_keysuri_prompt_input", return_value=dict(depleted)):
+            result = run_keysuri_text_only_reissue(
+                parent_id,
+                text_caller=MagicMock(return_value="{}"),
+                smoke_runner=lambda **_kw: _live_smoke_result_for_pack(sp_path, program_id=PROGRAM_KOREA),
+            )
         self.assertFalse(result.get("ok"))
-        self.assertEqual(result.get("error"), "text_only_reselect_failed_missing_candidate_pool")
+        self.assertEqual(result.get("error"), "reissue_live_candidate_pool_insufficient")
 
     @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
+    @patch("keysuri_service_full_run.run_keysuri_live_source_smoke")
     @patch("keysuri_service_full_run.generate_run_id")
     @patch("keysuri_service_full_run.build_keysuri_prompt_input")
     @patch("keysuri_service_full_run.build_keysuri_generation_prompt")
@@ -1302,7 +1448,7 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
     @patch("keysuri_service_full_run.render_keysuri_contract_preview_html")
     @patch("keysuri_service_full_run.build_keysuri_korea_gmail_owner_email_html")
     @patch("keysuri_service_full_run.validate_keysuri_html_visible_text_quality")
-    def test_text_only_reissue_excludes_previously_selected_signals(
+    def test_text_only_reissue_excludes_parent_selected_items(
         self,
         mock_validate_html: MagicMock,
         mock_email_html: MagicMock,
@@ -1315,10 +1461,11 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         mock_build_prompt: MagicMock,
         mock_build_input: MagicMock,
         mock_run_id: MagicMock,
+        mock_smoke: MagicMock,
         mock_customer_final: MagicMock,
     ) -> None:
-        """Parent regen_prompt_input_snapshot has previously selected signals.
-        Verify _filter_source_pack_for_reselect excludes them before regeneration."""
+        """body_only feeds the parent's selected_items into the live dedup gate via
+        extra_recent_log, so the regenerated TOP5 is fresh and parent-disjoint."""
         from keysuri_service_full_run import run_keysuri_text_only_reissue
 
         repo = Path(__file__).resolve().parents[1]
@@ -1330,19 +1477,7 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         top_path.parent.mkdir(parents=True, exist_ok=True)
         top_path.write_bytes(b"\xff\xd8\xff" + b"\x91" * 128)
 
-        previously_selected = [
-            {"news_id": "old_claim_01", "headline": "AI 반도체 공급망 핵심 이슈", "source_ids": ["src_old_01"]},
-            {"news_id": "old_claim_02", "headline": "글로벌 파운드리 경쟁 심화", "source_ids": ["src_old_02"]},
-        ]
-        source_pack_with_pool = {
-            "program_id": "keysuri_korea_tech",
-            "sources": [],
-            "claims": [
-                {"claim_id": "old_claim_01", "headline": "AI 반도체 공급망 핵심 이슈", "source_ids": ["src_old_01"]},
-                {"claim_id": "old_claim_02", "headline": "글로벌 파운드리 경쟁 심화", "source_ids": ["src_old_02"]},
-                {"claim_id": "new_claim_03", "headline": "국내 로봇 산업 성장 가속", "source_ids": ["src_new_03"]},
-            ],
-        }
+        parent_items = _reissue_parent_top5_items()
         save_run_artifact(
             {
                 "run_id": parent_id,
@@ -1357,24 +1492,32 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
                 "top_image_cid": "keysuri_topshot_korea_excl",
                 "owner_email_subject": "[운영자 검토] 기존",
                 "owner_email_preheader": "프리헤더",
-                "regen_source_pack_snapshot": source_pack_with_pool,
-                "regen_prompt_input_snapshot": {"top_5_news": {"items": previously_selected}},
+                "selected_items": parent_items,
             }
         )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as _sp:
+            json.dump({"program_id": "keysuri_korea_tech", "sources": [], "claims": []}, _sp)
+            sp_path = _sp.name
+        mock_smoke.return_value = _live_smoke_result_for_pack(sp_path, program_id=PROGRAM_KOREA)
 
-        captured_source_pack: dict = {}
+        live_items = _live_reselection_items(prefix="korea-live")
+        captured = {}
 
-        def _capture_build_input(pid, sp):
-            captured_source_pack.update(sp)
-            return {"target_date": "2026-06-24", "top_5_news": {"items": [
-                {"news_id": "new_claim_03", "headline": "국내 로봇 산업 성장 가속", "source_ids": ["src_new_03"]},
-            ]}}
+        def _capture_build_input(pid, sp, extra_recent_log=None):
+            captured["extra_recent_log"] = extra_recent_log
+            return {
+                "program_id": "keysuri_korea_tech",
+                "source_pack": sp,
+                "top_5_news": {"news_scope": "korea", "section_heading": "국내 테크 TOP 5", "items": live_items},
+                "sent_log_read_count": 1,
+                "exposure_log_read_count": 1,
+            }
 
         mock_build_input.side_effect = _capture_build_input
         mock_build_prompt.return_value = "PROMPT-EXCL"
         mock_parse.return_value = {
             "parse_status": "parsed_valid",
-            "generated_briefing": {"summary": "재선택 본문", "briefing_title": "로봇 제목"},
+            "generated_briefing": _briefing_for_live_items(live_items, program_id=PROGRAM_KOREA),
         }
         mock_enrich.side_effect = lambda briefing, *_args: briefing
         mock_validate_visible.side_effect = lambda payload, **_kwargs: (payload, {"visible_text_ellipsis_blocked": False})
@@ -1403,19 +1546,19 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        # Verify old claims were excluded from the source_pack passed to build_keysuri_prompt_input
-        remaining_claims = [c["claim_id"] for c in captured_source_pack.get("claims", [])]
-        self.assertNotIn("old_claim_01", remaining_claims)
-        self.assertNotIn("old_claim_02", remaining_claims)
-        self.assertIn("new_claim_03", remaining_claims)
+        # Parent selected_items were passed to the live dedup gate as exclusions.
+        rows = captured.get("extra_recent_log") or []
+        excluded_urls = {str(r.get("canonical_url") or r.get("url")) for r in rows}
+        for it in parent_items:
+            self.assertIn(it["canonical_url"], excluded_urls)
+        # Final selection is the fresh live set, disjoint from the parent.
         child = load_run_artifact(child_id) or {}
-        self.assertTrue(child.get("duplicate_reselect_called"))
-        self.assertTrue(child.get("candidate_pool_reused"))
-        excluded = child.get("excluded_signal_ids") or []
-        self.assertIn("old_claim_01", excluded)
-        self.assertIn("old_claim_02", excluded)
-        replacement = child.get("replacement_signal_ids") or []
-        self.assertIn("new_claim_03", replacement)
+        snap = child.get("regen_generated_briefing_snapshot") or {}
+        child_items = (snap.get("top_5_news") or {}).get("items") or []
+        self.assertEqual(len(child_items), 5)
+        parent_urls = {it["canonical_url"] for it in parent_items}
+        self.assertTrue(all(it.get("canonical_url") not in parent_urls for it in child_items))
+        self.assertEqual(child.get("reissue_top5_repair_source"), "reissue_live_selected_items")
 
 
 class KeysuriReissueSubjectPrefixTests(unittest.TestCase):
