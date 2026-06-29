@@ -15,6 +15,7 @@ from keysuri_visible_text import (
     korea_checkpoint_strategy_too_generic,
     normalize_visible_text,
     polish_korea_checkpoint_text,
+    repair_obvious_korean_quality_artifacts,
     render_visible_lines,
     sanitize_visible_impact_line,
     strip_watch_arrow_prefixes,
@@ -72,6 +73,30 @@ class KeysuriVisibleTextTests(unittest.TestCase):
         self.assertNotIn("태그:", out)
         self.assertNotIn("korean_entity_mention", out)
         self.assertIn("공급망", out)
+
+    def test_global_selection_reason_replaces_internal_numeric_score(self) -> None:
+        item = {
+            "korean_title": "구글, 풀스택 AI 에이전트 전략 공개",
+            "primary_category": "ai_software_platform",
+            "selection_reason": "총점 54점을 기록했으며 AI 플랫폼 변화와 연결됩니다.",
+        }
+
+        out = build_visible_selection_reason(item, {}, program_id="keysuri_global_tech")
+
+        self.assertIn("AI·소프트웨어·플랫폼", out)
+        for forbidden in ("총점", "점수", "스코어", "score", "scoring", "기록했으며"):
+            self.assertNotIn(forbidden, out.lower() if forbidden in ("score", "scoring") else out)
+
+    def test_repair_obvious_korean_quality_artifact_repeated_token(self) -> None:
+        raw = "이 흐름은 국내 산업에 어떤 영향을 미 미칠 것인가?"
+        out = repair_obvious_korean_quality_artifacts(raw)
+        self.assertEqual(out, "이 흐름은 국내 산업에 어떤 영향을 미칠 것인가?")
+        self.assertNotIn("미 미칠", out)
+
+    def test_repair_obvious_korean_quality_artifact_keeps_legitimate_phrase(self) -> None:
+        raw = "이 이슈는 주인님께 먼저 확인하실 만한 신호입니다."
+        out = repair_obvious_korean_quality_artifacts(raw)
+        self.assertEqual(out, raw)
 
     def test_sanitize_visible_impact_line_removes_signal_signal(self) -> None:
         raw = "글로벌→한국 번역 신호 신호가 의사결정·미팅 우선순위에 반영될 수 있습니다."

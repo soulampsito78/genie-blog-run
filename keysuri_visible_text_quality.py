@@ -7,8 +7,11 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Tuple
 
+from keysuri_visible_text import repair_obvious_korean_quality_artifacts
+
 KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED = "keysuri_korean_connector_ellipsis_blocked"
 KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_REPAIRED = "keysuri_korean_connector_ellipsis_repaired"
+KEYSURI_KOREAN_REPEATED_TOKEN_REPAIRED = "keysuri_korean_repeated_token_repaired"
 
 _ELLIPSIS_RE = re.compile(r"…|\.{2,}")
 _SPACE_RE = re.compile(r"\s+")
@@ -41,6 +44,8 @@ _QUALITY_FIELD_TEMPLATE: Dict[str, Any] = {
     "visible_text_ellipsis_found": False,
     "visible_text_ellipsis_repaired": False,
     "visible_text_ellipsis_blocked": False,
+    "visible_text_repeated_token_found": False,
+    "visible_text_repeated_token_repaired": False,
     "visible_text_quality_issue_codes": [],
     "visible_text_quality_samples": [],
 }
@@ -123,6 +128,17 @@ def repair_korean_connector_ellipsis_text(value: Any) -> EllipsisRepairResult:
     return EllipsisRepairResult(repaired, found=True, repaired=repaired != original, blocked=False)
 
 
+def repair_korean_repeated_token_text(value: Any) -> EllipsisRepairResult:
+    original = str(value or "")
+    repaired = repair_obvious_korean_quality_artifacts(original)
+    return EllipsisRepairResult(
+        repaired,
+        found=repaired != original,
+        repaired=repaired != original,
+        blocked=False,
+    )
+
+
 def _should_check_key(key: str) -> bool:
     lowered = key.lower()
     if lowered in {"email_subject", "owner_email_subject", "customer_email_subject"}:
@@ -164,7 +180,14 @@ def _walk_and_repair(node: Any, *, path: str, fields: Dict[str, Any]) -> Any:
                         fields["visible_text_ellipsis_blocked"] = True
                     elif result.repaired:
                         fields["visible_text_ellipsis_repaired"] = True
-                out[key] = result.text if result.found else value
+                next_value = result.text if result.found else value
+                repeated = repair_korean_repeated_token_text(next_value)
+                if repeated.found:
+                    fields["visible_text_repeated_token_found"] = True
+                    fields["visible_text_repeated_token_repaired"] = True
+                    _append_sample(fields, path=child_path, before=next_value, after=repeated.text)
+                    next_value = repeated.text
+                out[key] = next_value
             else:
                 out[key] = _walk_and_repair(value, path=child_path, fields=fields)
         return out
@@ -193,6 +216,8 @@ def _finalize_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
             issue_codes.append(KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_REPAIRED)
     else:
         fields["visible_text_quality_status"] = "pass"
+    if fields.get("visible_text_repeated_token_repaired") and KEYSURI_KOREAN_REPEATED_TOKEN_REPAIRED not in issue_codes:
+        issue_codes.append(KEYSURI_KOREAN_REPEATED_TOKEN_REPAIRED)
     return fields
 
 
@@ -221,6 +246,11 @@ def validate_keysuri_html_visible_text_quality(
         fields["visible_text_ellipsis_found"] = True
         fields["visible_text_ellipsis_blocked"] = True
         _append_sample(fields, path=path, before=text, after=result.text)
+    repeated = repair_korean_repeated_token_text(text)
+    if repeated.found:
+        fields["visible_text_repeated_token_found"] = True
+        fields["visible_text_repeated_token_repaired"] = True
+        _append_sample(fields, path=path, before=text, after=repeated.text)
     return _finalize_fields(fields)
 
 
@@ -242,6 +272,14 @@ def merge_visible_text_quality_fields(*field_sets: Mapping[str, Any]) -> Dict[st
         merged["visible_text_ellipsis_blocked"] = (
             bool(merged["visible_text_ellipsis_blocked"])
             or bool(fields.get("visible_text_ellipsis_blocked"))
+        )
+        merged["visible_text_repeated_token_found"] = (
+            bool(merged["visible_text_repeated_token_found"])
+            or bool(fields.get("visible_text_repeated_token_found"))
+        )
+        merged["visible_text_repeated_token_repaired"] = (
+            bool(merged["visible_text_repeated_token_repaired"])
+            or bool(fields.get("visible_text_repeated_token_repaired"))
         )
         for code in fields.get("visible_text_quality_issue_codes") or []:
             code = str(code or "").strip()

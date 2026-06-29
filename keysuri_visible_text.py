@@ -36,7 +36,7 @@ def _clean_line(text: str) -> str:
     out = out.replace("\\'", "'").replace('\\"', '"')
     out = re.sub(r"^\s*['\"]|['\"]\s*$", "", out)
     out = re.sub(r"\s+", " ", out).strip()
-    return out
+    return repair_obvious_korean_quality_artifacts(out)
 
 
 def looks_like_python_list_repr(text: str) -> bool:
@@ -176,6 +176,11 @@ def count_owner_salutation(text: str, *, exclude_block_labels: bool = True) -> i
 
 
 _INTERNAL_SCORE_MARKERS: tuple[str, ...] = (
+    "총점",
+    "점수",
+    "스코어",
+    "높은 점수",
+    "가장 높은 점수",
     "국내 총점",
     "국내관련",
     "태그:",
@@ -183,6 +188,7 @@ _INTERNAL_SCORE_MARKERS: tuple[str, ...] = (
     "reason_tags",
     "confidence math",
     "scoring",
+    "score",
 )
 
 _INTERNAL_SCORE_CONTEXT_MARKERS: tuple[str, ...] = (
@@ -306,12 +312,28 @@ _KOREA_IMPACT_BY_CATEGORY: Dict[str, str] = {
     ),
 }
 
+_GLOBAL_CATEGORY_AXIS: Dict[str, str] = {
+    "ai_software_platform": "AI·소프트웨어·플랫폼",
+    "semiconductor_chip_infra": "반도체·AI 인프라",
+    "semiconductor_equipment_materials": "반도체 장비·소재",
+    "robotics_automation_manufacturing": "로봇·자동화·제조",
+    "battery_ev_energy_grid": "배터리·EV·에너지·전력",
+    "aerospace_satellite_defense_tech": "항공우주·위성·방산 테크",
+    "hardware_device_display": "하드웨어·디바이스",
+    "cybersecurity_cloud_datacenter": "보안·클라우드·데이터센터",
+    "policy_regulation_capital_supplychain": "정책·규제·자본·공급망",
+    "market_signal": "글로벌 기술 시장",
+}
+
 _MACHINE_IMPACT_RE = re.compile(
     r"^(?:내일\s*영향\s*[:：]\s*)?(?P<cat>.+?)\s*신호(?:\s*신호)?가\s*의사결정·미팅\s*우선순위에\s*반영될\s*수\s*있습니다\.?$"
 )
 
 _SNAKE_TOKEN_RE = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
-_KOREA_DUPLICATE_MORPHEME_RE = re.compile(r"(?<![가-힣])([가-힣]{1,3})\s+\1(?=[가-힣])")
+_KOREA_DUPLICATE_MORPHEME_RE = re.compile(r"(?<![가-힣])([가-힣]{1,3})\s+\1(?![가-힣])")
+_KOREA_DUPLICATE_IMPACT_VERB_RE = re.compile(
+    r"(영향을)\s+미\s+(미(?:칠|칩니다|친|쳐|쳤|치는|치지|칠지)[가-힣]*)"
+)
 
 
 def _normalize_sentence_ws(text: str) -> str:
@@ -327,6 +349,7 @@ def repair_obvious_korean_quality_artifacts(text: Any) -> str:
     while previous != out:
         previous = out
         out = _KOREA_DUPLICATE_MORPHEME_RE.sub(r"\1", out)
+        out = _KOREA_DUPLICATE_IMPACT_VERB_RE.sub(r"\1 \2", out)
     out = re.sub(r"\s+([,.!?])", r"\1", out)
     return out.strip()
 
@@ -345,6 +368,12 @@ def looks_like_internal_owner_copy(text: str) -> bool:
     if "탈락:" in blob and "_" in blob:
         return True
     if re.search(r"총점\s*\d", blob):
+        return True
+    if re.search(r"\bscore(?:s|d|card|ing)?\b", lowered):
+        return True
+    if re.search(r"(?:총점|점수|스코어)\s*\d+", blob):
+        return True
+    if re.search(r"\d+\s*점(?:을|를)?\s*기록", blob):
         return True
     if re.search(r"구조\s*\d+", blob) and re.search(r"실행\s*\d+", blob):
         return True
@@ -475,6 +504,61 @@ def _korea_reason_from_tags_and_category(
     return "국내 적용·실행 확인 관점에서 오늘 의미 있는 신호로 선정했습니다."
 
 
+def _global_axis_from_item(item: Mapping[str, Any], meta: Mapping[str, Any]) -> str:
+    category = str(
+        meta.get("primary_category")
+        or item.get("primary_category")
+        or item.get("category")
+        or ""
+    ).strip()
+    label = str(item.get("category_label_ko") or meta.get("category_label_ko") or "").strip()
+    text = " ".join(
+        str(value or "")
+        for value in (
+            item.get("korean_title"),
+            item.get("headline"),
+            item.get("summary"),
+            item.get("what_happened"),
+            item.get("source_name"),
+        )
+    ).lower()
+    if category == "hardware_device_display" and any(
+        token in text
+        for token in (
+            "google ai",
+            "openai",
+            "anthropic",
+            "enterprise ai",
+            "agent",
+            "full-stack",
+            "full stack",
+            "conceptual",
+            "platform",
+            "software",
+            "ai ",
+        )
+    ):
+        category = "ai_software_platform"
+        label = ""
+    return label or _GLOBAL_CATEGORY_AXIS.get(category) or "글로벌 기술 시장"
+
+
+def _global_visible_selection_reason(
+    item: Mapping[str, Any],
+    meta: Mapping[str, Any],
+) -> str:
+    axis = _global_axis_from_item(item, meta)
+    title = _entity_hook_from_title(
+        str(item.get("korean_title") or item.get("headline") or meta.get("statement") or "")
+    )
+    if title:
+        return (
+            f"이 흐름은 {axis} 변화와 직접 연결되어 주인님께 먼저 확인하실 만한 "
+            f"신호로 판단되었습니다."
+        )
+    return f"이 신호는 {axis} 축에서 우선적으로 확인할 필요가 있는 소식으로 분류되었습니다."
+
+
 def build_visible_selection_reason(
     item: Mapping[str, Any],
     meta: Optional[Mapping[str, Any]] = None,
@@ -485,7 +569,13 @@ def build_visible_selection_reason(
     meta = meta or {}
     if program_id != PROGRAM_KOREA:
         cleaned = dedupe_sentences_in_paragraph(normalize_visible_text(existing, style="inline"))
-        return cleaned
+        if cleaned and not looks_like_internal_owner_copy(cleaned):
+            return cleaned
+        for key in ("selection_reason", "selection_rationale", "reason_for_selection"):
+            raw = normalize_visible_text(item.get(key) or meta.get(key) or "", style="inline")
+            if raw and not looks_like_internal_owner_copy(raw):
+                return dedupe_sentences_in_paragraph(raw)
+        return _global_visible_selection_reason(item, meta)
 
     candidate = normalize_visible_text(existing, style="inline")
     if candidate and not looks_like_internal_owner_copy(candidate):

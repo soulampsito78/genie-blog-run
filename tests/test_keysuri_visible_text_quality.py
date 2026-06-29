@@ -4,6 +4,7 @@ import unittest
 
 from keysuri_visible_text_quality import (
     KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+    KEYSURI_KOREAN_REPEATED_TOKEN_REPAIRED,
     repair_korean_connector_ellipsis_text,
     validate_and_repair_keysuri_visible_text_quality,
     validate_keysuri_html_visible_text_quality,
@@ -93,6 +94,24 @@ class KeysuriVisibleTextQualityTests(unittest.TestCase):
         self.assertTrue(fields["visible_text_ellipsis_repaired"])
         self.assertFalse(fields["visible_text_ellipsis_blocked"])
         self.assertNotRegex(repaired["deep_dive"]["body"], r"…|\.{2,}")
+
+    def test_repeated_korean_token_repaired_in_payload(self) -> None:
+        payload = {
+            "one_line_checkpoint": {
+                "body": "이 흐름은 국내 산업에 어떤 영향을 미 미칠 것인가?"
+            }
+        }
+
+        repaired, fields = validate_and_repair_keysuri_visible_text_quality(payload)
+
+        self.assertEqual(fields["visible_text_quality_status"], "pass")
+        self.assertTrue(fields["visible_text_repeated_token_found"])
+        self.assertTrue(fields["visible_text_repeated_token_repaired"])
+        self.assertIn(KEYSURI_KOREAN_REPEATED_TOKEN_REPAIRED, fields["visible_text_quality_issue_codes"])
+        self.assertEqual(
+            repaired["one_line_checkpoint"]["body"],
+            "이 흐름은 국내 산업에 어떤 영향을 미칠 것인가?",
+        )
 
     def test_html_visible_text_validator_blocks_renderer_leftovers(self) -> None:
         fields = validate_keysuri_html_visible_text_quality(

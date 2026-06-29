@@ -615,7 +615,7 @@ def classify_global_tech_category(
             "policy": "policy_regulation_capital_supplychain",
             "startup": "policy_regulation_capital_supplychain",
             "security": "cybersecurity_cloud_datacenter",
-            "market_signal": "hardware_device_display",
+            "market_signal": AI_PRIMARY_CATEGORY,
         }.get(legacy, "hardware_device_display")
         return mapped, [], 0.35, f"feed_default_mapped:{legacy}"
     primary, top_hits = hits[0][0], hits[0][1]

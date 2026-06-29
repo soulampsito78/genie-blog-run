@@ -455,6 +455,19 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
             fallback=_item_field(item, "korean_title", "headline"),
         )
     else:
+        meta_stub = {
+            "primary_category": item.get("primary_category"),
+            "category_label_ko": item.get("category_label_ko"),
+            "selection_rationale": item.get("selection_rationale"),
+            "reason_for_selection": item.get("reason_for_selection"),
+            "statement": item.get("korean_title") or item.get("headline"),
+        }
+        selection_reason = sanitize_visible_selection_reason(
+            selection_reason,
+            item,
+            meta_stub,
+            program_id=program_id,
+        )
         what_happened = dedupe_sentences_in_paragraph(what_happened)
         why_now = dedupe_sentences_in_paragraph(why_now)
         owner_angle = dedupe_sentences_in_paragraph(owner_angle)
@@ -1306,7 +1319,19 @@ def _gmail_render_global_signal_chips(fixture: Mapping[str, Any]) -> str:
 
 def _gmail_render_global_top_item(item: Mapping[str, Any], rank: int) -> str:
     headline = _item_field(item, "korean_title", "headline")
-    selection_reason = _item_field(item, "selection_reason", "selection_rationale")
+    meta_stub = {
+        "primary_category": item.get("primary_category"),
+        "category_label_ko": item.get("category_label_ko"),
+        "selection_rationale": item.get("selection_rationale"),
+        "reason_for_selection": item.get("reason_for_selection"),
+        "statement": item.get("korean_title") or item.get("headline"),
+    }
+    selection_reason = sanitize_visible_selection_reason(
+        _item_field(item, "selection_reason", "selection_rationale"),
+        item,
+        meta_stub,
+        program_id=PROGRAM_GLOBAL,
+    )
     what_happened = _item_field(item, "what_happened", "summary")
     why_now = _item_field(item, "why_now", "why_it_matters")
     owner_angle = _item_field(item, "owner_angle", "business_implication", "keysuri_comment")

@@ -3792,6 +3792,69 @@ class KeysuriGlobalOwnerReviewEmailDesignRestorationTests(unittest.TestCase):
         self.assertIn("원-라인 체크포인트", preview_html)
         self.assertIn("<style", preview_html.lower())
 
+    def test_global_gmail_owner_email_removes_internal_score_disclosure(self) -> None:
+        from keysuri_contract_preview_renderer import (
+            IMAGE_MODE_EMAIL,
+            IMAGE_MODE_PREVIEW,
+            build_keysuri_global_gmail_owner_email_html,
+            prepare_contract_preview_fixture,
+            render_keysuri_contract_preview_html,
+        )
+        from tests.test_keysuri_contract_preview_renderer import build_global_contract_fixture
+
+        repo = Path(__file__).resolve().parents[1]
+        fixture = build_global_contract_fixture()
+        fixture["top_shot_image_src"] = "cid:keysuri_topshot_global_20260630"
+        for idx, item in enumerate(fixture["top_5_items"], start=1):
+            item["primary_category"] = "ai_software_platform"
+            if idx == 1:
+                item["selection_reason"] = (
+                    "이 뉴스는 총점 54점을 기록했으며 AI·소프트웨어·플랫폼 "
+                    "카테고리에서 중요한 소식으로 선정되었습니다."
+                )
+            else:
+                item["selection_reason"] = f"총점 {50 + idx}점을 기록했으며 내부 scoring 결과입니다."
+            item["selection_rationale"] = item["selection_reason"]
+
+        prepare_contract_preview_fixture(fixture, repo_root=repo, image_mode=IMAGE_MODE_EMAIL)
+
+        preview_html = render_keysuri_contract_preview_html(
+            fixture,
+            repo_root=repo,
+            image_mode=IMAGE_MODE_PREVIEW,
+            auto_prepare=False,
+        )
+        email_html = build_keysuri_global_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Global Tech",
+            admin_url="https://example.com/admin/runs/test_sanitized_run",
+            run_id="test_sanitized_run",
+        )
+
+        self.assertEqual(len(fixture["top_5_items"]), 5)
+        self.assertIn("선정 이유", email_html)
+        self.assertIn("선정 이유", preview_html)
+        for forbidden in (
+            "총점",
+            "54점",
+            "점수",
+            "스코어",
+            "높은 점수",
+            "가장 높은 점수",
+            "기록했으며",
+        ):
+            with self.subTest(rendered="gmail", forbidden=forbidden):
+                self.assertNotIn(forbidden, email_html)
+            with self.subTest(rendered="preview", forbidden=forbidden):
+                self.assertNotIn(forbidden, preview_html)
+        for forbidden in ("score", "scoring"):
+            with self.subTest(rendered="gmail", forbidden=forbidden):
+                self.assertNotIn(forbidden, email_html.lower())
+            with self.subTest(rendered="preview", forbidden=forbidden):
+                self.assertNotIn(forbidden, preview_html.lower())
+        for rendered in (email_html, preview_html):
+            self.assertIn("주인님께 먼저 확인하실 만한 신호로 판단되었습니다", rendered)
+
     def test_korea_renderer_available_but_not_sent_by_global_service_full_run(self) -> None:
         from keysuri_contract_preview_renderer import render_keysuri_contract_preview_html
         from tests.test_keysuri_contract_preview_renderer import build_korea_contract_fixture
