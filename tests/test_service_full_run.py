@@ -126,6 +126,73 @@ def _fake_keysuri_smoke(program_id: str, **_kwargs) -> LiveSourceSmokeResult:
     )
 
 
+def _reissue_parent_top5_items() -> list[dict]:
+    out = []
+    for idx in range(1, 6):
+        out.append(
+            {
+                "rank": idx,
+                "news_id": f"parent-{idx}",
+                "headline": f"Parent Signal {idx}",
+                "korean_title": f"부모 신호 {idx}",
+                "category": "market_signal",
+                "summary": f"Parent summary {idx}",
+                "why_it_matters": f"Parent why {idx}",
+                "business_implication": f"Parent business implication {idx}",
+                "source_ids": [f"parent-{idx}"],
+                "source_name": f"Parent Source {idx}",
+                "source_url": f"https://example.com/parent-{idx}",
+                "canonical_url": f"https://example.com/parent-{idx}",
+                "confidence_label": "reported",
+            }
+        )
+    return out
+
+
+def _generated_briefing_with_top_count(items: list[dict], program_id: str = PROGRAM_GLOBAL) -> dict:
+    news_scope = "korea" if program_id == PROGRAM_KOREA else "global"
+    section_heading = "국내 테크 TOP 5" if program_id == PROGRAM_KOREA else "글로벌 테크 TOP 5"
+    source_list = [
+        {
+            "source_id": "parent-1",
+            "label": "Parent Source 1",
+            "url": "https://example.com/parent-1",
+        }
+    ]
+    return {
+        "program_id": program_id,
+        "operational_status": "review_required",
+        "generated_status": "generated_review_required",
+        "news_scope": news_scope,
+        "section_heading": section_heading,
+        "top_5_news": {
+            "news_scope": news_scope,
+            "section_heading": section_heading,
+            "items": items,
+        },
+        "deep_dive": {
+            "section_heading": "키수리의 딥-다이브",
+            "body": "Global operators should watch infrastructure and platform signals.",
+            "key_implications": ["Infrastructure signal", "Platform pressure"],
+            "source_ids": ["parent-1"],
+            "confidence_label": "reported",
+        },
+        "one_line_checkpoint": {
+            "section_heading": "원-라인 체크포인트",
+            "body": "Watch the parent-selected signals without changing the source set.",
+        },
+        "closing_sources": {
+            "section_heading": "마무리 및 출처 리스트",
+            "closing_message": "Source list remains grounded in the parent selection.",
+            "source_list": source_list,
+        },
+        "briefing_display": {
+            "opening_lead": "주인님, 오늘은 부모 선택 신호를 기준으로 재발행합니다.",
+            "closing_message": "오늘 신호는 여기까지 정리했습니다.",
+        },
+    }
+
+
 class KeysuriOwnerEmailDeliveryFieldsTests(unittest.TestCase):
     def test_success_masks_recipients_and_keeps_domains_and_hashes(self) -> None:
         from keysuri_service_full_run import _owner_email_delivery_fields
@@ -220,6 +287,100 @@ class KeysuriOwnerEmailDeliveryFieldsTests(unittest.TestCase):
         self.assertIsNone(fields["owner_email_sent_at_kst"])
         self.assertEqual(fields["owner_email_recipient_count"], 0)
         self.assertEqual(fields["owner_email_send_diagnostic"], "")
+
+
+class KeysuriReissueTop5RepairTests(unittest.TestCase):
+    def test_body_and_image_reissue_repairs_top5_from_parent_selection(self) -> None:
+        from keysuri_service_full_run import _repair_reissue_top5_from_raw_text
+
+        parent_items = _reissue_parent_top5_items()
+        parent = {"selected_items": parent_items}
+        generated = _generated_briefing_with_top_count(parent_items[:2])
+        prompt_input = {
+            "program_id": PROGRAM_GLOBAL,
+            "source_pack": {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []},
+            "top_5_news": generated["top_5_news"],
+        }
+
+        repaired_prompt, repaired_briefing, fields, err = _repair_reissue_top5_from_raw_text(
+            raw_text=json.dumps(generated, ensure_ascii=False),
+            prompt_input=prompt_input,
+            parent=parent,
+            program_id=PROGRAM_GLOBAL,
+        )
+
+        self.assertIsNone(err)
+        self.assertTrue(fields["reissue_top5_repaired_from_parent"])
+        self.assertEqual(fields["reissue_top5_original_count"], 2)
+        self.assertEqual(fields["reissue_top5_repaired_count"], 5)
+        repaired_items = repaired_briefing["top_5_news"]["items"]
+        self.assertEqual(len(repaired_items), 5)
+        self.assertEqual([it["news_id"] for it in repaired_items], [it["news_id"] for it in parent_items])
+        self.assertEqual(
+            [it["canonical_url"] for it in repaired_items],
+            [it["canonical_url"] for it in parent_items],
+        )
+        self.assertEqual(
+            [it["news_id"] for it in repaired_prompt["top_5_news"]["items"]],
+            [it["news_id"] for it in parent_items],
+        )
+
+    def test_body_only_reissue_regen_repairs_top5_from_parent_selection(self) -> None:
+        from keysuri_service_full_run import _regenerate_keysuri_text_from_source_pack
+
+        parent_items = _reissue_parent_top5_items()
+        parent = {"selected_items": parent_items}
+        generated = _generated_briefing_with_top_count(parent_items[:2])
+        source_pack = {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []}
+        prompt_input = {
+            "program_id": PROGRAM_GLOBAL,
+            "source_pack": source_pack,
+            "top_5_news": generated["top_5_news"],
+        }
+
+        with patch("keysuri_service_full_run.build_keysuri_prompt_input", return_value=dict(prompt_input)), patch(
+            "keysuri_service_full_run.build_keysuri_generation_prompt", return_value="PROMPT"
+        ):
+            repaired_prompt, repaired_briefing, fields, err = _regenerate_keysuri_text_from_source_pack(
+                PROGRAM_GLOBAL,
+                source_pack,
+                parent=parent,
+                text_caller=MagicMock(return_value=json.dumps(generated, ensure_ascii=False)),
+            )
+
+        self.assertIsNone(err)
+        self.assertTrue(fields["reissue_top5_repaired_from_parent"])
+        self.assertEqual(len(repaired_briefing["top_5_news"]["items"]), 5)
+        self.assertEqual(
+            [it["source_url"] for it in repaired_briefing["top_5_news"]["items"]],
+            [it["source_url"] for it in parent_items],
+        )
+        self.assertEqual(
+            [it["news_id"] for it in repaired_prompt["top_5_news"]["items"]],
+            [it["news_id"] for it in parent_items],
+        )
+
+    def test_reissue_top5_repair_requires_parent_selection(self) -> None:
+        from keysuri_service_full_run import _repair_reissue_top5_from_raw_text
+
+        generated = _generated_briefing_with_top_count(_reissue_parent_top5_items()[:2])
+        prompt_input = {
+            "program_id": PROGRAM_GLOBAL,
+            "source_pack": {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []},
+            "top_5_news": generated["top_5_news"],
+        }
+
+        repaired_prompt, repaired_briefing, fields, err = _repair_reissue_top5_from_raw_text(
+            raw_text=json.dumps(generated, ensure_ascii=False),
+            prompt_input=prompt_input,
+            parent={"selected_items": _reissue_parent_top5_items()[:4]},
+            program_id=PROGRAM_GLOBAL,
+        )
+
+        self.assertIsNone(repaired_prompt)
+        self.assertIsNone(repaired_briefing)
+        self.assertEqual(fields, {})
+        self.assertEqual(err, "reissue_top5_parent_repair_failed")
 
 
 class KeysuriImageOnlyReissueTests(unittest.TestCase):
@@ -688,6 +849,7 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
                 "response_status": 200,
                 "email_sent": True,
                 "customer_delivery_status": "not_sent",
+                "selected_items": _reissue_parent_top5_items(),
             },
             email_html="<html><body><p>parent body</p></body></html>",
         )
@@ -699,7 +861,10 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         ) as _sp_file:
             json.dump(fresh_source_pack, _sp_file)
             _sp_path = _sp_file.name
-        fresh_briefing = {"summary": "새 본문", "briefing_title": "새 전체 제목"}
+        fresh_briefing = _generated_briefing_with_top_count(
+            _reissue_parent_top5_items(),
+            program_id=PROGRAM_KOREA,
+        )
         smoke_result = LiveSourceSmokeResult(
             ok=True,
             program_id="keysuri_korea_tech",

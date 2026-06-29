@@ -7,6 +7,7 @@ import html
 import json
 import logging
 import os
+import re
 import secrets
 import time
 from typing import Optional
@@ -167,6 +168,19 @@ def _render_reissue_failure_page(
         f"<p><a href=\"/admin/runs/{_esc(run_id)}\">돌아가기</a></p>"
     )
     return HTMLResponse(_layout(title, inner), status_code=status_code)
+
+
+def _safe_reissue_result_error_code(raw_error: str) -> str:
+    code = str(raw_error or "").strip()
+    if not code:
+        return "keysuri_reissue_failed"
+    lowered = code.lower()
+    if "gemini parse failed" in lowered or "top_5_news" in lowered:
+        return "generated_briefing_contract_invalid"
+    if len(code) > 80 or any(ch.isspace() for ch in code):
+        return "keysuri_reissue_failed"
+    return re.sub(r"[^A-Za-z0-9_.:-]", "_", code)[:80]
+
 
 _APPROVE_ERROR_MESSAGES = {
     "already_approved": "이미 승인된 실행입니다.",
@@ -963,13 +977,17 @@ def admin_run_reissue(
             )
         if not result.get("ok") or not new_run_id:
             error_code = str(result.get("error") or "keysuri_reissue_failed")
+            safe_code = _safe_reissue_result_error_code(error_code)
             return _render_reissue_failure_page(
                 title="Reissue failed",
                 run_id=run_id,
                 mode=mode,
                 failed_step="keysuri_reissue_result_validation",
-                safe_message=f"재발행을 완료하지 못했습니다 ({error_code}).",
-                status_code=500,
+                safe_message=(
+                    "재발행 결과 검증 실패로 발송하지 않았습니다. "
+                    f"safe_error_code={safe_code}"
+                ),
+                status_code=200,
             )
         return RedirectResponse(url=f"/admin/runs/{new_run_id}", status_code=303)
 

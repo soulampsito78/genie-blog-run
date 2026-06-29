@@ -657,6 +657,51 @@ class AdminRoutesTests(unittest.TestCase):
         mock_exec.assert_not_called()
 
     @patch("admin_routes.execute_orchestrator_run")
+    @patch("admin_routes.run_keysuri_text_and_image_reissue")
+    def test_keysuri_reissue_result_validation_hides_raw_detail(self, mock_text_and_image, mock_exec) -> None:
+        mock_text_and_image.return_value = {
+            "ok": False,
+            "program_id": "keysuri_global_tech",
+            "error": (
+                "Gemini parse failed (parsed_invalid): "
+                "top_5_news.items must contain exactly 5 entries, got 2"
+            ),
+        }
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120208_keysuri_global_tech_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "keysuri_global_tech",
+                "program_id": "keysuri_global_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+                "reason_summary": "ok",
+                "reissue_count": 0,
+            },
+            email_html="<html><body><p>original body</p></body></html>",
+        )
+        resp = self.client.post(
+            f"/admin/runs/{parent_id}/reissue",
+            data={
+                "reason_option": "뉴스 중복 이슈",
+                "reason_note": "",
+                "reissue_scope": "body_and_image",
+            },
+            follow_redirects=False,
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("keysuri_reissue_result_validation", resp.text)
+        self.assertIn("safe_error_code=generated_briefing_contract_invalid", resp.text)
+        self.assertNotIn("Gemini parse failed", resp.text)
+        self.assertNotIn("top_5_news.items must contain exactly 5 entries", resp.text)
+        mock_text_and_image.assert_called_once()
+        mock_exec.assert_not_called()
+
+    @patch("admin_routes.execute_orchestrator_run")
     def test_reissue_unknown_mode_returns_400_with_safe_error_fields(self, mock_exec) -> None:
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
         # run_id must match the canonical mode pattern, but the stored "mode"

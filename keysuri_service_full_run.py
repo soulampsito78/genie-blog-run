@@ -42,6 +42,7 @@ from keysuri_contract_preview_renderer import (
 )
 from keysuri_briefing_content_enricher import enrich_generated_briefing_content
 from keysuri_bottom_shot_generation import generate_keysuri_korea_bottom_v6
+from keysuri_generation_prompt import extract_json_candidates_from_model_text
 from keysuri_generation_prompt import parse_keysuri_generated_response
 from keysuri_generation_prompt import build_keysuri_generation_prompt
 from keysuri_gemini_client import call_keysuri_gemini_text
@@ -59,6 +60,12 @@ from keysuri_live_source_smoke import (
     run_keysuri_live_source_smoke,
 )
 from keysuri_prompt_input import build_keysuri_prompt_input
+from keysuri_news_contract import (
+    KEYSURI_TOP_NEWS_COUNT,
+    expected_news_scope_for_program,
+    expected_top5_heading_for_program,
+    get_news_categories_for_program,
+)
 from keysuri_renderer import PROGRAM_DISPLAY
 from service_full_run_contract import (
     ERROR_IMAGE_GENERATION_FAILED,
@@ -901,6 +908,146 @@ def _regenerate_keysuri_text_from_snapshot(
     return prompt_input, generated_briefing, None
 
 
+def _parent_selected_items_for_reissue(
+    parent: Dict[str, Any],
+    program_id: str,
+) -> Optional[List[Dict[str, Any]]]:
+    raw_items = parent.get("selected_items")
+    if not isinstance(raw_items, list) or len(raw_items) != KEYSURI_TOP_NEWS_COUNT:
+        prompt_snapshot = parent.get("regen_prompt_input_snapshot")
+        top_5 = prompt_snapshot.get("top_5_news") if isinstance(prompt_snapshot, dict) else None
+        raw_items = top_5.get("items") if isinstance(top_5, dict) else None
+    if not isinstance(raw_items, list) or len(raw_items) != KEYSURI_TOP_NEWS_COUNT:
+        return None
+
+    categories = get_news_categories_for_program(program_id)
+    fallback_category = "market_signal" if "market_signal" in categories else next(iter(categories), "")
+    repaired: List[Dict[str, Any]] = []
+    for idx, raw in enumerate(raw_items, start=1):
+        if not isinstance(raw, dict):
+            return None
+        item = copy.deepcopy(raw)
+        title = str(
+            item.get("headline")
+            or item.get("korean_title")
+            or item.get("title")
+            or item.get("news_title")
+            or ""
+        ).strip()
+        summary = str(
+            item.get("summary")
+            or item.get("what_happened")
+            or item.get("description")
+            or title
+        ).strip()
+        why = str(
+            item.get("why_it_matters")
+            or item.get("why_now")
+            or item.get("selection_reason")
+            or summary
+        ).strip()
+        biz = str(
+            item.get("business_implication")
+            or item.get("owner_angle")
+            or item.get("next_day_impact_line")
+            or why
+        ).strip()
+        source_ids = item.get("source_ids")
+        if not isinstance(source_ids, list) or not source_ids:
+            source_id = str(item.get("news_id") or item.get("source_id") or "").strip()
+            source_ids = [source_id] if source_id else []
+        category = str(item.get("category") or item.get("primary_category") or "").strip()
+        if category not in categories:
+            category = fallback_category
+        confidence = str(item.get("confidence_label") or "").strip()
+        if confidence not in {"confirmed", "reported", "claimed", "estimated", "unverified"}:
+            confidence = "reported"
+
+        item["rank"] = idx
+        fallback_news_id = source_ids[0] if source_ids else f"parent-selected-{idx}"
+        item["news_id"] = str(item.get("news_id") or fallback_news_id).strip()
+        item["headline"] = title
+        item["category"] = category
+        item["summary"] = summary
+        item["why_it_matters"] = why
+        item["business_implication"] = biz
+        item["source_ids"] = [str(sid).strip() for sid in source_ids if str(sid).strip()]
+        item["confidence_label"] = confidence
+        if not item["headline"] or not item["summary"] or not item["source_ids"]:
+            return None
+        repaired.append(item)
+    return repaired
+
+
+def _repair_reissue_top5_from_parent_selection(
+    *,
+    generated_briefing: Dict[str, Any],
+    prompt_input: Dict[str, Any],
+    parent: Dict[str, Any],
+    program_id: str,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any], Optional[str]]:
+    parent_items = _parent_selected_items_for_reissue(parent, program_id)
+    if parent_items is None:
+        return None, None, {}, "reissue_parent_selected_items_missing_or_invalid"
+
+    original_top = generated_briefing.get("top_5_news")
+    original_items = original_top.get("items") if isinstance(original_top, dict) else []
+    original_count = len(original_items) if isinstance(original_items, list) else 0
+    top_5_news = {
+        "news_scope": expected_news_scope_for_program(program_id),
+        "section_heading": expected_top5_heading_for_program(program_id),
+        "items": copy.deepcopy(parent_items),
+    }
+    repaired_prompt_input = copy.deepcopy(prompt_input)
+    repaired_prompt_input["top_5_news"] = copy.deepcopy(top_5_news)
+    repaired_prompt_input["selected_items"] = copy.deepcopy(parent_items)
+    repaired_prompt_input["required_count"] = KEYSURI_TOP_NEWS_COUNT
+    repaired_prompt_input["selected_count"] = KEYSURI_TOP_NEWS_COUNT
+
+    repaired_briefing = copy.deepcopy(generated_briefing)
+    repaired_briefing["program_id"] = program_id
+    repaired_briefing["news_scope"] = expected_news_scope_for_program(program_id)
+    repaired_briefing["section_heading"] = expected_top5_heading_for_program(program_id)
+    repaired_briefing["top_5_news"] = copy.deepcopy(top_5_news)
+    parse_result = parse_keysuri_generated_response(
+        json.dumps(repaired_briefing, ensure_ascii=False),
+        program_id,
+        repaired_prompt_input,
+    )
+    if str(parse_result.get("parse_status") or "") != "parsed_valid":
+        return None, None, {}, "reissue_top5_parent_repair_validation_failed"
+
+    fields = {
+        "reissue_top5_repaired_from_parent": True,
+        "reissue_top5_original_count": original_count,
+        "reissue_top5_repaired_count": KEYSURI_TOP_NEWS_COUNT,
+    }
+    return repaired_prompt_input, parse_result.get("generated_briefing"), fields, None
+
+
+def _repair_reissue_top5_from_raw_text(
+    *,
+    raw_text: str,
+    prompt_input: Dict[str, Any],
+    parent: Dict[str, Any],
+    program_id: str,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any], Optional[str]]:
+    try:
+        candidates = extract_json_candidates_from_model_text(raw_text)
+    except ValueError:
+        candidates = []
+    for candidate in candidates:
+        repaired_prompt, repaired_briefing, fields, err = _repair_reissue_top5_from_parent_selection(
+            generated_briefing=candidate,
+            prompt_input=prompt_input,
+            parent=parent,
+            program_id=program_id,
+        )
+        if err is None and repaired_prompt is not None and repaired_briefing is not None:
+            return repaired_prompt, repaired_briefing, fields, None
+    return None, None, {}, "reissue_top5_parent_repair_failed"
+
+
 # ---------------------------------------------------------------------------
 # text_only reselect helpers
 # ---------------------------------------------------------------------------
@@ -1000,8 +1147,9 @@ def _regenerate_keysuri_text_from_source_pack(
     program_id: str,
     source_pack: Dict[str, Any],
     *,
+    parent: Optional[Dict[str, Any]] = None,
     text_caller: Optional[Callable[..., str]] = None,
-) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[str]]:
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any], Optional[str]]:
     """Build prompt_input from a given source_pack and regenerate text via Gemini.
 
     Like _regenerate_keysuri_text_from_snapshot but takes source_pack directly,
@@ -1010,25 +1158,44 @@ def _regenerate_keysuri_text_from_source_pack(
     try:
         prompt_input = build_keysuri_prompt_input(program_id, source_pack)
     except (ValueError, KeyError) as exc:
-        return None, None, f"text_only_reselect_candidate_pool_exhausted: {exc}"
+        return None, None, {}, f"text_only_reselect_candidate_pool_exhausted: {exc}"
     prompt_input["source_pack"] = source_pack
     prompt_text = build_keysuri_generation_prompt(prompt_input)
     caller = text_caller or call_keysuri_gemini_text
     raw_text = caller(prompt_text)
     parse_result = parse_keysuri_generated_response(raw_text, program_id, prompt_input)
     if str(parse_result.get("parse_status") or "") != "parsed_valid":
-        return None, None, "generated_briefing_regen_parse_failed"
+        if parent is not None:
+            repaired_prompt, repaired_briefing, repair_fields, repair_err = _repair_reissue_top5_from_raw_text(
+                raw_text=raw_text,
+                prompt_input=prompt_input,
+                parent=parent,
+                program_id=program_id,
+            )
+            if repair_err is None and repaired_prompt is not None and repaired_briefing is not None:
+                return repaired_prompt, repaired_briefing, repair_fields, None
+        return None, None, {}, "generated_briefing_regen_parse_failed"
     generated_briefing = parse_result.get("generated_briefing")
     if not isinstance(generated_briefing, dict):
-        return None, None, "generated_briefing_regen_missing"
+        return None, None, {}, "generated_briefing_regen_missing"
+    repair_fields: Dict[str, Any] = {}
+    repaired_prompt, repaired_briefing, repair_fields, repair_err = _repair_reissue_top5_from_parent_selection(
+        generated_briefing=generated_briefing,
+        prompt_input=prompt_input,
+        parent=parent or {},
+        program_id=program_id,
+    )
+    if repair_err is None and repaired_prompt is not None and repaired_briefing is not None:
+        prompt_input = repaired_prompt
+        generated_briefing = repaired_briefing
     generated_briefing = enrich_generated_briefing_content(generated_briefing, program_id, prompt_input)
     generated_briefing, visible_text_quality_fields = validate_and_repair_keysuri_visible_text_quality(
         generated_briefing,
         root_path="generated_briefing",
     )
     if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
-        return None, None, KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED
-    return prompt_input, generated_briefing, None
+        return None, None, {}, KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED
+    return prompt_input, generated_briefing, repair_fields, None
 
 
 def _resolve_saved_artifact_path(parent: Dict[str, Any], *keys: str) -> Optional[Path]:
@@ -1508,8 +1675,8 @@ def run_keysuri_text_only_reissue(
         source_pack, exclude_source_ids, exclude_urls, exclude_fps
     )
 
-    prompt_input, generated_briefing, regen_error = _regenerate_keysuri_text_from_source_pack(
-        pid, filtered_source_pack, text_caller=text_caller,
+    prompt_input, generated_briefing, repair_fields, regen_error = _regenerate_keysuri_text_from_source_pack(
+        pid, filtered_source_pack, parent=parent, text_caller=text_caller,
     )
     if regen_error or prompt_input is None or generated_briefing is None:
         return {"ok": False, "error": regen_error or "text_regeneration_failed", "program_id": pid}
@@ -1645,6 +1812,7 @@ def run_keysuri_text_only_reissue(
     )
     meta.update(subject_fields)
     meta.update(_dedup_artifact_fields_from_prompt_input(prompt_input))
+    meta.update(repair_fields)
     meta.update(visible_text_quality_fields)
     meta.update(_scope_delivery_reason_fields("body_only"))
     meta.update(
@@ -1738,22 +1906,67 @@ def run_keysuri_text_and_image_reissue(
         contract_preview=False,
         send=False,
     )
-    if not smoke.ok or not smoke.called_gemini or str(smoke.parse_status or "") != "parsed_valid":
+    if not smoke.called_gemini:
         return {
             "ok": False,
-            "error": getattr(smoke, "error", None) or "text_and_image_reissue_source_collection_failed",
+            "error": "text_and_image_reissue_gemini_not_called",
             "program_id": pid,
         }
-    generated_briefing = smoke.generated_briefing
+
+    try:
+        fresh_source_pack = json.loads(Path(smoke.source_pack_path).read_text(encoding="utf-8"))
+        prompt_input = build_keysuri_prompt_input(pid, fresh_source_pack)
+    except (OSError, ValueError, KeyError) as exc:
+        return {
+            "ok": False,
+            "error": "text_and_image_reissue_source_collection_failed",
+            "program_id": pid,
+            "error_code_detail": type(exc).__name__,
+        }
+    prompt_input["source_pack"] = fresh_source_pack
+
+    repair_fields: Dict[str, Any] = {}
+    parse_status = str(smoke.parse_status or "")
+    generated_briefing = smoke.generated_briefing if isinstance(smoke.generated_briefing, dict) else None
+    if parse_status != "parsed_valid":
+        raw_path = Path(str(smoke.raw_response_path or ""))
+        raw_text = raw_path.read_text(encoding="utf-8") if raw_path.is_file() else ""
+        if raw_text:
+            prompt_input, generated_briefing, repair_fields, repair_err = _repair_reissue_top5_from_raw_text(
+                raw_text=raw_text,
+                prompt_input=prompt_input,
+                parent=parent,
+                program_id=pid,
+            )
+            if repair_err is not None:
+                generated_briefing = None
+        else:
+            generated_briefing = None
+    elif not smoke.ok:
+        return {
+            "ok": False,
+            "error": "text_and_image_reissue_source_collection_failed",
+            "program_id": pid,
+        }
+    elif generated_briefing is not None:
+        repaired_prompt, repaired_briefing, repair_fields, repair_err = _repair_reissue_top5_from_parent_selection(
+            generated_briefing=generated_briefing,
+            prompt_input=prompt_input,
+            parent=parent,
+            program_id=pid,
+        )
+        if repair_err is None and repaired_prompt is not None and repaired_briefing is not None:
+            prompt_input = repaired_prompt
+            generated_briefing = repaired_briefing
+        else:
+            generated_briefing = None
+
     if not isinstance(generated_briefing, dict):
         return {
             "ok": False,
-            "error": "text_and_image_reissue_generated_briefing_missing",
+            "error": "text_and_image_reissue_result_validation_failed",
             "program_id": pid,
         }
-    fresh_source_pack = json.loads(Path(smoke.source_pack_path).read_text(encoding="utf-8"))
-    prompt_input = build_keysuri_prompt_input(pid, fresh_source_pack)
-    prompt_input["source_pack"] = fresh_source_pack
     generated_briefing = enrich_generated_briefing_content(generated_briefing, pid, prompt_input)
     generated_briefing, _visible_fresh = validate_and_repair_keysuri_visible_text_quality(
         generated_briefing,
@@ -1915,6 +2128,7 @@ def run_keysuri_text_and_image_reissue(
     )
     meta.update(subject_fields)
     meta.update(_dedup_artifact_fields_from_prompt_input(prompt_input))
+    meta.update(repair_fields)
     meta.update(visible_text_quality_fields)
     meta.update(_scope_delivery_reason_fields("body_and_image"))
     meta.update(
