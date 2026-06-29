@@ -60,6 +60,9 @@ from keysuri_live_source_smoke import (
     run_keysuri_live_source_smoke,
 )
 from keysuri_prompt_input import build_keysuri_prompt_input
+from sent_news_dedup_gate import normalize_candidate
+from sent_news_log_store import recent_sent_news_log
+from owner_review_exposure_log_store import recent_owner_review_exposure_log_with_status
 from keysuri_news_contract import (
     KEYSURI_TOP_NEWS_COUNT,
     expected_news_scope_for_program,
@@ -1178,6 +1181,110 @@ def _keysuri_reissue_exclusion_rows(parent: Dict[str, Any]) -> List[Dict[str, An
     return rows
 
 
+def _reissue_hard_exclusion_index(
+    exclusion_rows: List[Dict[str, Any]],
+) -> Tuple[set, set]:
+    """Normalized canonical_url and title sets used to hard-exclude candidates.
+
+    Uses the same normalization as the cross-day dedup gate so the pre-selection
+    filter and the post-selection gate agree on what counts as the *same article*.
+    """
+    canon: set = set()
+    titles: set = set()
+    for row in exclusion_rows or []:
+        if not isinstance(row, dict):
+            continue
+        norm = normalize_candidate(row)
+        if norm.get("canonical_url"):
+            canon.add(norm["canonical_url"])
+        if norm.get("normalized_title"):
+            titles.add(norm["normalized_title"])
+    return canon, titles
+
+
+def _filter_hard_duplicate_claims(
+    source_pack: Dict[str, Any],
+    exclusion_rows: List[Dict[str, Any]],
+) -> Tuple[Dict[str, Any], int]:
+    """Drop source_pack claims that are the *same article* as a hard-excluded item
+    (parent selected_items / recent sent / recent exposure), matched by canonical
+    URL or exact normalized title.
+
+    This must run BEFORE TOP5 selection: the diversity gate picks exactly 5 from
+    the qualified pool, so if hard-duplicates are only removed afterwards the slots
+    they consumed cannot be backfilled from the fresh replacement pool. Only HARD
+    duplicates are removed here — soft diversity (same source / entity / cluster)
+    is left to the diversity gate and its shortage relaxation.
+    """
+    canon, titles = _reissue_hard_exclusion_index(exclusion_rows)
+    claims = source_pack.get("claims") if isinstance(source_pack.get("claims"), list) else []
+    if not canon and not titles:
+        return source_pack, len(claims)
+    kept: List[Dict[str, Any]] = []
+    for claim in claims:
+        if not isinstance(claim, dict):
+            kept.append(claim)
+            continue
+        norm = normalize_candidate(claim)
+        c = norm.get("canonical_url")
+        t = norm.get("normalized_title")
+        if (c and c in canon) or (t and t in titles):
+            continue
+        kept.append(claim)
+    filtered = dict(source_pack)
+    filtered["claims"] = kept
+    return filtered, len(kept)
+
+
+def _prepare_keysuri_reissue_prompt_input(
+    program_id: str,
+    source_pack: Dict[str, Any],
+    parent: Dict[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any], Optional[str]]:
+    """Build a reissue prompt_input whose TOP5 is drawn from the FULL fresh pool
+    with parent/sent/exposure hard-duplicates removed before selection.
+
+    Returns ``(prompt_input, parent_rows, diagnostics, error)``. ``error`` is a safe
+    code string when the prompt could not be built (e.g. source gate blocked).
+    """
+    parent_rows = _keysuri_reissue_exclusion_rows(parent)
+    try:
+        sent_rows = [r for r in (recent_sent_news_log(program_id) or []) if isinstance(r, dict)]
+    except Exception:  # noqa: BLE001 — log read failures must not break reissue
+        sent_rows = []
+    try:
+        exposure_status = recent_owner_review_exposure_log_with_status(program_id, days=5)
+        exposure_rows = [r for r in (exposure_status.get("items") or []) if isinstance(r, dict)]
+    except Exception:  # noqa: BLE001
+        exposure_rows = []
+    hard_rows = list(parent_rows) + sent_rows + exposure_rows
+    raw_claims = source_pack.get("claims") if isinstance(source_pack.get("claims"), list) else []
+    raw_count = len(raw_claims)
+    filtered_pack, kept_count = _filter_hard_duplicate_claims(source_pack, hard_rows)
+    diagnostics: Dict[str, Any] = {
+        "reissue_candidate_raw_count": raw_count,
+        "reissue_candidate_after_hard_exclusion_count": kept_count,
+        "reissue_excluded_parent_items_count": len(parent_rows),
+        "reissue_recent_sent_log_count": len(sent_rows),
+        "reissue_recent_exposure_log_count": len(exposure_rows),
+    }
+    try:
+        prompt_input = build_keysuri_prompt_input(
+            program_id, filtered_pack, extra_recent_log=parent_rows
+        )
+    except (ValueError, KeyError):
+        return None, parent_rows, diagnostics, "reissue_live_candidate_pool_insufficient"
+    if isinstance(prompt_input, dict):
+        prompt_input["source_pack"] = filtered_pack
+        live = _live_selection_items_from_prompt_input(prompt_input)
+        diagnostics["reissue_candidate_final_count"] = len(live) if live else (
+            len((prompt_input.get("top_5_news") or {}).get("items", []))
+            if isinstance(prompt_input.get("top_5_news"), dict)
+            else 0
+        )
+    return prompt_input, parent_rows, diagnostics, None
+
+
 def _live_selection_items_from_prompt_input(
     prompt_input: Dict[str, Any],
 ) -> Optional[List[Dict[str, Any]]]:
@@ -1419,22 +1526,33 @@ def _regenerate_keysuri_text_from_source_pack(
         if is_reissue
         else "text_only_reselect_candidate_pool_exhausted"
     )
-    try:
-        prompt_input = build_keysuri_prompt_input(
-            program_id, source_pack, extra_recent_log=extra_recent_log
+    reissue_diag: Dict[str, Any] = {}
+    if is_reissue:
+        # Remove parent/sent/exposure hard-duplicates from the candidate pool
+        # BEFORE selection, so the diversity gate draws a full fresh TOP5 (with
+        # backfill) instead of being left short after post-selection dedup.
+        prompt_input, _parent_rows, reissue_diag, prep_err = _prepare_keysuri_reissue_prompt_input(
+            program_id, source_pack, parent or {}
         )
-    except (ValueError, KeyError) as exc:
-        suffix = "" if is_reissue else f": {exc}"
-        return None, None, {}, f"{insufficient_err}{suffix}"
-    if not isinstance(prompt_input, dict):
-        return None, None, {}, insufficient_err
+        if prep_err is not None or not isinstance(prompt_input, dict):
+            return None, None, reissue_diag, prep_err or insufficient_err
+        source_pack = prompt_input.get("source_pack") or source_pack
+    else:
+        try:
+            prompt_input = build_keysuri_prompt_input(
+                program_id, source_pack, extra_recent_log=extra_recent_log
+            )
+        except (ValueError, KeyError) as exc:
+            return None, None, {}, f"{insufficient_err}: {exc}"
+        if not isinstance(prompt_input, dict):
+            return None, None, {}, insufficient_err
     _top5 = prompt_input.get("top_5_news")
     _top5_items = _top5.get("items") if isinstance(_top5, dict) else None
     # Reissue requires a full fresh TOP5; legacy callers accept any non-empty set.
     if not isinstance(_top5_items, list) or not _top5_items:
-        return None, None, {}, insufficient_err
+        return None, None, reissue_diag, insufficient_err
     if is_reissue and len(_top5_items) < KEYSURI_TOP_NEWS_COUNT:
-        return None, None, {}, insufficient_err
+        return None, None, reissue_diag, insufficient_err
     prompt_input["source_pack"] = source_pack
     prompt_text = build_keysuri_generation_prompt(prompt_input)
     caller = text_caller or call_keysuri_gemini_text
@@ -1460,6 +1578,7 @@ def _regenerate_keysuri_text_from_source_pack(
             program_id=program_id,
             parent=parent,
         )
+        repair_fields = {**reissue_diag, **(repair_fields or {})}
         if repair_err is not None or repaired_prompt is None or repaired_briefing is None:
             return None, None, repair_fields, repair_err or "reissue_top5_live_repair_validation_failed"
         prompt_input = repaired_prompt
@@ -2221,33 +2340,33 @@ def run_keysuri_text_and_image_reissue(
         }
 
     # Reissue reselection: build a FRESH, parent-excluded TOP5 from the live pool.
-    # The parent's selected_items + recent sent/exposure logs are excluded so the
-    # regenerated news is fresh and deduped; the parent snapshot is never the final
-    # TOP5 source.
-    exclusion_rows = _keysuri_reissue_exclusion_rows(parent)
+    # Parent selected_items + recent sent/exposure hard-duplicates are removed from
+    # the candidate pool BEFORE selection so the diversity gate can fill 5 fresh
+    # items (with backfill); the parent snapshot is never the final TOP5 source.
     try:
         fresh_source_pack = json.loads(Path(smoke.source_pack_path).read_text(encoding="utf-8"))
-        prompt_input = build_keysuri_prompt_input(
-            pid, fresh_source_pack, extra_recent_log=exclusion_rows
-        )
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError) as exc:
         return {
             "ok": False,
             "error": "text_and_image_reissue_source_collection_failed",
             "program_id": pid,
             "error_code_detail": type(exc).__name__,
         }
-    prompt_input["source_pack"] = fresh_source_pack
-
+    prompt_input, exclusion_rows, reissue_diag, prep_err = _prepare_keysuri_reissue_prompt_input(
+        pid, fresh_source_pack, parent
+    )
     # Insufficient fresh candidates after exclusion → safe failure (never fall back
     # to the parent's duplicate TOP5).
-    if _live_selection_items_from_prompt_input(prompt_input) is None:
-        return {
+    if prep_err is not None or not isinstance(prompt_input, dict) or _live_selection_items_from_prompt_input(prompt_input) is None:
+        failure = {
             "ok": False,
-            "error": "reissue_live_candidate_pool_insufficient",
+            "error": prep_err or "reissue_live_candidate_pool_insufficient",
             "program_id": pid,
             "reissue_reselection_enabled": True,
         }
+        failure.update(reissue_diag)
+        return failure
+    fresh_source_pack = prompt_input.get("source_pack") or fresh_source_pack
 
     # Prose base: Gemini output when valid, else a salvaged candidate, else empty.
     parse_status = str(smoke.parse_status or "")
@@ -2270,7 +2389,7 @@ def run_keysuri_text_and_image_reissue(
         program_id=pid,
         parent=parent,
     )
-    repair_fields = dict(repair_fields or {})
+    repair_fields = {**reissue_diag, **(repair_fields or {})}
     repair_fields.setdefault("reissue_recent_sent_log_count", int(prompt_input.get("sent_log_read_count") or 0))
     repair_fields.setdefault("reissue_recent_exposure_log_count", int(prompt_input.get("exposure_log_read_count") or 0))
     repair_fields.setdefault("reissue_excluded_parent_items_count", len(exclusion_rows))

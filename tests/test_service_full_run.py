@@ -642,6 +642,121 @@ class KeysuriBodyOnlyReissueExhaustedPoolTests(unittest.TestCase):
         self.assertEqual(result.get("error"), "reissue_live_candidate_pool_insufficient")
 
 
+class KeysuriReissueCandidateExpansionTests(unittest.TestCase):
+    """Reissue must remove parent/sent/exposure HARD-duplicates from the candidate
+    pool BEFORE TOP5 selection, so the diversity gate fills 5 fresh items with
+    backfill instead of being left short after post-selection dedup."""
+
+    @staticmethod
+    def _claim(cid, url, title, source="example.com"):
+        return {
+            "claim_id": cid,
+            "headline": title,
+            "title": title,
+            "canonical_url": url,
+            "url": url,
+            "source_name": source,
+            "source_ids": [cid],
+        }
+
+    def test_filter_hard_duplicate_claims_removes_hard_keeps_soft(self) -> None:
+        from keysuri_service_full_run import _filter_hard_duplicate_claims
+
+        pack = {
+            "program_id": PROGRAM_GLOBAL,
+            "claims": [
+                self._claim("c1", "https://nvidia.com/a", "NVIDIA ships chip", "blogs.nvidia.com"),
+                self._claim("c2", "https://openai.com/b", "OpenAI launches model", "openai.com"),
+                self._claim("c3", "https://nvidia.com/c", "NVIDIA opens lab", "blogs.nvidia.com"),
+                self._claim("c4", "https://techcrunch.com/d", "Startup raises round", "techcrunch.com"),
+            ],
+        }
+        # Exclude c1 by canonical_url and c2 by exact title.
+        exclusion_rows = [
+            {"canonical_url": "https://nvidia.com/a", "title": "irrelevant"},
+            {"canonical_url": "https://other.com/x", "title": "OpenAI launches model"},
+        ]
+        filtered, kept = _filter_hard_duplicate_claims(pack, exclusion_rows)
+        ids = [c["claim_id"] for c in filtered["claims"]]
+        self.assertEqual(kept, 2)
+        self.assertNotIn("c1", ids)  # hard canonical_url duplicate removed
+        self.assertNotIn("c2", ids)  # hard title duplicate removed
+        # c3 (same NVIDIA *source* but different article) is SOFT — kept for the
+        # diversity gate to weigh, never hard-removed.
+        self.assertIn("c3", ids)
+        self.assertIn("c4", ids)
+
+    def test_prepare_reissue_prefilters_pool_and_reports_diagnostics(self) -> None:
+        from keysuri_service_full_run import _prepare_keysuri_reissue_prompt_input
+
+        parent_items = _reissue_parent_top5_items()  # canonical_url example.com/parent-N
+        parent = {"selected_items": parent_items}
+        pack = {
+            "program_id": PROGRAM_GLOBAL,
+            "claims": (
+                [self._claim(f"p{i}", parent_items[i]["canonical_url"], parent_items[i]["headline"]) for i in range(3)]
+                + [self._claim(f"f{i}", f"https://fresh.com/{i}", f"Fresh story {i}") for i in range(7)]
+            ),
+        }
+        live_items = _live_reselection_items()
+        captured = {}
+
+        def _fake_build(pid, sp, extra_recent_log=None):
+            captured["pack"] = sp
+            captured["extra"] = extra_recent_log
+            return {
+                "program_id": PROGRAM_GLOBAL,
+                "source_pack": sp,
+                "top_5_news": {"items": live_items},
+                "sent_log_read_count": 0,
+                "exposure_log_read_count": 0,
+            }
+
+        with patch("keysuri_service_full_run.build_keysuri_prompt_input", side_effect=_fake_build), patch(
+            "keysuri_service_full_run.recent_sent_news_log", return_value=[]
+        ), patch(
+            "keysuri_service_full_run.recent_owner_review_exposure_log_with_status",
+            return_value={"items": [], "read_ok": True},
+        ):
+            prompt_input, parent_rows, diag, err = _prepare_keysuri_reissue_prompt_input(
+                PROGRAM_GLOBAL, pack, parent
+            )
+
+        self.assertIsNone(err)
+        # The 3 parent-duplicate claims were removed before selection; 7 fresh kept.
+        kept_ids = [c["claim_id"] for c in captured["pack"]["claims"]]
+        self.assertEqual(len(kept_ids), 7)
+        self.assertTrue(all(cid.startswith("f") for cid in kept_ids))
+        self.assertEqual(diag["reissue_candidate_raw_count"], 10)
+        self.assertEqual(diag["reissue_candidate_after_hard_exclusion_count"], 7)
+        self.assertEqual(diag["reissue_excluded_parent_items_count"], 5)
+        self.assertEqual(diag["reissue_candidate_final_count"], 5)
+
+    def test_prepare_reissue_insufficient_after_prefilter_safe_fail(self) -> None:
+        from keysuri_service_full_run import _prepare_keysuri_reissue_prompt_input
+
+        parent = {"selected_items": _reissue_parent_top5_items()}
+        pack = {"program_id": PROGRAM_GLOBAL, "claims": []}
+
+        # build returns a short selection → prep reports it; caller treats <5 as insufficient.
+        def _fake_build(pid, sp, extra_recent_log=None):
+            return {"program_id": PROGRAM_GLOBAL, "source_pack": sp, "top_5_news": {"items": _live_reselection_items()[:3]}}
+
+        with patch("keysuri_service_full_run.build_keysuri_prompt_input", side_effect=_fake_build), patch(
+            "keysuri_service_full_run.recent_sent_news_log", return_value=[]
+        ), patch(
+            "keysuri_service_full_run.recent_owner_review_exposure_log_with_status",
+            return_value={"items": [], "read_ok": True},
+        ):
+            prompt_input, parent_rows, diag, err = _prepare_keysuri_reissue_prompt_input(
+                PROGRAM_GLOBAL, pack, parent
+            )
+        # prep itself returns no error, but the live selection is < 5 (caller safe-fails).
+        from keysuri_service_full_run import _live_selection_items_from_prompt_input
+        self.assertIsNone(_live_selection_items_from_prompt_input(prompt_input))
+        self.assertEqual(diag["reissue_candidate_final_count"], 3)
+
+
 class KeysuriImageOnlyReissueTests(unittest.TestCase):
     def setUp(self) -> None:
         self._env = patch.dict(
