@@ -293,6 +293,8 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
         "- Return exactly one JSON object.",
         "- Do not wrap in markdown fences (no ```json blocks).",
         "- Do not add explanations, preface, or postscript outside the JSON.",
+        "- No second corrected JSON. No duplicate JSON object.",
+        "- If correcting, output only the final corrected JSON object.",
         "- Do not use external sources beyond the provided source_pack and allowed_source_ids.",
         "- Do not invent sources, dates, numbers, or legal/policy certainty.",
         "- Do not output unsupported numbers.",
@@ -669,7 +671,7 @@ def parse_keysuri_generated_response(
     validations: List[Dict[str, Any]] = []
     best_index = 0
     best_score = -1
-    valid_index: "int | None" = None
+    valid_indices: List[int] = []
     for idx, obj in enumerate(candidates):
         validation = validate_parsed_keysuri_generated_briefing(pid, obj, prompt_input)
         validations.append(validation)
@@ -677,10 +679,11 @@ def parse_keysuri_generated_response(
         if score > best_score:
             best_score = score
             best_index = idx
-        if valid_index is None and validation["valid"]:
-            valid_index = idx
+        if validation["valid"]:
+            valid_indices.append(idx)
 
-    if valid_index is not None:
+    if len(valid_indices) == 1:
+        valid_index = valid_indices[0]
         return {
             "parse_status": "parsed_valid",
             "program_id": pid,
@@ -693,19 +696,38 @@ def parse_keysuri_generated_response(
             ),
         }
 
-    # No fully valid candidate: surface the best schema match through the normal
-    # validation path. Never merge objects; never relax validation.
+    # No fully valid candidate or ambiguous candidates: surface the best schema match
     selected_index = best_index
     issues = list(validations[selected_index]["issues"])
     if multiple:
-        issues.insert(
-            0,
-            _issue(
-                "parse_multiple_json_objects_unrecoverable",
-                f"{candidate_count} JSON objects found; none passed schema validation",
-                "raw_text",
-            ),
-        )
+        if len(valid_indices) > 1:
+            issues.insert(
+                0,
+                _issue(
+                    "parse_multiple_json_objects_ambiguous",
+                    f"{candidate_count} JSON objects found; {len(valid_indices)} passed schema validation (ambiguous)",
+                    "raw_text",
+                ),
+            )
+        else:
+            issues.insert(
+                0,
+                _issue(
+                    "parse_multiple_json_objects_unrecoverable",
+                    f"{candidate_count} JSON objects found; none passed schema validation",
+                    "raw_text",
+                ),
+            )
+            for i, val in enumerate(validations):
+                if i != selected_index:
+                    c_issues = [iss.get("code", "unknown") for iss in val.get("issues", [])]
+                    issues.append(
+                        _issue(
+                            f"candidate_{i}_summary",
+                            f"Candidate {i} issues: {', '.join(c_issues)}",
+                            "raw_text"
+                        )
+                    )
     return {
         "parse_status": "parsed_invalid",
         "program_id": pid,

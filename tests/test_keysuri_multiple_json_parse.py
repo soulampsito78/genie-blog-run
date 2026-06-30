@@ -180,6 +180,37 @@ class MultipleJsonRecoveryTests(unittest.TestCase):
         self.assertEqual(meta["selected_json_candidate_index"], 0)
         self.assertTrue(meta["parser_recovery_used"])
 
+    def test_two_valid_objects_ambiguous(self) -> None:
+        '''Two fully valid candidates should block safely as ambiguous.'''
+        payload1 = _valid_korea_payload()
+        payload2 = _valid_korea_payload()
+        # Change a field to bypass string deduplication but keep it valid
+        payload2["top_5_news"]["items"][0]["headline"] = "Slightly different valid headline"
+        pi = _korea_prompt_input(payload1)
+        import json
+        text = json.dumps(payload1, ensure_ascii=False) + '\n' + json.dumps(payload2, ensure_ascii=False)
+        result = parse_keysuri_generated_response(text, "keysuri_korea_tech", pi)
+        self.assertEqual(result["parse_status"], "parsed_invalid")
+        codes = [i.get("code") for i in result["issues"]]
+        self.assertIn("parse_multiple_json_objects_ambiguous", codes)
+        self.assertFalse(result["parse_meta"]["parser_recovery_used"])
+
+    def test_korea_missing_news_scope_repair(self) -> None:
+        '''Candidate can be repaired to news_scope="korea" when missing.'''
+        payload = _valid_korea_payload()
+        # Remove news_scope from top_5_news
+        del payload["top_5_news"]["news_scope"]
+
+        pi = _korea_prompt_input(payload)
+        import json
+        text = '{"error": "mock invalid first object"}\n' + json.dumps(payload, ensure_ascii=False)
+
+        result = parse_keysuri_generated_response(text, "keysuri_korea_tech", pi)
+        self.assertEqual(result["parse_status"], "parsed_valid", result.get("issues"))
+        top5 = result["generated_briefing"]["top_5_news"]
+        self.assertEqual(top5["news_scope"], "korea")
+        self.assertTrue(top5.get("_repaired_news_scope"))
+
     def test_two_invalid_objects_stays_validation_blocked(self) -> None:
         """Neither object is a valid payload: keep the validation_blocked outcome."""
         payload = _valid_korea_payload()
@@ -194,6 +225,9 @@ class MultipleJsonRecoveryTests(unittest.TestCase):
         self.assertTrue(meta["multiple_json_objects_detected"])
         self.assertEqual(meta["json_candidate_count"], 2)
         self.assertFalse(meta["parser_recovery_used"])
+
+        # Check that candidate-level diagnostic summaries are included
+        self.assertTrue(any(i.get("code") == "candidate_0_summary" or i.get("code") == "candidate_1_summary" for i in result["issues"]))
 
     def test_no_object_merging(self) -> None:
         """Recovery selects one whole object; it never merges fields across objects."""
