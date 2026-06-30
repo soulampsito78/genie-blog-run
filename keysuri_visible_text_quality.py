@@ -86,9 +86,6 @@ def repair_korean_connector_ellipsis_text(value: Any) -> EllipsisRepairResult:
     text = original
     text = re.sub(r"\.{2,}", "…", text)
 
-    if re.search(r"…\s*(?:$|[.!?。！？])", text):
-        return EllipsisRepairResult(text, found=True, repaired=False, blocked=True)
-
     if (
         "대규모 AI 생산을 위한" in text
         and "특화된 AI를 구축" in text
@@ -119,7 +116,14 @@ def repair_korean_connector_ellipsis_text(value: Any) -> EllipsisRepairResult:
     for pattern, repl in replacements:
         repaired = re.sub(pattern, repl, repaired)
 
+    # Mid-text ellipsis between alphanumeric/Korean characters
     repaired = re.sub(r"(?<=[A-Za-z0-9가-힣])\s*…\s*(?=[A-Za-z0-9가-힣])", " ", repaired)
+    # Mid-text ellipsis before quotes, brackets, or other delimiters
+    repaired = re.sub(r"(?<=[A-Za-z0-9가-힣])\s*…\s*(?=['\u2018\u2019'\"「『\(\[\u3008\u300A])", " ", repaired)
+    # Terminal trailing ellipsis at end of text: strip to sentence period
+    repaired = re.sub(r"\s*…\s*$", "", repaired)
+    # Ellipsis immediately before sentence-ending punctuation
+    repaired = re.sub(r"\s*…\s*(?=[.!?。！？])", "", repaired)
     repaired = re.sub(r"\s+([,.!?])", r"\1", repaired)
     repaired = re.sub(r"\s+", " ", repaired).strip()
 

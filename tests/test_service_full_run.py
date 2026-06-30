@@ -3408,7 +3408,7 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         }
         smoke = self._global_smoke(pack_path, raw_path)
         smoke.generated_briefing = {
-            "top_5_news": {"items": [{"headline": "확인 불가…"}]},
+            "top_5_news": {"items": [{"headline": "확인 불가 (…)"}]},
             "title": "글로벌 브리핑",
         }
         mock_send = MagicMock(return_value=True)
