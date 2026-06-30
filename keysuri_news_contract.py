@@ -226,6 +226,10 @@ def validate_top_5_news_block(program_id: str, top_5_news: dict) -> List[Dict[st
     expected_scope = expected_news_scope_for_program(pid)
     expected_heading = expected_top5_heading_for_program(pid)
 
+    if pid == "keysuri_korea_tech" and "news_scope" not in top_5_news:
+        top_5_news["news_scope"] = expected_scope
+        top_5_news["_repaired_news_scope"] = True
+
     scope = str(top_5_news.get("news_scope") or "").strip()
     if not scope:
         issues.append(

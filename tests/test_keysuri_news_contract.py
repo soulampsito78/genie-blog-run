@@ -62,8 +62,28 @@ class KeysuriNewsContractScopeTests(unittest.TestCase):
     def test_expected_heading_korea(self) -> None:
         self.assertEqual(expected_top5_heading_for_program("keysuri_korea_tech"), SECTION_TOP5_KOREA)
 
+    def test_korea_schema_example_contains_news_scope(self) -> None:
+        from keysuri_private_briefing import keysuri_output_schema_example
+        schema = keysuri_output_schema_example("keysuri_korea_tech")
+        self.assertIn("news_scope", schema["top_5_news"])
+        self.assertEqual(schema["top_5_news"]["news_scope"], NEWS_SCOPE_KOREA)
+
 
 class KeysuriNewsContractValidationTests(unittest.TestCase):
+    def test_missing_korea_news_scope_is_repaired(self) -> None:
+        block = _top5_block("keysuri_korea_tech")
+        del block["news_scope"]  # Remove news_scope
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        self.assertFalse(any(i["code"] == "top_5_news_scope_missing" for i in issues))
+        self.assertEqual(block["news_scope"], NEWS_SCOPE_KOREA)
+        self.assertTrue(block.get("_repaired_news_scope"))
+
+    def test_missing_global_news_scope_fails(self) -> None:
+        block = _top5_block("keysuri_global_tech")
+        del block["news_scope"]
+        issues = validate_top_5_news_block("keysuri_global_tech", block)
+        self.assertTrue(any(i["code"] == "top_5_news_scope_missing" for i in issues))
+        self.assertNotIn("_repaired_news_scope", block)
     def test_global_program_korea_scope_fails(self) -> None:
         block = _top5_block("keysuri_global_tech", scope=NEWS_SCOPE_KOREA)
         issues = validate_top_5_news_block("keysuri_global_tech", block)
