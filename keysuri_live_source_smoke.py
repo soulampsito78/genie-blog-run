@@ -341,6 +341,8 @@ class LiveSourceSmokeResult:
     fetched_live_news: bool = False
     use_gemini: bool = False
     parse_status: Optional[str] = None
+    parse_meta: Dict[str, Any] = field(default_factory=dict)
+    parse_diagnostics: Dict[str, Any] = field(default_factory=dict)
     raw_response_path: Optional[str] = None
     generated_body: Dict[str, str] = field(default_factory=dict)
     generated_briefing: Optional[dict] = None
@@ -397,6 +399,8 @@ class LiveSourceSmokeResult:
             "fetched_live_news": self.fetched_live_news,
             "use_gemini": self.use_gemini,
             "parse_status": self.parse_status,
+            "parse_meta": self.parse_meta,
+            "parse_diagnostics": self.parse_diagnostics,
             "raw_response_path": self.raw_response_path,
             "generated_body": self.generated_body,
             "generated_briefing": self.generated_briefing,
@@ -425,6 +429,73 @@ class LiveSourceSmokeResult:
 
 def _now_kst_iso() -> str:
     return datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
+
+
+def _prompt_input_diagnostic_snapshot(prompt_input: dict) -> Dict[str, Any]:
+    top = prompt_input.get("top_5_news") if isinstance(prompt_input.get("top_5_news"), dict) else {}
+    top_items = top.get("items") if isinstance(top.get("items"), list) else []
+    selected_items = (
+        prompt_input.get("selected_items")
+        if isinstance(prompt_input.get("selected_items"), list)
+        else []
+    )
+    snapshot: Dict[str, Any] = {
+        "program_id": prompt_input.get("program_id"),
+        "news_scope": prompt_input.get("news_scope"),
+        "prompt_status": prompt_input.get("prompt_status"),
+        "top_5_news_item_count": len(top_items),
+        "selected_items_count": len(selected_items),
+        "hold_reason": prompt_input.get("hold_reason"),
+        "exposure_dedup_backfill_used": bool(
+            prompt_input.get("exposure_dedup_backfill_used")
+        ),
+    }
+    funnel = prompt_input.get("candidate_funnel_summary")
+    if isinstance(funnel, dict):
+        snapshot["candidate_funnel_summary"] = funnel
+    return snapshot
+
+
+def _parse_failure_diagnostics(parse_result: dict, prompt_input: dict) -> Dict[str, Any]:
+    parse_meta = parse_result.get("parse_meta") if isinstance(parse_result.get("parse_meta"), dict) else {}
+    issues = parse_result.get("issues") if isinstance(parse_result.get("issues"), list) else []
+    field = ""
+    reason = ""
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        path = str(issue.get("path") or "")
+        code = str(issue.get("code") or "")
+        if path == "deep_dive.key_implications" or "key_implications" in code:
+            field = path or "deep_dive.key_implications"
+            reason = str(issue.get("message") or code)
+            break
+    if not field and issues and isinstance(issues[0], dict):
+        field = str(issues[0].get("path") or "")
+        reason = str(issues[0].get("message") or issues[0].get("code") or "")
+    return {
+        "prompt_input_diagnostic_snapshot": _prompt_input_diagnostic_snapshot(prompt_input),
+        "raw_parsed_field_presence_summary": parse_meta.get(
+            "raw_parsed_field_presence_summary"
+        ),
+        "parse_failure_field": field or None,
+        "parse_failure_reason": reason or None,
+        "repair_attempted": bool(
+            parse_meta.get("deep_dive_key_implications_repair_attempted")
+        ),
+        "repair_success": bool(
+            parse_meta.get("deep_dive_key_implications_repair_success")
+        ),
+    }
+
+
+def _parse_internal_issue_codes(parse_result: dict) -> List[str]:
+    parse_meta = parse_result.get("parse_meta") if isinstance(parse_result.get("parse_meta"), dict) else {}
+    return [
+        str(code)
+        for code in (parse_meta.get("internal_issue_codes") or [])
+        if str(code or "").strip()
+    ]
 
 
 def _strip_html(text: str) -> str:
@@ -1294,6 +1365,8 @@ def run_keysuri_live_source_smoke(
 
     generated_briefing = None
     parse_status: Optional[str] = None
+    parse_meta: Dict[str, Any] = {}
+    parse_internal_codes: List[str] = []
     raw_response_path: Optional[str] = None
     generated_body: Dict[str, str] = {}
 
@@ -1316,6 +1389,15 @@ def run_keysuri_live_source_smoke(
                 fetched_live_news=True,
                 use_gemini=True,
                 side_effects=side_effects,
+                candidate_funnel_summary=(
+                    prompt_input.get("candidate_funnel_summary")
+                    if isinstance(prompt_input.get("candidate_funnel_summary"), dict)
+                    else None
+                ),
+                hold_reason=prompt_input.get("hold_reason"),
+                exposure_dedup_backfill_used=bool(
+                    prompt_input.get("exposure_dedup_backfill_used")
+                ),
                 error=str(exc),
             )
 
@@ -1337,11 +1419,20 @@ def run_keysuri_live_source_smoke(
             except ValueError:
                 pass
         parse_status = str(parse_result.get("parse_status") or "")
+        parse_meta = (
+            parse_result.get("parse_meta")
+            if isinstance(parse_result.get("parse_meta"), dict)
+            else {}
+        )
+        parse_internal_codes = _parse_internal_issue_codes(parse_result)
         if parse_status != "parsed_valid":
             issues = parse_result.get("issues") or []
             issue_text = "; ".join(
                 f"{i.get('code')}: {i.get('message')}" for i in issues[:5] if isinstance(i, dict)
             )
+            prompt_internal_codes = [
+                str(code) for code in (prompt_input.get("internal_issue_codes") or []) if code
+            ]
             return LiveSourceSmokeResult(
                 ok=False,
                 program_id=program_id,
@@ -1355,8 +1446,22 @@ def run_keysuri_live_source_smoke(
                 use_gemini=True,
                 called_gemini=True,
                 parse_status=parse_status,
+                parse_meta=parse_meta,
+                parse_diagnostics=_parse_failure_diagnostics(parse_result, prompt_input),
                 raw_response_path=raw_response_path,
                 side_effects=side_effects,
+                candidate_funnel_summary=(
+                    prompt_input.get("candidate_funnel_summary")
+                    if isinstance(prompt_input.get("candidate_funnel_summary"), dict)
+                    else None
+                ),
+                hold_reason=prompt_input.get("hold_reason"),
+                exposure_dedup_backfill_used=bool(
+                    prompt_input.get("exposure_dedup_backfill_used")
+                ),
+                internal_issue_codes=prompt_internal_codes + [
+                    code for code in parse_internal_codes if code not in prompt_internal_codes
+                ],
                 error=f"Gemini parse failed ({parse_status}): {issue_text}",
             )
 
@@ -1568,6 +1673,7 @@ def run_keysuri_live_source_smoke(
         use_gemini=use_gemini,
         called_gemini=side_effects["called_gemini"],
         parse_status=parse_status,
+        parse_meta=parse_meta,
         raw_response_path=raw_response_path,
         generated_body=generated_body,
         generated_briefing=generated_briefing if isinstance(generated_briefing, dict) else None,
@@ -1594,6 +1700,12 @@ def run_keysuri_live_source_smoke(
         exposure_dedup_backfill_used=bool(prompt_input.get("exposure_dedup_backfill_used")),
         internal_issue_codes=[
             str(code) for code in (prompt_input.get("internal_issue_codes") or []) if code
+        ]
+        + [
+            code
+            for code in parse_internal_codes
+            if code
+            not in [str(c) for c in (prompt_input.get("internal_issue_codes") or [])]
         ],
     )
 

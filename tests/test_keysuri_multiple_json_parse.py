@@ -11,10 +11,12 @@ import json
 import unittest
 
 from keysuri_generation_prompt import (
+    KEYSURI_DEEP_DIVE_KEY_IMPL_REPAIR_CODE,
     extract_json_candidates_from_model_text,
     extract_json_object_from_model_text,
     parse_keysuri_generated_response,
 )
+from keysuri_renderer import render_keysuri_owner_review_html
 
 
 def _valid_korea_payload() -> dict:
@@ -285,6 +287,118 @@ class SingleJsonUnchangedTests(unittest.TestCase):
         self.assertEqual(result["parse_status"], "parse_failed")
         self.assertEqual(result["issues"][0]["code"], "json_extract_failed")
         self.assertEqual(result["parse_meta"]["json_candidate_count"], 0)
+
+
+class DeepDiveKeyImplicationsRepairTests(unittest.TestCase):
+    def test_empty_key_implications_repairs_from_existing_fields(self) -> None:
+        payload = _valid_korea_payload()
+        payload["top_5_news"]["items"][0]["headline"] = (
+            "총점 54점을 기록했으며 국내 AI 플랫폼 적용 확대"
+        )
+        payload["deep_dive"]["key_implications"] = []
+        payload["deep_dive"]["summary"] = "국내 기업의 도입 우선순위가 다시 정리되는 장면입니다."
+        payload["deep_dive"]["why_it_matters"] = "정책과 공급망 대응이 함께 움직입니다."
+        pi = _korea_prompt_input(payload)
+
+        result = parse_keysuri_generated_response(
+            json.dumps(payload, ensure_ascii=False),
+            "keysuri_korea_tech",
+            pi,
+        )
+
+        self.assertEqual(result["parse_status"], "parsed_valid", result.get("issues"))
+        implications = result["generated_briefing"]["deep_dive"]["key_implications"]
+        self.assertGreaterEqual(len(implications), 2)
+        self.assertIn(
+            KEYSURI_DEEP_DIVE_KEY_IMPL_REPAIR_CODE,
+            result["parse_meta"].get("internal_issue_codes") or [],
+        )
+        rendered = render_keysuri_owner_review_html(pi, result["generated_briefing"])
+        self.assertNotIn(KEYSURI_DEEP_DIVE_KEY_IMPL_REPAIR_CODE, rendered)
+        combined = "\n".join(implications)
+        self.assertNotIn("입니다입니다", combined)
+        for forbidden in ("총점", "점수", "스코어", "score", "scoring"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, combined.lower())
+
+    def test_missing_key_implications_key_repairs_from_existing_fields(self) -> None:
+        """deep_dive.key_implications entirely absent (not just an empty list) must
+        still be repairable from existing generated fields."""
+        payload = _valid_korea_payload()
+        payload["top_5_news"]["items"][0]["headline"] = "국내 AI 플랫폼 적용 확대 소식"
+        payload["deep_dive"].pop("key_implications", None)
+        payload["deep_dive"]["summary"] = "국내 기업의 도입 우선순위가 다시 정리되는 장면입니다."
+        payload["deep_dive"]["why_it_matters"] = "정책과 공급망 대응이 함께 움직입니다."
+        pi = _korea_prompt_input(payload)
+
+        result = parse_keysuri_generated_response(
+            json.dumps(payload, ensure_ascii=False),
+            "keysuri_korea_tech",
+            pi,
+        )
+
+        self.assertEqual(result["parse_status"], "parsed_valid", result.get("issues"))
+        implications = result["generated_briefing"]["deep_dive"]["key_implications"]
+        self.assertGreaterEqual(len(implications), 2)
+        self.assertIn(
+            KEYSURI_DEEP_DIVE_KEY_IMPL_REPAIR_CODE,
+            result["parse_meta"].get("internal_issue_codes") or [],
+        )
+
+    def test_non_list_key_implications_repairs_from_existing_fields(self) -> None:
+        """deep_dive.key_implications returned as a bare string (schema drift, not
+        a list at all) must still be repairable, not just the empty-list case."""
+        payload = _valid_korea_payload()
+        payload["top_5_news"]["items"][0]["headline"] = "국내 AI 플랫폼 적용 확대 소식"
+        payload["deep_dive"]["key_implications"] = "국내 시장에 중요한 함의가 있습니다"
+        payload["deep_dive"]["summary"] = "국내 기업의 도입 우선순위가 다시 정리되는 장면입니다."
+        payload["deep_dive"]["why_it_matters"] = "정책과 공급망 대응이 함께 움직입니다."
+        pi = _korea_prompt_input(payload)
+
+        result = parse_keysuri_generated_response(
+            json.dumps(payload, ensure_ascii=False),
+            "keysuri_korea_tech",
+            pi,
+        )
+
+        self.assertEqual(result["parse_status"], "parsed_valid", result.get("issues"))
+        implications = result["generated_briefing"]["deep_dive"]["key_implications"]
+        self.assertIsInstance(implications, list)
+        self.assertGreaterEqual(len(implications), 2)
+        self.assertIn(
+            KEYSURI_DEEP_DIVE_KEY_IMPL_REPAIR_CODE,
+            result["parse_meta"].get("internal_issue_codes") or [],
+        )
+
+    def test_key_implications_repair_failure_keeps_block_with_diagnostics(self) -> None:
+        payload = _valid_korea_payload()
+        payload["top_5_news"]["items"] = []
+        payload["deep_dive"]["body"] = ""
+        payload["deep_dive"]["summary"] = ""
+        payload["deep_dive"]["why_it_matters"] = ""
+        payload["deep_dive"]["owner_angle"] = ""
+        payload["deep_dive"]["interpretation"] = ""
+        payload["deep_dive"]["owner_impact"] = ""
+        payload["deep_dive"]["key_implications"] = []
+        pi = _korea_prompt_input(payload)
+
+        result = parse_keysuri_generated_response(
+            json.dumps(payload, ensure_ascii=False),
+            "keysuri_korea_tech",
+            pi,
+        )
+
+        self.assertEqual(result["parse_status"], "parsed_invalid")
+        codes = [i.get("code") for i in result["issues"]]
+        self.assertIn("deep_dive_key_implications_empty", codes)
+        meta = result["parse_meta"]
+        self.assertTrue(meta.get("deep_dive_key_implications_repair_attempted"))
+        self.assertFalse(meta.get("deep_dive_key_implications_repair_success"))
+        self.assertEqual(
+            meta.get("deep_dive_key_implications_repair_reason"),
+            "insufficient_source_fields",
+        )
+        self.assertIsInstance(meta.get("raw_parsed_field_presence_summary"), dict)
 
 
 class ExtractorContractTests(unittest.TestCase):

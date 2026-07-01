@@ -4251,6 +4251,78 @@ class KeysuriKoreaScheduledHoldDiagnosticsTests(unittest.TestCase):
         self.assertEqual(email_html, "")
 
     @patch("keysuri_service_full_run.save_run_artifact")
+    def test_gemini_parse_failure_persists_funnel_and_parse_diagnostics(
+        self, mock_save: MagicMock
+    ) -> None:
+        from keysuri_service_full_run import run_keysuri_service_full_run
+
+        def _smoke(**_kwargs):
+            return LiveSourceSmokeResult(
+                ok=False,
+                program_id=PROGRAM_KOREA,
+                source_pack_path="/tmp/keysuri-pack.json",
+                html_path="",
+                fetched_item_count=13,
+                feed_urls_used=[],
+                sample_marker_pass=False,
+                placeholder_gate_pass=False,
+                called_gemini=True,
+                use_gemini=True,
+                parse_status="parsed_invalid",
+                raw_response_path="/tmp/keysuri-raw.txt",
+                candidate_funnel_summary=dict(self._FUNNEL),
+                parse_meta={
+                    "deep_dive_key_implications_repair_attempted": True,
+                    "deep_dive_key_implications_repair_success": False,
+                    "raw_parsed_field_presence_summary": {
+                        "deep_dive_present": True,
+                        "deep_dive_key_implications_count": 0,
+                    },
+                },
+                parse_diagnostics={
+                    "prompt_input_diagnostic_snapshot": {
+                        "program_id": PROGRAM_KOREA,
+                        "top_5_news_item_count": 5,
+                    },
+                    "raw_parsed_field_presence_summary": {
+                        "deep_dive_present": True,
+                        "deep_dive_key_implications_count": 0,
+                    },
+                    "parse_failure_field": "deep_dive.key_implications",
+                    "parse_failure_reason": "deep_dive.key_implications must be a non-empty list",
+                    "repair_attempted": True,
+                    "repair_success": False,
+                },
+                error=(
+                    "Gemini parse failed (parsed_invalid): "
+                    "deep_dive_key_implications_empty: deep_dive.key_implications must be a non-empty list"
+                ),
+            )
+
+        payload = run_keysuri_service_full_run(
+            PROGRAM_KOREA,
+            trigger_source="scheduled_service_full_run",
+            smoke_runner=_smoke,
+        )
+
+        self.assertFalse(payload.get("email_sent"))
+        mock_save.assert_called_once()
+        meta = mock_save.call_args.args[0]
+        self.assertEqual(meta.get("validation_result"), "block")
+        self.assertEqual(meta.get("customer_delivery_status"), "not_sent")
+        self.assertIsInstance(meta.get("candidate_funnel_summary"), dict)
+        self.assertEqual(meta.get("candidate_count_after_dedup"), 0)
+        self.assertEqual(meta.get("parse_failure_field"), "deep_dive.key_implications")
+        self.assertTrue(meta.get("repair_attempted"))
+        self.assertFalse(meta.get("repair_success"))
+        self.assertIsInstance(meta.get("prompt_input_diagnostic_snapshot"), dict)
+        self.assertIsInstance(meta.get("raw_parsed_field_presence_summary"), dict)
+        email_html = mock_save.call_args.kwargs.get("email_html")
+        if email_html is None and len(mock_save.call_args.args) > 1:
+            email_html = mock_save.call_args.args[1]
+        self.assertEqual(email_html, "")
+
+    @patch("keysuri_service_full_run.save_run_artifact")
     def test_hold_without_funnel_records_unavailable_reason(
         self, mock_save: MagicMock
     ) -> None:

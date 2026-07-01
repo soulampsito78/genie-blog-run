@@ -3603,6 +3603,20 @@ def run_keysuri_service_full_run(
             hold_reason=getattr(smoke, "hold_reason", None),
             exposure_dedup_backfill_used=bool(getattr(smoke, "exposure_dedup_backfill_used", False)),
         )
+        parse_meta = getattr(smoke, "parse_meta", None)
+        if isinstance(parse_meta, dict) and parse_meta:
+            meta["parse_meta"] = copy.deepcopy(parse_meta)
+        parse_diagnostics = getattr(smoke, "parse_diagnostics", None)
+        if isinstance(parse_diagnostics, dict) and parse_diagnostics:
+            meta.update(copy.deepcopy(parse_diagnostics))
+        smoke_internal_codes = [
+            str(code) for code in (getattr(smoke, "internal_issue_codes", []) or []) if code
+        ]
+        if smoke_internal_codes:
+            meta["internal_issue_codes"] = _extend_unique(
+                list(meta.get("internal_issue_codes") or []),
+                smoke_internal_codes,
+            )
         save_run_artifact(meta, email_html="")
         return {
             "ok": False,
@@ -4029,6 +4043,17 @@ def run_keysuri_service_full_run(
     meta.update(owner_email_fields)
     meta.update(subject_fields)
     meta.update(_dedup_artifact_fields_from_prompt_input(prompt_input))
+    smoke_internal_codes = [
+        str(code) for code in (getattr(smoke, "internal_issue_codes", []) or []) if code
+    ]
+    if smoke_internal_codes:
+        meta["internal_issue_codes"] = _extend_unique(
+            list(meta.get("internal_issue_codes") or []),
+            smoke_internal_codes,
+        )
+    parse_meta = getattr(smoke, "parse_meta", None)
+    if isinstance(parse_meta, dict) and parse_meta:
+        meta["parse_meta"] = copy.deepcopy(parse_meta)
     meta.update(visible_text_quality_fields)
     meta["owner_email_subject"] = subject
     _log_owner_email_delivery_event(program_id=pid, run_id=run_id, fields=owner_email_fields)

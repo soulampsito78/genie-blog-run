@@ -23,6 +23,15 @@ IDENTITY_SUBTITLE = "프라이빗 테크 비서"
 
 PROGRAM_GLOBAL = "keysuri_global_tech"
 PROGRAM_KOREA = "keysuri_korea_tech"
+KEYSURI_DEEP_DIVE_KEY_IMPL_REPAIR_CODE = "keysuri_deep_dive_key_implications_repaired"
+
+_FORBIDDEN_VISIBLE_SCORE_TERMS: Tuple[str, ...] = (
+    "총점",
+    "점수",
+    "스코어",
+    "score",
+    "scoring",
+)
 
 _GLOBAL_TOP5_METADATA_KEYS: Tuple[str, ...] = (
     "selection_score",
@@ -158,6 +167,198 @@ def _metadata_keys_for_program(program_id: str) -> Tuple[str, ...]:
     if _is_korea_program(program_id):
         return _KOREA_TOP5_METADATA_KEYS
     return _GLOBAL_TOP5_METADATA_KEYS
+
+
+def _safe_visible_snippet(value: Any, *, max_chars: int = 54) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    text = re.sub(r"총점\s*\d+\s*점을?\s*기록했으며,?\s*", "", text)
+    text = re.sub(r"\d+\s*점", "", text)
+    for term in _FORBIDDEN_VISIBLE_SCORE_TERMS:
+        text = re.sub(re.escape(term), "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" ,.;:，。")
+    if not text:
+        return ""
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip(" ,.;:，。") + " 흐름"
+    return text
+
+
+def _top_items_for_implication_repair(obj: Dict[str, Any], prompt_input: dict) -> List[dict]:
+    pools: List[Any] = []
+    top = obj.get("top_5_news") if isinstance(obj.get("top_5_news"), dict) else {}
+    pools.append(top.get("items"))
+    prompt_top = (
+        prompt_input.get("top_5_news")
+        if isinstance(prompt_input.get("top_5_news"), dict)
+        else {}
+    )
+    pools.append(prompt_top.get("items"))
+    pools.append(prompt_input.get("selected_items"))
+
+    out: List[dict] = []
+    seen: Set[str] = set()
+    for pool in pools:
+        if not isinstance(pool, list):
+            continue
+        for item in pool:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("news_id") or item.get("claim_id") or item.get("headline") or "").strip()
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            out.append(item)
+    return out
+
+
+def _build_key_implication_repair_sentences(obj: Dict[str, Any], prompt_input: dict) -> List[str]:
+    deep = obj.get("deep_dive") if isinstance(obj.get("deep_dive"), dict) else {}
+    top_items = _top_items_for_implication_repair(obj, prompt_input)
+    titles: List[str] = []
+    for item in top_items:
+        title = _safe_visible_snippet(
+            item.get("korean_title")
+            or item.get("headline")
+            or item.get("title")
+            or item.get("summary")
+        )
+        if title and title not in titles:
+            titles.append(title)
+        if len(titles) >= 3:
+            break
+
+    deep_snippets: List[str] = []
+    for key in (
+        "summary",
+        "body",
+        "why_it_matters",
+        "owner_angle",
+        "business_implication",
+        "interpretation",
+        "keysuri_interpretation",
+        "owner_impact",
+        "korean_operator_impact",
+    ):
+        snippet = _safe_visible_snippet(deep.get(key), max_chars=42)
+        if snippet and snippet not in deep_snippets:
+            deep_snippets.append(snippet)
+
+    sentences: List[str] = []
+    if titles:
+        sentences.append(
+            f"{titles[0]} 흐름은 국내 사업자에게 적용 시점과 대응 우선순위를 다시 확인하게 하는 신호입니다."
+        )
+    if len(titles) >= 2:
+        sentences.append(
+            f"{titles[1]} 움직임은 공급망, 플랫폼, 정책 대응을 함께 보아야 하는 관측 대상으로 정리됩니다."
+        )
+    if deep_snippets:
+        sentences.append(
+            f"딥다이브 본문에서 확인된 {deep_snippets[0]} 흐름은 주인님께서 내일 실행 리스크와 기회 요인을 함께 점검하실 근거입니다."
+        )
+    if not sentences and len(titles) >= 3:
+        sentences.append(
+            f"{titles[2]} 신호는 국내 시장의 다음 대응 순서를 판단하기 위한 참고 축으로 남겨야 합니다."
+        )
+
+    cleaned: List[str] = []
+    for sentence in sentences:
+        safe = _safe_visible_snippet(sentence, max_chars=180)
+        if not safe:
+            continue
+        if safe.endswith(("다", "요")):
+            safe += "."
+        elif not safe.endswith("."):
+            safe += "입니다."
+        if any(term.lower() in safe.lower() for term in _FORBIDDEN_VISIBLE_SCORE_TERMS):
+            continue
+        if safe not in cleaned:
+            cleaned.append(safe)
+    return cleaned[:3]
+
+
+def _needs_key_implication_repair(deep: Any) -> bool:
+    if not isinstance(deep, dict):
+        return False
+    implications = deep.get("key_implications")
+    if not isinstance(implications, list):
+        return True
+    return not any(isinstance(item, str) and item.strip() for item in implications)
+
+
+def _raw_parsed_field_presence_summary(obj: Dict[str, Any]) -> Dict[str, Any]:
+    deep = obj.get("deep_dive") if isinstance(obj.get("deep_dive"), dict) else None
+    top = obj.get("top_5_news") if isinstance(obj.get("top_5_news"), dict) else None
+    items = top.get("items") if isinstance(top, dict) and isinstance(top.get("items"), list) else None
+    implications = deep.get("key_implications") if isinstance(deep, dict) else None
+    return {
+        "expected_top_level_keys_present": [
+            key for key in KEYSURI_EXPECTED_TOP_LEVEL_KEYS if obj.get(key) not in (None, "", [], {})
+        ],
+        "top_5_news_present": isinstance(top, dict),
+        "top_5_news_items_count": len(items) if isinstance(items, list) else None,
+        "deep_dive_present": isinstance(deep, dict),
+        "deep_dive_body_present": bool(
+            isinstance(deep, dict) and str(deep.get("body") or "").strip()
+        ),
+        "deep_dive_summary_present": bool(
+            isinstance(deep, dict) and str(deep.get("summary") or "").strip()
+        ),
+        "deep_dive_why_it_matters_present": bool(
+            isinstance(deep, dict) and str(deep.get("why_it_matters") or "").strip()
+        ),
+        "deep_dive_owner_angle_present": bool(
+            isinstance(deep, dict)
+            and str(deep.get("owner_angle") or deep.get("owner_impact") or "").strip()
+        ),
+        "deep_dive_key_implications_type": type(implications).__name__
+        if implications is not None
+        else None,
+        "deep_dive_key_implications_count": len(implications)
+        if isinstance(implications, list)
+        else None,
+    }
+
+
+def _repair_deep_dive_key_implications_for_parse(
+    obj: Dict[str, Any],
+    prompt_input: dict,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    summary = _raw_parsed_field_presence_summary(obj)
+    deep = obj.get("deep_dive")
+    attempted = _needs_key_implication_repair(deep)
+    diagnostics: Dict[str, Any] = {
+        "raw_parsed_field_presence_summary": summary,
+        "deep_dive_key_implications_repair_attempted": attempted,
+        "deep_dive_key_implications_repair_success": False,
+    }
+    if not attempted:
+        return obj, diagnostics
+
+    if not isinstance(deep, dict):
+        diagnostics["deep_dive_key_implications_repair_reason"] = "deep_dive_not_object"
+        return obj, diagnostics
+
+    repaired_items = _build_key_implication_repair_sentences(obj, prompt_input)
+    if not repaired_items:
+        diagnostics["deep_dive_key_implications_repair_reason"] = "insufficient_source_fields"
+        return obj, diagnostics
+
+    out = copy.deepcopy(obj)
+    out_deep = dict(out.get("deep_dive") or {})
+    out_deep["key_implications"] = repaired_items
+    out["deep_dive"] = out_deep
+    diagnostics.update(
+        {
+            "deep_dive_key_implications_repair_success": True,
+            "deep_dive_key_implications_repair_reason": "deterministic_from_existing_fields",
+            "internal_issue_codes": [KEYSURI_DEEP_DIVE_KEY_IMPL_REPAIR_CODE],
+        }
+    )
+    return out, diagnostics
 
 
 def _enrich_top5_with_selection_metadata(prompt_input: dict) -> dict:
@@ -336,6 +537,8 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
         "DEEP_DIVE (required — premium private briefing, not recap)",
         "- deep_dive.body: 5-8+ Korean sentences connecting selected news into a pattern.",
         "- deep_dive.confirmed_facts: array of confirmed fact strings from sources.",
+        "- deep_dive.key_implications: mandatory non-empty array of 2-3 complete Korean implication sentences; never [], null, a string, or omitted.",
+        "- deep_dive.key_implications must not expose internal scoring/evaluation language such as 총점, 점수, 스코어, score, or scoring.",
         "- deep_dive.interpretation OR keysuri_interpretation: Kee-Suri interpretation in Korean.",
         "- deep_dive.owner_impact OR korean_operator_impact: impact for Korean founders/operators.",
         "- deep_dive.uncertainty OR open_questions: what is still uncertain.",
@@ -620,14 +823,18 @@ def _parse_meta(
     candidate_count: int,
     selected_index: "int | None",
     recovery_used: bool,
+    selected_repair_diagnostics: "Dict[str, Any] | None" = None,
 ) -> Dict[str, Any]:
     """Safe, PII-free metadata about the JSON extraction decision."""
-    return {
+    meta = {
         "multiple_json_objects_detected": candidate_count > 1,
         "json_candidate_count": candidate_count,
         "selected_json_candidate_index": selected_index,
         "parser_recovery_used": recovery_used,
     }
+    if isinstance(selected_repair_diagnostics, dict):
+        meta.update(selected_repair_diagnostics)
+    return meta
 
 
 def parse_keysuri_generated_response(
@@ -675,13 +882,21 @@ def parse_keysuri_generated_response(
     multiple = candidate_count > 1
 
     validations: List[Dict[str, Any]] = []
+    repaired_candidates: List[Dict[str, Any]] = []
+    repair_diagnostics: List[Dict[str, Any]] = []
     best_index = 0
     best_score = -1
     valid_indices: List[int] = []
     for idx, obj in enumerate(candidates):
-        validation = validate_parsed_keysuri_generated_briefing(pid, obj, prompt_input)
+        repaired_obj, repair_diag = _repair_deep_dive_key_implications_for_parse(
+            obj,
+            prompt_input,
+        )
+        repaired_candidates.append(repaired_obj)
+        repair_diagnostics.append(repair_diag)
+        validation = validate_parsed_keysuri_generated_briefing(pid, repaired_obj, prompt_input)
         validations.append(validation)
-        score = _expected_top_level_key_score(obj)
+        score = _expected_top_level_key_score(repaired_obj)
         if score > best_score:
             best_score = score
             best_index = idx
@@ -694,11 +909,12 @@ def parse_keysuri_generated_response(
             "parse_status": "parsed_valid",
             "program_id": pid,
             "issues": [],
-            "generated_briefing": candidates[valid_index],
+            "generated_briefing": repaired_candidates[valid_index],
             "parse_meta": _parse_meta(
                 candidate_count=candidate_count,
                 selected_index=valid_index,
                 recovery_used=multiple,
+                selected_repair_diagnostics=repair_diagnostics[valid_index],
             ),
         }
 
@@ -743,5 +959,8 @@ def parse_keysuri_generated_response(
             candidate_count=candidate_count,
             selected_index=selected_index,
             recovery_used=False,
+            selected_repair_diagnostics=repair_diagnostics[selected_index]
+            if repair_diagnostics
+            else None,
         ),
     }

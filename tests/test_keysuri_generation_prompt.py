@@ -115,6 +115,7 @@ class KeysuriGenerationPromptContractTests(unittest.TestCase):
         self.assertIn("국내 적용", prompt)
         self.assertIn("퇴근 전 메모", prompt)
         self.assertIn("한국 기업·정책으로 읽으면", prompt)
+        self.assertIn("deep_dive.key_implications: mandatory non-empty array", prompt)
 
     def test_global_prompt_excludes_korea_only_lens_block(self) -> None:
         prompt = build_keysuri_generation_prompt(_global_prompt())
