@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from urllib.parse import urlsplit
 
+from genie_schedule_policy import is_scheduled_trigger_source
 from keysuri_korea_signal_scoring import CATEGORY_KO_LABELS, KOREA_TECH_CATEGORIES
 from keysuri_source_gate import CONFIDENCE_LABELS, GateResult
 from sent_news_dedup_gate import (
@@ -14,6 +15,13 @@ from sent_news_dedup_gate import (
 )
 
 KEYSURI_TOP_NEWS_COUNT = 5
+
+# Internal-only marker recorded on the selection result (and, downstream, the
+# failure/owner-review artifact) when an owner-review-exposure duplicate had to
+# be re-injected to fill the TOP5. Owner-review exposure is not a customer send,
+# so on scheduled runs re-showing an already-exposed item is preferable to a hard
+# HTTP 500. This code must never surface in reader-facing HTML.
+KEYSURI_EXPOSURE_DEDUP_BACKFILL_ISSUE_CODE = "keysuri_korea_exposure_dedup_backfill_used"
 NEWS_SCOPE_GLOBAL = "global"
 NEWS_SCOPE_KOREA = "korea"
 
@@ -526,19 +534,42 @@ def select_top_5_news(
     source_pack: dict,
     gate_result: GateResult,
     recent_dedup_rows: Optional[List[Dict[str, Any]]] = None,
+    *,
+    sent_log_rows: Optional[List[Dict[str, Any]]] = None,
+    exposure_log_rows: Optional[List[Dict[str, Any]]] = None,
+    trigger_source: Optional[str] = None,
+    allow_exposure_backfill: Optional[bool] = None,
 ) -> dict:
     """
     Select TOP 5 news items from staged source_pack.claims (no live fetch).
 
     Returns dict with verdict pass|hold|block and optional top_5_news / issues.
 
-    ``recent_dedup_rows`` (recent sent-news + owner-review-exposure log rows) are
-    hard-removed from the FULL hydrated candidate pool BEFORE the intra-briefing
-    diversity selection. This guarantees the final five are both diverse and free
-    of cross-day duplicates — doing the cross-day dedup *after* selection could
-    shrink the five to four with no replacement pool left (invalid TOP5). When
-    fewer than five fresh candidates remain, a ``hold`` verdict is returned so the
-    caller safe-fails instead of emitting an under-count briefing.
+    Cross-day dedup runs over the FULL hydrated candidate pool BEFORE the
+    intra-briefing diversity selection, so a recent-log duplicate is dropped and
+    backfilled from the next fresh candidate instead of shrinking the final five.
+
+    Two dedup layers with different strictness:
+
+    * ``sent_log_rows`` — items already sent to *customers*. These are a HARD
+      block: never re-selected, never backfilled.
+    * ``exposure_log_rows`` — items shown only in an earlier *owner-review* email
+      the same window. These are a SOFT duplicate: removed first, but on a
+      scheduled run they may be re-injected (controlled backfill) rather than
+      collapsing the run into a hold, because an owner-review re-exposure is not a
+      customer send. Manual/QA runs keep them as a hard block so the operator sees
+      the real dedup state.
+
+    ``recent_dedup_rows`` is the legacy combined param and is treated as a hard
+    block (used by reissue to exclude a parent run's items). When ``sent_log_rows``
+    /``exposure_log_rows`` are supplied they take precedence for the layered logic.
+
+    Backfill priority when the fresh deduped pool is short: first fill from the
+    source_pack's fresh ``backfill_claims`` (never-selected, in-scope watchlist
+    items, themselves dedup-checked), then — only if still short and allowed —
+    re-inject the soft (owner-review-exposure) duplicates. Customer-sent items are
+    never used to backfill. If neither can reach five, a ``hold`` verdict with a
+    full candidate funnel summary is returned so the caller safe-fails.
     """
     if gate_result.verdict == "block":
         raise ValueError("source gate blocked; cannot select top news")
@@ -624,44 +655,153 @@ def select_top_5_news(
         for i, (_t, claim) in enumerate(qualified)
     ]
 
-    # Cross-day sent/owner-review-exposure dedup over the FULL hydrated pool,
-    # applied BEFORE the diversity caps so a recent-log duplicate is dropped and
-    # backfilled from the next fresh candidate instead of shrinking the final
-    # five. (Running this after selection is the root cause of 4-item TOP5.)
-    recent_rows = [row for row in (recent_dedup_rows or []) if isinstance(row, dict)]
+    # Resolve the two dedup layers. When the caller supplies the split rows we run
+    # the layered (hard sent / soft exposure) logic; otherwise fall back to the
+    # legacy combined param, treated entirely as a hard block for compatibility.
+    layered = sent_log_rows is not None or exposure_log_rows is not None
+    hard_rows = [row for row in (sent_log_rows or []) if isinstance(row, dict)]
+    soft_rows = [row for row in (exposure_log_rows or []) if isinstance(row, dict)]
+    # Legacy/reissue rows are always a hard block (never backfilled).
+    hard_rows += [row for row in (recent_dedup_rows or []) if isinstance(row, dict)]
+
+    if allow_exposure_backfill is None:
+        allow_exposure_backfill = is_scheduled_trigger_source(trigger_source)
+
+    # Cross-day dedup over the FULL hydrated pool, applied BEFORE the diversity
+    # caps so a recent-log duplicate is dropped and backfilled from the next fresh
+    # candidate instead of shrinking the final five. (Running this after selection
+    # is the root cause of 4-item TOP5.)
     candidate_count_before_dedup = len(hydrated)
-    cross_day_rejected: List[Dict[str, Any]] = []
-    if recent_rows:
-        deduped_pool: List[Dict[str, Any]] = []
-        for item in hydrated:
-            reason = recent_log_duplicate_reason(item, recent_rows)
-            if reason:
-                cross_day_rejected.append({**item, "rejected_reason": reason})
-            else:
-                deduped_pool.append(item)
-    else:
-        deduped_pool = hydrated
-    candidate_count_after_dedup = len(deduped_pool)
+    hard_rejected: List[Dict[str, Any]] = []
+    soft_rejected: List[Dict[str, Any]] = []
+    deduped_pool: List[Dict[str, Any]] = []
+    for item in hydrated:
+        hard_reason = recent_log_duplicate_reason(item, hard_rows) if hard_rows else ""
+        if hard_reason:
+            hard_rejected.append({**item, "rejected_reason": hard_reason})
+            continue
+        soft_reason = recent_log_duplicate_reason(item, soft_rows) if soft_rows else ""
+        if soft_reason:
+            soft_rejected.append({**item, "rejected_reason": soft_reason})
+            continue
+        deduped_pool.append(item)
+
+    dedup_removed_by_sent_log_count = len(hard_rejected)
+    dedup_removed_by_exposure_log_count = len(soft_rejected)
+    cross_day_rejected = hard_rejected + soft_rejected
     cross_day_dedup_removed_count = len(cross_day_rejected)
+    candidate_count_after_hard_dedup = candidate_count_before_dedup - dedup_removed_by_sent_log_count
+
+    # Fresh backfill: never-selected, in-scope watchlist claims carried by the
+    # source pack. Dedup-check them against BOTH layers so we never re-add a
+    # customer-sent or already-exposed item as if it were fresh.
+    exposure_backfill_used = False
+    fresh_backfill_used_count = 0
+    exposure_backfill_used_count = 0
+    if len(deduped_pool) < KEYSURI_TOP_NEWS_COUNT:
+        seen_ids = {str(it.get("news_id") or "") for it in deduped_pool}
+        backfill_claims = (
+            source_pack.get("backfill_claims")
+            if isinstance(source_pack.get("backfill_claims"), list)
+            else []
+        )
+        backfill_sources = (
+            source_pack.get("backfill_sources")
+            if isinstance(source_pack.get("backfill_sources"), list)
+            else []
+        )
+        bsmap = dict(smap)
+        for src in backfill_sources:
+            if isinstance(src, dict):
+                sid = str(src.get("source_id") or "").strip()
+                if sid:
+                    bsmap[sid] = src
+        for j, claim in enumerate(backfill_claims):
+            if len(deduped_pool) >= KEYSURI_TOP_NEWS_COUNT:
+                break
+            if not isinstance(claim, dict):
+                continue
+            ok, _reason = _claim_is_qualified(claim, bsmap)
+            if not ok or not _is_non_empty_str(claim.get("business_implication")):
+                continue
+            item = _claim_to_news_item(
+                claim, rank=candidate_count_before_dedup + j + 1, smap=bsmap
+            )
+            if str(item.get("news_id") or "") in seen_ids:
+                continue
+            if hard_rows and recent_log_duplicate_reason(item, hard_rows):
+                continue
+            if soft_rows and recent_log_duplicate_reason(item, soft_rows):
+                continue
+            deduped_pool.append(item)
+            seen_ids.add(str(item.get("news_id") or ""))
+            fresh_backfill_used_count += 1
+
+    # Controlled backfill of last resort: re-inject soft (owner-review-exposure)
+    # duplicates so a scheduled run recovers instead of returning HTTP 500. Never
+    # touches customer-sent (hard) items.
+    if (
+        len(deduped_pool) < KEYSURI_TOP_NEWS_COUNT
+        and allow_exposure_backfill
+        and soft_rejected
+    ):
+        need = KEYSURI_TOP_NEWS_COUNT - len(deduped_pool)
+        for row in soft_rejected[:need]:
+            item = {k: v for k, v in row.items() if k != "rejected_reason"}
+            deduped_pool.append(item)
+            exposure_backfill_used_count += 1
+        exposure_backfill_used = exposure_backfill_used_count > 0
+
+    candidate_count_after_dedup = len(deduped_pool)
+
+    source_pack_funnel = (
+        source_pack.get("source_pack_funnel_summary")
+        if isinstance(source_pack.get("source_pack_funnel_summary"), dict)
+        else {}
+    )
+
+    def _funnel(selected_count: int, hold_reason: Optional[str] = None) -> Dict[str, Any]:
+        summary: Dict[str, Any] = {
+            **source_pack_funnel,
+            "candidate_count_before_dedup": candidate_count_before_dedup,
+            "sent_log_read_count": len(hard_rows),
+            "exposure_log_read_count": len(soft_rows),
+            "recent_combined_log_count": len(hard_rows) + len(soft_rows),
+            "dedup_removed_count": cross_day_dedup_removed_count,
+            # Backward-compatible alias for the combined cross-day removal count.
+            "cross_day_dedup_removed_count": cross_day_dedup_removed_count,
+            "dedup_removed_by_sent_log_count": dedup_removed_by_sent_log_count,
+            "dedup_removed_by_exposure_log_count": dedup_removed_by_exposure_log_count,
+            "candidate_count_after_hard_dedup": candidate_count_after_hard_dedup,
+            "candidate_count_after_dedup": candidate_count_after_dedup,
+            "fresh_backfill_used_count": fresh_backfill_used_count,
+            "exposure_backfill_used": exposure_backfill_used,
+            "exposure_backfill_used_count": exposure_backfill_used_count,
+            "final_selected_count": selected_count,
+            "selected_count": selected_count,
+        }
+        if hold_reason:
+            summary["hold_reason"] = hold_reason
+        return summary
 
     if candidate_count_after_dedup < KEYSURI_TOP_NEWS_COUNT:
+        hold_reason = "insufficient_fresh_candidates_after_dedup"
         return {
             "verdict": "hold",
             "issues": [
                 _issue(
-                    "insufficient_fresh_candidates_after_dedup",
+                    hold_reason,
                     f"Need {KEYSURI_TOP_NEWS_COUNT} candidates after cross-day dedup, "
                     f"have {candidate_count_after_dedup} "
                     f"(removed {cross_day_dedup_removed_count} recent-log duplicate(s) "
-                    f"from {candidate_count_before_dedup})",
+                    f"[{dedup_removed_by_sent_log_count} customer-sent, "
+                    f"{dedup_removed_by_exposure_log_count} owner-exposure] "
+                    f"from {candidate_count_before_dedup}; "
+                    f"fresh backfill {fresh_backfill_used_count})",
                 )
             ],
-            "candidate_funnel_summary": {
-                "candidate_count_before_dedup": candidate_count_before_dedup,
-                "cross_day_dedup_removed_count": cross_day_dedup_removed_count,
-                "candidate_count_after_dedup": candidate_count_after_dedup,
-                "selected_count": 0,
-            },
+            "candidate_funnel_summary": _funnel(0, hold_reason=hold_reason),
+            "hold_reason": hold_reason,
             "cross_day_dedup_removed_count": cross_day_dedup_removed_count,
             "cross_day_dedup_rejected_items": cross_day_rejected,
         }
@@ -669,24 +809,18 @@ def select_top_5_news(
     diversity = select_with_diversity_caps(deduped_pool, required_count=KEYSURI_TOP_NEWS_COUNT)
     selected = diversity["selected_items"]
     diversity_summary = diversity["diversity_summary"]
-    source_pack_funnel = (
-        source_pack.get("source_pack_funnel_summary")
-        if isinstance(source_pack.get("source_pack_funnel_summary"), dict)
-        else {}
-    )
     candidate_funnel_summary = {
-        **source_pack_funnel,
-        "candidate_count_before_dedup": candidate_count_before_dedup,
-        "cross_day_dedup_removed_count": cross_day_dedup_removed_count,
-        "candidate_count_after_dedup": candidate_count_after_dedup,
+        **_funnel(len(selected)),
         "pre_diversity_candidate_count": len(deduped_pool),
         "post_diversity_selected_count": len(selected),
-        "selected_count": len(selected),
         "diversity_rejected_count": len(diversity["rejected_items"]),
         "relaxed_due_to_candidate_shortage": bool(
             diversity_summary.get("relaxed_due_to_candidate_shortage")
         ),
     }
+    internal_issue_codes: List[str] = []
+    if exposure_backfill_used:
+        internal_issue_codes.append(KEYSURI_EXPOSURE_DEDUP_BACKFILL_ISSUE_CODE)
     top_5_news = {
         "news_scope": expected_news_scope_for_program(program_id),
         "section_heading": expected_top5_heading_for_program(program_id),
@@ -701,4 +835,6 @@ def select_top_5_news(
         "candidate_funnel_summary": candidate_funnel_summary,
         "cross_day_dedup_removed_count": cross_day_dedup_removed_count,
         "cross_day_dedup_rejected_items": cross_day_rejected,
+        "exposure_backfill_used": exposure_backfill_used,
+        "internal_issue_codes": internal_issue_codes,
     }

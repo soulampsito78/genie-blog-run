@@ -1332,6 +1332,80 @@ def score_candidates_from_source_pack(
     )
 
 
+# Hard-reject reasons that mean the candidate never entered the Korea scope
+# (off-topic / not a domestic tech signal), vs. reasons that mean it was in
+# scope but scored too low on domestic actionability. Used purely to break the
+# candidate funnel into diagnosable stages for the failure artifact.
+_KOREA_SCOPE_REJECT_REASONS = frozenset(
+    {
+        "overseas_no_korea_application",
+        "entertainment_not_tech",
+        "stock_only_no_tech_signal",
+    }
+)
+_KOREA_RELEVANCE_REJECT_REASONS = frozenset({"low_domestic_actionability"})
+
+
+def _apply_scored_signal_to_claim(claim: dict, scored: "ScoredKoreaSignal") -> None:
+    """Copy the scoring/classification metadata from a scored signal onto a claim."""
+    claim["selection_score"] = scored.scores.final_score
+    claim["selection_score_before_diversity"] = scored.scores.base_score
+    claim["selection_rationale"] = scored.reason_for_selection
+    claim["selection_classification"] = scored.classification
+    claim["primary_category"] = scored.primary_category
+    claim["secondary_categories"] = list(scored.secondary_categories)
+    claim["category_confidence"] = scored.category_confidence
+    claim["reason_for_category"] = scored.reason_for_category
+    claim["category_label_ko"] = scored.category_display_label
+    claim["owner_action_line"] = scored.owner_action_line
+    claim["next_day_impact_line"] = scored.next_day_impact_line
+    claim["briefing_angle"] = "국내 적용"
+    claim["angle_chip"] = "국내 적용"
+    claim["hype_warning"] = scored.pr_hype_warning
+    claim["press_release_only"] = scored.press_release_only
+    claim["selection_reason_tags"] = list(scored.selection_reason_tags)
+    claim["source_name"] = scored.source_name
+    claim["source_domain"] = scored.source_domain or _host(scored.url)
+    claim["source_count_in_top5"] = scored.source_count_in_top5
+    claim["source_diversity_limited"] = scored.source_diversity_limited
+    claim["source_concentration_limited"] = scored.source_concentration_limited
+    claim["global_duplicate_detected"] = scored.global_duplicate_detected
+    claim["korea_angle_required"] = scored.korea_angle_required
+    claim["korea_angle_satisfied"] = scored.korea_angle_satisfied
+    claim["duplicate_resolution"] = scored.duplicate_resolution
+    claim["same_entity_not_same_story"] = scored.same_entity_not_same_story
+    if scored.matched_global_title:
+        claim["matched_global_title"] = scored.matched_global_title
+    if scored.penalty_notes:
+        claim["penalty_notes"] = list(scored.penalty_notes)
+
+
+def _korea_source_pack_funnel_summary(selection: KoreaTop5SelectionResult) -> dict:
+    """Break the scored candidate pool into diagnosable pre-dedup funnel stages."""
+    all_candidates = list(selection.all_candidates)
+    normalized = len(all_candidates)
+    scope_rejected = sum(
+        1
+        for c in all_candidates
+        if str(c.hard_reject_reason or "") in _KOREA_SCOPE_REJECT_REASONS
+    )
+    relevance_rejected = sum(
+        1
+        for c in all_candidates
+        if str(c.hard_reject_reason or "") in _KOREA_RELEVANCE_REJECT_REASONS
+    )
+    korea_scope = max(0, normalized - scope_rejected)
+    relevance = max(0, korea_scope - relevance_rejected)
+    return {
+        "normalized_candidate_count": normalized,
+        "korea_scope_candidate_count": korea_scope,
+        "relevance_candidate_count": relevance,
+        "selected_count": len(selection.selected_top5),
+        "watchlist_count": len(selection.watchlist),
+        "rejected_count": len(selection.rejected),
+    }
+
+
 def apply_scored_selection_to_source_pack(
     source_pack: dict,
     selection: KoreaTop5SelectionResult,
@@ -1339,65 +1413,61 @@ def apply_scored_selection_to_source_pack(
     pack = dict(source_pack)
     selected_ids = {s.source_id for s in selection.selected_top5 if s.source_id}
     selected_urls = {s.url for s in selection.selected_top5}
+    # Watchlist candidates are already scored and qualified but were not among the
+    # top five. They are carried alongside (not merged into) the primary claims as
+    # a fresh backfill pool so the downstream contract can top the TOP5 back up to
+    # five when cross-day dedup removes selected items — without re-exposing news
+    # the owner already saw. Keeps the healthy-path claims list unchanged.
+    backfill_ids = {
+        s.source_id
+        for s in selection.watchlist
+        if s.source_id and s.source_id not in selected_ids and not s.hard_reject_reason
+    }
 
     sources = pack.get("sources") if isinstance(pack.get("sources"), list) else []
     claims = pack.get("claims") if isinstance(pack.get("claims"), list) else []
 
-    new_sources = [
-        s
-        for s in sources
-        if isinstance(s, dict)
-        and (
-            str(s.get("source_id") or "") in selected_ids
-            or str(s.get("source_url") or "") in selected_urls
-        )
-    ]
-    new_claims = [
-        c
-        for c in claims
-        if isinstance(c, dict)
-        and any(str(sid) in selected_ids for sid in (c.get("source_ids") or []))
-    ]
+    def _sources_for(ids: set, urls: set) -> list:
+        return [
+            s
+            for s in sources
+            if isinstance(s, dict)
+            and (
+                str(s.get("source_id") or "") in ids
+                or str(s.get("source_url") or "") in urls
+            )
+        ]
+
+    def _claims_for(ids: set) -> list:
+        return [
+            dict(c)
+            for c in claims
+            if isinstance(c, dict)
+            and any(str(sid) in ids for sid in (c.get("source_ids") or []))
+        ]
+
+    new_sources = _sources_for(selected_ids, selected_urls)
+    new_claims = _claims_for(selected_ids)
+    backfill_sources = _sources_for(backfill_ids, set())
+    backfill_claims = _claims_for(backfill_ids)
 
     score_by_sid = {s.source_id: s for s in selection.selected_top5}
-    for claim in new_claims:
+    score_by_sid.update({s.source_id: s for s in selection.watchlist if s.source_id})
+    for claim in new_claims + backfill_claims:
         sids = claim.get("source_ids") if isinstance(claim.get("source_ids"), list) else []
         for sid in sids:
             scored = score_by_sid.get(str(sid))
             if scored:
-                claim["selection_score"] = scored.scores.final_score
-                claim["selection_score_before_diversity"] = scored.scores.base_score
-                claim["selection_rationale"] = scored.reason_for_selection
-                claim["selection_classification"] = scored.classification
-                claim["primary_category"] = scored.primary_category
-                claim["secondary_categories"] = list(scored.secondary_categories)
-                claim["category_confidence"] = scored.category_confidence
-                claim["reason_for_category"] = scored.reason_for_category
-                claim["category_label_ko"] = scored.category_display_label
-                claim["owner_action_line"] = scored.owner_action_line
-                claim["next_day_impact_line"] = scored.next_day_impact_line
-                claim["briefing_angle"] = "국내 적용"
-                claim["angle_chip"] = "국내 적용"
-                claim["hype_warning"] = scored.pr_hype_warning
-                claim["press_release_only"] = scored.press_release_only
-                claim["selection_reason_tags"] = list(scored.selection_reason_tags)
-                claim["source_name"] = scored.source_name
-                claim["source_domain"] = scored.source_domain or _host(scored.url)
-                claim["source_count_in_top5"] = scored.source_count_in_top5
-                claim["source_diversity_limited"] = scored.source_diversity_limited
-                claim["source_concentration_limited"] = scored.source_concentration_limited
-                claim["global_duplicate_detected"] = scored.global_duplicate_detected
-                claim["korea_angle_required"] = scored.korea_angle_required
-                claim["korea_angle_satisfied"] = scored.korea_angle_satisfied
-                claim["duplicate_resolution"] = scored.duplicate_resolution
-                claim["same_entity_not_same_story"] = scored.same_entity_not_same_story
-                if scored.matched_global_title:
-                    claim["matched_global_title"] = scored.matched_global_title
-                if scored.penalty_notes:
-                    claim["penalty_notes"] = list(scored.penalty_notes)
+                _apply_scored_signal_to_claim(claim, scored)
 
     pack["sources"] = new_sources
     pack["claims"] = new_claims
+    # Fresh (never-selected, in-scope) backfill candidates for cross-day dedup
+    # top-up. Owner-review only; the contract layer decides whether to promote
+    # them. Empty list when no watchlist survives scope filtering.
+    pack["backfill_sources"] = backfill_sources
+    pack["backfill_claims"] = backfill_claims
+    pack["source_pack_funnel_summary"] = _korea_source_pack_funnel_summary(selection)
     pack["korea_top5_selection"] = {
         "generated_at": selection.generated_at,
         "policy": "keysuri_korea_top5_selection_v2_duplicate_guard",

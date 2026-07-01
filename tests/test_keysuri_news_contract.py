@@ -536,5 +536,198 @@ class KeysuriNewsSelectionDiversityTests(unittest.TestCase):
         self.assertEqual(relaxed[0]["diversity_relaxed_from"], "same_source_cap")
 
 
+class KeysuriKoreaExposureDedupBackfillTests(unittest.TestCase):
+    """Scheduled Korea runs must not 500 just because an earlier same-day
+    owner-review exposed the same news. Customer-sent items stay a hard block;
+    owner-review-exposure items are a soft duplicate that a scheduled run may
+    controlled-backfill (fresh watchlist first, then re-injected exposure dupes).
+    """
+
+    _SCHEDULED = "scheduled_service_full_run"
+
+    def _claim(self, cid: str) -> dict:
+        return {
+            "claim_id": cid,
+            "statement": f"Korea tech statement {cid}",
+            "claim_type": "general",
+            "source_ids": [f"s-{cid}"],
+            "confidence_label": "reported",
+            "primary_category": "korea_semiconductor",
+            "category": "korea_semiconductor",
+            "headline": f"Korea headline {cid}",
+            "summary": f"Summary {cid}",
+            "why_it_matters": f"Why {cid}",
+            "business_implication": f"Biz impl {cid}",
+        }
+
+    def _source(self, cid: str) -> dict:
+        return {
+            "source_id": f"s-{cid}",
+            "source_name": f"Outlet {cid}",
+            "source_url": f"https://korea-{cid}.example.com/news/{cid}",
+            "source_tier": "T2_TIER1_WIRE",
+            "fetched_at": "2026-07-01T10:00:00+09:00",
+        }
+
+    def _pack(self, selected, backfill=()) -> dict:
+        return {
+            "program_id": "keysuri_korea_tech",
+            "generated_at": "2026-07-01T10:00:00+09:00",
+            "sources": [self._source(c) for c in selected],
+            "claims": [self._claim(c) for c in selected],
+            "backfill_sources": [self._source(c) for c in backfill],
+            "backfill_claims": [self._claim(c) for c in backfill],
+        }
+
+    def _log_row(self, cid: str) -> dict:
+        return {
+            "title": f"Korea headline {cid}",
+            "url": f"https://korea-{cid}.example.com/news/{cid}",
+            "source": f"Outlet {cid}",
+        }
+
+    def _gate(self) -> GateResult:
+        return GateResult(verdict="pass", issues=())
+
+    def test_scheduled_run_backfills_from_fresh_watchlist_first(self) -> None:
+        # All 5 selected are owner-review-exposure duplicates, but 5 fresh
+        # watchlist candidates are available -> recover with FRESH items, no
+        # exposure re-injection.
+        pack = self._pack(["a1", "a2", "a3", "a4", "a5"], backfill=["b1", "b2", "b3", "b4", "b5"])
+        exposure = [self._log_row(c) for c in ["a1", "a2", "a3", "a4", "a5"]]
+        result = select_top_5_news(
+            pack,
+            self._gate(),
+            exposure_log_rows=exposure,
+            trigger_source=self._SCHEDULED,
+        )
+        self.assertEqual(result["verdict"], "pass")
+        ids = [it["news_id"] for it in result["top_5_news"]["items"]]
+        self.assertEqual(len(ids), 5)
+        self.assertTrue(all(i.startswith("b") for i in ids), ids)
+        self.assertFalse(result["exposure_backfill_used"])
+        self.assertNotIn(
+            "keysuri_korea_exposure_dedup_backfill_used",
+            result.get("internal_issue_codes") or [],
+        )
+        funnel = result["candidate_funnel_summary"]
+        self.assertEqual(funnel["dedup_removed_by_exposure_log_count"], 5)
+        self.assertEqual(funnel["dedup_removed_by_sent_log_count"], 0)
+        self.assertEqual(funnel["fresh_backfill_used_count"], 5)
+        self.assertEqual(funnel["final_selected_count"], 5)
+
+    def test_scheduled_run_reinjects_exposure_dupes_when_no_fresh_pool(self) -> None:
+        # 5 selected are exposure duplicates and there is no fresh watchlist ->
+        # controlled backfill re-injects the exposure dupes and marks the run.
+        pack = self._pack(["a1", "a2", "a3", "a4", "a5"])
+        exposure = [self._log_row(c) for c in ["a1", "a2", "a3", "a4", "a5"]]
+        result = select_top_5_news(
+            pack,
+            self._gate(),
+            exposure_log_rows=exposure,
+            trigger_source=self._SCHEDULED,
+        )
+        self.assertEqual(result["verdict"], "pass")
+        self.assertEqual(len(result["top_5_news"]["items"]), 5)
+        self.assertTrue(result["exposure_backfill_used"])
+        self.assertIn(
+            "keysuri_korea_exposure_dedup_backfill_used",
+            result.get("internal_issue_codes") or [],
+        )
+        funnel = result["candidate_funnel_summary"]
+        self.assertEqual(funnel["exposure_backfill_used_count"], 5)
+        self.assertEqual(funnel["final_selected_count"], 5)
+
+    def test_sent_log_customer_dupes_are_never_backfilled(self) -> None:
+        # Customer-sent items are a hard block: even a scheduled run holds rather
+        # than re-injecting them, and no fresh pool exists to recover from.
+        pack = self._pack(["a1", "a2", "a3", "a4", "a5"])
+        sent = [self._log_row(c) for c in ["a1", "a2", "a3", "a4", "a5"]]
+        result = select_top_5_news(
+            pack,
+            self._gate(),
+            sent_log_rows=sent,
+            trigger_source=self._SCHEDULED,
+        )
+        self.assertEqual(result["verdict"], "hold")
+        self.assertFalse(result.get("exposure_backfill_used"))
+        funnel = result["candidate_funnel_summary"]
+        self.assertEqual(funnel["dedup_removed_by_sent_log_count"], 5)
+        self.assertEqual(funnel["dedup_removed_by_exposure_log_count"], 0)
+        self.assertEqual(funnel["hold_reason"], "insufficient_fresh_candidates_after_dedup")
+
+    def test_sent_dupe_blocks_backfill_even_with_fresh_watchlist(self) -> None:
+        # One selected item is customer-sent; the fresh watchlist backfills only
+        # the non-sent gap, and the customer-sent item is never re-added.
+        pack = self._pack(["a1", "a2", "a3", "a4", "a5"], backfill=["b1"])
+        sent = [self._log_row("a1")]
+        result = select_top_5_news(
+            pack,
+            self._gate(),
+            sent_log_rows=sent,
+            trigger_source=self._SCHEDULED,
+        )
+        self.assertEqual(result["verdict"], "pass")
+        ids = [it["news_id"] for it in result["top_5_news"]["items"]]
+        self.assertNotIn("a1", ids)
+        self.assertIn("b1", ids)
+        self.assertEqual(len(ids), 5)
+
+    def test_manual_run_holds_on_exposure_dupes_without_backfill(self) -> None:
+        # Non-scheduled (manual/QA) run keeps exposure items as a hard block so the
+        # operator sees the true dedup state -> hold, no re-injection.
+        pack = self._pack(["a1", "a2", "a3", "a4", "a5"])
+        exposure = [self._log_row(c) for c in ["a1", "a2", "a3", "a4", "a5"]]
+        result = select_top_5_news(
+            pack,
+            self._gate(),
+            exposure_log_rows=exposure,
+            trigger_source="manual_admin_review",
+        )
+        self.assertEqual(result["verdict"], "hold")
+        self.assertFalse(result.get("exposure_backfill_used"))
+
+    def test_hold_funnel_has_all_diagnostic_fields(self) -> None:
+        pack = self._pack(["a1", "a2", "a3", "a4", "a5"])
+        exposure = [self._log_row(c) for c in ["a1", "a2", "a3"]]
+        sent = [self._log_row(c) for c in ["a4", "a5"]]
+        result = select_top_5_news(
+            pack,
+            self._gate(),
+            sent_log_rows=sent,
+            exposure_log_rows=exposure,
+            trigger_source="manual_admin_review",
+        )
+        self.assertEqual(result["verdict"], "hold")
+        funnel = result["candidate_funnel_summary"]
+        for key in (
+            "candidate_count_before_dedup",
+            "sent_log_read_count",
+            "exposure_log_read_count",
+            "recent_combined_log_count",
+            "dedup_removed_count",
+            "dedup_removed_by_sent_log_count",
+            "dedup_removed_by_exposure_log_count",
+            "candidate_count_after_dedup",
+            "final_selected_count",
+            "hold_reason",
+        ):
+            self.assertIn(key, funnel)
+        self.assertEqual(funnel["dedup_removed_by_sent_log_count"], 2)
+        self.assertEqual(funnel["dedup_removed_by_exposure_log_count"], 3)
+
+    def test_healthy_path_unchanged_when_no_recent_logs(self) -> None:
+        # No dedup rows at all: identical to legacy behaviour (no backfill fields
+        # firing), exactly five selected.
+        pack = self._pack(["a1", "a2", "a3", "a4", "a5"], backfill=["b1", "b2"])
+        result = select_top_5_news(pack, self._gate(), trigger_source=self._SCHEDULED)
+        self.assertEqual(result["verdict"], "pass")
+        ids = [it["news_id"] for it in result["top_5_news"]["items"]]
+        self.assertEqual(len(ids), 5)
+        self.assertTrue(all(i.startswith("a") for i in ids), ids)
+        self.assertFalse(result["exposure_backfill_used"])
+        self.assertEqual(result["candidate_funnel_summary"]["fresh_backfill_used_count"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

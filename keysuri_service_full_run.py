@@ -77,6 +77,7 @@ from service_full_run_contract import (
     IMAGE_SOURCE_GENERATED,
     SERVICE_FULL_RUN_TRIGGER,
     ServiceImageOutcome,
+    _candidate_funnel_artifact_fields,
     build_service_artifact_fields,
 )
 from service_image_api import invoke_vertex_image_generation
@@ -2431,19 +2432,42 @@ def _scope_delivery_reason_fields(regen_type: str) -> Dict[str, bool]:
 
 
 def _dedup_artifact_fields_from_prompt_input(prompt_input: Dict[str, Any]) -> Dict[str, Any]:
+    fields: Dict[str, Any] = {}
+    # Candidate funnel + controlled-backfill audit trail travel with every run
+    # (success or backfill), independent of whether the safety-net dedup gate ran.
+    funnel = prompt_input.get("candidate_funnel_summary")
+    if isinstance(funnel, dict):
+        fields.update(
+            _candidate_funnel_artifact_fields(
+                candidate_funnel_summary=funnel,
+                fetched_item_count=funnel.get("fetched_item_count"),
+                hold_reason=prompt_input.get("hold_reason"),
+                exposure_dedup_backfill_used=bool(
+                    prompt_input.get("exposure_dedup_backfill_used")
+                ),
+            )
+        )
+    internal_codes = [
+        str(code) for code in (prompt_input.get("internal_issue_codes") or []) if code
+    ]
+    if internal_codes:
+        fields["internal_issue_codes"] = internal_codes
     if not prompt_input.get("used_dedup_gate"):
-        return {}
+        return fields
     selected = prompt_input.get("selected_items")
     rejected = prompt_input.get("rejected_items")
     summary = prompt_input.get("dedup_summary")
-    return {
-        "used_dedup_gate": True,
-        "selected_items": selected if isinstance(selected, list) else [],
-        "rejected_items": rejected if isinstance(rejected, list) else [],
-        "dedup_summary": summary if isinstance(summary, dict) else {},
-        "required_count": int(prompt_input.get("required_count") or 0),
-        "selected_count": int(prompt_input.get("selected_count") or 0),
-    }
+    fields.update(
+        {
+            "used_dedup_gate": True,
+            "selected_items": selected if isinstance(selected, list) else [],
+            "rejected_items": rejected if isinstance(rejected, list) else [],
+            "dedup_summary": summary if isinstance(summary, dict) else {},
+            "required_count": int(prompt_input.get("required_count") or 0),
+            "selected_count": int(prompt_input.get("selected_count") or 0),
+        }
+    )
+    return fields
 
 
 def _selection_item_key(item: Dict[str, Any]) -> str:
@@ -3553,6 +3577,7 @@ def run_keysuri_service_full_run(
         use_gemini=True,
         contract_preview=False,
         send=False,
+        trigger_source=trigger_source,
     )
     validation_result = _validation_result_from_smoke(smoke)
     if smoke.called_gemini and smoke.parse_status == "parsed_valid" and smoke.ok:
@@ -3573,6 +3598,10 @@ def run_keysuri_service_full_run(
             html_path=str(smoke.html_path or ""),
             email_sent=False,
             error_code="validation_blocked" if validation_result != "pass" else "gemini_or_smoke_failed",
+            candidate_funnel_summary=getattr(smoke, "candidate_funnel_summary", None),
+            fetched_item_count=getattr(smoke, "fetched_item_count", None),
+            hold_reason=getattr(smoke, "hold_reason", None),
+            exposure_dedup_backfill_used=bool(getattr(smoke, "exposure_dedup_backfill_used", False)),
         )
         save_run_artifact(meta, email_html="")
         return {

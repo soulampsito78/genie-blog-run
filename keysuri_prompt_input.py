@@ -121,6 +121,8 @@ def build_keysuri_prompt_input(
     source_pack: dict,
     gate_result: Optional[GateResult] = None,
     extra_recent_log: Optional[list] = None,
+    *,
+    trigger_source: Optional[str] = None,
 ) -> dict:
     """
     Build staged Kee-Suri prompt input from a source pack (offline; no LLM call).
@@ -131,6 +133,12 @@ def build_keysuri_prompt_input(
     top of the recent sent-news / owner-review exposure logs. Reissue uses this to
     exclude the parent run's selected_items so the regenerated TOP5 picks fresh,
     non-duplicate news instead of re-selecting the parent's items.
+
+    ``trigger_source`` distinguishes scheduled runs from manual/QA runs. On a
+    scheduled run an owner-review-exposure duplicate is a soft duplicate that may
+    be re-injected (controlled backfill) rather than collapsing the run into a
+    hold; customer-sent items always stay a hard block. See
+    :func:`keysuri_news_contract.select_top_5_news`.
     """
     pid = (program_id or "").strip()
     if pid not in KEYSURI_PROGRAM_IDS:
@@ -165,8 +173,16 @@ def build_keysuri_prompt_input(
     extra_rows = [row for row in (extra_recent_log or []) if isinstance(row, dict)]
     combined_recent_log = list(sent_log_rows) + list(exposure_log_rows) + extra_rows
 
+    # Customer-sent + reissue parent rows are a HARD block; owner-review exposure
+    # rows are a SOFT duplicate that a scheduled run may controlled-backfill.
+    hard_block_rows = list(sent_log_rows) + extra_rows
     selection = select_top_5_news(
-        source_pack, gate_result, recent_dedup_rows=combined_recent_log
+        source_pack,
+        gate_result,
+        recent_dedup_rows=extra_rows,
+        sent_log_rows=list(sent_log_rows),
+        exposure_log_rows=list(exposure_log_rows),
+        trigger_source=trigger_source,
     )
     spec = get_program(pid)
     news_scope = expected_news_scope_for_program(pid)
@@ -205,6 +221,8 @@ def build_keysuri_prompt_input(
         _attach_recent_log_fields()
         if isinstance(selection.get("candidate_funnel_summary"), dict):
             base["candidate_funnel_summary"] = selection["candidate_funnel_summary"]
+        if selection.get("hold_reason"):
+            base["hold_reason"] = selection["hold_reason"]
         if selection.get("cross_day_dedup_removed_count") is not None:
             base["cross_day_dedup_removed_count"] = selection["cross_day_dedup_removed_count"]
         hold_codes = [
@@ -223,13 +241,15 @@ def build_keysuri_prompt_input(
     top_5_news = dict(selection["top_5_news"])
     items = top_5_news.get("items") if isinstance(top_5_news.get("items"), list) else []
     # Safety-net cross-day dedup over the already-deduped, diversity-selected five.
-    # The candidate pool was filtered against ``combined_recent_log`` BEFORE the
-    # selection above, so this should be a no-op; it stays to emit the
-    # dedup_summary metadata and as a second line of defense.
+    # This layer hard-blocks only customer-sent (+ reissue parent) items. Owner-
+    # review-exposure duplicates are deliberately NOT re-filtered here: the
+    # selection above already made the controlled backfill decision, and running
+    # exposure dedup a second time would strip a legitimately backfilled item and
+    # collapse the count below five. Customer-send remains the irreversible block.
     dedup_result = run_sent_news_dedup_gate(
         briefing_type=pid,
         candidates=[item for item in items if isinstance(item, dict)],
-        sent_log_last_5_days=combined_recent_log,
+        sent_log_last_5_days=hard_block_rows,
         required_count=KEYSURI_TOP_NEWS_COUNT,
     )
     dedup_meta = metadata_from_gate_result(dedup_result, required_count=KEYSURI_TOP_NEWS_COUNT)
@@ -245,6 +265,17 @@ def build_keysuri_prompt_input(
         base["candidate_funnel_summary"] = selection["candidate_funnel_summary"]
     if selection.get("cross_day_dedup_removed_count") is not None:
         base["cross_day_dedup_removed_count"] = selection["cross_day_dedup_removed_count"]
+    # Internal-only backfill audit trail (never reader-facing). Surfaced so the
+    # run artifact records that an owner-review-exposure duplicate was re-injected.
+    if selection.get("exposure_backfill_used"):
+        base["exposure_dedup_backfill_used"] = True
+    selection_internal_codes = [
+        str(code)
+        for code in (selection.get("internal_issue_codes") or [])
+        if code
+    ]
+    if selection_internal_codes:
+        base["internal_issue_codes"] = selection_internal_codes
 
     # Final exactly-5 contract guard: never emit an under-count TOP5 to the
     # generation prompt. If the safety-net gate (defensively) reduced the count

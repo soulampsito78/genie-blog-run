@@ -23,6 +23,52 @@ SMOKE_ONLY_IMAGE_SOURCES = frozenset(
     {IMAGE_SOURCE_FALLBACK, IMAGE_SOURCE_REUSED, IMAGE_SOURCE_REGISTRY, IMAGE_SOURCE_STATIC}
 )
 
+# Flat candidate-funnel diagnostic keys mirrored onto the run artifact so a
+# pre-Gemini hold (or a successful controlled backfill) can be diagnosed straight
+# from the JSON without re-running the pipeline. Sourced from the selection
+# funnel summary; missing keys are recorded as null with an unavailable_reason.
+_FUNNEL_ARTIFACT_KEYS = (
+    "normalized_candidate_count",
+    "korea_scope_candidate_count",
+    "relevance_candidate_count",
+    "candidate_count_before_dedup",
+    "sent_log_read_count",
+    "exposure_log_read_count",
+    "recent_combined_log_count",
+    "dedup_removed_count",
+    "dedup_removed_by_sent_log_count",
+    "dedup_removed_by_exposure_log_count",
+    "candidate_count_after_dedup",
+    "final_selected_count",
+    "hold_reason",
+)
+
+
+def _candidate_funnel_artifact_fields(
+    *,
+    candidate_funnel_summary: Optional[Dict[str, Any]],
+    fetched_item_count: Optional[int],
+    hold_reason: Optional[str],
+    exposure_dedup_backfill_used: bool,
+) -> Dict[str, Any]:
+    """Flatten the candidate funnel onto artifact fields for cold diagnosis."""
+    funnel = candidate_funnel_summary if isinstance(candidate_funnel_summary, dict) else {}
+    out: Dict[str, Any] = {
+        "candidate_funnel_summary": funnel or None,
+        "fetched_item_count": fetched_item_count,
+        "raw_fetched_count": fetched_item_count,
+        "exposure_dedup_backfill_used": bool(exposure_dedup_backfill_used),
+    }
+    for key in _FUNNEL_ARTIFACT_KEYS:
+        out[key] = funnel.get(key)
+    if hold_reason and not out.get("hold_reason"):
+        out["hold_reason"] = hold_reason
+    if not funnel:
+        out["candidate_funnel_unavailable_reason"] = (
+            "selection_funnel_summary_not_produced_by_smoke_result"
+        )
+    return out
+
 
 @dataclass
 class ServiceImageOutcome:
@@ -93,6 +139,10 @@ def build_service_artifact_fields(
     error_code: Optional[str] = None,
     owner_review_url: Optional[str] = None,
     artifact_storage_durable: bool = False,
+    candidate_funnel_summary: Optional[Dict[str, Any]] = None,
+    fetched_item_count: Optional[int] = None,
+    hold_reason: Optional[str] = None,
+    exposure_dedup_backfill_used: bool = False,
 ) -> Dict[str, Any]:
     """Standard admin_runs metadata for service-level full runs."""
     called_image_api = False
@@ -143,4 +193,12 @@ def build_service_artifact_fields(
     if owner_review_url:
         meta["owner_review_url"] = owner_review_url
     meta["artifact_storage_durable"] = bool(artifact_storage_durable)
+    meta.update(
+        _candidate_funnel_artifact_fields(
+            candidate_funnel_summary=candidate_funnel_summary,
+            fetched_item_count=fetched_item_count,
+            hold_reason=hold_reason,
+            exposure_dedup_backfill_used=exposure_dedup_backfill_used,
+        )
+    )
     return meta

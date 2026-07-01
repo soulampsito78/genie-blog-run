@@ -360,6 +360,12 @@ class LiveSourceSmokeResult:
     ready_for_owner_manual_visual_inspection: bool = False
     side_effects: Dict[str, bool] = field(default_factory=dict)
     error: Optional[str] = None
+    # Candidate selection funnel diagnostics (carried even on pre-Gemini holds so
+    # the failure artifact can explain *why* candidates dropped below five).
+    candidate_funnel_summary: Optional[Dict[str, Any]] = None
+    hold_reason: Optional[str] = None
+    exposure_dedup_backfill_used: bool = False
+    internal_issue_codes: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -410,6 +416,10 @@ class LiveSourceSmokeResult:
             "ready_for_owner_manual_visual_inspection": self.ready_for_owner_manual_visual_inspection,
             "side_effects": self.side_effects,
             "error": self.error,
+            "candidate_funnel_summary": self.candidate_funnel_summary,
+            "hold_reason": self.hold_reason,
+            "exposure_dedup_backfill_used": self.exposure_dedup_backfill_used,
+            "internal_issue_codes": list(self.internal_issue_codes),
         }
 
 
@@ -1110,6 +1120,7 @@ def run_keysuri_live_source_smoke(
     gemini_caller=None,
     top_shot_image_path: Optional[Path] = None,
     global_selection_report_path: Optional[Path] = None,
+    trigger_source: Optional[str] = None,
 ) -> LiveSourceSmokeResult:
     repo = repo_root or Path(__file__).resolve().parent
     preview_dir = out_dir or (repo / "output" / "keysuri_preview")
@@ -1259,8 +1270,11 @@ def run_keysuri_live_source_smoke(
         )
     pack_path.write_text(json.dumps(source_pack, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    prompt_input = build_keysuri_prompt_input(program_id, source_pack)
+    prompt_input = build_keysuri_prompt_input(
+        program_id, source_pack, trigger_source=trigger_source
+    )
     if prompt_input.get("prompt_status") != "ready_for_generation":
+        funnel = prompt_input.get("candidate_funnel_summary")
         return LiveSourceSmokeResult(
             ok=False,
             program_id=program_id,
@@ -1273,6 +1287,8 @@ def run_keysuri_live_source_smoke(
             fetched_live_news=True,
             use_gemini=use_gemini,
             side_effects=side_effects,
+            candidate_funnel_summary=funnel if isinstance(funnel, dict) else None,
+            hold_reason=prompt_input.get("hold_reason"),
             error=f"prompt_status={prompt_input.get('prompt_status')!r} after live source pack",
         )
 
@@ -1570,6 +1586,15 @@ def run_keysuri_live_source_smoke(
         ready_for_owner_visual_review=ready_for_owner_visual_review,
         ready_for_owner_manual_visual_inspection=ready_for_owner_manual_visual_inspection,
         side_effects=side_effects,
+        candidate_funnel_summary=(
+            prompt_input.get("candidate_funnel_summary")
+            if isinstance(prompt_input.get("candidate_funnel_summary"), dict)
+            else None
+        ),
+        exposure_dedup_backfill_used=bool(prompt_input.get("exposure_dedup_backfill_used")),
+        internal_issue_codes=[
+            str(code) for code in (prompt_input.get("internal_issue_codes") or []) if code
+        ],
     )
 
     if not send:

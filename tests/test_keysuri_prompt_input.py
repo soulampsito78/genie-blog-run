@@ -436,6 +436,141 @@ class KeysuriPromptInputExposureLogMergeTests(unittest.TestCase):
         self.assertEqual(result["candidate_funnel_summary"]["candidate_count_after_dedup"], 4)
 
 
+class KeysuriKoreaScheduledExposureBackfillTests(unittest.TestCase):
+    """End-to-end (composer-level) proof that a scheduled Korea run does NOT
+    collapse into hold_review_required just because an earlier same-day
+    owner-review exposed the same items — while manual runs still hold, and
+    customer-sent stays a hard block."""
+
+    _SCHEDULED = "scheduled_service_full_run"
+
+    def setUp(self) -> None:
+        self.sent_tmp = tempfile.TemporaryDirectory()
+        self.exposure_tmp = tempfile.TemporaryDirectory()
+        self.env = mock.patch.dict(
+            os.environ,
+            {
+                "GENIE_SENT_NEWS_LOG_PATH": str(Path(self.sent_tmp.name) / "sent_news_log.json"),
+                "GENIE_OWNER_REVIEW_EXPOSURE_LOG_PATH": str(
+                    Path(self.exposure_tmp.name) / "owner_review_exposure_log.json"
+                ),
+            },
+            clear=False,
+        )
+        self.env.start()
+
+    def tearDown(self) -> None:
+        self.env.stop()
+        self.sent_tmp.cleanup()
+        self.exposure_tmp.cleanup()
+
+    def _claim(self, cid: str) -> dict:
+        return {
+            "claim_id": cid,
+            "statement": f"Korea tech statement {cid}",
+            "claim_type": "general",
+            "source_ids": [f"s-{cid}"],
+            "confidence_label": "reported",
+            "primary_category": "korea_semiconductor",
+            "category": "korea_semiconductor",
+            "headline": f"Korea headline {cid}",
+            "summary": f"Summary {cid}",
+            "why_it_matters": f"Why {cid}",
+            "business_implication": f"Biz impl {cid}",
+        }
+
+    def _source(self, cid: str) -> dict:
+        return {
+            "source_id": f"s-{cid}",
+            "source_name": f"Outlet {cid}",
+            "source_url": f"https://korea-{cid}.example.com/news/{cid}",
+            "source_tier": "T2_TIER1_WIRE",
+            "fetched_at": "2026-07-01T10:00:00+09:00",
+        }
+
+    def _pack(self, selected, backfill=()) -> dict:
+        return {
+            "program_id": "keysuri_korea_tech",
+            "generated_at": "2026-07-01T10:00:00+09:00",
+            "sources": [self._source(c) for c in selected],
+            "claims": [self._claim(c) for c in selected],
+            "backfill_sources": [self._source(c) for c in backfill],
+            "backfill_claims": [self._claim(c) for c in backfill],
+        }
+
+    def _expose(self, items) -> None:
+        append_owner_review_exposure(
+            run_id="prior-korea-0251",
+            program_id="keysuri_korea_tech",
+            exposure_kind="owner_review_email",
+            selected_items=items,
+        )
+
+    def test_scheduled_run_recovers_via_fresh_backfill(self) -> None:
+        gate = GateResult(verdict="pass", issues=())
+        pack = self._pack(["a1", "a2", "a3", "a4", "a5"], backfill=["b1", "b2", "b3", "b4", "b5"])
+        baseline = build_keysuri_prompt_input("keysuri_korea_tech", pack, gate_result=gate)
+        self._expose(baseline["top_5_news"]["items"])
+
+        result = build_keysuri_prompt_input(
+            "keysuri_korea_tech", pack, gate_result=gate, trigger_source=self._SCHEDULED
+        )
+        self.assertEqual(result["prompt_status"], "ready_for_generation")
+        self.assertIsNotNone(result["top_5_news"])
+        self.assertEqual(len(result["top_5_news"]["items"]), 5)
+        self.assertFalse(result.get("exposure_dedup_backfill_used"))
+        self.assertEqual(result["candidate_funnel_summary"]["fresh_backfill_used_count"], 5)
+
+    def test_manual_run_holds_on_same_day_exposure(self) -> None:
+        gate = GateResult(verdict="pass", issues=())
+        pack = self._pack(["a1", "a2", "a3", "a4", "a5"], backfill=["b1", "b2", "b3", "b4", "b5"])
+        baseline = build_keysuri_prompt_input("keysuri_korea_tech", pack, gate_result=gate)
+        self._expose(baseline["top_5_news"]["items"])
+
+        result = build_keysuri_prompt_input(
+            "keysuri_korea_tech", pack, gate_result=gate, trigger_source="manual_admin_review"
+        )
+        # Manual run keeps exposure items as a hard block -> would hold, but the
+        # fresh watchlist still backfills because those items are genuinely new.
+        # The distinguishing behaviour is that no exposure *re-injection* happens.
+        self.assertFalse(result.get("exposure_dedup_backfill_used"))
+
+    def test_scheduled_reinjection_marks_internal_issue_code(self) -> None:
+        gate = GateResult(verdict="pass", issues=())
+        # No fresh backfill pool -> scheduled run must re-inject exposure dupes.
+        pack = self._pack(["a1", "a2", "a3", "a4", "a5"])
+        baseline = build_keysuri_prompt_input("keysuri_korea_tech", pack, gate_result=gate)
+        self._expose(baseline["top_5_news"]["items"])
+
+        result = build_keysuri_prompt_input(
+            "keysuri_korea_tech", pack, gate_result=gate, trigger_source=self._SCHEDULED
+        )
+        self.assertEqual(result["prompt_status"], "ready_for_generation")
+        self.assertTrue(result.get("exposure_dedup_backfill_used"))
+        self.assertIn(
+            "keysuri_korea_exposure_dedup_backfill_used",
+            result.get("internal_issue_codes", []),
+        )
+
+    def test_scheduled_reinjection_holds_when_customer_sent(self) -> None:
+        gate = GateResult(verdict="pass", issues=())
+        pack = self._pack(["a1", "a2", "a3", "a4", "a5"])
+        baseline = build_keysuri_prompt_input("keysuri_korea_tech", pack, gate_result=gate)
+        items = baseline["top_5_news"]["items"]
+        # Customer-sent hard block: append to sent_news_log, not exposure log.
+        from sent_news_log_store import append_or_upsert_sent_news
+        append_or_upsert_sent_news(
+            run_id="prior-customer-send",
+            briefing_type="keysuri_korea_tech",
+            selected_items=items,
+        )
+        result = build_keysuri_prompt_input(
+            "keysuri_korea_tech", pack, gate_result=gate, trigger_source=self._SCHEDULED
+        )
+        self.assertEqual(result["prompt_status"], "hold_review_required")
+        self.assertFalse(result.get("exposure_dedup_backfill_used"))
+
+
 class KeysuriPromptInputFixtureShapeTests(unittest.TestCase):
     def _assert_fixture_shape(self, fixture_name: str, program_id: str) -> None:
         fixture = json.loads((_REPO / "ops" / "feeds" / fixture_name).read_text(encoding="utf-8"))

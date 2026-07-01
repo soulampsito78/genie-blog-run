@@ -4166,6 +4166,174 @@ class KeysuriKoreaOwnerReviewEmailDesignTests(unittest.TestCase):
                 self.assertIn(kept, email_html)
 
 
+class KeysuriKoreaScheduledHoldDiagnosticsTests(unittest.TestCase):
+    """A pre-Gemini hold on a scheduled Korea run must (a) not send to customers,
+    and (b) leave a full candidate-funnel diagnostic on the artifact so the
+    failure is diagnosable straight from the JSON — the missing-diagnostics gap
+    behind the 2026-07-01 18:30 KST 500."""
+
+    _FUNNEL = {
+        "normalized_candidate_count": 26,
+        "korea_scope_candidate_count": 18,
+        "relevance_candidate_count": 11,
+        "candidate_count_before_dedup": 5,
+        "sent_log_read_count": 0,
+        "exposure_log_read_count": 5,
+        "recent_combined_log_count": 5,
+        "dedup_removed_count": 5,
+        "dedup_removed_by_sent_log_count": 0,
+        "dedup_removed_by_exposure_log_count": 5,
+        "candidate_count_after_dedup": 0,
+        "final_selected_count": 0,
+        "hold_reason": "insufficient_fresh_candidates_after_dedup",
+    }
+
+    @patch("keysuri_service_full_run.save_run_artifact")
+    def test_scheduled_hold_persists_funnel_and_stays_not_sent(
+        self, mock_save: MagicMock
+    ) -> None:
+        from keysuri_service_full_run import run_keysuri_service_full_run
+
+        repo = Path(__file__).resolve().parents[1]
+        pack_path = repo / "output" / "keysuri_preview" / "test_pack_korea_hold.json"
+        pack_path.parent.mkdir(parents=True, exist_ok=True)
+        pack_path.write_text(
+            json.dumps({"sources": [], "program_id": PROGRAM_KOREA}), encoding="utf-8"
+        )
+
+        def _smoke(**_kwargs):
+            self.assertEqual(_kwargs.get("trigger_source"), "scheduled_service_full_run")
+            return LiveSourceSmokeResult(
+                ok=False,
+                program_id=PROGRAM_KOREA,
+                source_pack_path=str(pack_path),
+                html_path="",
+                fetched_item_count=13,
+                feed_urls_used=[],
+                sample_marker_pass=False,
+                placeholder_gate_pass=False,
+                called_gemini=False,
+                use_gemini=True,
+                candidate_funnel_summary=dict(self._FUNNEL),
+                hold_reason="insufficient_fresh_candidates_after_dedup",
+                error="prompt_status='hold_review_required' after live source pack",
+            )
+
+        payload = run_keysuri_service_full_run(
+            PROGRAM_KOREA,
+            trigger_source="scheduled_service_full_run",
+            smoke_runner=_smoke,
+        )
+
+        self.assertFalse(payload.get("email_sent"))
+        mock_save.assert_called_once()
+        meta = mock_save.call_args.args[0]
+        # Customer-facing state stays untouched.
+        self.assertEqual(meta.get("customer_delivery_status"), "not_sent")
+        self.assertFalse(meta.get("email_sent"))
+        self.assertFalse(meta.get("smtp_attempted"))
+        # Full funnel is now recoverable from the failure artifact.
+        self.assertEqual(meta.get("fetched_item_count"), 13)
+        self.assertEqual(meta.get("raw_fetched_count"), 13)
+        self.assertEqual(meta.get("candidate_count_before_dedup"), 5)
+        self.assertEqual(meta.get("dedup_removed_by_exposure_log_count"), 5)
+        self.assertEqual(meta.get("dedup_removed_by_sent_log_count"), 0)
+        self.assertEqual(meta.get("candidate_count_after_dedup"), 0)
+        self.assertEqual(meta.get("normalized_candidate_count"), 26)
+        self.assertEqual(meta.get("korea_scope_candidate_count"), 18)
+        self.assertEqual(meta.get("relevance_candidate_count"), 11)
+        self.assertEqual(meta.get("hold_reason"), "insufficient_fresh_candidates_after_dedup")
+        self.assertIsInstance(meta.get("candidate_funnel_summary"), dict)
+        # The saved email body is empty on a hold; no internal marker leaks.
+        email_html = mock_save.call_args.kwargs.get("email_html")
+        if email_html is None and len(mock_save.call_args.args) > 1:
+            email_html = mock_save.call_args.args[1]
+        self.assertEqual(email_html, "")
+
+    @patch("keysuri_service_full_run.save_run_artifact")
+    def test_hold_without_funnel_records_unavailable_reason(
+        self, mock_save: MagicMock
+    ) -> None:
+        from keysuri_service_full_run import run_keysuri_service_full_run
+
+        repo = Path(__file__).resolve().parents[1]
+        pack_path = repo / "output" / "keysuri_preview" / "test_pack_korea_hold2.json"
+        pack_path.parent.mkdir(parents=True, exist_ok=True)
+        pack_path.write_text(
+            json.dumps({"sources": [], "program_id": PROGRAM_KOREA}), encoding="utf-8"
+        )
+
+        def _smoke(**_kwargs):
+            return LiveSourceSmokeResult(
+                ok=False,
+                program_id=PROGRAM_KOREA,
+                source_pack_path=str(pack_path),
+                html_path="",
+                fetched_item_count=2,
+                feed_urls_used=[],
+                sample_marker_pass=False,
+                placeholder_gate_pass=False,
+                called_gemini=False,
+                use_gemini=True,
+                error="Insufficient live feed items (2)",
+            )
+
+        run_keysuri_service_full_run(
+            PROGRAM_KOREA,
+            trigger_source="scheduled_service_full_run",
+            smoke_runner=_smoke,
+        )
+        meta = mock_save.call_args.args[0]
+        self.assertIsNone(meta.get("candidate_funnel_summary"))
+        self.assertEqual(
+            meta.get("candidate_funnel_unavailable_reason"),
+            "selection_funnel_summary_not_produced_by_smoke_result",
+        )
+        self.assertEqual(meta.get("fetched_item_count"), 2)
+
+
+class KeysuriKoreaVisibleInternalMarkerTests(unittest.TestCase):
+    """Internal backfill/scope markers must never surface in reader-facing HTML."""
+
+    def test_backfill_and_scope_markers_absent_from_owner_email(self) -> None:
+        from keysuri_contract_preview_renderer import (
+            IMAGE_MODE_EMAIL,
+            build_keysuri_korea_gmail_owner_email_html,
+            prepare_contract_preview_fixture,
+        )
+        from keysuri_service_full_run import keysuri_korea_service_email_cid_src
+        from tests.test_keysuri_contract_preview_renderer import build_korea_contract_fixture
+
+        repo = Path(__file__).resolve().parents[1]
+        fixture = build_korea_contract_fixture()
+        fixture["top_shot_image_src"] = keysuri_korea_service_email_cid_src(
+            "20260701_183000_keysuri_korea_tech_test"
+        )
+        # Even if internal audit markers were (wrongly) copied into item fields,
+        # the renderer must not surface them. Seed them to prove containment.
+        for item in fixture["top_5_items"]:
+            item.setdefault("internal_issue_codes", ["keysuri_korea_exposure_dedup_backfill_used"])
+        prepare_contract_preview_fixture(fixture, repo_root=repo, image_mode=IMAGE_MODE_EMAIL)
+        email_html = build_keysuri_korea_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Korea Tech",
+            admin_url="https://example.com/admin/runs/test_korea_marker",
+            run_id="test_korea_marker",
+        )
+        for forbidden in (
+            "keysuri_korea_exposure_dedup_backfill_used",
+            "_repaired_news_scope",
+            "총점",
+            "점수",
+            "스코어",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, email_html)
+        for forbidden in ("score", "scoring"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, email_html.lower())
+
+
 class KeysuriKoreaContractPreviewBottomOrderingTests(unittest.TestCase):
     """Contract preview must be rendered after Bottom decision so it shows actual Bottom."""
 
