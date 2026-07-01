@@ -401,6 +401,29 @@ def strip_watch_arrow_prefixes(text: str) -> str:
     return "; ".join(cleaned)
 
 
+_SCORE_SENTENCE_RE = re.compile(
+    r"총점\s*\d+"
+    r"|(?:점수|스코어)\s*\d+"
+    r"|\d+\s*점(?:을|를)?\s*기록"
+    r"|\bscor(?:e|es|ed|ing|card)\b",
+    re.IGNORECASE,
+)
+
+
+def strip_internal_score_sentences(text: str) -> str:
+    """Remove sentences containing unambiguous internal scoring language.
+
+    Conservative: only strips sentences with score-with-digit patterns or
+    English score/scoring terms. Leaves ordinary Korean body text intact.
+    """
+    raw = str(text or "").strip()
+    if not raw or not _SCORE_SENTENCE_RE.search(raw):
+        return raw
+    parts = re.split(r"(?<=[.!?。！？])\s+", raw)
+    cleaned = [s for s in parts if not _SCORE_SENTENCE_RE.search(s)]
+    return " ".join(cleaned)
+
+
 def dedupe_sentences_in_paragraph(text: str) -> str:
     raw = repair_obvious_korean_quality_artifacts(text)
     if not raw:

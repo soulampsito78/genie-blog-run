@@ -37,6 +37,7 @@ from keysuri_visible_text import (
     polish_korea_checkpoint_text,
     sanitize_visible_impact_line,
     sanitize_visible_selection_reason,
+    strip_internal_score_sentences,
     strip_watch_arrow_prefixes,
 )
 
@@ -471,6 +472,9 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
         what_happened = dedupe_sentences_in_paragraph(what_happened)
         why_now = dedupe_sentences_in_paragraph(why_now)
         owner_angle = dedupe_sentences_in_paragraph(owner_angle)
+    what_happened = strip_internal_score_sentences(what_happened)
+    why_now = strip_internal_score_sentences(why_now)
+    owner_angle = strip_internal_score_sentences(owner_angle)
     next_watch_raw = None
     for key in ("next_watch", "next_check_point"):
         if item.get(key) not in (None, ""):
@@ -1332,9 +1336,9 @@ def _gmail_render_global_top_item(item: Mapping[str, Any], rank: int) -> str:
         meta_stub,
         program_id=PROGRAM_GLOBAL,
     )
-    what_happened = _item_field(item, "what_happened", "summary")
-    why_now = _item_field(item, "why_now", "why_it_matters")
-    owner_angle = _item_field(item, "owner_angle", "business_implication", "keysuri_comment")
+    what_happened = strip_internal_score_sentences(_item_field(item, "what_happened", "summary"))
+    why_now = strip_internal_score_sentences(_item_field(item, "why_now", "why_it_matters"))
+    owner_angle = strip_internal_score_sentences(_item_field(item, "owner_angle", "business_implication", "keysuri_comment"))
     source_url = _item_field(item, "source_url")
     source_name = _item_field(item, "source_name") or "출처"
     emphasis_body = _item_field(item, "next_day_impact_line", "owner_action_line")
@@ -1647,9 +1651,9 @@ def _gmail_render_korea_top_item(item: Mapping[str, Any], rank: int) -> str:
         selection_reason,
         fallback=_item_field(item, "korean_title", "headline"),
     )
-    what_happened = _korea_visible_field(item, "what_happened", "summary")
-    why_now = _korea_visible_field(item, "why_now", "why_it_matters")
-    owner_angle = _korea_visible_field(item, "owner_angle", "business_implication", "keysuri_comment")
+    what_happened = strip_internal_score_sentences(_korea_visible_field(item, "what_happened", "summary"))
+    why_now = strip_internal_score_sentences(_korea_visible_field(item, "why_now", "why_it_matters"))
+    owner_angle = strip_internal_score_sentences(_korea_visible_field(item, "owner_angle", "business_implication", "keysuri_comment"))
     source_url = _item_field(item, "source_url")
     source_name = _item_field(item, "source_name") or "출처"
     emphasis_body = _item_field(item, "next_day_impact_line", "owner_action_line")

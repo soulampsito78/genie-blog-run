@@ -3867,6 +3867,65 @@ class KeysuriGlobalOwnerReviewEmailDesignRestorationTests(unittest.TestCase):
         self.assertIn("theme-korea", korea_html)
         self.assertIn("키수리 국내 테크 브리핑", korea_html)
 
+    def test_global_gmail_owner_email_no_score_in_body_fields(self) -> None:
+        """score/총점/점수/스코어/scoring must be stripped from non-selection_reason body fields."""
+        from keysuri_contract_preview_renderer import (
+            IMAGE_MODE_EMAIL,
+            IMAGE_MODE_PREVIEW,
+            build_keysuri_global_gmail_owner_email_html,
+            prepare_contract_preview_fixture,
+            render_keysuri_contract_preview_html,
+        )
+        from tests.test_keysuri_contract_preview_renderer import build_global_contract_fixture
+
+        repo = Path(__file__).resolve().parents[1]
+        fixture = build_global_contract_fixture()
+        fixture["top_shot_image_src"] = "cid:keysuri_topshot_global_20260701"
+        for idx, item in enumerate(fixture["top_5_items"], start=1):
+            item["primary_category"] = "ai_software_platform"
+            item["what_happened"] = (
+                f"이 뉴스는 총점 {50 + idx}점을 기록했으며 AI 플랫폼 변화가 확인되었습니다. "
+                "해당 기업은 3분기 목표 달성을 발표했습니다."
+            )
+            item["why_now"] = (
+                f"내부 scoring 결과 점수 {60 + idx}에 해당합니다. "
+                "시장 영향은 반도체 공급망 전반에 걸쳐 나타납니다."
+            )
+            item["owner_angle"] = (
+                f"스코어 {70 + idx}점 기준으로 선정된 항목입니다. "
+                "주인님께서 주목하실 만한 공급망 의사결정 시그널입니다."
+            )
+
+        prepare_contract_preview_fixture(fixture, repo_root=repo, image_mode=IMAGE_MODE_EMAIL)
+        email_html = build_keysuri_global_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Global Tech",
+            admin_url="https://example.com/admin/runs/test_body_fields",
+            run_id="test_body_fields",
+        )
+        preview_html = render_keysuri_contract_preview_html(
+            fixture,
+            repo_root=repo,
+            image_mode=IMAGE_MODE_PREVIEW,
+            auto_prepare=False,
+        )
+
+        self.assertEqual(len(fixture["top_5_items"]), 5)
+        for forbidden in ("총점", "점수", "스코어"):
+            with self.subTest(rendered="gmail", forbidden=forbidden):
+                self.assertNotIn(forbidden, email_html)
+            with self.subTest(rendered="preview", forbidden=forbidden):
+                self.assertNotIn(forbidden, preview_html)
+        for forbidden in ("score", "scoring"):
+            with self.subTest(rendered="gmail", forbidden=forbidden):
+                self.assertNotIn(forbidden, email_html.lower())
+            with self.subTest(rendered="preview", forbidden=forbidden):
+                self.assertNotIn(forbidden, preview_html.lower())
+        # Legitimate prose from the same items must survive stripping
+        for kept in ("반도체 공급망", "공급망 의사결정 시그널"):
+            with self.subTest(kept=kept):
+                self.assertIn(kept, email_html)
+
 
 class KeysuriKoreaOwnerReviewEmailDesignTests(unittest.TestCase):
     """Korea service_full_run owner email must use Gmail-safe inline/table renderer."""
@@ -4056,6 +4115,55 @@ class KeysuriKoreaOwnerReviewEmailDesignTests(unittest.TestCase):
             email_html[judgment_start : judgment_start + 400],
             r"키수리\s*판단\s*[:：]",
         )
+
+    def test_korea_gmail_owner_email_no_score_disclosure(self) -> None:
+        """Korea email must strip score/총점/점수/스코어/scoring from all body fields."""
+        from keysuri_contract_preview_renderer import (
+            IMAGE_MODE_EMAIL,
+            build_keysuri_korea_gmail_owner_email_html,
+            prepare_contract_preview_fixture,
+        )
+        from keysuri_service_full_run import keysuri_korea_service_email_cid_src
+        from tests.test_keysuri_contract_preview_renderer import build_korea_contract_fixture
+
+        repo = Path(__file__).resolve().parents[1]
+        fixture = build_korea_contract_fixture()
+        fixture["top_shot_image_src"] = keysuri_korea_service_email_cid_src(
+            "20260701_180000_keysuri_korea_tech_test"
+        )
+        for idx, item in enumerate(fixture["top_5_items"], start=1):
+            item["what_happened"] = (
+                f"이 뉴스는 총점 {50 + idx}점을 기록했으며 국내 반도체 공급망에 영향을 미칩니다. "
+                "관련 정책 발표가 이번 주 예정되어 있습니다."
+            )
+            item["why_now"] = (
+                f"내부 scoring 지표 기준 점수 {60 + idx}에 해당합니다. "
+                "국내 기업의 조달 일정이 직접적으로 연결됩니다."
+            )
+            item["owner_angle"] = (
+                f"스코어 {70 + idx}점 기준 최우선 선별 항목입니다. "
+                "주인님께서 내일 직접 점검하실 공급망 포인트가 포함됩니다."
+            )
+
+        prepare_contract_preview_fixture(fixture, repo_root=repo, image_mode=IMAGE_MODE_EMAIL)
+        email_html = build_keysuri_korea_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Korea Tech",
+            admin_url="https://example.com/admin/runs/test_korea_fields",
+            run_id="test_korea_fields",
+        )
+
+        self.assertEqual(len(fixture["top_5_items"]), 5)
+        for forbidden in ("총점", "점수", "스코어"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, email_html)
+        for forbidden in ("score", "scoring"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, email_html.lower())
+        # Legitimate prose sentences that don't contain scores must survive
+        for kept in ("관련 정책 발표", "공급망 포인트"):
+            with self.subTest(kept=kept):
+                self.assertIn(kept, email_html)
 
 
 class KeysuriKoreaContractPreviewBottomOrderingTests(unittest.TestCase):

@@ -398,7 +398,7 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
                 "- If source detail is thin: set detail_insufficient=true and state uncertainty briefly; do not invent facts.",
                 "",
                 "KOREA TECH TOP5 DEPTH (mandatory per item — use TOP_5_SELECTED metadata)",
-                "- selection_reason: 2+ Korean sentences — why selected for domestic interpretation (category, score, Korea angle).",
+                "- selection_reason: 2+ Korean sentences — why selected for domestic interpretation (category, signal type, Korea angle).",
                 "- what_happened: 2-4 Korean sentences grounded in source text only.",
                 "- why_now: 2-3 Korean sentences — why it matters in Korea today (policy, supply chain, company action).",
                 "- owner_angle: 2-3 Korean sentences — what 주인님 should watch, prepare, or decide tomorrow.",
@@ -406,6 +406,7 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
                 "- Reflect owner_action_line and next_day_impact_line from metadata in natural Korean prose.",
                 "- angle_chip should read as 국내 적용 when item overlaps Global but has Korea application.",
                 "- hype_caution: required when pr_hype_warning — state 과장 주의 / 보도자료 주의 without amplifying PR language.",
+                "- FORBIDDEN in all visible fields: 총점, 점수, 스코어, score, scoring — never expose internal evaluation numbers in reader-facing copy.",
             ]
         )
     if program_id == PROGRAM_GLOBAL:
@@ -422,7 +423,7 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
                 "- Use judgment label 과장 주의 when hype_warning, sponsored_warning, or customer-case penalties apply.",
                 "",
                 "GLOBAL TECH TOP5 DEPTH (mandatory per item — use TOP_5_SELECTED metadata)",
-                "- selection_reason: 2+ Korean sentences — why this item was selected (category, score, signal type).",
+                "- selection_reason: 2+ Korean sentences — why this item was selected (category, signal type).",
                 "- what_happened: 3+ Korean sentences grounded in source text only.",
                 "- why_now: 3+ Korean sentences — timing, market/infra/policy context.",
                 "- owner_angle: 3+ Korean sentences — what 주인님 should watch, use, avoid, or prepare.",
@@ -431,6 +432,7 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
                 "- hype_caution: required string when hype_warning or sponsored_warning — state 과장 주의 / 스폰서·파트너 콘텐츠.",
                 "- If source is thin: say '향후 공식 발표를 통해 세부 내용이 보완될 가능성이 있습니다.' and set detail_insufficient=true.",
                 "- FORBIDDEN generic filler: 'AI 도입이 가속화', '기업들이 AI를 활용', '업무 효율이 높아질 수 있습니다'.",
+                "- FORBIDDEN in all visible fields: 총점, 점수, 스코어, score, scoring — never expose internal evaluation numbers in reader-facing copy.",
                 "- Do NOT invent facts beyond provided source_pack and TOP_5_SELECTED metadata.",
             ]
         )
