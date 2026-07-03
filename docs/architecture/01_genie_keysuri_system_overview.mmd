@@ -1,0 +1,125 @@
+%% 01. GENIE x KeeSuri — 시스템 전체 개요 (System Overview)
+%% 수정 포인트: 새 프로그램 → PROGRAMS subgraph에 노드 추가 / 스타일 → classDef 수정 / 운영 기준선 및 미래 전환안 반영
+
+graph TB
+
+  classDef trigger fill:#E3F2FD,stroke:#1565C0,stroke-width:2px,color:#0D47A1
+  classDef orch fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
+  classDef gen fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px,color:#1B5E20
+  classDef output fill:#F3E5F5,stroke:#6A1B9A,stroke-width:2px,color:#4A148C
+  classDef ops fill:#ECEFF1,stroke:#37474F,stroke-width:2px,color:#263238
+  classDef lang fill:#FFF9C4,stroke:#F9A825,stroke-width:2px,color:#F57F17
+  classDef danger fill:#FFEBEE,stroke:#C62828,stroke-width:2px,color:#B71C1C
+
+  subgraph BASELINE["현재 운영 기준선 (Baseline)"]
+    direction TB
+    BL["latest Korea PASS run_id\ncurrent deployed revision"]
+  end
+  class BL ops
+
+  subgraph TRIGGER["트리거 / 입력"]
+    direction TB
+    CS["Cloud Scheduler\nKST 06:30 / 12:30 / 18:30"]
+    CR["Cloud Run\nFastAPI Entry"]
+    IJ["Internal Jobs\n/internal/keysuri-owner-review"]
+    CS --> CR --> IJ
+  end
+  class CS,CR,IJ trigger
+
+  subgraph PROGRAMS["프로그램 분기 Program Dispatch"]
+    direction TB
+    REG["ProgramRegistry\nprograms/registry.py"]
+    TG["Today Geenee\n오늘의 지니"]
+    KG["KeeSuri Global Tech\n키수리 글로벌"]
+    KK["KeeSuri Korea Tech\n키수리 코리아"]
+    REG --> TG
+    REG --> KG
+    REG --> KK
+  end
+  class REG,TG,KG,KK trigger
+
+  subgraph ORCH["오케스트레이션 Orchestration Layer"]
+    direction TB
+    LSS["Live Source Smoke\n실시간 소스 점검"]
+    SG["Source Gate\n소스 검증 게이트"]
+    PIB["Prompt Input Builder\n프롬프트 입력 조립"]
+    DD["Dedup Gate\n중복 필터 (candidate pool expansion)\nexposure_dedup_backfill_used"]
+    LSS --> SG --> PIB --> DD
+  end
+  class LSS,SG,PIB,DD orch
+
+  subgraph GEN["생성 / 검증 Generation and Validation"]
+    direction TB
+    GP["Generation Prompt\n프롬프트 빌드"]
+    GM["Gemini 호출\nVertex AI"]
+    JP["JSON 파싱 / 복구\nparse + repair"]
+    REP["deterministic repair\nkeysuri_deep_dive_key_implications_repaired\n(LLM_OUTPUT_CONTRACT_REPAIR_GAP)"]
+    VL["Validation Layer\nvalidators.py"]
+    VTQ["Visible Text Quality\n가시 텍스트 품질\n(internal marker visible HTML 노출 금지)"]
+    GP --> GM --> JP --> REP --> VL --> VTQ
+  end
+  class GP,GM,JP,REP,VL,VTQ gen
+
+  subgraph IMG["이미지 and 렌더링"]
+    direction TB
+    IG["Image Generation API\nVertex Imagen"]
+    OV["Image Overlay\n워터마크/합성"]
+    HR["HTML 렌더링\ncontract_preview_renderer"]
+    IG --> OV --> HR
+  end
+  class IG,OV,HR gen
+
+  subgraph OUTPUT["산출 / 발송 Output and Delivery"]
+    direction TB
+    GCS["GCS Artifact 저장\nadmin_runs JSON + email.html"]
+    OE["Owner-Review Email\n운영자 검토 발송"]
+    AB["Approve Boundary\ncustomer_delivery_status=not_sent\napprove_customer_final_send=false"]
+    CF["Customer Final Send\n고객 최종 발송"]
+    GCS --> OE --> AB
+    AB -->|"승인 후"| CF
+  end
+  class GCS,OE output
+  class AB danger
+  class CF output
+
+  subgraph OPS["운영 / 관리 Admin and Ops"]
+    direction TB
+    ADM["Admin Routes\n검토 / 승인 / 재발행"]
+    SMTP["Gmail SMTP\n발송 경로"]
+    PP["Publishing Policy\n발행 정책"]
+    ADM --> PP --> SMTP
+  end
+  class ADM,SMTP,PP ops
+
+  subgraph LANG["미래: LangGraph 전환안 (도입 후보)"]
+    direction TB
+    LC["LangChain 후보\nprompt template, model wrapper\nstructured output, tool abstraction"]
+    LG["LangGraph 후보\nstate machine, node graph\nretry/safe-fail/resume"]
+    LS["LangSmith 후보\ntracing, observability, eval\nregression tracking"]
+  end
+  class LC,LG,LS lang
+
+  subgraph CURRENT["현재 구현 (Current Implementation)"]
+    direction TB
+    C_APP["Python / FastAPI / service_full_run"]
+    C_FLOW["prompt_input → validation → Gemini →\nparser → artifact → SMTP → admin approve"]
+    C_APP --> C_FLOW
+  end
+  class C_APP,C_FLOW ops
+
+  BASELINE ~~~ TRIGGER
+  TRIGGER --> PROGRAMS
+  PROGRAMS --> ORCH
+  ORCH --> GEN
+  GEN --> IMG
+  IMG --> OUTPUT
+  OUTPUT --> OPS
+  OPS ~~~ CURRENT
+  CURRENT ~~~ LANG
+
+  LC -.->|"프롬프트 조립"| PIB
+  LC -.->|"모델 호출 래핑"| GM
+  LG -.->|"워크플로 제어"| ORCH
+  LG -.->|"분기/재시도"| GEN
+  LS -.->|"실행 추적"| GM
+  LS -.->|"품질 평가"| VL

@@ -1,0 +1,131 @@
+%% 02. GENIE x KeeSuri — 실행 시퀀스 (Execution Sequence)
+%% 수정 포인트: 새 단계 → 해당 위치에 노드 삽입 / 실패 지점 → danger 클래스 적용
+
+flowchart TD
+
+  classDef step fill:#E3F2FD,stroke:#1565C0,stroke-width:2px,color:#0D47A1
+  classDef decision fill:#FFF3E0,stroke:#E65100,stroke-width:2px,color:#BF360C
+  classDef danger fill:#FFCDD2,stroke:#C62828,stroke-width:2px,color:#B71C1C
+  classDef success fill:#C8E6C9,stroke:#2E7D32,stroke-width:2px,color:#1B5E20
+  classDef boundary fill:#F3E5F5,stroke:#6A1B9A,stroke-width:3px,color:#4A148C
+  classDef hold fill:#FFF9C4,stroke:#F9A825,stroke-width:2px,color:#F57F17
+
+  subgraph P1["Phase 1 -- 트리거 및 분기"]
+    T1["1. Cloud Scheduler\n트리거 발생"]
+    T2["2. Internal Job Endpoint\n토큰 인증"]
+    T3{"3. program_id 분기"}
+    T4["Today Geenee"]
+    T5["KeeSuri Global"]
+    T6["KeeSuri Korea"]
+    T1 --> T2 --> T3
+    T3 -->|"today_geenee"| T4
+    T3 -->|"keysuri_global_tech"| T5
+    T3 -->|"keysuri_korea_tech"| T6
+  end
+  class T1,T2 step
+  class T3 decision
+  class T4,T5,T6 step
+
+  subgraph P2["Phase 2 -- 소스 수집 및 검증"]
+    S1["4. Live Source Fetch\n실시간 소스 수집"]
+    S2["5. Source Gate\n소스 품질 검증"]
+    S3["6. Source Pack 조립"]
+    fail1["FAIL: Source Hold\n소스 부족/부적합"]
+    S1 --> S2
+    S2 -->|"pass"| S3
+    S2 -->|"hold / block"| fail1
+  end
+  class S1,S2,S3 step
+  class fail1 danger
+
+  subgraph P3["Phase 3 -- 프롬프트 빌드 및 중복 검사"]
+    B1["7. Prompt Input Build\n프롬프트 입력 조립"]
+    B2["8. Dedup Gate\n기 발송 중복 검사\n(candidate pool expansion)"]
+    fail2["FAIL: Dedup Hold\n중복 뉴스 과다\nDEDUP_OVERBLOCK_DEFECT"]
+    B1 --> B2
+    B2 -->|"hold"| fail2
+  end
+  class B1,B2 step
+  class fail2 danger
+
+  subgraph P4["Phase 4 -- Gemini 생성 및 파싱"]
+    G1["9. Generation Prompt 빌드"]
+    G2["10. Gemini 호출\nVertex AI"]
+    G3["11. JSON 파싱\nextract_json_candidates"]
+    G4["12. Parse Repair\n결정적 복구\n(LLM_OUTPUT_CONTRACT_REPAIR_GAP)\nkeysuri_deep_dive_key_implications_repaired"]
+    fail3["FAIL: Gemini Parse Failure\n파싱 불가"]
+    G1 --> G2 --> G3
+    G3 -->|"성공"| G4
+    G3 -->|"실패"| fail3
+  end
+  class G1,G2,G3,G4 step
+  class fail3 danger
+
+  subgraph P5["Phase 5 -- 검증 및 품질 게이트"]
+    V1["13. Validation Layer\n구조 + 내용 검증"]
+    V2["14. Visible Text Quality\n가시 텍스트 품질\n(internal marker visible HTML 노출 금지)"]
+    V3["15. Content Quality Check\n브리핑 콘텐츠 품질"]
+    fail4["FAIL: Quality Gate\n품질 미달\nMISSING_DIAGNOSTICS\n(candidate_funnel_summary 기록)"]
+    V1 --> V2 --> V3
+    V2 -->|"block"| fail4
+    V3 -->|"block"| fail4
+  end
+  class V1,V2,V3 step
+  class fail4 danger
+
+  subgraph P6["Phase 6 -- 이미지 생성 및 렌더링"]
+    I1["16. Image Generation\nVertex Imagen"]
+    I2["17. Image Overlay\n워터마크 합성"]
+    I3["18. HTML Render\ncontract_preview"]
+    I1 --> I2 --> I3
+  end
+  class I1,I2,I3 step
+
+  subgraph P7["Phase 7 -- Artifact 저장 및 발송"]
+    A1["19. GCS Artifact Save\nJSON + email.html"]
+    A2["20. Owner-Review Email\n운영자 검토 발송"]
+    fail5["FAIL: SMTP Failure\n발송 실패"]
+    A1 --> A2
+    A2 -->|"SMTP 실패"| fail5
+  end
+  class A1 step
+  class A2 success
+  class fail5 danger
+
+  subgraph P8["Phase 8 -- 승인 경계 및 고객 발송"]
+    AP1["LOCK: Approve Boundary\napprove_customer_final_send=false\ncustomer_delivery_status=not_sent"]
+    AP2{"운영자 승인 여부"}
+    CS1["OK: Customer Final Send\n고객 최종 발송"]
+    BL1["BLOCKED: NOT SENT\n미승인 -- 발송 차단"]
+    AP1 --> AP2
+    AP2 -->|"approved"| CS1
+    AP2 -->|"미승인"| BL1
+  end
+  class AP1 boundary
+  class AP2 decision
+  class CS1 success
+  class BL1 hold
+
+  subgraph SAFEFAIL["SAFE-FAIL -- 고객 노출 차단"]
+    SF["모든 실패 -> owner-review까지만 도달\n고객에게는 절대 미발송"]
+  end
+  class SF danger
+
+  fail1 --> SF
+  fail2 --> SF
+  fail3 --> SF
+  fail4 --> SF
+  fail5 --> SF
+
+  P1 --> P2
+  P2 --> P3
+  S3 --> B1
+  B2 -->|"pass\n(exposure_dedup_backfill_used)"| G1
+  P4 --> P5
+  G4 --> V1
+  P5 --> P6
+  V3 -->|"pass"| I1
+  P6 --> P7
+  I3 --> A1
+  P7 --> P8
+  A2 -->|"성공"| AP1

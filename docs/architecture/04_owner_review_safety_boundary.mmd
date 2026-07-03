@@ -1,0 +1,116 @@
+%% 04. Owner-Review and Safety Boundary
+%% 수정 포인트: 새 검증 게이트 → SAFE_ZONE에 노드 추가 / Hard Boundary → 노드 추가
+
+graph TB
+
+  classDef safe fill:#C8E6C9,stroke:#2E7D32,stroke-width:2px,color:#1B5E20
+  classDef review fill:#B3E5FC,stroke:#0277BD,stroke-width:2px,color:#01579B
+  classDef approve fill:#FFF9C4,stroke:#F9A825,stroke-width:2px,color:#F57F17
+  classDef customer fill:#E1BEE7,stroke:#6A1B9A,stroke-width:2px,color:#4A148C
+  classDef block fill:#FFCDD2,stroke:#C62828,stroke-width:3px,color:#B71C1C
+  classDef hard fill:#D32F2F,stroke:#B71C1C,stroke-width:3px,color:#FFFFFF
+  classDef ops fill:#ECEFF1,stroke:#455A64,stroke-width:2px,color:#263238
+  classDef persist fill:#DCEDC8,stroke:#558B2F,stroke-width:2px,color:#33691E
+
+  subgraph SAFE_ZONE["안전 영역 -- Validation Gates"]
+    direction TB
+    SG["Source Gate\n소스 품질 검증"]
+    DG["Dedup Gate\n중복 뉴스 필터"]
+    PG["Parse Repair Gate\nGemini 출력 파싱 복구"]
+    VG["Validation Gate\n구조 + 내용 검증"]
+    TQ["Visible Text Quality Gate\n가시 텍스트 품질\n(internal marker visible HTML 노출 금지)"]
+    CQ["Content Quality Gate\n브리핑 품질"]
+    SG --> DG --> PG --> VG --> TQ --> CQ
+  end
+  class SG,DG,PG,VG,TQ,CQ safe
+
+  subgraph BASELINE["현재 운영 기준선 (Baseline)"]
+    direction TB
+    BL["latest Korea PASS run_id\ncurrent deployed revision"]
+  end
+  class BL ops
+
+  subgraph PERSIST["Artifact 영속 저장"]
+    direction TB
+    GCS_JSON["GCS admin_runs\nJSON Artifact"]
+    GCS_HTML["GCS email.html\n렌더링 결과"]
+    GCS_IMG["GCS 이미지 에셋\ntop/bottom shot"]
+    GCS_JSON --- GCS_HTML --- GCS_IMG
+  end
+  class GCS_JSON,GCS_HTML,GCS_IMG persist
+
+  subgraph OWNER_REVIEW["Owner-Review 경로"]
+    direction TB
+    OR1["Owner-Review Email 생성"]
+    OR2["SMTP 발송\n운영자에게만"]
+    OR3["Admin UI 진입\n/admin/runs/run_id"]
+    OR4["운영자 검토\nHTML 프리뷰 확인"]
+    OR1 --> OR2 --> OR3 --> OR4
+  end
+  class OR1,OR2,OR3,OR4 review
+
+  subgraph APPROVE["승인 경계 Approve Boundary"]
+    direction TB
+    AB1["approve_customer_final_send=false\ncustomer_delivery_status=not_sent"]
+    AB2{"운영자가\n명시적 승인?"}
+    AB3["status: approved\n승인 완료"]
+    AB4["status: not_sent\n미승인 유지"]
+    AB1 --> AB2
+    AB2 -->|"Yes"| AB3
+    AB2 -->|"No"| AB4
+  end
+  class AB1 approve
+  class AB2 approve
+  class AB3 safe
+  class AB4 block
+
+  subgraph CUSTOMER["Customer Send 경로"]
+    direction TB
+    CS1["Customer Email 렌더링\n운영자 전용 요소 제거"]
+    CS2["Customer 수신자 확인\nresolve_customer_recipients"]
+    CS3["Customer Final Send\nSMTP 발송"]
+    CS1 --> CS2 --> CS3
+  end
+  class CS1,CS2,CS3 customer
+
+  subgraph HARD_BOUNDARY["절대 금지 영역 Hard Boundary"]
+    direction TB
+    HB1["STOP: 무단 Customer Send 금지\n승인 없는 고객 발송 불가"]
+    HB2["STOP: Approve 없는 Final Send 금지\ncustomer_send_requires_approval=True"]
+    HB3["STOP: Manual Production Action 주의\n수동 운영 행위 경계"]
+    HB4["STOP: Scheduler / Secret / env 변경\n운영 민감 설정 변경 금지"]
+    HB5["STOP: GCS Mutation 직접 접근\n아티팩트 직접 수정 금지"]
+  end
+  class HB1,HB2,HB3,HB4,HB5 hard
+
+  subgraph SAFEFAIL["Safe-Fail 보호"]
+    direction TB
+    SF1["모든 실패 시\n고객 발송 자동 차단"]
+    SF2["운영자에게만\n실패 정보 노출"]
+    SF3["Artifact에 실패 사유 기록\nGCS JSON"]
+    SF1 --- SF2 --- SF3
+  end
+  class SF1,SF2,SF3 block
+
+  subgraph OPS_VIEW["운영자 가시 범위"]
+    direction TB
+    OV1["Admin Dashboard\n전체 run 목록"]
+    OV2["개별 Run 상세\nJSON + HTML 프리뷰"]
+    OV3["Validation 결과\n이슈 코드 + 심각도"]
+    OV4["Delivery Trace\n발송 이력"]
+    OV1 --> OV2 --> OV3 --> OV4
+  end
+  class OV1,OV2,OV3,OV4 ops
+
+  BASELINE ~~~ SAFE_ZONE
+  SAFE_ZONE -->|"검증 통과"| PERSIST
+  SAFE_ZONE -->|"검증 실패"| SAFEFAIL
+  PERSIST --> OWNER_REVIEW
+  OWNER_REVIEW --> APPROVE
+  APPROVE -->|"승인 완료"| CUSTOMER
+  APPROVE -->|"미승인"| SAFEFAIL
+  OWNER_REVIEW --> OPS_VIEW
+  PERSIST --> OPS_VIEW
+
+  CUSTOMER -.->|"위반 불가"| HARD_BOUNDARY
+  SAFEFAIL -.->|"보호"| HARD_BOUNDARY

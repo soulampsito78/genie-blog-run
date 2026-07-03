@@ -1,0 +1,96 @@
+%% 03. LangChain / LangGraph / LangSmith — 역할 비교
+%% 수정 포인트: 기능 추가 → 해당 subgraph에 노드 추가 / 시스템 매핑 → SYS 연결선 수정
+
+graph TB
+
+  classDef lcStyle fill:#DCEDC8,stroke:#33691E,stroke-width:2px,color:#1B5E20
+  classDef lgStyle fill:#B3E5FC,stroke:#01579B,stroke-width:2px,color:#01579B
+  classDef lsStyle fill:#FFE0B2,stroke:#E65100,stroke-width:2px,color:#BF360C
+  classDef sysStyle fill:#F3E5F5,stroke:#6A1B9A,stroke-width:2px,color:#4A148C
+  classDef compare fill:#ECEFF1,stroke:#455A64,stroke-width:1px,color:#263238
+  classDef header fill:#37474F,stroke:#263238,stroke-width:2px,color:#FFFFFF
+
+  subgraph CURRENT["현재 구현 (Current Implementation)"]
+    direction TB
+    C1["Python / FastAPI / service_full_run"]
+    C2["prompt_input → validation → Gemini"]
+    C3["parser → artifact → SMTP → admin approve"]
+    C1 --> C2 --> C3
+  end
+  class CURRENT header
+  class C1,C2,C3 compare
+
+  subgraph LC["LangChain 도입 후보"]
+    direction TB
+    LC_H["역할: 구성 요소 라이브러리"]
+    LC1["prompt template"]
+    LC2["model wrapper"]
+    LC3["structured output"]
+    LC4["tool abstraction"]
+    LC_H --> LC1 --> LC2 --> LC3 --> LC4
+  end
+  class LC_H header
+  class LC1,LC2,LC3,LC4 lcStyle
+
+  subgraph LG["LangGraph 도입 후보"]
+    direction TB
+    LG_H["역할: 워크플로 엔진"]
+    LG1["state machine"]
+    LG2["node graph"]
+    LG3["retry/safe-fail/resume"]
+    LG_H --> LG1 --> LG2 --> LG3
+  end
+  class LG_H header
+  class LG1,LG2,LG3 lgStyle
+
+  subgraph LS["LangSmith 도입 후보"]
+    direction TB
+    LS_H["역할: 관측 / 디버깅 플랫폼"]
+    LS1["tracing"]
+    LS2["observability"]
+    LS3["eval"]
+    LS4["regression tracking"]
+    LS_H --> LS1 --> LS2 --> LS3 --> LS4
+  end
+  class LS_H header
+  class LS1,LS2,LS3,LS4 lsStyle
+
+  subgraph REL["3자 관계"]
+    direction TB
+    R1["LangChain 컴포넌트를\nLangGraph 노드로 사용"]
+    R2["LangGraph 실행 흐름을\nLangSmith가 추적"]
+    R3["LangChain 체인 호출을\nLangSmith가 기록"]
+  end
+  class R1,R2,R3 compare
+
+  CURRENT ~~~ LC
+  LG --> R2
+  R2 --> LS
+  LC --> R3
+  R3 --> LS
+
+  subgraph SYS["GENIE x KeeSuri 시스템 내 적용 위치"]
+    direction TB
+    SYS1["Prompt Input Build\n프롬프트 조립 단계"]
+    SYS2["Gemini 호출 래핑\n모델 인터랙션"]
+    SYS3["Source to Validation to Delivery\n전체 파이프라인 제어"]
+    SYS4["분기 / 재시도 / safe-fail\n오류 복구 경로"]
+    SYS5["Gemini 호출 추적\n비용/지연/성공률"]
+    SYS6["Validation 결과 기록\n품질 평가 수집"]
+  end
+  class SYS1,SYS2,SYS3,SYS4,SYS5,SYS6 sysStyle
+
+  LC -.->|"적용"| SYS1
+  LC -.->|"적용"| SYS2
+  LG -.->|"적용"| SYS3
+  LG -.->|"적용"| SYS4
+  LS -.->|"적용"| SYS5
+  LS -.->|"적용"| SYS6
+
+  subgraph CAUTION["혼동 주의"]
+    direction TB
+    C1["LangChain != LangGraph\nLangChain은 부품\nLangGraph는 조립 라인"]
+    C2["LangGraph != LangSmith\nLangGraph는 실행\nLangSmith는 관찰"]
+    C3["LangSmith != LangChain\nLangSmith는 코드에 개입하지 않음"]
+  end
+  class C1,C2,C3 compare
