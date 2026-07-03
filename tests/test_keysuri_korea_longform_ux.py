@@ -376,6 +376,17 @@ class KeysuriKoreaMarketRendererHelpersTests(unittest.TestCase):
 
         self.assertEqual(infer_korea_market_lenses({"korean_title": "짧은 소식"}), [KOREA_MARKET_LENS_FALLBACK])
 
+    def test_empty_explicit_lens_falls_back_to_inference(self) -> None:
+        from keysuri_korea_longform_ux import infer_korea_market_lenses
+
+        item = {
+            "market_lens": [""],
+            "korean_title": "정부, AI 데이터센터 전력·인허가 가이드라인 개정",
+            "why_now": "국내 정책·공급망 변화가 겹치는 시점입니다.",
+        }
+        lenses = infer_korea_market_lenses(item)
+        self.assertIn("정책", lenses)
+
     def test_market_impact_line_explicit_field_wins(self) -> None:
         from keysuri_korea_longform_ux import build_korea_market_impact_line
 
@@ -383,6 +394,13 @@ class KeysuriKoreaMarketRendererHelpersTests(unittest.TestCase):
         self.assertEqual(
             build_korea_market_impact_line(item), "주식시장에서는 2차 반응을 먼저 봐야 합니다."
         )
+
+    def test_empty_market_impact_line_uses_fallback(self) -> None:
+        from keysuri_korea_longform_ux import build_korea_market_impact_line
+
+        item = {"market_impact": "   ", "market_lens": ["AI"], "korean_title": "AI 도입 확대"}
+        line = build_korea_market_impact_line(item, rank=1)
+        self.assertIn("AI 뉴스", line)
 
     def test_market_impact_line_fallback_not_empty_and_varies_by_rank(self) -> None:
         from keysuri_korea_longform_ux import build_korea_market_impact_line

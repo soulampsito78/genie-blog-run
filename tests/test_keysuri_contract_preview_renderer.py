@@ -1152,6 +1152,14 @@ class KeysuriKoreaMarketBriefingRenderTests(unittest.TestCase):
         self.assertIn("채권/금리 · 환율", html)
 
     @_require_contract_renderer
+    def test_empty_market_lens_field_falls_back_to_inference(self) -> None:
+        fixture = build_korea_contract_fixture()
+        fixture["top_5_items"][0]["market_lens"] = [""]
+        html = _render_contract_html(_CONTRACT_RENDERER, fixture)
+        self.assertIn("[시장 렌즈]", html)
+        self.assertNotIn("[시장 렌즈]</span> </p>", html)
+
+    @_require_contract_renderer
     def test_korea_deep_dive_display_title_is_market_judgment(self) -> None:
         html = _render_contract_html(_CONTRACT_RENDERER, build_korea_contract_fixture())
         self.assertIn("키수리의 시장 판단", html)

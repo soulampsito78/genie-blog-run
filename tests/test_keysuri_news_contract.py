@@ -754,6 +754,15 @@ class KeysuriKoreaMarketSignalFieldContractTests(unittest.TestCase):
         issues = validate_top_5_news_block("keysuri_korea_tech", block)
         self.assertEqual(issues, [])
 
+    def test_empty_market_lens_values_fall_back_without_blocking(self) -> None:
+        for empty_value in ("", "   ", [], [""], ["  "]):
+            with self.subTest(empty_value=empty_value):
+                block = self._korea_block_with_item_fields(market_lens=empty_value)
+                issues = validate_top_5_news_block("keysuri_korea_tech", block)
+                codes = {i["code"] for i in issues}
+                self.assertNotIn("top_5_news_item_market_lens_empty", codes)
+                self.assertEqual(issues, [])
+
     def test_unknown_market_lens_value_rejected(self) -> None:
         block = self._korea_block_with_item_fields(market_lens=["주식", "부동산"])
         issues = validate_top_5_news_block("keysuri_korea_tech", block)
@@ -766,6 +775,14 @@ class KeysuriKoreaMarketSignalFieldContractTests(unittest.TestCase):
         codes = {i["code"] for i in issues}
         self.assertIn("top_5_news_item_market_lens_invalid", codes)
 
+    def test_dangerous_market_lens_terms_rejected(self) -> None:
+        for value in ("매수", "강력추천", "총점"):
+            with self.subTest(value=value):
+                block = self._korea_block_with_item_fields(market_lens=[value])
+                issues = validate_top_5_news_block("keysuri_korea_tech", block)
+                codes = {i["code"] for i in issues}
+                self.assertIn("top_5_news_item_market_lens_forbidden", codes)
+
     def test_market_impact_buy_sell_directive_rejected(self) -> None:
         block = self._korea_block_with_item_fields(
             market_impact="이 종목은 내일 매수하시는 것이 좋습니다."
@@ -774,8 +791,19 @@ class KeysuriKoreaMarketSignalFieldContractTests(unittest.TestCase):
         codes = {i["code"] for i in issues}
         self.assertIn("top_5_news_item_market_impact_directive", codes)
 
-    def test_market_impact_empty_string_rejected(self) -> None:
+    def test_market_impact_score_terms_rejected(self) -> None:
+        block = self._korea_block_with_item_fields(market_impact="총점 95점으로 강력추천합니다.")
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        codes = {i["code"] for i in issues}
+        self.assertIn("top_5_news_item_market_impact_directive", codes)
+
+    def test_market_impact_empty_string_falls_back_without_blocking(self) -> None:
         block = self._korea_block_with_item_fields(market_impact="   ")
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        self.assertEqual(issues, [])
+
+    def test_market_impact_wrong_type_rejected(self) -> None:
+        block = self._korea_block_with_item_fields(market_impact=[])
         issues = validate_top_5_news_block("keysuri_korea_tech", block)
         codes = {i["code"] for i in issues}
         self.assertIn("top_5_news_item_market_impact_invalid", codes)

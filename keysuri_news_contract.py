@@ -104,8 +104,20 @@ KOREA_MARKET_LENS_VALUES = frozenset(
     }
 )
 
-# market_impact must be a market-consequence judgment, never a trade directive.
-KOREA_MARKET_IMPACT_FORBIDDEN_DIRECTIVES: Tuple[str, ...] = ("매수", "매도")
+# Korea market fields are optional. Empty values are treated like missing values
+# so old artifacts / partial Gemini output can fall back to renderer inference;
+# non-empty dangerous terms remain blocking.
+KOREA_MARKET_FIELD_FORBIDDEN_TERMS: Tuple[str, ...] = (
+    "매수",
+    "매도",
+    "강력추천",
+    "점수",
+    "스코어",
+    "총점",
+)
+
+# Backward-compatible alias for tests/callers that import the old name.
+KOREA_MARKET_IMPACT_FORBIDDEN_DIRECTIVES: Tuple[str, ...] = KOREA_MARKET_FIELD_FORBIDDEN_TERMS
 
 
 def parse_korea_market_lens_values(raw: Any) -> List[str]:
@@ -433,15 +445,21 @@ def validate_top_5_news_block(program_id: str, top_5_news: dict) -> List[Dict[st
                     )
                 else:
                     lens_values = parse_korea_market_lens_values(lens_raw)
-                    if not lens_values:
-                        issues.append(
-                            _issue(
-                                "top_5_news_item_market_lens_empty",
-                                "market_lens must contain at least one label when present",
-                                f"{prefix}.market_lens",
+                    if lens_values:
+                        forbidden = [
+                            term
+                            for value in lens_values
+                            for term in KOREA_MARKET_FIELD_FORBIDDEN_TERMS
+                            if term in value
+                        ]
+                        if forbidden:
+                            issues.append(
+                                _issue(
+                                    "top_5_news_item_market_lens_forbidden",
+                                    f"market_lens must not contain forbidden visible terms: {forbidden!r}",
+                                    f"{prefix}.market_lens",
+                                )
                             )
-                        )
-                    else:
                         unknown = [v for v in lens_values if v not in KOREA_MARKET_LENS_VALUES]
                         if unknown:
                             issues.append(
@@ -453,17 +471,17 @@ def validate_top_5_news_block(program_id: str, top_5_news: dict) -> List[Dict[st
                             )
             impact_raw = item.get("market_impact")
             if impact_raw is not None:
-                if not _is_non_empty_str(impact_raw):
+                if not isinstance(impact_raw, str):
                     issues.append(
                         _issue(
                             "top_5_news_item_market_impact_invalid",
-                            "market_impact must be a non-empty string when present",
+                            "market_impact must be a string when present",
                             f"{prefix}.market_impact",
                         )
                     )
                 else:
-                    impact_text = str(impact_raw)
-                    hit = [d for d in KOREA_MARKET_IMPACT_FORBIDDEN_DIRECTIVES if d in impact_text]
+                    impact_text = str(impact_raw).strip()
+                    hit = [d for d in KOREA_MARKET_FIELD_FORBIDDEN_TERMS if d in impact_text]
                     if hit:
                         issues.append(
                             _issue(
