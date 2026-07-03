@@ -10,6 +10,10 @@ from keysuri_generated_briefing import (
     GENERATED_STATUS_REQUIRED,
     validate_keysuri_generated_briefing,
 )
+from keysuri_news_contract import (
+    KEYSURI_MARKET_LENS_NORMALIZED_ISSUE_CODE,
+    repair_korea_market_lens_fields_in_top5,
+)
 from keysuri_private_briefing import (
     REQUIRED_OPERATIONAL_STATUS,
     SECTION_CLOSING,
@@ -415,6 +419,56 @@ def _repair_deep_dive_key_implications_for_parse(
     return out, diagnostics
 
 
+def _repair_korea_market_lens_for_parse(
+    obj: Dict[str, Any],
+    program_id: str,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    pid = (program_id or "").strip()
+    diagnostics: Dict[str, Any] = {
+        "korea_market_lens_repair_attempted": False,
+        "korea_market_lens_repair_success": False,
+    }
+    if pid != "keysuri_korea_tech":
+        return obj, diagnostics
+
+    top_5 = obj.get("top_5_news")
+    if not isinstance(top_5, dict):
+        return obj, diagnostics
+
+    diagnostics["korea_market_lens_repair_attempted"] = True
+    out = copy.deepcopy(obj)
+    repaired_top5, repair_notes = repair_korea_market_lens_fields_in_top5(
+        dict(out.get("top_5_news") or {})
+    )
+    out["top_5_news"] = repaired_top5
+    if repair_notes:
+        diagnostics.update(
+            {
+                "korea_market_lens_repair_success": True,
+                "korea_market_lens_repair_reason": "alias_or_fallback_normalization",
+                "korea_market_lens_repair_notes": repair_notes,
+                "internal_issue_codes": [KEYSURI_MARKET_LENS_NORMALIZED_ISSUE_CODE],
+            }
+        )
+    return out, diagnostics
+
+
+def _repair_parsed_candidate_for_parse(
+    obj: Dict[str, Any],
+    prompt_input: dict,
+    program_id: str,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    repaired, deep_diag = _repair_deep_dive_key_implications_for_parse(obj, prompt_input)
+    repaired, lens_diag = _repair_korea_market_lens_for_parse(repaired, program_id)
+    diagnostics = dict(deep_diag)
+    diagnostics.update(lens_diag)
+    deep_codes = list(diagnostics.get("internal_issue_codes") or [])
+    lens_codes = list(lens_diag.get("internal_issue_codes") or [])
+    if deep_codes or lens_codes:
+        diagnostics["internal_issue_codes"] = deep_codes + lens_codes
+    return repaired, diagnostics
+
+
 def _enrich_top5_with_selection_metadata(prompt_input: dict) -> dict:
     """Attach scored TOP5 selection metadata for Gemini depth enforcement."""
     top_5 = prompt_input.get("top_5_news")
@@ -680,6 +734,9 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
                 "KOREA MARKET SIGNAL OUTPUT FIELDS (explicit, per TOP5 item — do not rely on downstream inference)",
                 "- market_lens: array of 1-3 labels, ONLY from this list: 주식, 채권/금리, 환율, 정책, 산업, AI, "
                 "대기업 투자, 중소기업, 일자리, 자영업, 인프라, 조달, 규제.",
+                "- Do NOT use impact-axis names as market_lens labels: 개인 투자자, 사업자/프리랜서, "
+                "관련 업종, 협력사/소부장, 일자리/지역, 투자, 투자자, 수혜주.",
+                "- Put those perspectives in market_impact or impact-translation prose only — never as market_lens values.",
                 "- market_impact: exactly one Korean sentence stating the market consequence for this item — "
                 "not an article recap. It should translate where the signal lands for related industries, "
                 "suppliers/materials/parts/equipment, jobs/regions, ordinary investors, or SMB/freelancers.",
@@ -1024,9 +1081,10 @@ def parse_keysuri_generated_response(
     best_score = -1
     valid_indices: List[int] = []
     for idx, obj in enumerate(candidates):
-        repaired_obj, repair_diag = _repair_deep_dive_key_implications_for_parse(
+        repaired_obj, repair_diag = _repair_parsed_candidate_for_parse(
             obj,
             prompt_input,
+            pid,
         )
         repaired_candidates.append(repaired_obj)
         repair_diagnostics.append(repair_diag)

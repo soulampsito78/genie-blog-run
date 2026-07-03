@@ -235,6 +235,18 @@ class KeysuriGenerationPromptContractTests(unittest.TestCase):
         self.assertIn("market_impact: exactly one Korean sentence", prompt)
         self.assertIn("NEVER contain buy/sell directives", prompt)
 
+    def test_korea_prompt_forbids_impact_axis_names_in_market_lens(self) -> None:
+        prompt = build_keysuri_generation_prompt(_korea_prompt())
+        self.assertIn("Do NOT use impact-axis names as market_lens labels", prompt)
+        for forbidden_label in ("개인 투자자", "투자", "투자자", "수혜주"):
+            with self.subTest(forbidden_label=forbidden_label):
+                self.assertIn(forbidden_label, prompt)
+
+    def test_korea_prompt_requires_single_json_object_only(self) -> None:
+        prompt = build_keysuri_generation_prompt(_korea_prompt())
+        self.assertIn("Return exactly one JSON object.", prompt)
+        self.assertIn("No second corrected JSON. No duplicate JSON object.", prompt)
+
     def test_korea_output_schema_example_includes_market_fields(self) -> None:
         contract = build_keysuri_generation_prompt_contract(_korea_prompt())
         items = contract["required_output_schema"]["top_5_news"]["items"]

@@ -111,13 +111,59 @@ KOREA_MARKET_FIELD_FORBIDDEN_TERMS: Tuple[str, ...] = (
     "매수",
     "매도",
     "강력추천",
+    "추천 종목",
+    "목표가",
+    "목표주가",
     "점수",
     "스코어",
     "총점",
+    "90점",
+    "투자하라",
+    "사라",
+    "팔아라",
+    "지금 사라",
+    "지금 팔아라",
 )
 
 # Backward-compatible alias for tests/callers that import the old name.
 KOREA_MARKET_IMPACT_FORBIDDEN_DIRECTIVES: Tuple[str, ...] = KOREA_MARKET_FIELD_FORBIDDEN_TERMS
+
+# Contract fallback when Gemini emits a non-dangerous unknown market_lens label.
+# Use 산업 — Korea Tech is a broad industry/market-signal briefing; defaulting unknown
+# labels to 주식 would over-index stock/investment framing.
+KOREA_MARKET_LENS_CONTRACT_FALLBACK = "산업"
+
+# Non-dangerous alias labels map to the allowed enum above — never add "투자" as a
+# formal enum; impact-axis names belong in market_impact prose only.
+KOREA_MARKET_LENS_ALIASES: Dict[str, str] = {
+    "투자": "주식",
+    "투자자": "주식",
+    "개인 투자자": "주식",
+    "투자 관점": "주식",
+    "주가": "주식",
+    "증시": "주식",
+    "수혜주": "주식",
+    "시장 신호": "산업",
+    "정책금융": "정책",
+    "정책 신호": "정책",
+    "산업 신호": "산업",
+    "사업 신호": "중소기업",
+    "기업": "중소기업",
+    "사업": "중소기업",
+    "소부장": "산업",
+    "협력사": "산업",
+    "장비": "산업",
+    "소재": "산업",
+    "부품": "산업",
+    "패키징": "산업",
+    "전력": "인프라",
+    "데이터센터": "인프라",
+    "지역": "일자리",
+    "프리랜서": "자영업",
+    "생활 영향": "일자리",
+}
+
+KEYSURI_MARKET_LENS_NORMALIZED_ISSUE_CODE = "keysuri_market_lens_normalized"
 
 
 def parse_korea_market_lens_values(raw: Any) -> List[str]:
@@ -129,6 +175,85 @@ def parse_korea_market_lens_values(raw: Any) -> List[str]:
     if not text:
         return []
     return [part.strip() for part in re.split(r"[·,]", text) if part.strip()]
+
+
+def korea_market_lens_value_is_dangerous(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return any(term in text for term in KOREA_MARKET_FIELD_FORBIDDEN_TERMS)
+
+
+def normalize_korea_market_lens_single(value: str) -> Tuple[Optional[str], bool]:
+    """Map one label to an allowed enum. Returns (normalized, used_fallback)."""
+    text = str(value or "").strip()
+    if not text:
+        return None, False
+    if text in KOREA_MARKET_LENS_VALUES:
+        return text, False
+    if korea_market_lens_value_is_dangerous(text):
+        return text, False
+    mapped = KOREA_MARKET_LENS_ALIASES.get(text)
+    if mapped:
+        return mapped, False
+    return KOREA_MARKET_LENS_CONTRACT_FALLBACK, True
+
+
+def normalize_korea_market_lens_values(raw: Any) -> Tuple[List[str], List[str]]:
+    """Normalize parsed market_lens labels; return repair notes for alias/fallback use."""
+    parsed = parse_korea_market_lens_values(raw)
+    if not parsed:
+        return [], []
+
+    normalized: List[str] = []
+    repairs: List[str] = []
+    seen: Set[str] = set()
+    for value in parsed:
+        if korea_market_lens_value_is_dangerous(value):
+            if value not in seen:
+                normalized.append(value)
+                seen.add(value)
+            continue
+        mapped, used_fallback = normalize_korea_market_lens_single(value)
+        if mapped is None:
+            continue
+        if used_fallback or (mapped != value and value not in KOREA_MARKET_LENS_VALUES):
+            repairs.append(f"{value}->{mapped}")
+        if mapped not in seen:
+            normalized.append(mapped)
+            seen.add(mapped)
+    return normalized, repairs
+
+
+def repair_korea_market_lens_fields_in_top5(top_5_news: dict) -> Tuple[dict, List[str]]:
+    """In-place repair of Korea TOP5 market_lens values; returns repair notes."""
+    if not isinstance(top_5_news, dict):
+        return top_5_news, []
+    repairs: List[str] = []
+    items = top_5_news.get("items")
+    if not isinstance(items, list):
+        return top_5_news, repairs
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict) or "market_lens" not in item:
+            continue
+        lens_raw = item.get("market_lens")
+        if lens_raw is None:
+            continue
+        parsed = parse_korea_market_lens_values(lens_raw)
+        if not parsed:
+            continue
+        if any(korea_market_lens_value_is_dangerous(v) for v in parsed):
+            continue
+        normalized, notes = normalize_korea_market_lens_values(lens_raw)
+        if not normalized:
+            continue
+        if notes:
+            repairs.extend(f"items[{idx}].market_lens:{note}" for note in notes)
+        if isinstance(lens_raw, str):
+            item["market_lens"] = " · ".join(normalized)
+        else:
+            item["market_lens"] = normalized
+    return top_5_news, repairs
 
 
 def get_news_categories_for_program(program_id: str) -> frozenset[str]:
@@ -471,15 +596,17 @@ def validate_top_5_news_block(program_id: str, top_5_news: dict) -> List[Dict[st
                                     f"{prefix}.market_lens",
                                 )
                             )
-                        unknown = [v for v in lens_values if v not in KOREA_MARKET_LENS_VALUES]
-                        if unknown:
-                            issues.append(
-                                _issue(
-                                    "top_5_news_item_market_lens_unknown",
-                                    f"market_lens values not in contract: {unknown!r}",
-                                    f"{prefix}.market_lens",
+                        else:
+                            normalized_lens, _ = normalize_korea_market_lens_values(lens_raw)
+                            unknown = [v for v in normalized_lens if v not in KOREA_MARKET_LENS_VALUES]
+                            if unknown:
+                                issues.append(
+                                    _issue(
+                                        "top_5_news_item_market_lens_unknown",
+                                        f"market_lens values not in contract: {unknown!r}",
+                                        f"{prefix}.market_lens",
+                                    )
                                 )
-                            )
             impact_raw = item.get("market_impact")
             if impact_raw is not None:
                 if not isinstance(impact_raw, str):

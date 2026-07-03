@@ -789,11 +789,59 @@ class KeysuriKoreaMarketSignalFieldContractTests(unittest.TestCase):
                 self.assertNotIn("top_5_news_item_market_lens_empty", codes)
                 self.assertEqual(issues, [])
 
-    def test_unknown_market_lens_value_rejected(self) -> None:
+    def test_unknown_market_lens_value_falls_back_without_blocking(self) -> None:
         block = self._korea_block_with_item_fields(market_lens=["주식", "부동산"])
         issues = validate_top_5_news_block("keysuri_korea_tech", block)
         codes = {i["code"] for i in issues}
-        self.assertIn("top_5_news_item_market_lens_unknown", codes)
+        self.assertNotIn("top_5_news_item_market_lens_unknown", codes)
+        self.assertEqual(issues, [])
+
+    def test_market_lens_investment_alias_normalizes_to_stock(self) -> None:
+        for value in ("투자", ["투자"], ["투자자"], ["개인 투자자"]):
+            with self.subTest(value=value):
+                block = self._korea_block_with_item_fields(market_lens=value)
+                issues = validate_top_5_news_block("keysuri_korea_tech", block)
+                self.assertEqual(issues, [], issues)
+
+    def test_market_lens_policy_finance_alias_normalizes(self) -> None:
+        block = self._korea_block_with_item_fields(market_lens=["정책금융"])
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        self.assertEqual(issues, [])
+
+    def test_market_lens_subcontractor_alias_normalizes(self) -> None:
+        block = self._korea_block_with_item_fields(market_lens=["소부장"])
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        self.assertEqual(issues, [])
+
+    def test_normalize_korea_market_lens_values_maps_investment_aliases(self) -> None:
+        from keysuri_news_contract import normalize_korea_market_lens_values
+
+        for raw in ("투자", ["투자"], ["투자자"], ["개인 투자자"]):
+            with self.subTest(raw=raw):
+                normalized, repairs = normalize_korea_market_lens_values(raw)
+                self.assertEqual(normalized, ["주식"])
+                self.assertTrue(repairs)
+
+    def test_normalize_korea_market_lens_values_unknown_non_dangerous_fallback(self) -> None:
+        from keysuri_news_contract import normalize_korea_market_lens_values
+
+        normalized, repairs = normalize_korea_market_lens_values(["부동산"])
+        self.assertEqual(normalized, ["산업"])
+        self.assertEqual(repairs, ["부동산->산업"])
+
+    def test_dangerous_market_lens_sell_term_rejected(self) -> None:
+        block = self._korea_block_with_item_fields(market_lens=["매도"])
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        codes = {i["code"] for i in issues}
+        self.assertIn("top_5_news_item_market_lens_forbidden", codes)
+
+    def test_dangerous_market_lens_score_term_rejected(self) -> None:
+        for value in ("점수", "총점"):
+            with self.subTest(value=value):
+                block = self._korea_block_with_item_fields(market_lens=[value])
+                issues = validate_top_5_news_block("keysuri_korea_tech", block)
+                codes = {i["code"] for i in issues}
+                self.assertIn("top_5_news_item_market_lens_forbidden", codes)
 
     def test_market_lens_wrong_type_rejected(self) -> None:
         block = self._korea_block_with_item_fields(market_lens={"lens": "주식"})
@@ -808,6 +856,12 @@ class KeysuriKoreaMarketSignalFieldContractTests(unittest.TestCase):
                 issues = validate_top_5_news_block("keysuri_korea_tech", block)
                 codes = {i["code"] for i in issues}
                 self.assertIn("top_5_news_item_market_lens_forbidden", codes)
+
+    def test_market_impact_investment_directive_phrase_rejected(self) -> None:
+        block = self._korea_block_with_item_fields(market_impact="지금 사라. 내일 팔아라.")
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        codes = {i["code"] for i in issues}
+        self.assertIn("top_5_news_item_market_impact_directive", codes)
 
     def test_market_impact_buy_sell_directive_rejected(self) -> None:
         block = self._korea_block_with_item_fields(
@@ -848,6 +902,14 @@ class KeysuriKoreaMarketSignalFieldContractTests(unittest.TestCase):
             parse_korea_market_lens_values("주식 · 채권/금리, 환율"),
             ["주식", "채권/금리", "환율"],
         )
+
+    def test_repair_korea_market_lens_fields_maps_investment_alias(self) -> None:
+        from keysuri_news_contract import repair_korea_market_lens_fields_in_top5
+
+        block = self._korea_block_with_item_fields(market_lens=["투자"])
+        repaired, notes = repair_korea_market_lens_fields_in_top5(block)
+        self.assertEqual(repaired["items"][0]["market_lens"], ["주식"])
+        self.assertTrue(notes)
 
 
 if __name__ == "__main__":
