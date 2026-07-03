@@ -18,11 +18,17 @@ from keysuri_korea_longform_ux import (
     contains_truncated_headline_fragment,
     finalize_korea_visible_field,
     has_incomplete_korean_sentence_ending,
+    korea_checkpoint_lacks_confirm_and_hold,
+    korea_cliche_phrase_overused,
     korea_closing_paragraph_too_long,
     korea_deep_block_too_long,
+    korea_deep_dive_repeats_top5_headline,
     korea_deep_dive_uses_forbidden_labels,
     korea_evening_memo_too_thin,
+    korea_market_lens_axis_count,
+    korea_market_lens_insufficient,
     korea_memo_action_line_too_long,
+    korea_risk_lacks_hold_criteria,
     korea_warm_farewell_missing,
     remove_truncated_headline_fragments,
     repair_incomplete_korean_visible_text,
@@ -289,6 +295,231 @@ class KeysuriKoreaLongformUxTests(unittest.TestCase):
         self.assertNotIn("퇴근 전 메모", html)
         self.assertNotIn("오늘도 수고 많으셨습니다.", html)
         self.assertIn("deep-dive-prose", html)
+
+
+class KeysuriKoreaMarketSignalBriefingTests(unittest.TestCase):
+    """Korea Tech reposition: market-signal briefing checks, not news-summary checks."""
+
+    def test_market_lens_axis_count_recognizes_multiple_axes(self) -> None:
+        text = (
+            "오늘은 코스피 반응과 함께 원달러 환율, 기준금리 발표가 겹쳤습니다. "
+            "대기업 투자 일정도 함께 살펴야 합니다."
+        )
+        self.assertGreaterEqual(korea_market_lens_axis_count(text), 3)
+        self.assertFalse(korea_market_lens_insufficient(text))
+
+    def test_market_lens_insufficient_when_only_tech_recap(self) -> None:
+        text = "오늘 국내에서 AI 모델이 새로 출시되었다는 소식이 있었습니다."
+        self.assertTrue(korea_market_lens_insufficient(text))
+
+    def test_cliche_phrase_overuse_requires_repetition_not_single_use(self) -> None:
+        single_use = "이 흐름은 구조 변화를 구분해 보는 것이 중요합니다."
+        self.assertFalse(korea_cliche_phrase_overused(single_use))
+        repeated = "오늘 뉴스는 중요합니다. 저 뉴스도 중요합니다. 이 흐름도 중요합니다."
+        self.assertTrue(korea_cliche_phrase_overused(repeated))
+
+    def test_risk_lacks_hold_criteria_flags_abstract_warning(self) -> None:
+        abstract = "이 뉴스는 위험할 수 있습니다."
+        self.assertTrue(korea_risk_lacks_hold_criteria(abstract))
+        concrete = "실제 발주 일정이 확정되기 전까지는 판단을 보류하시는 편이 안전합니다."
+        self.assertFalse(korea_risk_lacks_hold_criteria(concrete))
+
+    def test_default_risk_fallback_satisfies_hold_criteria(self) -> None:
+        sections = structure_korea_deep_dive("", _top_items())
+        risk = next(section for section in sections if section["label"] == "위험 요인")
+        self.assertFalse(korea_risk_lacks_hold_criteria(risk["body"]))
+
+    def test_checkpoint_lacks_confirm_and_hold_flags_bare_recap(self) -> None:
+        bare = "오늘 신호는 기회와 리스크가 동시에 이동하고 있습니다."
+        self.assertTrue(korea_checkpoint_lacks_confirm_and_hold(bare))
+        actionable = "내일은 발주 일정을 먼저 확인하고, 숫자가 확정되기 전까지는 판단을 보류하시면 됩니다."
+        self.assertFalse(korea_checkpoint_lacks_confirm_and_hold(actionable))
+
+    def test_default_checkpoint_synthesis_satisfies_confirm_and_hold(self) -> None:
+        checkpoint = build_korea_one_line_checkpoint(_top_items(), existing="")
+        self.assertFalse(korea_checkpoint_lacks_confirm_and_hold(checkpoint))
+
+    def test_deep_dive_repeats_top5_headline_detects_verbatim_recap(self) -> None:
+        items = [{"korean_title": "엔비디아 CEO 방한, HBM4 협력 논의"}]
+        recap_sections = [
+            {"label": "글로벌 영향", "body": "엔비디아 CEO 방한, HBM4 협력 논의가 있었습니다."}
+        ]
+        self.assertTrue(korea_deep_dive_repeats_top5_headline(recap_sections, items))
+
+    def test_deep_dive_synthesis_does_not_flag_as_recap(self) -> None:
+        sections = structure_korea_deep_dive("", _top_items())
+        self.assertFalse(korea_deep_dive_repeats_top5_headline(sections, _top_items()))
+
+
+class KeysuriKoreaMarketRendererHelpersTests(unittest.TestCase):
+    """Helpers backing the Korea market-briefing renderer UX (Phase 2)."""
+
+    def test_lens_inference_from_item_text(self) -> None:
+        from keysuri_korea_longform_ux import infer_korea_market_lenses
+
+        item = {
+            "korean_title": "정부, AI 데이터센터 전력·인허가 가이드라인 개정",
+            "why_now": "국내 정책·공급망 변화가 겹치는 시점입니다.",
+        }
+        lenses = infer_korea_market_lenses(item)
+        self.assertIn("정책", lenses)
+        self.assertLessEqual(len(lenses), 3)
+
+    def test_lens_explicit_field_takes_priority(self) -> None:
+        from keysuri_korea_longform_ux import infer_korea_market_lenses
+
+        item = {"market_lens": "주식 · 환율", "korean_title": "정부 정책 발표"}
+        self.assertEqual(infer_korea_market_lenses(item), ["주식", "환율"])
+
+    def test_lens_fallback_never_empty(self) -> None:
+        from keysuri_korea_longform_ux import KOREA_MARKET_LENS_FALLBACK, infer_korea_market_lenses
+
+        self.assertEqual(infer_korea_market_lenses({"korean_title": "짧은 소식"}), [KOREA_MARKET_LENS_FALLBACK])
+
+    def test_market_impact_line_explicit_field_wins(self) -> None:
+        from keysuri_korea_longform_ux import build_korea_market_impact_line
+
+        item = {"market_impact": "주식시장에서는 2차 반응을 먼저 봐야 합니다.", "korean_title": "삼성 투자"}
+        self.assertEqual(
+            build_korea_market_impact_line(item), "주식시장에서는 2차 반응을 먼저 봐야 합니다."
+        )
+
+    def test_market_impact_line_fallback_not_empty_and_varies_by_rank(self) -> None:
+        from keysuri_korea_longform_ux import build_korea_market_impact_line
+
+        item = {"korean_title": "정부, AI 예산·조달 정책 발표", "why_now": "정책 일정이 겹칩니다."}
+        lines = {build_korea_market_impact_line(item, rank=r) for r in (1, 2, 3)}
+        self.assertTrue(all(lines))
+        self.assertGreaterEqual(len(lines), 2)
+
+    def test_market_impact_lines_avoid_news_summary_cliches(self) -> None:
+        from keysuri_korea_longform_ux import (
+            _KOREA_MARKET_IMPACT_POOLS,
+            KOREA_NEWS_SUMMARY_CLICHE_PHRASES,
+        )
+
+        for pool in _KOREA_MARKET_IMPACT_POOLS.values():
+            for sentence in pool:
+                for cliche in KOREA_NEWS_SUMMARY_CLICHE_PHRASES:
+                    self.assertNotIn(cliche, sentence)
+                for directive in ("매수", "매도"):
+                    self.assertNotIn(directive, sentence)
+
+    def test_tomorrow_checkpoint_parts_have_confirm_and_hold(self) -> None:
+        from keysuri_korea_longform_ux import build_korea_tomorrow_checkpoint_parts
+
+        confirm, hold = build_korea_tomorrow_checkpoint_parts(_top_items()[0])
+        self.assertTrue(confirm)
+        self.assertTrue(hold)
+        confirm_empty, hold_empty = build_korea_tomorrow_checkpoint_parts({"korean_title": "신호"})
+        self.assertTrue(confirm_empty)
+        self.assertTrue(hold_empty)
+
+    def test_market_impact_summary_min_three_axes(self) -> None:
+        from keysuri_korea_longform_ux import build_korea_market_impact_summary
+
+        rows = build_korea_market_impact_summary(_top_items())
+        self.assertGreaterEqual(len(rows), 3)
+        axes = {row["axis"] for row in rows}
+        self.assertIn("주식시장", axes)
+        self.assertIn("개인/사업자", axes)
+        for row in rows:
+            self.assertTrue(row["body"])
+            self.assertNotIn("매수", row["body"])
+            self.assertNotIn("매도", row["body"])
+
+    def test_follow_hold_blocks_have_min_entries(self) -> None:
+        from keysuri_korea_longform_ux import build_korea_follow_hold_blocks
+
+        blocks = build_korea_follow_hold_blocks(_top_items())
+        self.assertGreaterEqual(len(blocks["follow"]), 1)
+        self.assertGreaterEqual(len(blocks["hold"]), 2)
+        blocks_empty = build_korea_follow_hold_blocks([])
+        self.assertGreaterEqual(len(blocks_empty["follow"]), 1)
+        self.assertGreaterEqual(len(blocks_empty["hold"]), 2)
+
+    def test_market_frame_line_synthesizes_structure_not_recap(self) -> None:
+        from keysuri_korea_longform_ux import build_korea_market_frame_line
+
+        frame = build_korea_market_frame_line(_top_items())
+        self.assertIn("오늘 다섯 신호를 하나로 보면", frame)
+        self.assertIn("시장 구조", frame)
+        self.assertNotIn("엔비디아 CEO 방한, HBM4 협력 논의", frame)
+        self.assertLess(len(frame), 220)
+
+
+class KeysuriKoreaMarketContractHardeningTests(unittest.TestCase):
+    """Phase 3: explicit-field priority, lens label integrity, follow/memo dedupe."""
+
+    def test_explicit_bond_rate_lens_label_not_split(self) -> None:
+        from keysuri_korea_longform_ux import infer_korea_market_lenses
+
+        item = {"market_lens": "채권/금리 · 환율", "korean_title": "금리 뉴스"}
+        self.assertEqual(infer_korea_market_lenses(item), ["채권/금리", "환율"])
+
+    def test_explicit_bond_rate_lens_maps_to_impact_pool(self) -> None:
+        from keysuri_korea_longform_ux import build_korea_market_impact_line
+
+        item = {"market_lens": ["채권/금리"], "korean_title": "기준금리 발표"}
+        line = build_korea_market_impact_line(item, rank=1)
+        self.assertIn("금리", line)
+
+    def test_compress_follow_check_item_shortens_memo_sentence(self) -> None:
+        from keysuri_korea_longform_ux import compress_to_follow_check_item
+
+        memo_line = "항목 1 관련 공식 발표·가격·일정 공개 여부를 확인하세요"
+        short = compress_to_follow_check_item(memo_line)
+        self.assertNotEqual(short, memo_line)
+        self.assertTrue(short.endswith("확인"))
+
+    def test_follow_lines_never_verbatim_repeat_memo_action_lines(self) -> None:
+        from keysuri_korea_longform_ux import (
+            build_korea_evening_memo,
+            build_korea_follow_hold_blocks,
+        )
+
+        items = _top_items()
+        follow = build_korea_follow_hold_blocks(items)["follow"]
+        memo_lines = build_korea_evening_memo(items)["action_lines"]
+        overlap = set(follow) & set(memo_lines)
+        self.assertEqual(overlap, set(), overlap)
+        self.assertGreaterEqual(len(follow), 1)
+
+    def test_follow_lines_differ_even_for_noun_style_watch_items(self) -> None:
+        from keysuri_korea_longform_ux import (
+            build_korea_evening_memo,
+            build_korea_follow_hold_blocks,
+        )
+
+        items = [
+            {
+                "korean_title": "국내 반도체 공급망 신호",
+                "next_watch": "삼성전자 HBM4 후속 일정; 국내 팹 투자 발표",
+            }
+        ]
+        follow = build_korea_follow_hold_blocks(items)["follow"]
+        memo_lines = build_korea_evening_memo(items)["action_lines"]
+        self.assertEqual(set(follow) & set(memo_lines), set())
+
+    def test_fixture_mapper_passes_market_fields_for_korea_only(self) -> None:
+        from keysuri_contract_preview_fixture import _map_top_item
+
+        item = {
+            "korean_title": "국내 클라우드 GPU 조달 일정",
+            "market_lens": ["주식", "채권/금리"],
+            "market_impact": "주식시장에서는 직접 수혜보다 2차 반응을 봐야 합니다.",
+            "source_ids": ["s1"],
+        }
+        korea_out = _map_top_item(
+            item, src={}, source_pack={}, rank=1, program_id="keysuri_korea_tech"
+        )
+        self.assertEqual(korea_out.get("market_lens"), ["주식", "채권/금리"])
+        self.assertIn("2차 반응", korea_out.get("market_impact") or "")
+        global_out = _map_top_item(
+            item, src={}, source_pack={}, rank=1, program_id="keysuri_global_tech"
+        )
+        self.assertNotIn("market_lens", global_out)
+        self.assertNotIn("market_impact", global_out)
 
 
 if __name__ == "__main__":

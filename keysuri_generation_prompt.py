@@ -25,6 +25,55 @@ PROGRAM_GLOBAL = "keysuri_global_tech"
 PROGRAM_KOREA = "keysuri_korea_tech"
 KEYSURI_DEEP_DIVE_KEY_IMPL_REPAIR_CODE = "keysuri_deep_dive_key_implications_repaired"
 
+# Kee-Suri Korea Tech market-signal-briefing lenses. Every TOP5 item should bridge
+# to at least 3 of these so the briefing reads as a Korea-market judgment briefing,
+# not a domestic IT news summary.
+KOREA_MARKET_LENS_AXES: Tuple[str, ...] = (
+    "주식시장",
+    "채권시장",
+    "환율",
+    "금리",
+    "대기업 투자",
+    "정부 정책",
+    "산업 생태계",
+    "중소기업·자영업자·직장인·일자리 영향",
+    "AI 도입으로 바뀌는 업종",
+    "내일 시장 반응 가능성",
+)
+
+# Action-posture labels for keysuri_judgment on Korea Tech items — a judgment, not
+# a news-ranking label.
+KOREA_JUDGMENT_ACTION_POSTURES: Tuple[str, ...] = (
+    "바로 따라갈 신호",
+    "아직 확인이 필요한 신호",
+    "과열 가능성이 있는 신호",
+    "중장기 관찰 신호",
+    "정책/금리/환율 확인 전 보류 신호",
+)
+
+# Press-release / wire-summary cliches. Occasional single use is normal Korean
+# prose; repetition is what makes a briefing read like an auto-summarized news
+# digest instead of a market-judgment briefing.
+KOREA_NEWS_SUMMARY_FORBIDDEN_PHRASES: Tuple[str, ...] = (
+    "의미 있는 신호",
+    "영향을 줄 수 있습니다",
+    "중요합니다",
+    "검토해야 합니다",
+    "주목해야 합니다",
+    "발표했습니다",
+    "밝혔습니다",
+    "추진합니다",
+)
+
+KOREA_RECOMMENDED_MARKET_JUDGMENT_PHRASES: Tuple[str, ...] = (
+    "바로 따라가기보다 먼저 확인할 축은 발주와 일정입니다.",
+    "이 뉴스는 숫자보다 발주/일정 확인이 먼저입니다.",
+    "주식시장에서는 직접 수혜보다 2차 반응을 봐야 합니다.",
+    "금리·환율 환경이 불리하면 기대감만으로 오래 버티기 어렵습니다.",
+    "정책 발표와 실제 예산/조달 일정은 분리해서 봐야 합니다.",
+    "일반 고객에게는 투자 뉴스보다 비용 구조 변화가 더 중요합니다.",
+)
+
 _FORBIDDEN_VISIBLE_SCORE_TERMS: Tuple[str, ...] = (
     "총점",
     "점수",
@@ -52,6 +101,8 @@ _GLOBAL_TOP5_METADATA_KEYS: Tuple[str, ...] = (
 )
 
 _KOREA_TOP5_METADATA_KEYS: Tuple[str, ...] = (
+    "market_lens",
+    "market_impact",
     "selection_score",
     "selection_score_before_diversity",
     "selection_rationale",
@@ -406,6 +457,15 @@ def _required_output_schema(program_id: str) -> Dict[str, Any]:
         "global" if program_id == "keysuri_global_tech" else "korea"
     )
     base["section_heading"] = base["top_5_news"]["section_heading"]
+    if _is_korea_program(program_id):
+        # Korea-only optional market-signal fields, shown in the schema example so
+        # Gemini emits them explicitly instead of relying on renderer inference.
+        for example_item in base["top_5_news"].get("items") or []:
+            if isinstance(example_item, dict):
+                example_item["market_lens"] = ["주식", "산업"]
+                example_item["market_impact"] = (
+                    "주식시장에서는 직접 수혜보다 2차 반응을 봐야 합니다."
+                )
     return base
 
 
@@ -575,6 +635,9 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
             [
                 "",
                 "KOREA TECH 18:30 LENS (mandatory for keysuri_korea_tech)",
+                "- Kee-Suri Korea Tech is NOT a domestic IT news summary (국내 IT 뉴스 요약이 아니다).",
+                "- Kee-Suri Korea Tech IS a Korea-market signal briefing (한국형 테크-시장 브리핑): it connects "
+                "technology, capital, and policy news to 주인님의 돈·일·사업·투자 판단.",
                 "- This is NOT a Global 12:30 summary. Write as an evening domestic interpretation desk.",
                 "- Do not repeat Global morning framing or copy Global sentences verbatim.",
                 "- Every TOP5 item must answer in Korean:",
@@ -610,6 +673,56 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
                 "- angle_chip should read as 국내 적용 when item overlaps Global but has Korea application.",
                 "- hype_caution: required when pr_hype_warning — state 과장 주의 / 보도자료 주의 without amplifying PR language.",
                 "- FORBIDDEN in all visible fields: 총점, 점수, 스코어, score, scoring — never expose internal evaluation numbers in reader-facing copy.",
+                "",
+                "KOREA MARKET SIGNAL OUTPUT FIELDS (explicit, per TOP5 item — do not rely on downstream inference)",
+                "- market_lens: array of 1-3 labels, ONLY from this list: 주식, 채권/금리, 환율, 정책, 산업, AI, "
+                "대기업 투자, 중소기업, 일자리, 자영업, 인프라, 조달, 규제.",
+                "- market_impact: exactly one Korean sentence stating the market consequence for this item — "
+                "not an article recap. It should name 먼저 확인할 축 or 보류할 축.",
+                "- market_impact must NEVER contain buy/sell directives (매수, 매도) or name a specific stock to trade.",
+                "",
+                "KOREA MARKET SIGNAL DEPTH (mandatory — TOP5 is a signal ranking, not a news ranking)",
+                "- TOP 5는 뉴스 순위가 아니라 신호 순위다: ranking order reflects market impact, customer "
+                "usefulness, and tomorrow-reaction likelihood — not recency alone.",
+                "- Every TOP5 item must bridge to at least 3 of these market lenses: "
+                + ", ".join(KOREA_MARKET_LENS_AXES) + ".",
+                "- Every item must answer in Korean: 이 뉴스가 왜 국내 시장 신호인가? 주식/채권/환율/금리/산업/정책/"
+                "일자리 중 어디에 영향을 줄 수 있는가? 일반 고객은 무엇을 조심하거나 확인해야 하는가? 내일 바로 볼 "
+                "체크포인트는 무엇인가?",
+                "- If a global story is used, it must carry an explicit domestic bridge: 국내 기업 영향, 국내 정책 영향, "
+                "국내 증시·섹터 영향, 국내 환율·금리·자금시장 영향, or 국내 고객 행동 영향.",
+                "- keysuri_judgment must read as one of these action postures, not a bare recap label: "
+                + ", ".join(KOREA_JUDGMENT_ACTION_POSTURES) + ".",
+                "",
+                "KOREA FORBIDDEN NEWS-SUMMARY STYLE (avoid repetition — occasional single use is normal Korean prose; "
+                "repeated use reads as an auto-summarized wire digest instead of a judgment briefing)",
+                *[f"- {phrase!r}" for phrase in KOREA_NEWS_SUMMARY_FORBIDDEN_PHRASES],
+                "- Do not write 발표했다/밝혔다/추진한다/의미가 있다 as the main framing without translating into a "
+                "market or customer consequence.",
+                "- Prefer market-judgment phrasing instead, for example:",
+                *[f"  · {phrase!r}" for phrase in KOREA_RECOMMENDED_MARKET_JUDGMENT_PHRASES],
+                "",
+                "KOREA DEEP DIVE MUST NOT RECAP TOP5 (mandatory)",
+                "- deep_dive must not simply restate the five TOP5 items one by one in the same order as a recap.",
+                "- deep_dive must propose ONE market-structure judgment frame connecting all five signals, e.g.: "
+                "'오늘 5개 뉴스는 모두 AI가 서비스 실험 단계를 지나 지역·전력·데이터센터·조달·산업용 솔루션으로 "
+                "내려앉는 과정입니다.'",
+                "",
+                "KOREA RISK = HOLD CRITERIA, NOT ABSTRACT WARNING (mandatory, 2+ statements)",
+                "- 위험 요인 must state what to not assume yet (무엇을 아직 단정하지 말아야 하는가).",
+                "- 위험 요인 must state which number/schedule/order/policy confirmation to wait for before acting "
+                "(어떤 숫자·일정·발주·정책이 확인되기 전까지 보류해야 하는가).",
+                "- 위험 요인 must flag where investors would be exposed if they chase the news immediately, and "
+                "where operators/employees/business owners could over-interpret the news.",
+                "",
+                "KOREA ONE-LINE CHECKPOINT MUST BE ACTION-FORM (mandatory)",
+                "- one_line_checkpoint must state BOTH 내일 먼저 확인할 것 AND 아직 단정하지 말 것, referencing a "
+                "concrete data point, schedule, or event where possible — not a bare recap sentence.",
+                "",
+                "KOREA INVESTMENT-ADVICE BOUNDARY (mandatory)",
+                "- Never instruct 주인님 to buy or sell a specific stock or asset.",
+                "- Avoid definitive financial-advice phrasing; state what to confirm and what to hold off "
+                "judging until confirmed instead of a flat directive.",
             ]
         )
     if program_id == PROGRAM_GLOBAL:

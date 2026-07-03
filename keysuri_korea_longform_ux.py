@@ -45,6 +45,128 @@ FORBIDDEN_KOREA_VISIBLE_LABELS: tuple[str, ...] = (
     "domestic evening close",
 )
 
+# Korea Tech market-signal-briefing lenses. A briefing item/body should bridge to
+# at least 3 of these axes so it reads as a market briefing, not a tech news recap.
+KOREA_MARKET_LENS_AXIS_KEYWORDS: Dict[str, tuple[str, ...]] = {
+    "stock_market": ("주식", "증시", "코스피", "코스닥", "주가"),
+    "bond_market": ("채권", "국채", "회사채"),
+    "fx": ("환율", "원달러", "원화 가치", "달러 강세", "달러 약세"),
+    "rate": ("금리", "기준금리", "한국은행"),
+    "corporate_investment": ("대기업 투자", "설비 투자", "투자 계획"),
+    "gov_policy": ("정부 정책", "정책 발표", "정책 일정", "규제"),
+    "industry_ecosystem": ("산업 생태계", "공급망", "밸류체인"),
+    "sme_worker_impact": ("중소기업", "자영업자", "직장인", "일자리"),
+    "ai_adoption": ("AI 도입", "AI 전환", "업종 변화"),
+    "market_reaction": ("내일 시장", "시장 반응", "2차 반응"),
+}
+
+# Press-release / wire-summary cliches. A single use is normal Korean prose; the
+# problem the owner flagged is *repetition* making the briefing read like an
+# auto-summarized news digest instead of a judgment briefing.
+KOREA_NEWS_SUMMARY_CLICHE_PHRASES: tuple[str, ...] = (
+    "의미 있는 신호",
+    "영향을 줄 수 있습니다",
+    "중요합니다",
+    "검토해야 합니다",
+    "주목해야 합니다",
+    "발표했습니다",
+    "밝혔습니다",
+    "추진합니다",
+)
+
+KOREA_RISK_HOLD_CRITERIA_MARKERS: tuple[str, ...] = (
+    "보류",
+    "단정",
+    "확인 전",
+    "확정되지 않은",
+    "아직",
+)
+
+# Korea Tech market-signal-briefing visible labels (renderer copy — Korea only).
+# Display title only: the generated-JSON contract heading stays SECTION_DEEP_DIVE
+# ("키수리의 딥-다이브"); Korea renderers override what the reader sees.
+KOREA_DEEP_DIVE_DISPLAY_TITLE = "키수리의 시장 판단"
+KOREA_MARKET_LENS_LABEL = "시장 렌즈"
+KOREA_MARKET_LENS_FALLBACK = "시장 신호"
+KOREA_MARKET_IMPACT_LABEL = "시장 영향"
+KOREA_MARKET_FRAME_HEADING = "오늘의 시장 구조"
+KOREA_MARKET_SUMMARY_HEADING = "시장 영향 요약"
+KOREA_FOLLOW_BLOCK_HEADING = "바로 볼 것"
+KOREA_HOLD_BLOCK_HEADING = "보류할 것"
+KOREA_TOMORROW_CONFIRM_LABEL = "내일 먼저 볼 것"
+KOREA_TOMORROW_HOLD_LABEL = "아직 단정하지 말 것"
+
+# Priority-ordered lens inference rules: first matches win, max 3 lenses shown.
+_KOREA_MARKET_LENS_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("정책", ("정책", "정부", "규제", "인허가", "가이드라인", "국토부", "과기정통부", "지자체", "예산")),
+    ("대기업 투자", ("삼성", "SK하이닉스", "LG", "현대차", "대기업", "설비 투자", "투자 계획")),
+    ("주식", ("주가", "증시", "코스피", "코스닥", "상장", "수혜주", "공모", "주식시장")),
+    ("채권/금리", ("금리", "채권", "기준금리", "한국은행")),
+    ("환율", ("환율", "원달러", "원화", "달러")),
+    ("조달", ("조달", "발주", "입찰", "공공기관", "공공 부문")),
+    ("인프라", ("데이터센터", "전력", "GPU", "인프라", "클라우드", "온프레미스")),
+    ("산업", ("반도체", "파운드리", "HBM", "공급망", "장비", "소재", "로봇", "배터리", "제조", "스마트팩토리", "통신")),
+    ("AI", ("AI", "인공지능", "에이전트", "LLM", "생성형")),
+    ("중소기업", ("중소기업", "스타트업", "벤처", "시리즈 A", "시리즈A")),
+    ("일자리", ("일자리", "고용", "채용", "직장인")),
+    ("자영업", ("자영업", "소상공인")),
+)
+
+# Lens → market-impact sentence pools. Variants rotate by rank so five cards with
+# the same dominant lens do not repeat one sentence five times (auto-summary feel).
+_KOREA_MARKET_IMPACT_POOLS: Dict[str, tuple[str, ...]] = {
+    "정책": (
+        "정책 발표와 실제 예산·조달 일정은 분리해서 봐야 합니다.",
+        "발표 문안보다 집행 일정과 후속 공고가 판단 기준입니다.",
+        "정책 기대감은 실제 예산 반영이 확인될 때까지 낮춰 잡는 편이 안전합니다.",
+    ),
+    "대기업 투자": (
+        "투자 규모 숫자보다 실제 발주와 협력사 선정 일정이 먼저입니다.",
+        "주식시장에서는 직접 수혜보다 장비·소재·전력 2차 반응을 먼저 봐야 합니다.",
+    ),
+    "주식": (
+        "주식시장에서는 직접 수혜보다 2차 반응을 봐야 합니다.",
+        "관련 종목 기대감보다 실제 계약·실적 확인이 먼저입니다.",
+    ),
+    "채권/금리": (
+        "금리·환율 환경이 불리하면 기대감만으로 오래 버티기 어렵습니다.",
+        "기준금리 방향이 확인되기 전에는 자금 조달 부담을 함께 봐야 합니다.",
+    ),
+    "환율": (
+        "환율 부담이 이어지면 수입 장비·부품 비용 구조부터 다시 봐야 합니다.",
+        "원화 약세 구간에서는 해외 조달 비중이 큰 축의 원가를 먼저 봐야 합니다.",
+    ),
+    "조달": (
+        "공고 시점보다 실제 발주·계약 체결 여부가 판단 기준입니다.",
+        "이 뉴스는 숫자보다 발주·일정 확인이 먼저입니다.",
+    ),
+    "인프라": (
+        "인프라 신호는 전력·부지·조달 일정이 확인될 때 실체가 됩니다.",
+        "데이터센터·전력 축은 착공·계약 단계 확인이 먼저입니다.",
+    ),
+    "산업": (
+        "밸류체인 전체 기대보다 실제 물량이 움직이는 구간을 좁혀 봐야 합니다.",
+        "공급망에서는 직접 수혜보다 장비·소재 2차 반응을 먼저 봐야 합니다.",
+    ),
+    "AI": (
+        "AI 도입 신호는 업종별 비용 구조 변화로 이어질 때 실질 영향이 생깁니다.",
+        "일반 고객에게는 도입 발표보다 요금·업무 방식 변화가 실질 변수입니다.",
+    ),
+    "중소기업": (
+        "중소기업·스타트업에는 지원 공고보다 집행 일정과 요건 확인이 먼저입니다.",
+        "후속 투자·조달 연결이 확인될 때까지는 신호 강도를 낮춰 봅니다.",
+    ),
+    "일자리": (
+        "고용 신호는 실제 채용 공고가 열리는 시점을 기준으로 봐야 합니다.",
+    ),
+    "자영업": (
+        "자영업·소상공인에게는 투자 뉴스보다 비용·수수료 구조 변화가 실질 변수입니다.",
+    ),
+    KOREA_MARKET_LENS_FALLBACK: (
+        "오늘 신호만으로는 직접 영향이 제한적입니다. 후속 확인 후에 판단하는 편이 안전합니다.",
+    ),
+}
+
 _TRUNCATED_GLUE_RE = re.compile(
     r"오늘 눈에 띄는 점은[^.!?…]*[가-힣A-Za-z0-9]{1,3}…[^.!?…]*"
     r"(?:동시에 보인다는 것입니다|이슈가 동시에 보인다는 것입니다)\.?\s*",
@@ -569,8 +691,8 @@ def _build_risk_block(
             lines.append(line)
     if not lines:
         lines = [
-            "과장된 해석이나 보도자료 톤은 분리해 볼 필요가 있습니다.",
-            "세부 일정·수치는 향후 공식 발표로 보완될 가능성이 있습니다.",
+            "과장된 해석이나 보도자료 톤은 아직 단정하지 않고 분리해서 보겠습니다.",
+            "세부 일정·수치가 공식 확인되기 전까지는 판단을 보류하는 편이 안전합니다.",
         ]
     return _format_bullets(lines[:3])
 
@@ -644,7 +766,8 @@ def build_korea_one_line_checkpoint(
         move = "구조 변화 판단 압력이 앞으로 이동"
 
     return (
-        f"글로벌·국내 TOP5를 종합하면, {axis} 축에서 한국 시장의 관건은 {move}하고 있습니다."
+        f"글로벌·국내 TOP5를 종합하면, {axis} 축에서 한국 시장의 관건은 {move}하고 있습니다. "
+        f"내일은 관련 지표부터 먼저 확인하고, 숫자가 확정되기 전까지는 판단을 보류하시면 됩니다."
     )
 
 
@@ -668,6 +791,274 @@ def structure_korea_deep_dive(
         {"label": "키수리 판단", "body": _build_keysuri_judgment_block(items)},
     ]
     return [s for s in sections if _text(s.get("body")) and _text(s.get("label"))]
+
+
+def korea_market_lens_axis_hits(text: str) -> List[str]:
+    """Return which market-signal lenses (stock/bond/FX/rate/policy/...) a text touches."""
+    blob = _text(text)
+    if not blob:
+        return []
+    return [
+        axis
+        for axis, keywords in KOREA_MARKET_LENS_AXIS_KEYWORDS.items()
+        if any(keyword in blob for keyword in keywords)
+    ]
+
+
+def korea_market_lens_axis_count(text: str) -> int:
+    return len(korea_market_lens_axis_hits(text))
+
+
+def korea_market_lens_insufficient(text: str, *, minimum: int = 3) -> bool:
+    """True when a Korea briefing body connects to fewer than ``minimum`` market lenses."""
+    return korea_market_lens_axis_count(text) < minimum
+
+
+def korea_cliche_phrase_counts(text: str) -> Dict[str, int]:
+    blob = _text(text)
+    if not blob:
+        return {}
+    return {
+        phrase: blob.count(phrase)
+        for phrase in KOREA_NEWS_SUMMARY_CLICHE_PHRASES
+        if blob.count(phrase)
+    }
+
+
+def korea_cliche_phrase_overused(text: str, *, per_phrase_limit: int = 3, total_limit: int = 5) -> bool:
+    """True when press-release cliches repeat enough to read like an auto-summary."""
+    counts = korea_cliche_phrase_counts(text)
+    if any(count >= per_phrase_limit for count in counts.values()):
+        return True
+    return sum(counts.values()) >= total_limit
+
+
+def korea_risk_lacks_hold_criteria(text: str) -> bool:
+    """True when a risk block never states what to hold off on / not assume yet."""
+    blob = _text(text)
+    if not blob:
+        return True
+    return not any(marker in blob for marker in KOREA_RISK_HOLD_CRITERIA_MARKERS)
+
+
+def korea_checkpoint_lacks_confirm_and_hold(text: str) -> bool:
+    """True unless checkpoint states both what to confirm first and what to hold off on."""
+    blob = _text(text)
+    if not blob:
+        return True
+    has_confirm = any(marker in blob for marker in ("확인", "체크포인트", "먼저"))
+    has_hold = any(marker in blob for marker in ("보류", "단정", "아직"))
+    return not (has_confirm and has_hold)
+
+
+def korea_deep_dive_repeats_top5_headline(
+    sections: Sequence[Mapping[str, str]],
+    top5_items: Sequence[Mapping[str, Any]],
+    *,
+    min_len: int = 8,
+) -> bool:
+    """True when a deep-dive block simply restates a TOP5 headline verbatim.
+
+    Deep-dive must synthesize a market-structure judgment across the five items,
+    not recap them one by one, so a literal headline match is a regression signal.
+    """
+    titles = [
+        _text(item.get("korean_title") or item.get("headline"))
+        for item in top5_items
+        if isinstance(item, dict)
+    ]
+    titles = [title for title in titles if len(title) >= min_len]
+    if not titles:
+        return False
+    for section in sections:
+        body = _text(section.get("body")) if isinstance(section, Mapping) else ""
+        if not body:
+            continue
+        if any(title in body for title in titles):
+            return True
+    return False
+
+
+def infer_korea_market_lenses(item: Mapping[str, Any], *, max_lenses: int = 3) -> List[str]:
+    """Resolve market lenses for a Korea TOP5 card: explicit field first, then keyword inference."""
+    explicit = item.get("market_lens") or item.get("signal_type")
+    if isinstance(explicit, (list, tuple)):
+        lenses = [_text(x) for x in explicit if _text(x)]
+        if lenses:
+            return lenses[:max_lenses]
+    elif _text(explicit):
+        # Split on '·' and ',' only — '/' is part of the label 채권/금리.
+        parts = [p.strip() for p in re.split(r"[·,]", _text(explicit)) if p.strip()]
+        if parts:
+            return parts[:max_lenses]
+
+    blob = " ".join(
+        (
+            _item_blob(item),
+            _text(item.get("keysuri_judgment") if isinstance(item.get("keysuri_judgment"), str) else ""),
+            _text(item.get("next_day_impact_line")),
+        )
+    )
+    lenses = [
+        label
+        for label, keywords in _KOREA_MARKET_LENS_RULES
+        if any(keyword in blob for keyword in keywords)
+    ]
+    return lenses[:max_lenses] if lenses else [KOREA_MARKET_LENS_FALLBACK]
+
+
+def build_korea_market_impact_line(item: Mapping[str, Any], *, rank: int = 0) -> str:
+    """Market-impact line for a Korea card: explicit market_impact field wins, else lens-based."""
+    explicit = _text(item.get("market_impact") or item.get("market_impact_line"))
+    if explicit:
+        return finalize_korea_visible_field(explicit)
+    lenses = infer_korea_market_lenses(item)
+    pool = _KOREA_MARKET_IMPACT_POOLS.get(
+        lenses[0], _KOREA_MARKET_IMPACT_POOLS[KOREA_MARKET_LENS_FALLBACK]
+    )
+    return pool[max(rank - 1, 0) % len(pool)]
+
+
+def build_korea_tomorrow_checkpoint_parts(item: Mapping[str, Any]) -> tuple[str, str]:
+    """Return (confirm-first, hold-off) phrases for a Korea card's tomorrow checkpoint."""
+    watch = _item_watch_lines(item)
+    confirm = clamp_action_line(watch[0], max_chars=90) if watch else ""
+    if not confirm:
+        title = _short_title(_text(item.get("korean_title") or item.get("headline"))) or "핵심 신호"
+        confirm = f"{title} 후속 발표·일정"
+
+    hold = ""
+    label, explanation = _item_judgment(item)
+    if label in _RISK_LABELS and explanation:
+        hold = clamp_action_line(_strip_keysuri_judgment_label_prefix(explanation), max_chars=90)
+    if not hold and _text(item.get("hype_caution")):
+        hold = clamp_action_line(_text(item.get("hype_caution")), max_chars=90)
+    if not hold:
+        hold = "숫자·일정이 확인되지 않은 기대감"
+    return confirm, hold
+
+
+def build_korea_market_impact_summary(items: Sequence[Mapping[str, Any]]) -> List[Dict[str, str]]:
+    """Bottom-of-briefing market-impact summary rows (Korea only, ≥3 axes, no directives)."""
+    items = [i for i in items if isinstance(i, dict)]
+    lens_hits: set[str] = set()
+    for item in items:
+        lens_hits.update(infer_korea_market_lenses(item))
+
+    stock_related = bool(lens_hits & {"주식", "대기업 투자", "산업", "인프라", "조달"})
+    rows: List[Dict[str, str]] = [
+        {
+            "axis": "주식시장",
+            "body": (
+                "직접 수혜를 단정하기보다 발주·계약이 확인되는 축의 2차 반응부터 보겠습니다."
+                if stock_related
+                else "오늘 신호의 직접 영향은 제한적입니다. 섹터별 후속 확인이 먼저입니다."
+            ),
+        },
+        {
+            "axis": "채권/금리",
+            "body": (
+                "금리 환경이 불리하면 기대감만으로 오래 버티기 어렵습니다."
+                if "채권/금리" in lens_hits
+                else "오늘 신호와의 직접 연결은 제한적입니다. 기준금리 일정만 병행 확인하겠습니다."
+            ),
+        },
+        {
+            "axis": "환율",
+            "body": (
+                "환율 부담이 이어지면 수입 장비·부품 비용 구조부터 다시 봐야 합니다."
+                if "환율" in lens_hits
+                else "직접 영향은 제한적입니다. 원달러 흐름은 참고 축으로만 두겠습니다."
+            ),
+        },
+        {
+            "axis": "산업/기업",
+            "body": "발주·조달·투자 일정이 확인되는 순서대로 실체가 생기는 흐름입니다.",
+        },
+        {
+            "axis": "개인/사업자",
+            "body": "투자 뉴스보다 비용 구조와 도입 일정 변화가 실질 변수입니다.",
+        },
+    ]
+    return rows
+
+
+_FOLLOW_VERB_TAIL_RE = re.compile(
+    r"\s*(?:을|를|여부를)?\s*(?:먼저\s*)?"
+    r"(?:확인하세요|확인하십시오|점검하세요|점검하십시오|확인해\s*보세요|보세요|보시면 됩니다|하시면 됩니다)"
+    r"[.!]?$"
+)
+
+
+def compress_to_follow_check_item(line: str) -> str:
+    """Compress a memo-style action sentence into a short follow-check item.
+
+    바로 볼 것 entries must not repeat the evening memo verbatim: the memo keeps the
+    full closing sentence, the follow block gets the shorter check-item form.
+    """
+    out = _text(line).rstrip(".")
+    match = _FOLLOW_VERB_TAIL_RE.search(out)
+    if match:
+        prefix = out[: match.start()].rstrip(" ,·")
+        if prefix:
+            return f"{prefix} 확인"
+    return out
+
+
+def build_korea_follow_hold_blocks(items: Sequence[Mapping[str, Any]]) -> Dict[str, List[str]]:
+    """Follow-now vs hold-off lists — the core split from a plain news summary."""
+    items = [i for i in items if isinstance(i, dict)]
+    memo_lines = set(_collect_memo_action_lines(items))
+    follow: List[str] = []
+    for line in _collect_memo_action_lines(items):
+        short = compress_to_follow_check_item(line)
+        if short in memo_lines and not short.endswith(("확인", "점검")):
+            short = f"{short} 확인"
+        if short and short not in follow and short not in memo_lines:
+            follow.append(short)
+        if len(follow) >= 3:
+            break
+    if not follow:
+        follow = ["오늘 신호의 후속 발표·일정 확인"]
+
+    hold: List[str] = []
+    for item in items:
+        label, explanation = _item_judgment(item)
+        if label in _RISK_LABELS and explanation:
+            line = _declarative_risk_statement(explanation)
+            if line and line not in hold:
+                hold.append(line)
+        elif _text(item.get("hype_caution")):
+            line = _declarative_risk_statement(_text(item.get("hype_caution")))
+            if line and line not in hold:
+                hold.append(line)
+        if len(hold) >= 3:
+            break
+    for default in (
+        "숫자·일정이 확인되지 않은 기대감은 아직 단정하지 않겠습니다.",
+        "정책 발표와 실제 예산·조달 집행은 분리해서 확인하겠습니다.",
+    ):
+        if len(hold) >= 2:
+            break
+        if default not in hold:
+            hold.append(default)
+    return {"follow": follow[:3], "hold": hold[:3]}
+
+
+def build_korea_market_frame_line(items: Sequence[Mapping[str, Any]]) -> str:
+    """One market-structure frame connecting today's five signals (not a TOP5 recap)."""
+    items = [i for i in items if isinstance(i, dict)]
+    theme = _theme_phrase(items)
+    industries: List[str] = []
+    for item in items:
+        cat = _korea_industry_label(_text(item.get("category_label_ko") or item.get("primary_category")))
+        if cat and cat not in industries:
+            industries.append(cat)
+    industry_phrase = ", ".join(industries[:3]) if industries else "반도체·AI·정책·투자"
+    return (
+        f"오늘 다섯 신호를 하나로 보면, {theme}를 축으로 {industry_phrase} 흐름이 "
+        f"같은 방향으로 움직이는 시장 구조입니다. 개별 뉴스보다 발주·일정·정책 확인 순서가 먼저입니다."
+    )
 
 
 def remove_internal_glue(text: str) -> str:

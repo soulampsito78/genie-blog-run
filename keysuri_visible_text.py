@@ -524,7 +524,7 @@ def _korea_reason_from_tags_and_category(
             return (
                 f"{lead} 신호라서, 내일 관련 사업·파트너십 검토 우선순위에 올릴 만합니다."
             )
-    return "국내 적용·실행 확인 관점에서 오늘 의미 있는 신호로 선정했습니다."
+    return "국내 적용·실행 확인 관점에서 오늘 선정한 신호입니다."
 
 
 def _global_axis_from_item(item: Mapping[str, Any], meta: Mapping[str, Any]) -> str:

@@ -3974,7 +3974,8 @@ class KeysuriKoreaOwnerReviewEmailDesignTests(unittest.TestCase):
         self.assertIn("키수리 국내 테크 브리핑", email_html)
         self.assertIn("오늘 국내에서 움직인 것", email_html)
         self.assertIn("국내 테크 TOP", email_html.upper())
-        self.assertIn("키수리의 딥-다이브", email_html)
+        self.assertIn("키수리의 시장 판단", email_html)
+        self.assertNotIn("키수리의 딥-다이브", email_html)
         self.assertIn("원-라인 체크포인트", email_html)
         self.assertIn("한국 시장 관찰 포인트", email_html)
         self.assertIn("글로벌·국내 TOP5", email_html)
@@ -3989,7 +3990,7 @@ class KeysuriKoreaOwnerReviewEmailDesignTests(unittest.TestCase):
         self.assertNotIn("production-ready", email_html.lower())
         self.assertNotIn("production_asset", email_html.lower())
         review_marker = "본 브리핑은 운영책임자의 직접 검수 대기 상태입니다"
-        self.assertLess(email_html.find("키수리의 딥-다이브"), email_html.find("원-라인 체크포인트"))
+        self.assertLess(email_html.find("키수리의 시장 판단"), email_html.find("원-라인 체크포인트"))
         self.assertLess(email_html.find("원-라인 체크포인트"), email_html.find('id="bottom-shot-placeholder"'))
         self.assertLess(email_html.find('id="bottom-shot-placeholder"'), email_html.find(review_marker))
         self.assertLess(email_html.find(review_marker), email_html.find("퇴근 전 메모"))
@@ -4101,7 +4102,7 @@ class KeysuriKoreaOwnerReviewEmailDesignTests(unittest.TestCase):
         self.assertNotRegex(email_html, r"조명합(?:\s|<|$)")
         self.assertIn("글로벌 AI 인프라", email_html)
         self.assertIn("한국 기업", email_html)
-        deep_start = email_html.find("키수리의 딥-다이브")
+        deep_start = email_html.find("키수리의 시장 판단")
         checkpoint_start = email_html.find("원-라인 체크포인트", deep_start)
         deep_section = email_html[deep_start:checkpoint_start]
         self.assertNotIn("삼성전자, &#x27;C랩 아웃사이드&#x27;", deep_section)

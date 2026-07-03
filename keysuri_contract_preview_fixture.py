@@ -243,7 +243,23 @@ def _map_top_item(
         extra.get("detail_insufficient") or item.get("detail_insufficient")
     )
 
+    # Korea-only optional market-signal fields: pass explicit Gemini output through
+    # to the renderer so it does not fall back to keyword inference.
+    korea_market_fields: Dict[str, Any] = {}
+    if program_id == PROGRAM_KOREA:
+        market_lens = extra.get("market_lens") or item.get("market_lens")
+        if isinstance(market_lens, (list, tuple)):
+            lens_values = [str(v).strip() for v in market_lens if str(v).strip()]
+            if lens_values:
+                korea_market_fields["market_lens"] = lens_values
+        elif str(market_lens or "").strip():
+            korea_market_fields["market_lens"] = str(market_lens).strip()
+        market_impact = str(extra.get("market_impact") or item.get("market_impact") or "").strip()
+        if market_impact:
+            korea_market_fields["market_impact"] = _sanitize_owner_visible_text(market_impact)
+
     return {
+        **korea_market_fields,
         "rank": rank,
         "korean_title": _sanitize_owner_visible_text(korean_title),
         "headline": _sanitize_owner_visible_text(korean_title),

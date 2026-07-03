@@ -21,12 +21,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 
+from keysuri_korea_longform_ux import KOREA_DEEP_DIVE_DISPLAY_TITLE
 from keysuri_news_contract import SECTION_TOP5_GLOBAL, SECTION_TOP5_KOREA
 from keysuri_private_briefing import (
     SECTION_CLOSING,
     SECTION_DEEP_DIVE,
     SECTION_ONE_LINE,
 )
+
+# The generated-JSON contract heading stays SECTION_DEEP_DIVE; Korea renderers show
+# the market-judgment display title instead. Both mark the deep-dive section in HTML.
+DEEP_DIVE_SECTION_MARKERS: Tuple[str, ...] = (SECTION_DEEP_DIVE, KOREA_DEEP_DIVE_DISPLAY_TITLE)
 
 CheckStatus = Literal["PASS", "FAIL"]
 OptionalCheckStatus = Literal["PASS", "FAIL", "SKIP"]
@@ -316,17 +321,19 @@ def _rights_policy_present(html: str) -> bool:
 
 
 def _deep_dive_region(html: str) -> str:
-    match = re.search(
-        rf"{re.escape(SECTION_DEEP_DIVE)}(.*?)(?={re.escape(SECTION_ONE_LINE)}|<section|<footer|$)",
-        html,
-        flags=re.DOTALL,
-    )
-    if match:
-        return match.group(0)
-    idx = html.find(SECTION_DEEP_DIVE)
-    if idx < 0:
-        return ""
-    return html[idx : idx + 4000]
+    for marker in DEEP_DIVE_SECTION_MARKERS:
+        match = re.search(
+            rf"{re.escape(marker)}(.*?)(?={re.escape(SECTION_ONE_LINE)}|<section|<footer|$)",
+            html,
+            flags=re.DOTALL,
+        )
+        if match:
+            return match.group(0)
+    for marker in DEEP_DIVE_SECTION_MARKERS:
+        idx = html.find(marker)
+        if idx >= 0:
+            return html[idx : idx + 4000]
+    return ""
 
 
 def _deep_dive_is_dense(region: str) -> bool:
@@ -450,7 +457,7 @@ def _validate_required_sections(
     required_all: List[Tuple[str, Sequence[str]]] = [
         ("preview_metadata", ("Preview metadata", 'id="preview-metadata"', "preview metadata")),
         ("identity_title", (IDENTITY_TITLE,)),
-        ("deep_dive_section", (SECTION_DEEP_DIVE,)),
+        ("deep_dive_section", DEEP_DIVE_SECTION_MARKERS),
         ("one_line_checkpoint", (SECTION_ONE_LINE,)),
         ("closing_section", (SECTION_CLOSING,)),
         ("operation_metadata", ("Operation metadata", 'id="operation-metadata"')),
@@ -520,7 +527,7 @@ def _validate_top5_sources(html: str, issues: List[ValidationIssue]) -> bool:
 
 
 def _validate_deep_dive_readability(html: str, issues: List[ValidationIssue]) -> bool:
-    if SECTION_DEEP_DIVE not in html:
+    if not any(marker in html for marker in DEEP_DIVE_SECTION_MARKERS):
         issues.append(ValidationIssue("deep_dive_missing", f"Missing {SECTION_DEEP_DIVE!r}"))
         return False
 

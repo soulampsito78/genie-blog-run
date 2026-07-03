@@ -141,6 +141,91 @@ class KeysuriGenerationPromptContractTests(unittest.TestCase):
         self.assertIn("next_day_impact_line", prompt)
         self.assertIn("내일 파트너·입찰 일정을 점검하세요.", prompt)
 
+    def test_korea_prompt_repositions_as_market_signal_briefing(self) -> None:
+        """Korea Tech must be positioned as a market-signal briefing, not a news summary."""
+        prompt = build_keysuri_generation_prompt(_korea_prompt())
+        self.assertIn("국내 IT 뉴스 요약이 아니다", prompt)
+        self.assertIn("한국형 테크-시장 브리핑", prompt)
+        self.assertIn("돈·일·사업·투자 판단", prompt)
+
+    def test_korea_prompt_requires_market_lens_axes(self) -> None:
+        """Korea Tech must require stock/bond/FX/rate/policy/industry/jobs perspectives."""
+        prompt = build_keysuri_generation_prompt(_korea_prompt())
+        for axis in ("주식시장", "채권시장", "환율", "금리", "정부 정책", "산업 생태계", "일자리"):
+            with self.subTest(axis=axis):
+                self.assertIn(axis, prompt)
+        self.assertIn("KOREA MARKET SIGNAL DEPTH", prompt)
+        self.assertIn("신호 순위", prompt)
+
+    def test_korea_prompt_market_repositioning_does_not_leak_into_global(self) -> None:
+        """Korea-only market-signal-briefing framing must not damage the Global prompt."""
+        global_prompt = build_keysuri_generation_prompt(_global_prompt())
+        self.assertIn("GLOBAL TECH BREADTH", global_prompt)
+        self.assertIn("NOT an AI-only newsletter", global_prompt)
+        for korea_only_marker in (
+            "KOREA MARKET SIGNAL DEPTH",
+            "KOREA MARKET SIGNAL BRIEFING",
+            "KOREA DEEP DIVE MUST NOT RECAP TOP5",
+            "KOREA RISK = HOLD CRITERIA",
+            "KOREA ONE-LINE CHECKPOINT MUST BE ACTION-FORM",
+            "KOREA INVESTMENT-ADVICE BOUNDARY",
+            "국내 IT 뉴스 요약이 아니다",
+        ):
+            with self.subTest(marker=korea_only_marker):
+                self.assertNotIn(korea_only_marker, global_prompt)
+
+    def test_korea_prompt_deep_dive_forbids_top5_recap(self) -> None:
+        prompt = build_keysuri_generation_prompt(_korea_prompt())
+        self.assertIn("KOREA DEEP DIVE MUST NOT RECAP TOP5", prompt)
+        self.assertIn("ONE market-structure judgment frame", prompt)
+
+    def test_korea_prompt_risk_requires_hold_criteria(self) -> None:
+        prompt = build_keysuri_generation_prompt(_korea_prompt())
+        self.assertIn("무엇을 아직 단정하지 말아야 하는가", prompt)
+        self.assertIn("확인되기 전까지 보류해야 하는가", prompt)
+
+    def test_korea_prompt_checkpoint_requires_confirm_and_hold(self) -> None:
+        prompt = build_keysuri_generation_prompt(_korea_prompt())
+        self.assertIn("내일 먼저 확인할 것", prompt)
+        self.assertIn("아직 단정하지 말 것", prompt)
+
+    def test_korea_prompt_forbids_press_release_cliches_and_recommends_market_phrasing(self) -> None:
+        prompt = build_keysuri_generation_prompt(_korea_prompt())
+        self.assertIn("KOREA FORBIDDEN NEWS-SUMMARY STYLE", prompt)
+        for phrase in ("의미 있는 신호", "영향을 줄 수 있습니다", "발표했습니다", "밝혔습니다", "추진합니다"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, prompt)
+        self.assertIn("주식시장에서는 직접 수혜보다 2차 반응을 봐야 합니다.", prompt)
+
+    def test_korea_prompt_forbids_specific_investment_directives(self) -> None:
+        prompt = build_keysuri_generation_prompt(_korea_prompt())
+        self.assertIn("KOREA INVESTMENT-ADVICE BOUNDARY", prompt)
+        self.assertIn("Never instruct 주인님 to buy or sell a specific stock", prompt)
+
+    def test_korea_prompt_requires_explicit_market_signal_output_fields(self) -> None:
+        """Phase 3: market_lens/market_impact must be explicit Gemini output, not inference."""
+        prompt = build_keysuri_generation_prompt(_korea_prompt())
+        self.assertIn("KOREA MARKET SIGNAL OUTPUT FIELDS", prompt)
+        self.assertIn("market_lens: array of 1-3 labels", prompt)
+        self.assertIn("채권/금리", prompt)
+        self.assertIn("market_impact: exactly one Korean sentence", prompt)
+        self.assertIn("NEVER contain buy/sell directives", prompt)
+
+    def test_korea_output_schema_example_includes_market_fields(self) -> None:
+        contract = build_keysuri_generation_prompt_contract(_korea_prompt())
+        items = contract["required_output_schema"]["top_5_news"]["items"]
+        for item in items:
+            self.assertIn("market_lens", item)
+            self.assertIn("market_impact", item)
+
+    def test_global_prompt_and_schema_exclude_market_signal_fields(self) -> None:
+        prompt = build_keysuri_generation_prompt(_global_prompt())
+        self.assertNotIn("KOREA MARKET SIGNAL OUTPUT FIELDS", prompt)
+        contract = build_keysuri_generation_prompt_contract(_global_prompt())
+        for item in contract["required_output_schema"]["top_5_news"]["items"]:
+            self.assertNotIn("market_lens", item)
+            self.assertNotIn("market_impact", item)
+
 
 class KeysuriJsonExtractionTests(unittest.TestCase):
     def setUp(self) -> None:

@@ -662,7 +662,7 @@ class KeysuriContractPreviewRendererTests(unittest.TestCase):
             "미리보기 정보",
             "테크 비서 키수리",
             "국내 테크 TOP 5",
-            "키수리의 딥-다이브",
+            "키수리의 시장 판단",
             "원-라인 체크포인트",
             "bottom-shot",
             "review-confirmation",
@@ -1065,6 +1065,157 @@ class KeysuriPremiumHandoffRendererTests(unittest.TestCase):
         self.assertNotRegex(style_block, r"\.top-shot-hero\{[^}]*object-fit:\s*cover")
         self.assertNotIn("object-fit:cover", style_block.replace(" ", ""))
         self.assertIn('class="hero-layout"', html)
+
+
+_KOREA_MARKET_MARKERS: tuple[str, ...] = (
+    "시장 렌즈",
+    "시장 영향",
+    "내일 먼저 볼 것",
+    "아직 단정하지 말 것",
+    "시장 영향 요약",
+    "바로 볼 것",
+    "보류할 것",
+    "오늘의 시장 구조",
+)
+
+
+class KeysuriKoreaMarketBriefingRenderTests(unittest.TestCase):
+    """Korea Tech email must render as a market-judgment briefing, not a news digest."""
+
+    @_require_contract_renderer
+    def test_korea_preview_renders_all_market_briefing_markers(self) -> None:
+        html = _render_contract_html(_CONTRACT_RENDERER, build_korea_contract_fixture())
+        for marker in _KOREA_MARKET_MARKERS:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, html)
+
+    @_require_contract_renderer
+    def test_korea_market_lens_badge_on_every_card(self) -> None:
+        html = _render_contract_html(_CONTRACT_RENDERER, build_korea_contract_fixture())
+        self.assertGreaterEqual(html.count('class="market-lens-line"'), 5)
+        self.assertGreaterEqual(html.count("[시장 렌즈]"), 5)
+
+    @_require_contract_renderer
+    def test_korea_market_impact_and_tomorrow_checkpoint_per_card(self) -> None:
+        html = _render_contract_html(_CONTRACT_RENDERER, build_korea_contract_fixture())
+        self.assertGreaterEqual(html.count("market-impact-block"), 5)
+        self.assertGreaterEqual(html.count('class="tomorrow-checkpoint"'), 5)
+        self.assertGreaterEqual(html.count("내일 먼저 볼 것"), 5)
+        self.assertGreaterEqual(html.count("아직 단정하지 말 것"), 5)
+
+    @_require_contract_renderer
+    def test_korea_market_summary_has_at_least_three_axes(self) -> None:
+        html = _render_contract_html(_CONTRACT_RENDERER, build_korea_contract_fixture())
+        self.assertIn('id="market-impact-summary"', html)
+        axes = sum(
+            1 for axis in ("주식시장", "채권/금리", "환율", "산업/기업", "개인/사업자") if axis in html
+        )
+        self.assertGreaterEqual(axes, 3)
+
+    @_require_contract_renderer
+    def test_korea_follow_hold_section_renders_both_blocks(self) -> None:
+        html = _render_contract_html(_CONTRACT_RENDERER, build_korea_contract_fixture())
+        self.assertIn('id="follow-hold-section"', html)
+        self.assertIn('class="follow-block"', html)
+        self.assertIn('class="hold-block"', html)
+
+    @_require_contract_renderer
+    def test_korea_deep_dive_carries_market_structure_frame(self) -> None:
+        html = _render_contract_html(_CONTRACT_RENDERER, build_korea_contract_fixture())
+        self.assertIn('class="korea-market-frame"', html)
+        self.assertIn("오늘의 시장 구조", html)
+        self.assertIn("오늘 다섯 신호를 하나로 보면", html)
+
+    @_require_contract_renderer
+    def test_explicit_market_impact_field_takes_priority(self) -> None:
+        fixture = build_korea_contract_fixture()
+        fixture["top_5_items"][0]["market_impact"] = (
+            "주식시장에서는 직접 수혜보다 전력·건설 2차 반응을 먼저 봐야 합니다."
+        )
+        html = _render_contract_html(_CONTRACT_RENDERER, fixture)
+        self.assertIn("전력·건설 2차 반응을 먼저 봐야 합니다", html)
+
+    @_require_contract_renderer
+    def test_explicit_market_lens_field_takes_priority_over_inference(self) -> None:
+        fixture = build_korea_contract_fixture()
+        fixture["top_5_items"][0]["market_lens"] = ["채권/금리", "환율"]
+        html = _render_contract_html(_CONTRACT_RENDERER, fixture)
+        self.assertIn("채권/금리 · 환율", html)
+
+    @_require_contract_renderer
+    def test_korea_deep_dive_display_title_is_market_judgment(self) -> None:
+        html = _render_contract_html(_CONTRACT_RENDERER, build_korea_contract_fixture())
+        self.assertIn("키수리의 시장 판단", html)
+        self.assertNotIn("키수리의 딥-다이브", html)
+        self.assertIn('id="deep-dive-section"', html)
+
+    @_require_contract_renderer
+    def test_global_deep_dive_title_unchanged(self) -> None:
+        html = _render_contract_html(_CONTRACT_RENDERER, build_global_contract_fixture())
+        self.assertIn("키수리의 딥-다이브", html)
+        self.assertNotIn("키수리의 시장 판단", html)
+
+    @_require_contract_renderer
+    def test_korea_follow_lines_do_not_repeat_memo_lines_in_html(self) -> None:
+        from keysuri_korea_longform_ux import extract_korea_memo_action_lines_from_html
+
+        html = _render_contract_html(_CONTRACT_RENDERER, build_korea_contract_fixture())
+        follow_m = re.search(
+            r'<div class="follow-block">.*?<ul class="follow-hold-list">(.*?)</ul>',
+            html,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(follow_m)
+        assert follow_m is not None
+        follow_lines = {
+            re.sub(r"<[^>]+>", "", li).strip()
+            for li in re.findall(r"<li>(.*?)</li>", follow_m.group(1), flags=re.DOTALL)
+        }
+        memo_lines = set(extract_korea_memo_action_lines_from_html(html))
+        self.assertTrue(follow_lines)
+        self.assertEqual(follow_lines & memo_lines, set())
+
+    @_require_contract_renderer
+    def test_korea_html_contains_no_buy_sell_directives(self) -> None:
+        html = _render_contract_html(_CONTRACT_RENDERER, build_korea_contract_fixture())
+        for directive in ("매수", "매도", "사세요", "파세요"):
+            with self.subTest(directive=directive):
+                self.assertNotIn(directive, html)
+
+    @_require_contract_renderer
+    def test_global_preview_has_no_korea_market_briefing_markers(self) -> None:
+        html = _render_contract_html(_CONTRACT_RENDERER, build_global_contract_fixture())
+        for marker in _KOREA_MARKET_MARKERS:
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, html)
+        self.assertNotIn('id="market-impact-summary"', html)
+        self.assertNotIn('id="follow-hold-section"', html)
+
+    @_require_contract_renderer
+    def test_korea_gmail_owner_email_renders_market_briefing_markers(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        fixture = build_korea_contract_fixture()
+        fixture["top_shot_image_src"] = "cid:keysuri_topshot_korea_test"
+        mod.prepare_contract_preview_fixture(
+            fixture, repo_root=_REPO, image_mode=mod.IMAGE_MODE_EMAIL
+        )
+        email_html = mod.build_keysuri_korea_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Korea Tech",
+            admin_url="https://example.com/admin/runs/test_market_ux",
+            run_id="test_market_ux",
+        )
+        for marker in _KOREA_MARKET_MARKERS:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, email_html)
+        lowered = email_html.lower()
+        for forbidden in ("<style", "var(--", "display:flex", "<details"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, lowered)
+        for score_term in ("총점", "점수", "스코어"):
+            with self.subTest(score_term=score_term):
+                self.assertNotIn(score_term, email_html)
 
 
 if __name__ == "__main__":

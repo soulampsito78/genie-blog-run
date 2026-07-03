@@ -16,11 +16,26 @@ from keysuri_contract_preview_quality import GENERIC_CLOSING_PHRASES
 from keysuri_private_briefing import SECTION_CLOSING, SECTION_DEEP_DIVE, SECTION_ONE_LINE
 from keysuri_korea_longform_ux import (
     KOREA_CHECKPOINT_SUBFRAME,
+    KOREA_DEEP_DIVE_DISPLAY_TITLE,
     KOREA_EVENING_MEMO_HEADING,
+    KOREA_FOLLOW_BLOCK_HEADING,
+    KOREA_HOLD_BLOCK_HEADING,
+    KOREA_MARKET_FRAME_HEADING,
+    KOREA_MARKET_IMPACT_LABEL,
+    KOREA_MARKET_LENS_LABEL,
+    KOREA_MARKET_SUMMARY_HEADING,
+    KOREA_TOMORROW_CONFIRM_LABEL,
+    KOREA_TOMORROW_HOLD_LABEL,
     KOREA_WARM_FAREWELL_LINES,
     build_korea_evening_memo,
+    build_korea_follow_hold_blocks,
+    build_korea_market_frame_line,
+    build_korea_market_impact_line,
+    build_korea_market_impact_summary,
     build_korea_one_line_checkpoint,
+    build_korea_tomorrow_checkpoint_parts,
     finalize_korea_visible_field,
+    infer_korea_market_lenses,
     korea_closing_internal_label_leak,
     korea_closing_structure_incomplete,
     korea_evening_memo_too_thin,
@@ -407,7 +422,7 @@ def _render_theme_top_insert(fixture: Mapping[str, Any], *, program_id: str) -> 
         return f"""
     <section id="signal-summary" class="theme-top-insert korea-domestic-strip signal-summary section-card">
       <p class="theme-insert-label">오늘 국내에서 움직인 것</p>
-      <p class="theme-insert-copy">국내 적용 관점에서 오늘 다섯 신호를 정리했습니다.</p>
+      <p class="theme-insert-copy">오늘 한국 시장에서 돈·산업·정책이 움직인 축을 다섯 신호로 정리했습니다.</p>
       {chip_row}
     </section>"""
 
@@ -541,11 +556,36 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
             f'<span class="card-emphasis-label">{_esc(emphasis_label)}</span></p>'
         )
 
+    market_lens_html = ""
+    market_impact_html = ""
+    tomorrow_checkpoint_html = ""
+    if _is_korea_program(program_id):
+        lenses = infer_korea_market_lenses(item)
+        market_lens_html = (
+            f'<p class="market-lens-line">'
+            f'<span class="market-lens-label">[{_esc(KOREA_MARKET_LENS_LABEL)}]</span> '
+            f'{_esc(" · ".join(lenses))}</p>'
+        )
+        impact_line = build_korea_market_impact_line(item, rank=rank)
+        if impact_line:
+            market_impact_html = f"""
+      <div class="brief-block market-impact-block">
+        <h4 class="block-label">{_esc(KOREA_MARKET_IMPACT_LABEL)}</h4>
+        <p class="block-body">{_esc(impact_line)}</p>
+      </div>"""
+        confirm, hold = build_korea_tomorrow_checkpoint_parts(item)
+        tomorrow_checkpoint_html = (
+            f'<p class="tomorrow-checkpoint">'
+            f'<span class="tomorrow-label">{_esc(KOREA_TOMORROW_CONFIRM_LABEL)}:</span> {_esc(confirm)}<br/>'
+            f'<span class="tomorrow-label">{_esc(KOREA_TOMORROW_HOLD_LABEL)}:</span> {_esc(hold)}</p>'
+        )
+
     rank_html = "" if _is_korea_program(program_id) else f'<div class="card-rank">{rank}</div>'
     return f"""
     <article class="briefing-card top-item" data-top-item="{rank}">
       {rank_html}
       <span class="angle-chip">{_esc(angle_chip)}</span>
+      {market_lens_html}
       <h3 class="card-headline">{rank}. {_esc(headline)}</h3>
       {insuff_badge}
       {hype_badge}{selection_block}
@@ -562,6 +602,7 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
         <h4 class="block-label">주인님 관점</h4>
         <p class="block-body">{_esc(owner_angle)}</p>
       </div>
+      {market_impact_html}
       <div class="judgment-row">
         <span class="judgment-label">키수리 판단</span>
         <span class="judgment-badge">{_esc(j_label)}</span>
@@ -570,6 +611,7 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
       <div class="brief-block next-watch-block">
         <h4 class="block-label">다음 확인 포인트</h4>
         <p class="block-body"><span class="watch-arrow">→</span> {_esc(next_watch)}</p>
+        {tomorrow_checkpoint_html}
       </div>
       <div class="source-chip">
         <span class="chip-label">출처</span>
@@ -677,8 +719,53 @@ def _render_korea_evening_memo_body(memo: Mapping[str, Any]) -> str:
     )
 
 
+def _render_korea_market_summary(fixture: Mapping[str, Any]) -> str:
+    """Korea-only bottom summary: how today's signals touch each market axis."""
+    rows = build_korea_market_impact_summary(fixture.get("top_5_items") or [])
+    if not rows:
+        return ""
+    lis = "".join(
+        f'<li><strong class="market-axis">{_esc(row.get("axis"))}</strong> — {_esc(row.get("body"))}</li>'
+        for row in rows
+        if str(row.get("axis") or "").strip() and str(row.get("body") or "").strip()
+    )
+    return f"""
+    <section id="market-impact-summary" class="section-card market-summary-section">
+      <h2 class="section-heading">{_esc(KOREA_MARKET_SUMMARY_HEADING)}</h2>
+      <ul class="market-summary-list">{lis}</ul>
+    </section>"""
+
+
+def _render_korea_follow_hold(fixture: Mapping[str, Any]) -> str:
+    """Korea-only follow-now vs hold-off split — the judgment layer over the news."""
+    blocks = build_korea_follow_hold_blocks(fixture.get("top_5_items") or [])
+    follow = "".join(f"<li>{_esc(line)}</li>" for line in blocks.get("follow") or [])
+    hold = "".join(f"<li>{_esc(line)}</li>" for line in blocks.get("hold") or [])
+    if not follow and not hold:
+        return ""
+    return f"""
+    <section id="follow-hold-section" class="section-card follow-hold-section">
+      <h2 class="section-heading">{_esc(KOREA_FOLLOW_BLOCK_HEADING)} · {_esc(KOREA_HOLD_BLOCK_HEADING)}</h2>
+      <div class="follow-hold-grid">
+        <div class="follow-block">
+          <h4 class="block-label">{_esc(KOREA_FOLLOW_BLOCK_HEADING)}</h4>
+          <ul class="follow-hold-list">{follow}</ul>
+        </div>
+        <div class="hold-block">
+          <h4 class="block-label">{_esc(KOREA_HOLD_BLOCK_HEADING)}</h4>
+          <ul class="follow-hold-list">{hold}</ul>
+        </div>
+      </div>
+    </section>"""
+
+
 def _render_deep_dive(fixture: Mapping[str, Any], *, program_id: str) -> str:
-    heading = _esc(fixture.get("deep_dive_heading") or SECTION_DEEP_DIVE)
+    # Korea display-only override: the generated-JSON contract heading stays
+    # SECTION_DEEP_DIVE; the Korea reader sees the market-judgment title instead.
+    if _is_korea_program(program_id):
+        heading = _esc(KOREA_DEEP_DIVE_DISPLAY_TITLE)
+    else:
+        heading = _esc(fixture.get("deep_dive_heading") or SECTION_DEEP_DIVE)
     subframe = _esc(_deep_dive_subframe(program_id))
     confirmed = fixture.get("deep_dive_confirmed_facts") or []
     interpretation = _esc(fixture.get("deep_dive_interpretation") or "")
@@ -704,7 +791,13 @@ def _render_deep_dive(fixture: Mapping[str, Any], *, program_id: str) -> str:
     prose = ""
     unc = ""
     if _is_korea_program(program_id):
-        prose = f'<div class="korea-deep-blocks">{_render_korea_deep_dive_blocks(fixture)}</div>'
+        frame_line = build_korea_market_frame_line(fixture.get("top_5_items") or [])
+        frame_html = (
+            f'<p class="korea-market-frame">'
+            f'<strong class="korea-market-frame-label">{_esc(KOREA_MARKET_FRAME_HEADING)}</strong> — '
+            f'{_esc(frame_line)}</p>'
+        )
+        prose = f'{frame_html}<div class="korea-deep-blocks">{_render_korea_deep_dive_blocks(fixture)}</div>'
     else:
         body = str(fixture.get("deep_dive_body") or "")
         if body:
@@ -990,6 +1083,25 @@ def _premium_styles() -> str:
     }
     .source-box{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden;}
     .deep-dive-prose p,.deep-interpretation p,.deep-impact p,.deep-uncertainty p{margin:0 0 var(--sp-3);line-height:1.75;}
+    .market-lens-line{margin:0 0 var(--sp-2);font-size:.8rem;color:var(--k-gold);letter-spacing:0.02em;}
+    .market-lens-label{font-weight:700;}
+    .tomorrow-checkpoint{margin:var(--sp-2) 0 0;font-size:.88rem;line-height:1.7;color:var(--ks-text-dim);}
+    .tomorrow-label{font-weight:700;color:var(--k-gold);}
+    .korea-market-frame{margin:0 0 var(--sp-4);line-height:1.75;color:var(--ks-text);}
+    .korea-market-frame-label{color:var(--k-gold);}
+    .market-summary-list{margin:0;padding-left:1.2rem;line-height:1.8;}
+    .market-summary-list li{margin:0 0 var(--sp-2);}
+    .market-axis{color:var(--k-gold);}
+    .follow-hold-grid{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-4);}
+    @media(max-width:560px){.follow-hold-grid{grid-template-columns:1fr;}}
+    .follow-block,.hold-block{
+      border:1px solid var(--ks-line);border-radius:var(--r-sm);
+      padding:var(--sp-3) var(--sp-4);background:var(--ks-surface-2);
+    }
+    .follow-block{border-left:3px solid var(--k-gold);}
+    .hold-block{border-left:3px solid var(--ks-blue);}
+    .follow-hold-list{margin:0;padding-left:1.1rem;line-height:1.7;font-size:0.9rem;}
+    .follow-hold-list li{margin:0 0 var(--sp-2);}
     .korea-deep-block{margin:0 0 var(--sp-4);padding:var(--sp-3) 0;border-top:1px solid rgba(255,255,255,.08);}
     .korea-deep-block:first-of-type{border-top:none;padding-top:0;}
     .korea-deep-label{margin:0 0 var(--sp-2);font-size:.95rem;letter-spacing:-.01em;}
@@ -1215,7 +1327,17 @@ def render_keysuri_contract_preview_html(
     validation_box = _render_validation_box(timestamp)
 
     if is_korea:
-        main_tail = checkpoint + bottom_shot + review_confirmation + korea_memo_section + closing
+        market_summary_section = _render_korea_market_summary(working)
+        follow_hold_section = _render_korea_follow_hold(working)
+        main_tail = (
+            market_summary_section
+            + follow_hold_section
+            + checkpoint
+            + bottom_shot
+            + review_confirmation
+            + korea_memo_section
+            + closing
+        )
     else:
         main_tail = checkpoint + global_open_ending + review_confirmation + closing
 
@@ -1620,7 +1742,7 @@ def _gmail_render_korea_domestic_strip(fixture: Mapping[str, Any]) -> str:
         f'<p style="margin:0 0 8px 0;font-size:12px;font-weight:700;letter-spacing:0.04em;color:{c["accent"]};">'
         f'오늘 국내에서 움직인 것</p>'
         f'<p style="margin:0 0 12px 0;font-size:14px;line-height:1.6;color:{c["dim"]};">'
-        f'국내 적용 관점에서 오늘 다섯 신호를 정리했습니다.</p>'
+        f'오늘 한국 시장에서 돈·산업·정책이 움직인 축을 다섯 신호로 정리했습니다.</p>'
         f'{"".join(chip_cells)}'
         f'</td></tr></table>'
     )
@@ -1713,6 +1835,23 @@ def _gmail_render_korea_top_item(item: Mapping[str, Any], rank: int) -> str:
     if selection_reason:
         selection_html = _label("선정 이유") + _body(selection_reason)
 
+    lenses = infer_korea_market_lenses(item)
+    lens_html = (
+        f'<p style="margin:0 0 10px 0;font-size:12px;font-weight:700;letter-spacing:0.02em;color:{c["blue"]};">'
+        f'[{_esc(KOREA_MARKET_LENS_LABEL)}] {_esc(" · ".join(lenses))}</p>'
+    )
+    market_impact_html = ""
+    impact_line = build_korea_market_impact_line(item, rank=rank)
+    if impact_line:
+        market_impact_html = _label(KOREA_MARKET_IMPACT_LABEL) + _body(impact_line)
+    confirm, hold = build_korea_tomorrow_checkpoint_parts(item)
+    tomorrow_html = (
+        f'{_gmail_spacer(10)}'
+        f'<p style="margin:0;font-size:13px;line-height:1.7;color:{c["dim"]};">'
+        f'<strong style="color:{c["accent"]};">{_esc(KOREA_TOMORROW_CONFIRM_LABEL)}:</strong> {_esc(confirm)}<br/>'
+        f'<strong style="color:{c["accent"]};">{_esc(KOREA_TOMORROW_HOLD_LABEL)}:</strong> {_esc(hold)}</p>'
+    )
+
     return (
         f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
         f'style="background:{c["surface"]};border:1px solid {c["line"]};border-left:4px solid {c["accent"]};border-radius:12px;">'
@@ -1721,6 +1860,7 @@ def _gmail_render_korea_top_item(item: Mapping[str, Any], rank: int) -> str:
         f'<span style="display:inline-block;margin:0 0 10px 0;padding:4px 10px;font-size:11px;font-weight:700;'
         f'color:{c["accent"]};background:{c["gold_soft"]};border:1px solid rgba(205,168,95,0.30);border-radius:999px;">'
         f'{_esc(KOREA_ANGLE_CHIP)}</span>'
+        f'{lens_html}'
         f'<h3 style="margin:0 0 12px 0;font-size:18px;line-height:1.45;font-weight:700;color:{c["text"]};">'
         f'{rank}. {_esc(headline)}</h3>'
         f'{selection_html}{emphasis_html}'
@@ -1731,7 +1871,7 @@ def _gmail_render_korea_top_item(item: Mapping[str, Any], rank: int) -> str:
         f'<tr><td style="padding:12px 14px;">'
         f'{_label("주인님 관점")}{_body(owner_angle)}'
         f'</td></tr></table>'
-        f'{_gmail_spacer(12)}{judgment_html}{source_html}'
+        f'{_gmail_spacer(12)}{market_impact_html}{judgment_html}{tomorrow_html}{source_html}'
         f'</td></tr></table>'
     )
 
@@ -1757,7 +1897,8 @@ def _gmail_render_korea_top5(fixture: Mapping[str, Any]) -> str:
 
 def _gmail_render_korea_deep_dive(fixture: Mapping[str, Any]) -> str:
     c = _GMAIL_KOREA_COLORS
-    heading = str(fixture.get("deep_dive_heading") or SECTION_DEEP_DIVE).strip()
+    # Display-only override — contract JSON heading stays SECTION_DEEP_DIVE.
+    heading = KOREA_DEEP_DIVE_DISPLAY_TITLE
     subframe = KOREA_DEEP_SUBFRAME
     sections = fixture.get("korea_deep_dive_sections") or []
     if not sections:
@@ -1770,6 +1911,16 @@ def _gmail_render_korea_deep_dive(fixture: Mapping[str, Any]) -> str:
             ),
         )
     inner_parts: list[str] = []
+    frame_line = build_korea_market_frame_line(fixture.get("top_5_items") or [])
+    if frame_line:
+        inner_parts.append(
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+            f'style="margin:0 0 12px 0;background:{c["gold_soft"]};border-left:3px solid {c["accent"]};border-radius:10px;">'
+            f'<tr><td style="padding:14px 16px;">'
+            f'<p style="margin:0 0 6px 0;font-size:13px;font-weight:700;color:{c["accent"]};">{_esc(KOREA_MARKET_FRAME_HEADING)}</p>'
+            f'<p style="margin:0;font-size:14px;line-height:1.75;color:{c["text"]};">{_esc(frame_line)}</p>'
+            f'</td></tr></table>'
+        )
     body = str(fixture.get("deep_dive_body") or "").strip()
     if body and not sections:
         for para in [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()] or [body]:
@@ -1807,6 +1958,66 @@ def _gmail_render_korea_deep_dive(fixture: Mapping[str, Any]) -> str:
         f'<p style="margin:0 0 16px 0;font-size:12px;font-weight:700;letter-spacing:0.04em;color:{c["mute"]};">'
         f'{_esc(subframe)}</p>'
         f'{"".join(inner_parts)}'
+        f'</td></tr></table>'
+    )
+
+
+def _gmail_render_korea_market_summary(fixture: Mapping[str, Any]) -> str:
+    """Gmail-safe Korea market-impact summary box (table + inline styles only)."""
+    c = _GMAIL_KOREA_COLORS
+    rows = build_korea_market_impact_summary(fixture.get("top_5_items") or [])
+    if not rows:
+        return ""
+    row_html = "".join(
+        f'<p style="margin:0 0 10px 0;font-size:14px;line-height:1.7;color:{c["text"]};">'
+        f'<strong style="color:{c["accent"]};">{_esc(row.get("axis"))}</strong> — {_esc(row.get("body"))}</p>'
+        for row in rows
+        if str(row.get("axis") or "").strip() and str(row.get("body") or "").strip()
+    )
+    return (
+        f'{_gmail_spacer(18)}'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="background:{c["surface"]};border:1px solid {c["line"]};border-radius:12px;">'
+        f'<tr><td style="padding:18px;">'
+        f'<h2 style="margin:0 0 12px 0;font-size:18px;line-height:1.4;font-weight:700;color:{c["text"]};'
+        f'border-left:4px solid {c["accent"]};padding-left:12px;">{_esc(KOREA_MARKET_SUMMARY_HEADING)}</h2>'
+        f'{row_html}'
+        f'</td></tr></table>'
+    )
+
+
+def _gmail_render_korea_follow_hold(fixture: Mapping[str, Any]) -> str:
+    """Gmail-safe follow-now vs hold-off blocks (stacked for mobile safety)."""
+    c = _GMAIL_KOREA_COLORS
+    blocks = build_korea_follow_hold_blocks(fixture.get("top_5_items") or [])
+    follow_lines = blocks.get("follow") or []
+    hold_lines = blocks.get("hold") or []
+    if not follow_lines and not hold_lines:
+        return ""
+
+    def _block(heading: str, lines: Sequence[str], border_color: str) -> str:
+        if not lines:
+            return ""
+        lis = "".join(
+            f'<li style="margin:0 0 8px 0;font-size:14px;line-height:1.7;color:{c["text"]};">{_esc(line)}</li>'
+            for line in lines
+        )
+        return (
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+            f'style="margin:0 0 12px 0;background:{c["surface2"]};border:1px solid {c["line"]};'
+            f'border-left:4px solid {border_color};border-radius:10px;">'
+            f'<tr><td style="padding:14px 16px;">'
+            f'<p style="margin:0 0 8px 0;font-size:13px;font-weight:700;color:{c["accent"]};">{_esc(heading)}</p>'
+            f'<ul style="margin:0 0 0 18px;padding:0;">{lis}</ul>'
+            f'</td></tr></table>'
+        )
+
+    return (
+        f'{_gmail_spacer(18)}'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">'
+        f'<tr><td>'
+        f'{_block(KOREA_FOLLOW_BLOCK_HEADING, follow_lines, c["accent"])}'
+        f'{_block(KOREA_HOLD_BLOCK_HEADING, hold_lines, c["blue"])}'
         f'</td></tr></table>'
     )
 
@@ -1964,6 +2175,8 @@ def build_keysuri_korea_gmail_owner_email_html(
     domestic_strip = _gmail_render_korea_domestic_strip(fixture)
     top5 = _gmail_render_korea_top5(fixture)
     deep_dive = _gmail_render_korea_deep_dive(fixture)
+    market_summary = _gmail_render_korea_market_summary(fixture)
+    follow_hold = _gmail_render_korea_follow_hold(fixture)
     checkpoint_html = _gmail_render_korea_one_line_checkpoint(fixture)
     bottom_shot = _gmail_render_korea_bottom_shot(fixture)
     evening_memo = _gmail_render_korea_evening_memo(fixture)
@@ -2023,6 +2236,8 @@ def build_keysuri_korea_gmail_owner_email_html(
 {_gmail_spacer(18)}
 {top5}
 {deep_dive}
+{market_summary}
+{follow_hold}
 {checkpoint_html}
 {bottom_shot}
 {review_html}

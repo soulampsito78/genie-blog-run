@@ -729,5 +729,72 @@ class KeysuriKoreaExposureDedupBackfillTests(unittest.TestCase):
         self.assertEqual(result["candidate_funnel_summary"]["fresh_backfill_used_count"], 0)
 
 
+class KeysuriKoreaMarketSignalFieldContractTests(unittest.TestCase):
+    """Korea-only OPTIONAL market_lens/market_impact fields on TOP5 items."""
+
+    def _korea_block_with_item_fields(self, **fields) -> dict:
+        block = _top5_block("keysuri_korea_tech")
+        block["items"][0].update(fields)
+        return block
+
+    def test_absent_fields_stay_valid(self) -> None:
+        issues = validate_top_5_news_block("keysuri_korea_tech", _top5_block("keysuri_korea_tech"))
+        self.assertEqual(issues, [])
+
+    def test_valid_market_lens_list_accepted(self) -> None:
+        block = self._korea_block_with_item_fields(
+            market_lens=["주식", "채권/금리", "정책"],
+            market_impact="정책 발표와 실제 예산·조달 일정은 분리해서 봐야 합니다.",
+        )
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        self.assertEqual(issues, [])
+
+    def test_valid_market_lens_string_form_accepted(self) -> None:
+        block = self._korea_block_with_item_fields(market_lens="주식 · 채권/금리")
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        self.assertEqual(issues, [])
+
+    def test_unknown_market_lens_value_rejected(self) -> None:
+        block = self._korea_block_with_item_fields(market_lens=["주식", "부동산"])
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        codes = {i["code"] for i in issues}
+        self.assertIn("top_5_news_item_market_lens_unknown", codes)
+
+    def test_market_lens_wrong_type_rejected(self) -> None:
+        block = self._korea_block_with_item_fields(market_lens={"lens": "주식"})
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        codes = {i["code"] for i in issues}
+        self.assertIn("top_5_news_item_market_lens_invalid", codes)
+
+    def test_market_impact_buy_sell_directive_rejected(self) -> None:
+        block = self._korea_block_with_item_fields(
+            market_impact="이 종목은 내일 매수하시는 것이 좋습니다."
+        )
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        codes = {i["code"] for i in issues}
+        self.assertIn("top_5_news_item_market_impact_directive", codes)
+
+    def test_market_impact_empty_string_rejected(self) -> None:
+        block = self._korea_block_with_item_fields(market_impact="   ")
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        codes = {i["code"] for i in issues}
+        self.assertIn("top_5_news_item_market_impact_invalid", codes)
+
+    def test_global_program_ignores_market_fields(self) -> None:
+        block = _top5_block("keysuri_global_tech")
+        block["items"][0]["market_lens"] = ["부동산"]
+        block["items"][0]["market_impact"] = "매수 추천."
+        issues = validate_top_5_news_block("keysuri_global_tech", block)
+        self.assertEqual(issues, [])
+
+    def test_lens_parser_keeps_bond_rate_label_intact(self) -> None:
+        from keysuri_news_contract import parse_korea_market_lens_values
+
+        self.assertEqual(
+            parse_korea_market_lens_values("주식 · 채권/금리, 환율"),
+            ["주식", "채권/금리", "환율"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

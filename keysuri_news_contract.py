@@ -1,6 +1,7 @@
 """Kee-Suri Global/Korea TOP 5 news contract (foundation — not wired to runtime)."""
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from urllib.parse import urlsplit
 
@@ -81,6 +82,41 @@ NEWS_CATEGORIES = GLOBAL_NEWS_CATEGORIES
 
 PROGRAM_KOREA_TECH = "keysuri_korea_tech"
 PROGRAM_GLOBAL_TECH = "keysuri_global_tech"
+
+# Korea-only OPTIONAL market-signal fields on TOP5 items. Absent fields are always
+# valid (old artifacts / partial Gemini output keep working via renderer fallback);
+# when present they must follow this contract so the renderer can trust them.
+KOREA_MARKET_LENS_VALUES = frozenset(
+    {
+        "주식",
+        "채권/금리",
+        "환율",
+        "정책",
+        "산업",
+        "AI",
+        "대기업 투자",
+        "중소기업",
+        "일자리",
+        "자영업",
+        "인프라",
+        "조달",
+        "규제",
+    }
+)
+
+# market_impact must be a market-consequence judgment, never a trade directive.
+KOREA_MARKET_IMPACT_FORBIDDEN_DIRECTIVES: Tuple[str, ...] = ("매수", "매도")
+
+
+def parse_korea_market_lens_values(raw: Any) -> List[str]:
+    """Normalize market_lens (string or list) into label list. '/' is kept — it is
+    part of the label 채권/금리, not a separator."""
+    if isinstance(raw, (list, tuple)):
+        return [str(v).strip() for v in raw if str(v).strip()]
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    return [part.strip() for part in re.split(r"[·,]", text) if part.strip()]
 
 
 def get_news_categories_for_program(program_id: str) -> frozenset[str]:
@@ -383,6 +419,59 @@ def validate_top_5_news_block(program_id: str, top_5_news: dict) -> List[Dict[st
                         f"{prefix}.{field}",
                     )
                 )
+
+        if pid == PROGRAM_KOREA_TECH:
+            lens_raw = item.get("market_lens")
+            if lens_raw is not None:
+                if not isinstance(lens_raw, (str, list, tuple)):
+                    issues.append(
+                        _issue(
+                            "top_5_news_item_market_lens_invalid",
+                            "market_lens must be a string or list of strings",
+                            f"{prefix}.market_lens",
+                        )
+                    )
+                else:
+                    lens_values = parse_korea_market_lens_values(lens_raw)
+                    if not lens_values:
+                        issues.append(
+                            _issue(
+                                "top_5_news_item_market_lens_empty",
+                                "market_lens must contain at least one label when present",
+                                f"{prefix}.market_lens",
+                            )
+                        )
+                    else:
+                        unknown = [v for v in lens_values if v not in KOREA_MARKET_LENS_VALUES]
+                        if unknown:
+                            issues.append(
+                                _issue(
+                                    "top_5_news_item_market_lens_unknown",
+                                    f"market_lens values not in contract: {unknown!r}",
+                                    f"{prefix}.market_lens",
+                                )
+                            )
+            impact_raw = item.get("market_impact")
+            if impact_raw is not None:
+                if not _is_non_empty_str(impact_raw):
+                    issues.append(
+                        _issue(
+                            "top_5_news_item_market_impact_invalid",
+                            "market_impact must be a non-empty string when present",
+                            f"{prefix}.market_impact",
+                        )
+                    )
+                else:
+                    impact_text = str(impact_raw)
+                    hit = [d for d in KOREA_MARKET_IMPACT_FORBIDDEN_DIRECTIVES if d in impact_text]
+                    if hit:
+                        issues.append(
+                            _issue(
+                                "top_5_news_item_market_impact_directive",
+                                f"market_impact must not contain buy/sell directives: {hit!r}",
+                                f"{prefix}.market_impact",
+                            )
+                        )
 
     if items and ranks_seen != {1, 2, 3, 4, 5}:
         issues.append(

@@ -21,17 +21,23 @@ from keysuri_korea_longform_ux import (
     KOREA_DEEP_MAX_PARAGRAPH_CHARS,
     KOREA_EVENING_MEMO_HEADING,
     KOREA_MEMO_ACTION_MAX_CHARS,
+    KOREA_NEWS_SUMMARY_CLICHE_PHRASES,
     contains_truncated_headline_fragment,
     count_korea_memo_action_lines_in_closing,
     extract_korea_memo_action_lines_from_html,
     has_incomplete_korean_sentence_ending,
+    korea_checkpoint_lacks_confirm_and_hold,
+    korea_cliche_phrase_overused,
     korea_closing_internal_label_leak,
     korea_closing_paragraph_too_long,
     korea_closing_repeats_title_only,
     korea_deep_block_too_long,
     korea_deep_dive_missing_blocks,
+    korea_deep_dive_repeats_top5_headline,
     korea_deep_dive_uses_forbidden_labels,
+    korea_market_lens_insufficient,
     korea_memo_action_line_too_long,
+    korea_risk_lacks_hold_criteria,
     korea_section_label_not_user_facing,
     korea_warm_farewell_missing,
     max_paragraph_length,
@@ -579,6 +585,7 @@ def _validate_korea_longform_visible_ux(
     html: str,
     *,
     use_korea_scoring_rules: bool,
+    top_headlines: Sequence[str] = (),
 ) -> List[BriefingContentIssue]:
     if not _html_is_korea_briefing(html, use_korea_scoring_rules=use_korea_scoring_rules):
         return []
@@ -629,6 +636,16 @@ def _validate_korea_longform_visible_ux(
                     section="deep_dive",
                 )
             )
+        pseudo_top_items = [{"korean_title": h} for h in top_headlines if str(h or "").strip()]
+        if pseudo_top_items and korea_deep_dive_repeats_top5_headline(deep_blocks, pseudo_top_items):
+            issues.append(
+                BriefingContentIssue(
+                    "korea_deep_dive_repeats_top5_recap",
+                    "Korea deep-dive must synthesize a market-structure judgment, not restate "
+                    "TOP5 headlines verbatim",
+                    section="deep_dive",
+                )
+            )
         for block in deep_blocks:
             body = block.get("body", "")
             label = str(block.get("label") or "").strip()
@@ -657,6 +674,17 @@ def _validate_korea_longform_visible_ux(
                     BriefingContentIssue(
                         "korea_risk_section_question_style",
                         "Korea risk section must use declarative risk statements, not questions",
+                        section="deep_dive",
+                        excerpt=body[:100],
+                    )
+                )
+                break
+            if label == "위험 요인" and korea_risk_lacks_hold_criteria(body):
+                issues.append(
+                    BriefingContentIssue(
+                        "korea_risk_lacks_hold_criteria",
+                        "Korea risk section must state what to not assume yet / hold off on "
+                        "until confirmed (보류/단정/확인 전), not just an abstract warning",
                         section="deep_dive",
                         excerpt=body[:100],
                     )
@@ -869,6 +897,25 @@ def validate_briefing_content_gate(
                 BriefingContentIssue(
                     "korea_stock_digest_tone",
                     "Korea briefing reads like stock-price digest without tech/industry signal",
+                    section="visible_body",
+                    severity="warning",
+                )
+            )
+        if korea_cliche_phrase_overused(region):
+            issues.append(
+                BriefingContentIssue(
+                    "korea_news_summary_cliche_overused",
+                    "Korea briefing overuses press-release/news-summary cliche phrases "
+                    f"(watch for: {', '.join(KOREA_NEWS_SUMMARY_CLICHE_PHRASES)})",
+                    section="visible_body",
+                )
+            )
+        if korea_market_lens_insufficient(region):
+            warnings.append(
+                BriefingContentIssue(
+                    "korea_market_lens_thin",
+                    "Korea briefing should connect to at least 3 market lenses (stock/bond/FX/rate/"
+                    "corporate investment/policy/industry/SME-worker/AI adoption/market reaction)",
                     section="visible_body",
                     severity="warning",
                 )
@@ -1327,6 +1374,19 @@ def validate_briefing_content_gate(
                     excerpt=checkpoint[:100],
                 )
             )
+        if _html_is_korea_briefing(
+            html, use_korea_scoring_rules=use_korea_scoring_rules
+        ) and korea_checkpoint_lacks_confirm_and_hold(checkpoint):
+            warnings.append(
+                BriefingContentIssue(
+                    "korea_checkpoint_lacks_confirm_and_hold",
+                    "Korea one-line checkpoint should state both what to confirm first "
+                    "tomorrow and what to hold off judging until confirmed",
+                    section="one_line_checkpoint",
+                    excerpt=checkpoint[:100],
+                    severity="warning",
+                )
+            )
     else:
         issues.append(
             BriefingContentIssue(
@@ -1359,6 +1419,7 @@ def validate_briefing_content_gate(
         _validate_korea_longform_visible_ux(
             html,
             use_korea_scoring_rules=use_korea_scoring_rules,
+            top_headlines=top_headlines,
         )
     )
 
