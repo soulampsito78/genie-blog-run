@@ -30,15 +30,18 @@ from keysuri_korea_longform_ux import (
     korea_cliche_phrase_overused,
     korea_closing_internal_label_leak,
     korea_closing_paragraph_too_long,
+    korea_defensive_market_phrase_overused,
     korea_closing_repeats_title_only,
     korea_deep_block_too_long,
     korea_deep_dive_missing_blocks,
     korea_deep_dive_repeats_top5_headline,
     korea_deep_dive_uses_forbidden_labels,
+    korea_everyday_impact_lens_insufficient,
     korea_market_lens_insufficient,
     korea_memo_action_line_too_long,
     korea_risk_lacks_hold_criteria,
     korea_section_label_not_user_facing,
+    korea_upper_layer_only_without_everyday_lens,
     korea_warm_farewell_missing,
     max_paragraph_length,
 )
@@ -918,6 +921,35 @@ def validate_briefing_content_gate(
                     "corporate investment/policy/industry/SME-worker/AI adoption/market reaction)",
                     section="visible_body",
                     severity="warning",
+                )
+            )
+        if korea_everyday_impact_lens_insufficient(region):
+            warnings.append(
+                BriefingContentIssue(
+                    "korea_everyday_impact_lens_thin",
+                    "Korea Tech should translate signals into related industries, suppliers/materials/"
+                    "parts/equipment, jobs/regions, personal investors, and SMB/freelancer impact.",
+                    section="visible_body",
+                    severity="warning",
+                )
+            )
+        if korea_upper_layer_only_without_everyday_lens(region):
+            warnings.append(
+                BriefingContentIssue(
+                    "korea_upper_layer_only_without_everyday_lens",
+                    "Korea Tech leans on M&A/funding/procurement/beneficiary-stock language without "
+                    "enough tangible downstream impact translation.",
+                    section="visible_body",
+                    severity="warning",
+                )
+            )
+        if korea_defensive_market_phrase_overused(region):
+            issues.append(
+                BriefingContentIssue(
+                    "korea_defensive_market_phrase_overused",
+                    "Korea Tech overuses defensive market-impact phrasing instead of explaining where "
+                    "the signal lands for industries, workers, operators, or ordinary investors.",
+                    section="visible_body",
                 )
             )
 

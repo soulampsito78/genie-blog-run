@@ -90,11 +90,54 @@ KOREA_MARKET_LENS_LABEL = "시장 렌즈"
 KOREA_MARKET_LENS_FALLBACK = "시장 신호"
 KOREA_MARKET_IMPACT_LABEL = "시장 영향"
 KOREA_MARKET_FRAME_HEADING = "오늘의 시장 구조"
-KOREA_MARKET_SUMMARY_HEADING = "시장 영향 요약"
+KOREA_MARKET_SUMMARY_HEADING = "오늘 신호가 내려오는 곳"
 KOREA_FOLLOW_BLOCK_HEADING = "바로 볼 것"
 KOREA_HOLD_BLOCK_HEADING = "보류할 것"
 KOREA_TOMORROW_CONFIRM_LABEL = "내일 먼저 볼 것"
 KOREA_TOMORROW_HOLD_LABEL = "아직 단정하지 말 것"
+
+KOREA_EVERYDAY_IMPACT_TERMS: tuple[str, ...] = (
+    "소부장",
+    "협력사",
+    "장비",
+    "소재",
+    "부품",
+    "패키징",
+    "테스트",
+    "전력",
+    "냉각",
+    "데이터센터",
+    "지역",
+    "일자리",
+    "채용",
+    "외주",
+    "유지보수",
+    "교육",
+    "비용 구조",
+    "도입 일정",
+    "자영업",
+    "프리랜서",
+    "중소기업",
+)
+
+KOREA_UPPER_LAYER_MARKET_TERMS: tuple[str, ...] = (
+    "M&A",
+    "인수합병",
+    "투자유치",
+    "정책금융",
+    "외국인 자금",
+    "조달",
+    "발주",
+    "수혜주",
+)
+
+KOREA_DEFENSIVE_MARKET_PHRASES: tuple[str, ...] = (
+    "직접 영향은 제한적",
+    "직접 영향이 제한적",
+    "참고 축",
+    "기준금리 일정만",
+    "발주·계약이 확인되는 축의 2차 반응",
+)
 
 # Priority-ordered lens inference rules: first matches win, max 3 lenses shown.
 _KOREA_MARKET_LENS_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -116,54 +159,54 @@ _KOREA_MARKET_LENS_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
 # the same dominant lens do not repeat one sentence five times (auto-summary feel).
 _KOREA_MARKET_IMPACT_POOLS: Dict[str, tuple[str, ...]] = {
     "정책": (
-        "정책 발표와 실제 예산·조달 일정은 분리해서 봐야 합니다.",
-        "발표 문안보다 집행 일정과 후속 공고가 판단 기준입니다.",
-        "정책 기대감은 실제 예산 반영이 확인될 때까지 낮춰 잡는 편이 안전합니다.",
+        "정책 뉴스는 예산표보다 지역 일자리, 공사·자재·설계·감리, 유지보수 수요로 내려오는 속도를 보겠습니다.",
+        "발표 문안보다 중소기업 지원 요건, 교육 일정, 외주 발주가 열리는 순서가 체감 변수입니다.",
+        "정책 기대감은 지역 사업자와 협력사에 실제 공고·교육·도입 일정이 닿을 때 힘이 생깁니다.",
     ),
     "대기업 투자": (
-        "투자 규모 숫자보다 실제 발주와 협력사 선정 일정이 먼저입니다.",
-        "주식시장에서는 직접 수혜보다 장비·소재·전력 2차 반응을 먼저 봐야 합니다.",
+        "투자 규모 숫자보다 장비·소재·부품 협력사와 지역 채용 일정으로 온기가 내려오는지 보겠습니다.",
+        "수혜주를 단정하기보다 장비·소재·부품·전력·냉각처럼 주변 업종으로 번지는 순서가 먼저입니다.",
     ),
     "주식": (
-        "주식시장에서는 직접 수혜보다 2차 반응을 봐야 합니다.",
-        "관련 종목 기대감보다 실제 계약·실적 확인이 먼저입니다.",
+        "종목 기대감보다 관련 업종의 계약, 협력사 물량, 비용 구조 변화가 먼저 확인돼야 합니다.",
+        "개인 투자자는 수혜주 이름보다 장비·소재·부품·전력 같은 주변 업종의 실적 단서를 보겠습니다.",
     ),
     "채권/금리": (
-        "금리·환율 환경이 불리하면 기대감만으로 오래 버티기 어렵습니다.",
-        "기준금리 방향이 확인되기 전에는 자금 조달 부담을 함께 봐야 합니다.",
+        "금리 부담은 스타트업·중소기업의 채용, 외주, 장비 도입 일정으로 먼저 내려올 수 있습니다.",
+        "자금 조달 비용이 올라가면 데이터센터·장비·유지보수 투자의 속도 조절부터 확인해야 합니다.",
     ),
     "환율": (
         "환율 부담이 이어지면 수입 장비·부품 비용 구조부터 다시 봐야 합니다.",
-        "원화 약세 구간에서는 해외 조달 비중이 큰 축의 원가를 먼저 봐야 합니다.",
+        "원화 약세 구간에서는 해외 장비·소재·부품 비중이 큰 사업자의 견적과 납기부터 흔들릴 수 있습니다.",
     ),
     "조달": (
-        "공고 시점보다 실제 발주·계약 체결 여부가 판단 기준입니다.",
-        "이 뉴스는 숫자보다 발주·일정 확인이 먼저입니다.",
+        "공고 시점보다 지역 업체, SI 협력사, 유지보수 외주가 실제 계약으로 이어지는지가 핵심입니다.",
+        "이 뉴스는 숫자보다 발주 일정이 교육·장비·현장 인력 수요로 내려오는지가 먼저입니다.",
     ),
     "인프라": (
-        "인프라 신호는 전력·부지·조달 일정이 확인될 때 실체가 됩니다.",
-        "데이터센터·전력 축은 착공·계약 단계 확인이 먼저입니다.",
+        "인프라 투자는 데이터센터·전력·냉각·공사·유지보수와 주변 상권까지 같이 봐야 합니다.",
+        "데이터센터·전력 축은 착공·계약 뒤 지역 채용과 협력사 물량으로 내려올 때 실체가 생깁니다.",
     ),
     "산업": (
-        "밸류체인 전체 기대보다 실제 물량이 움직이는 구간을 좁혀 봐야 합니다.",
-        "공급망에서는 직접 수혜보다 장비·소재 2차 반응을 먼저 봐야 합니다.",
+        "산업 뉴스는 완제품보다 장비·소재·부품·패키징·테스트 구간의 실제 물량으로 번지는지 보겠습니다.",
+        "공급망에서는 대기업 발표보다 협력사와 소부장 업체의 납품 일정이 체감 신호입니다.",
     ),
     "AI": (
-        "AI 도입 신호는 업종별 비용 구조 변화로 이어질 때 실질 영향이 생깁니다.",
-        "일반 고객에게는 도입 발표보다 요금·업무 방식 변화가 실질 변수입니다.",
+        "AI 뉴스는 주가보다 업무 자동화, 교육, 보안, SaaS 도입 비용 변화로 먼저 체감될 수 있습니다.",
+        "사업자와 프리랜서는 AI 도입 발표보다 외주 단가, 교육 수요, 업무 방식 변화가 실질 변수입니다.",
     ),
     "중소기업": (
-        "중소기업·스타트업에는 지원 공고보다 집행 일정과 요건 확인이 먼저입니다.",
-        "후속 투자·조달 연결이 확인될 때까지는 신호 강도를 낮춰 봅니다.",
+        "중소기업·스타트업에는 지원 공고보다 도입 비용, 교육 요건, 외주 기회가 실제로 열리는지가 먼저입니다.",
+        "투자유치 뉴스라도 채용, 장비 구매, 협력사 계약으로 이어지는지 확인해야 합니다.",
     ),
     "일자리": (
-        "고용 신호는 실제 채용 공고가 열리는 시점을 기준으로 봐야 합니다.",
+        "고용 신호는 실제 채용 공고와 지역 교육·전환 배치 수요가 열리는 시점을 기준으로 봐야 합니다.",
     ),
     "자영업": (
-        "자영업·소상공인에게는 투자 뉴스보다 비용·수수료 구조 변화가 실질 변수입니다.",
+        "자영업·소상공인에게는 투자 뉴스보다 SaaS 요금, 결제 수수료, 교육·자동화 비용 변화가 실질 변수입니다.",
     ),
     KOREA_MARKET_LENS_FALLBACK: (
-        "오늘 신호만으로는 직접 영향이 제한적입니다. 후속 확인 후에 판단하는 편이 안전합니다.",
+        "오늘 신호는 관련 업종, 비용 구조, 도입 일정 중 어디로 내려오는지부터 확인하겠습니다.",
     ),
 }
 
@@ -814,6 +857,42 @@ def korea_market_lens_insufficient(text: str, *, minimum: int = 3) -> bool:
     return korea_market_lens_axis_count(text) < minimum
 
 
+def korea_everyday_impact_term_hits(text: str) -> List[str]:
+    """Return reader-facing impact terms that make market news tangible."""
+    blob = _text(text)
+    if not blob:
+        return []
+    return [term for term in KOREA_EVERYDAY_IMPACT_TERMS if term in blob]
+
+
+def korea_everyday_impact_lens_insufficient(text: str, *, minimum: int = 4) -> bool:
+    """True when Korea Tech stays abstract instead of translating impact downward."""
+    return len(korea_everyday_impact_term_hits(text)) < minimum
+
+
+def korea_upper_layer_only_without_everyday_lens(
+    text: str,
+    *,
+    upper_minimum: int = 3,
+    everyday_minimum: int = 3,
+) -> bool:
+    """True when capital/procurement language appears without everyday impact translation."""
+    blob = _text(text)
+    if not blob:
+        return False
+    upper_hits = sum(blob.count(term) for term in KOREA_UPPER_LAYER_MARKET_TERMS)
+    everyday_hits = len(korea_everyday_impact_term_hits(blob))
+    return upper_hits >= upper_minimum and everyday_hits < everyday_minimum
+
+
+def korea_defensive_market_phrase_overused(text: str, *, limit: int = 2) -> bool:
+    """True when Korea Tech repeatedly hides behind 'limited direct impact' phrasing."""
+    blob = _text(text)
+    if not blob:
+        return False
+    return sum(blob.count(phrase) for phrase in KOREA_DEFENSIVE_MARKET_PHRASES) >= limit
+
+
 def korea_cliche_phrase_counts(text: str) -> Dict[str, int]:
     blob = _text(text)
     if not blob:
@@ -940,44 +1019,26 @@ def build_korea_tomorrow_checkpoint_parts(item: Mapping[str, Any]) -> tuple[str,
 
 def build_korea_market_impact_summary(items: Sequence[Mapping[str, Any]]) -> List[Dict[str, str]]:
     """Bottom-of-briefing market-impact summary rows (Korea only, ≥3 axes, no directives)."""
-    items = [i for i in items if isinstance(i, dict)]
-    lens_hits: set[str] = set()
-    for item in items:
-        lens_hits.update(infer_korea_market_lenses(item))
-
-    stock_related = bool(lens_hits & {"주식", "대기업 투자", "산업", "인프라", "조달"})
     rows: List[Dict[str, str]] = [
         {
-            "axis": "주식시장",
-            "body": (
-                "직접 수혜를 단정하기보다 발주·계약이 확인되는 축의 2차 반응부터 보겠습니다."
-                if stock_related
-                else "오늘 신호의 직접 영향은 제한적입니다. 섹터별 후속 확인이 먼저입니다."
-            ),
+            "axis": "관련 업종",
+            "body": "반도체·AI·인프라 뉴스는 장비, 소재, 부품, 전력, 냉각처럼 주변 업종으로 내려오는 순서를 보겠습니다.",
         },
         {
-            "axis": "채권/금리",
-            "body": (
-                "금리 환경이 불리하면 기대감만으로 오래 버티기 어렵습니다."
-                if "채권/금리" in lens_hits
-                else "오늘 신호와의 직접 연결은 제한적입니다. 기준금리 일정만 병행 확인하겠습니다."
-            ),
+            "axis": "협력사/소부장",
+            "body": "대기업 투자와 정책 신호는 협력사, 소부장, 패키징, 테스트 물량으로 번질 때 체감 영향이 커집니다.",
         },
         {
-            "axis": "환율",
-            "body": (
-                "환율 부담이 이어지면 수입 장비·부품 비용 구조부터 다시 봐야 합니다."
-                if "환율" in lens_hits
-                else "직접 영향은 제한적입니다. 원달러 흐름은 참고 축으로만 두겠습니다."
-            ),
+            "axis": "일자리/지역",
+            "body": "데이터센터·공장·정책 사업은 지역 채용, 교육, 공사, 유지보수 수요로 내려오는지 확인하겠습니다.",
         },
         {
-            "axis": "산업/기업",
-            "body": "발주·조달·투자 일정이 확인되는 순서대로 실체가 생기는 흐름입니다.",
+            "axis": "개인 투자자",
+            "body": "수혜주를 단정하기보다 관련 업종의 계약, 비용 구조, 도입 일정이 숫자로 확인되는지 보겠습니다.",
         },
         {
-            "axis": "개인/사업자",
-            "body": "투자 뉴스보다 비용 구조와 도입 일정 변화가 실질 변수입니다.",
+            "axis": "사업자/프리랜서",
+            "body": "AI·클라우드·정책 변화는 외주 단가, SaaS 비용, 교육 수요, 중소기업 도입 일정으로 먼저 체감될 수 있습니다.",
         },
     ]
     return rows

@@ -37,6 +37,9 @@ KOREA_MARKET_LENS_AXES: Tuple[str, ...] = (
     "정부 정책",
     "산업 생태계",
     "중소기업·자영업자·직장인·일자리 영향",
+    "협력사·소부장·장비·소재·부품 영향",
+    "지역 채용·교육·유지보수 수요",
+    "사업자·프리랜서 비용 구조와 도입 일정",
     "AI 도입으로 바뀌는 업종",
     "내일 시장 반응 가능성",
 )
@@ -66,12 +69,12 @@ KOREA_NEWS_SUMMARY_FORBIDDEN_PHRASES: Tuple[str, ...] = (
 )
 
 KOREA_RECOMMENDED_MARKET_JUDGMENT_PHRASES: Tuple[str, ...] = (
-    "바로 따라가기보다 먼저 확인할 축은 발주와 일정입니다.",
-    "이 뉴스는 숫자보다 발주/일정 확인이 먼저입니다.",
-    "주식시장에서는 직접 수혜보다 2차 반응을 봐야 합니다.",
-    "금리·환율 환경이 불리하면 기대감만으로 오래 버티기 어렵습니다.",
-    "정책 발표와 실제 예산/조달 일정은 분리해서 봐야 합니다.",
-    "일반 고객에게는 투자 뉴스보다 비용 구조 변화가 더 중요합니다.",
+    "이 뉴스는 장비·소재·부품 협력사와 지역 채용 일정으로 내려오는지 확인해야 합니다.",
+    "AI 도입 발표보다 교육 수요, 외주 단가, SaaS 비용 구조 변화가 더 먼저 체감될 수 있습니다.",
+    "정책 발표는 예산표보다 중소기업 지원 요건과 유지보수 발주가 열리는 순서가 중요합니다.",
+    "개인 투자자는 수혜주 이름보다 관련 업종의 계약·납기·도입 일정이 숫자로 확인되는지 봐야 합니다.",
+    "데이터센터 투자는 전력·냉각·공사·유지보수와 주변 지역 수요까지 같이 보겠습니다.",
+    "사업자와 프리랜서는 투자 뉴스보다 비용 구조, 교육, 자동화 도입 일정 변화를 먼저 봐야 합니다.",
 )
 
 _FORBIDDEN_VISIBLE_SCORE_TERMS: Tuple[str, ...] = (
@@ -464,7 +467,7 @@ def _required_output_schema(program_id: str) -> Dict[str, Any]:
             if isinstance(example_item, dict):
                 example_item["market_lens"] = ["주식", "산업"]
                 example_item["market_impact"] = (
-                    "주식시장에서는 직접 수혜보다 2차 반응을 봐야 합니다."
+                    "개인 투자자는 수혜주 이름보다 장비·소재·부품 협력사의 계약과 납기 변화를 먼저 봐야 합니다."
                 )
     return base
 
@@ -678,8 +681,26 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
                 "- market_lens: array of 1-3 labels, ONLY from this list: 주식, 채권/금리, 환율, 정책, 산업, AI, "
                 "대기업 투자, 중소기업, 일자리, 자영업, 인프라, 조달, 규제.",
                 "- market_impact: exactly one Korean sentence stating the market consequence for this item — "
-                "not an article recap. It should name 먼저 확인할 축 or 보류할 축.",
+                "not an article recap. It should translate where the signal lands for related industries, "
+                "suppliers/materials/parts/equipment, jobs/regions, ordinary investors, or SMB/freelancers.",
                 "- market_impact must NEVER contain buy/sell directives (매수, 매도) or name a specific stock to trade.",
+                "",
+                "KOREA IMPACT TRANSLATION LAYER (mandatory — ordinary-reader downstream impact)",
+                "- Korea Tech is not only for decision-makers or market professionals. Translate each signal so an "
+                "ordinary reader can see where it lands: 업종, 협력사/소부장, 일자리/지역, 개인 투자자, "
+                "사업자/프리랜서.",
+                "- Use tangible downstream words naturally when relevant: 소부장, 협력사, 장비, 소재, 부품, 패키징, "
+                "테스트, 전력, 냉각, 데이터센터, 지역, 일자리, 채용, 외주, 유지보수, 교육, 비용 구조, "
+                "도입 일정, 자영업, 프리랜서, 중소기업.",
+                "- Upper-layer market terms are allowed but insufficient by themselves: M&A, 투자유치, 정책금융, "
+                "외국인 자금, 조달, 발주, 수혜주. If you use them, immediately translate what changes for "
+                "suppliers, workers, regional operators, SMBs, freelancers, or ordinary investors.",
+                "- Semiconductor example: do not stop at 수혜주. Explain 장비·소재·부품·패키징·테스트 협력사, "
+                "전력·냉각, 지역 채용 or 유지보수 demand.",
+                "- AI example: do not stop at AI 투자. Explain 업무 자동화, 교육 수요, 보안, SaaS 비용, "
+                "외주 단가, 프리랜서 업무 변화.",
+                "- Infrastructure/policy example: do not stop at 조달 or 정책금융. Explain 데이터센터, 전력, "
+                "공사·자재·설계·감리, 지역 일자리, 중소기업 참여 요건.",
                 "",
                 "KOREA MARKET SIGNAL DEPTH (mandatory — TOP5 is a signal ranking, not a news ranking)",
                 "- TOP 5는 뉴스 순위가 아니라 신호 순위다: ranking order reflects market impact, customer "
@@ -691,6 +712,8 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
                 "체크포인트는 무엇인가?",
                 "- If a global story is used, it must carry an explicit domestic bridge: 국내 기업 영향, 국내 정책 영향, "
                 "국내 증시·섹터 영향, 국내 환율·금리·자금시장 영향, or 국내 고객 행동 영향.",
+                "- Do not make every market_impact a finance-only defensive sentence such as 직접 영향 제한적, "
+                "참고 축, 기준금리 일정만, or 2차 반응. Explain the concrete downstream landing point.",
                 "- keysuri_judgment must read as one of these action postures, not a bare recap label: "
                 + ", ".join(KOREA_JUDGMENT_ACTION_POSTURES) + ".",
                 "",

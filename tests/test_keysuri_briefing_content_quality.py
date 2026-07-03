@@ -391,6 +391,27 @@ class KeysuriBriefingContentQualityTests(unittest.TestCase):
         self.assertFalse(any(i.code == "korea_global_label_leak" for i in result.issues))
         self.assertFalse(any(i.code == "korea_lens_terms_missing" for i in result.warnings))
 
+    def test_korea_gate_warns_on_upper_layer_only_market_copy(self) -> None:
+        html = (
+            '<html><body class="premium-briefing theme-korea">'
+            "<main>"
+            "<section>"
+            "<p>주인님, 오늘 국내 적용 관점에서는 M&A와 투자유치, 정책금융, 외국인 자금, "
+            "조달, 발주, 수혜주 흐름을 봅니다.</p>"
+            "<p>직접 영향은 제한적입니다. 기준금리 일정만 참고 축으로 보겠습니다. "
+            "직접 영향은 제한적입니다.</p>"
+            "</section>"
+            "</main>"
+            "</body></html>"
+        )
+        metadata = {"korea_top5_selection": {"policy": "keysuri_korea_top5_selection_v2_duplicate_guard"}}
+        result = validate_briefing_content_gate(html, source_metadata=metadata)
+        warning_codes = {i.code for i in result.warnings}
+        issue_codes = {i.code for i in result.issues}
+        self.assertIn("korea_everyday_impact_lens_thin", warning_codes)
+        self.assertIn("korea_upper_layer_only_without_everyday_lens", warning_codes)
+        self.assertIn("korea_defensive_market_phrase_overused", issue_codes)
+
 
 class KeysuriKoreaGateExtractionTests(unittest.TestCase):
     _FIXTURE_001502 = (

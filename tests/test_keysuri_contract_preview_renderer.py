@@ -1072,7 +1072,7 @@ _KOREA_MARKET_MARKERS: tuple[str, ...] = (
     "시장 영향",
     "내일 먼저 볼 것",
     "아직 단정하지 말 것",
-    "시장 영향 요약",
+    "오늘 신호가 내려오는 곳",
     "바로 볼 것",
     "보류할 것",
     "오늘의 시장 구조",
@@ -1108,9 +1108,18 @@ class KeysuriKoreaMarketBriefingRenderTests(unittest.TestCase):
         html = _render_contract_html(_CONTRACT_RENDERER, build_korea_contract_fixture())
         self.assertIn('id="market-impact-summary"', html)
         axes = sum(
-            1 for axis in ("주식시장", "채권/금리", "환율", "산업/기업", "개인/사업자") if axis in html
+            1
+            for axis in (
+                "관련 업종",
+                "협력사/소부장",
+                "일자리/지역",
+                "개인 투자자",
+                "사업자/프리랜서",
+            )
+            if axis in html
         )
-        self.assertGreaterEqual(axes, 3)
+        self.assertEqual(axes, 5)
+        self.assertNotIn("시장 영향 요약", html)
 
     @_require_contract_renderer
     def test_korea_follow_hold_section_renders_both_blocks(self) -> None:

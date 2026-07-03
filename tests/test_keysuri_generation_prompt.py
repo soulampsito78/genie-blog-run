@@ -151,11 +151,34 @@ class KeysuriGenerationPromptContractTests(unittest.TestCase):
     def test_korea_prompt_requires_market_lens_axes(self) -> None:
         """Korea Tech must require stock/bond/FX/rate/policy/industry/jobs perspectives."""
         prompt = build_keysuri_generation_prompt(_korea_prompt())
-        for axis in ("주식시장", "채권시장", "환율", "금리", "정부 정책", "산업 생태계", "일자리"):
+        for axis in (
+            "주식시장",
+            "채권시장",
+            "환율",
+            "금리",
+            "정부 정책",
+            "산업 생태계",
+            "일자리",
+            "협력사·소부장·장비·소재·부품 영향",
+            "지역 채용·교육·유지보수 수요",
+            "사업자·프리랜서 비용 구조와 도입 일정",
+        ):
             with self.subTest(axis=axis):
                 self.assertIn(axis, prompt)
         self.assertIn("KOREA MARKET SIGNAL DEPTH", prompt)
         self.assertIn("신호 순위", prompt)
+
+    def test_korea_prompt_requires_ordinary_reader_impact_translation(self) -> None:
+        prompt = build_keysuri_generation_prompt(_korea_prompt())
+        self.assertIn("KOREA IMPACT TRANSLATION LAYER", prompt)
+        for marker in ("업종", "협력사/소부장", "일자리/지역", "개인 투자자", "사업자/프리랜서"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, prompt)
+        for term in ("소부장", "협력사", "장비", "소재", "부품", "데이터센터", "지역", "채용", "외주", "비용 구조"):
+            with self.subTest(term=term):
+                self.assertIn(term, prompt)
+        self.assertIn("Upper-layer market terms are allowed but insufficient by themselves", prompt)
+        self.assertIn("M&A, 투자유치, 정책금융", prompt)
 
     def test_korea_prompt_market_repositioning_does_not_leak_into_global(self) -> None:
         """Korea-only market-signal-briefing framing must not damage the Global prompt."""
@@ -169,6 +192,7 @@ class KeysuriGenerationPromptContractTests(unittest.TestCase):
             "KOREA RISK = HOLD CRITERIA",
             "KOREA ONE-LINE CHECKPOINT MUST BE ACTION-FORM",
             "KOREA INVESTMENT-ADVICE BOUNDARY",
+            "KOREA IMPACT TRANSLATION LAYER",
             "국내 IT 뉴스 요약이 아니다",
         ):
             with self.subTest(marker=korea_only_marker):
@@ -195,7 +219,7 @@ class KeysuriGenerationPromptContractTests(unittest.TestCase):
         for phrase in ("의미 있는 신호", "영향을 줄 수 있습니다", "발표했습니다", "밝혔습니다", "추진합니다"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, prompt)
-        self.assertIn("주식시장에서는 직접 수혜보다 2차 반응을 봐야 합니다.", prompt)
+        self.assertIn("장비·소재·부품 협력사와 지역 채용 일정", prompt)
 
     def test_korea_prompt_forbids_specific_investment_directives(self) -> None:
         prompt = build_keysuri_generation_prompt(_korea_prompt())

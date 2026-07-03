@@ -405,6 +405,24 @@ class KeysuriKoreaMarketRendererHelpersTests(unittest.TestCase):
                 for directive in ("매수", "매도"):
                     self.assertNotIn(directive, sentence)
 
+    def test_market_impact_fallback_translates_to_everyday_impact(self) -> None:
+        from keysuri_korea_longform_ux import build_korea_market_impact_line
+
+        cases = [
+            {"market_lens": ["산업"], "korean_title": "반도체 패키징 투자 확대"},
+            {"market_lens": ["AI"], "korean_title": "AI 업무 자동화 서비스 출시"},
+            {"market_lens": ["인프라"], "korean_title": "데이터센터 전력 투자"},
+        ]
+        lines = [
+            build_korea_market_impact_line(item, rank=rank)
+            for item, rank in zip(cases, (1, 1, 2))
+        ]
+        joined = " ".join(lines)
+        for term in ("장비", "소재", "부품", "교육", "비용", "데이터센터", "지역", "채용"):
+            with self.subTest(term=term):
+                self.assertIn(term, joined)
+        self.assertNotIn("직접 영향은 제한적", joined)
+
     def test_tomorrow_checkpoint_parts_have_confirm_and_hold(self) -> None:
         from keysuri_korea_longform_ux import build_korea_tomorrow_checkpoint_parts
 
@@ -416,17 +434,44 @@ class KeysuriKoreaMarketRendererHelpersTests(unittest.TestCase):
         self.assertTrue(hold_empty)
 
     def test_market_impact_summary_min_three_axes(self) -> None:
-        from keysuri_korea_longform_ux import build_korea_market_impact_summary
+        from keysuri_korea_longform_ux import (
+            KOREA_MARKET_SUMMARY_HEADING,
+            build_korea_market_impact_summary,
+        )
 
         rows = build_korea_market_impact_summary(_top_items())
         self.assertGreaterEqual(len(rows), 3)
         axes = {row["axis"] for row in rows}
-        self.assertIn("주식시장", axes)
-        self.assertIn("개인/사업자", axes)
+        self.assertEqual(KOREA_MARKET_SUMMARY_HEADING, "오늘 신호가 내려오는 곳")
+        for axis in ("관련 업종", "협력사/소부장", "일자리/지역", "개인 투자자", "사업자/프리랜서"):
+            with self.subTest(axis=axis):
+                self.assertIn(axis, axes)
         for row in rows:
             self.assertTrue(row["body"])
             self.assertNotIn("매수", row["body"])
             self.assertNotIn("매도", row["body"])
+            self.assertNotIn("직접 영향은 제한적", row["body"])
+
+    def test_everyday_impact_quality_helpers_flag_finance_only_copy(self) -> None:
+        from keysuri_korea_longform_ux import (
+            korea_defensive_market_phrase_overused,
+            korea_everyday_impact_lens_insufficient,
+            korea_upper_layer_only_without_everyday_lens,
+        )
+
+        finance_only = (
+            "M&A와 투자유치, 정책금융, 외국인 자금, 조달, 발주, 수혜주를 봅니다. "
+            "직접 영향은 제한적입니다. 원달러 흐름은 참고 축입니다."
+        )
+        translated = (
+            "M&A와 조달 신호를 보되 협력사, 소부장, 장비, 소재, 부품, 지역 채용, "
+            "유지보수, 교육, 프리랜서 외주로 내려오는지 확인합니다."
+        )
+        self.assertTrue(korea_everyday_impact_lens_insufficient(finance_only))
+        self.assertTrue(korea_upper_layer_only_without_everyday_lens(finance_only))
+        self.assertTrue(korea_defensive_market_phrase_overused(finance_only))
+        self.assertFalse(korea_everyday_impact_lens_insufficient(translated))
+        self.assertFalse(korea_upper_layer_only_without_everyday_lens(translated))
 
     def test_follow_hold_blocks_have_min_entries(self) -> None:
         from keysuri_korea_longform_ux import build_korea_follow_hold_blocks
@@ -507,14 +552,14 @@ class KeysuriKoreaMarketContractHardeningTests(unittest.TestCase):
         item = {
             "korean_title": "국내 클라우드 GPU 조달 일정",
             "market_lens": ["주식", "채권/금리"],
-            "market_impact": "주식시장에서는 직접 수혜보다 2차 반응을 봐야 합니다.",
+            "market_impact": "개인 투자자는 GPU 협력사와 데이터센터 비용 구조 변화를 먼저 봐야 합니다.",
             "source_ids": ["s1"],
         }
         korea_out = _map_top_item(
             item, src={}, source_pack={}, rank=1, program_id="keysuri_korea_tech"
         )
         self.assertEqual(korea_out.get("market_lens"), ["주식", "채권/금리"])
-        self.assertIn("2차 반응", korea_out.get("market_impact") or "")
+        self.assertIn("데이터센터 비용 구조", korea_out.get("market_impact") or "")
         global_out = _map_top_item(
             item, src={}, source_pack={}, rank=1, program_id="keysuri_global_tech"
         )
