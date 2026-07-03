@@ -432,7 +432,18 @@ def validate_top_5_news_block(program_id: str, top_5_news: dict) -> List[Dict[st
                     )
                 )
 
-        if pid == PROGRAM_KOREA_TECH:
+        if pid == "keysuri_korea_tech":
+            headline = str(item.get("headline") or "").strip()
+            summary = str(item.get("summary") or "").strip()
+            if is_korea_tech_irrelevant_headline(headline, summary):
+                issues.append(
+                    _issue(
+                        "korea_tech_top5_irrelevant_item",
+                        f"Item headline/summary contains non-tech foreign/accident news patterns",
+                        f"{prefix}.headline",
+                    )
+                )
+
             lens_raw = item.get("market_lens")
             if lens_raw is not None:
                 if not isinstance(lens_raw, (str, list, tuple)):
@@ -542,13 +553,43 @@ def validate_news_scope_matches_program(
                     "top_5_news.news_scope",
                 )
             )
-
     return issues
+
+
+def is_korea_tech_irrelevant_headline(headline: str, summary: str = "") -> bool:
+    """Filter out non-tech foreign news (accidents, crimes, disasters)."""
+    text = f"{headline} {summary}".lower()
+    
+    # 1. Tech/Industry anchors: If it has these, it is a valid tech/industry news
+    tech_anchors = [
+        "ai", "반도체", "소부장", "데이터센터", "보안", "클라우드", 
+        "전력", "에너지", "투자", "규제", "기업", "산업", "스타트업",
+        "플랫폼", "saas", "자율주행", "로봇", "스마트팩토리", "배터리",
+        "빅테크", "apple", "google", "microsoft", "amazon", "meta", "nvidia",
+        "애플", "구글", "마이크로소프트", "아마존", "메타", "엔비디아", "삼성", "sk", "현대", "lg"
+    ]
+    if any(anchor in text for anchor in tech_anchors):
+        return False
+        
+    # 2. General/Foreign Accident patterns (No tech anchor + accident/crime keywords)
+    accident_keywords = [
+        "사망", "사고", "부상", "살인", "폭행", "경찰", "소방", "체포",
+        "재난", "지진", "홍수", "화재", "사상자", "승려", "트럭", "추돌",
+        "태국", "중국", "일본", "미국", "유럽", "소년", "소녀", "남성", "여성"
+    ]
+    
+    # If it contains clear accident keywords without any tech anchors, reject
+    accident_matches = sum(1 for kw in accident_keywords if kw in text)
+    if accident_matches >= 2:
+        return True
+        
+    return False
 
 
 def _claim_is_qualified(
     claim: Dict[str, Any],
     smap: Dict[str, Dict[str, Any]],
+    program_id: str = "",
 ) -> Tuple[bool, str]:
     if not isinstance(claim, dict):
         return False, "invalid_claim"
@@ -565,6 +606,11 @@ def _claim_is_qualified(
         return False, "unmapped_category"
     if not _is_non_empty_str(claim.get("statement")):
         return False, "missing_statement"
+    if program_id == "keysuri_korea_tech":
+        headline = str(claim.get("headline") or claim.get("statement") or "").strip()
+        summary = str(claim.get("summary") or "").strip()
+        if is_korea_tech_irrelevant_headline(headline, summary):
+            return False, "korea_tech_irrelevant_headline"
     return True, "ok"
 
 
@@ -703,7 +749,7 @@ def select_top_5_news(
     for claim in claims:
         if not isinstance(claim, dict):
             continue
-        ok, _reason = _claim_is_qualified(claim, smap)
+        ok, _reason = _claim_is_qualified(claim, smap, program_id)
         if not ok:
             continue
         tier_rank = _best_tier_rank(_source_tiers_for_claim(claim, smap))
@@ -828,7 +874,7 @@ def select_top_5_news(
                 break
             if not isinstance(claim, dict):
                 continue
-            ok, _reason = _claim_is_qualified(claim, bsmap)
+            ok, _reason = _claim_is_qualified(claim, bsmap, program_id)
             if not ok or not _is_non_empty_str(claim.get("business_implication")):
                 continue
             item = _claim_to_news_item(

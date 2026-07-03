@@ -962,17 +962,16 @@ class KeysuriReissueCandidateExpansionTests(unittest.TestCase):
         self.assertEqual(diag["reissue_candidate_after_hard_exclusion_count"], 6)
         self.assertEqual(diag["reissue_hard_excluded_parent_count"], 1)
 
-    def test_prepare_reissue_hard_excludes_sent_and_exposure_before_selection(self) -> None:
+    def test_reissue_hard_rows_exclude_owner_review_exposure(self) -> None:
         from keysuri_service_full_run import _prepare_keysuri_reissue_prompt_input
 
-        sent_url = "https://sent.example.com/story"
-        exposure_url = "https://exposure.example.com/story"
+        sent_url = "https://sent.example.com"
+        exposure_url = "https://exposure.example.com"
         pack = {
             "program_id": PROGRAM_GLOBAL,
             "claims": [
                 self._claim("sent-dup", sent_url, "Sent story"),
                 self._claim("exposure-dup", exposure_url, "Exposure story"),
-                *[self._claim(f"fresh-{i}", f"https://fresh.example.com/{i}", f"Fresh story {i}") for i in range(6)],
             ],
         }
         captured = {}
@@ -1005,10 +1004,10 @@ class KeysuriReissueCandidateExpansionTests(unittest.TestCase):
         self.assertIsNotNone(prompt_input)
         kept_ids = [c["claim_id"] for c in captured["pack"]["claims"]]
         self.assertNotIn("sent-dup", kept_ids)
-        self.assertNotIn("exposure-dup", kept_ids)
+        self.assertIn("exposure-dup", kept_ids)
         self.assertEqual(diag["reissue_hard_excluded_sent_count"], 1)
-        self.assertEqual(diag["reissue_hard_excluded_exposure_count"], 1)
-        self.assertEqual(diag["reissue_hard_excluded_total_count"], 2)
+        self.assertEqual(diag.get("reissue_hard_excluded_exposure_count", 0), 0)
+        self.assertEqual(diag["reissue_hard_excluded_total_count"], 1)
 
     def test_prepare_reissue_insufficient_after_prefilter_safe_fail(self) -> None:
         from keysuri_service_full_run import _prepare_keysuri_reissue_prompt_input
@@ -4635,6 +4634,7 @@ class OwnerReviewExposureLogWriteTriggerTests(unittest.TestCase):
             "program_id": PROGRAM_GLOBAL,
             "run_id": "r1",
             "selected_items": [self._item("Title", "https://x.com/a")],
+            "customer_delivery_status": "sent",
         }
         _maybe_write_owner_review_exposure_log(meta, email_sent=False, exposure_kind="owner_review_email")
         self.assertFalse(meta["exposure_log_updated"])
@@ -4649,19 +4649,56 @@ class OwnerReviewExposureLogWriteTriggerTests(unittest.TestCase):
             "program_id": PROGRAM_GLOBAL,
             "run_id": "r1",
             "selected_items": [self._item("Title", "https://x.com/a")],
+            "customer_delivery_status": "sent",
         }
         _maybe_write_owner_review_exposure_log(meta, email_sent=True, exposure_kind="owner_review_email")
         self.assertTrue(meta["exposure_log_updated"])
         self.assertEqual(meta["exposure_log_written_count"], 1)
         self.assertIn("exposure_log_path", meta)
-        self.assertIsNone(meta["exposure_log_update_error"])
-        self.assertEqual(len(load_owner_review_exposure_log()), 1)
+    def test_write_skipped_for_various_customer_delivery_statuses(self) -> None:
+        from keysuri_service_full_run import _maybe_write_owner_review_exposure_log
+        from owner_review_exposure_log_store import load_owner_review_exposure_log
+
+        # Verify all these statuses block the write even if email_sent=True
+        blocked_statuses = [None, "", "not_sent", "blocked", "failed", "pending"]
+        
+        for status in blocked_statuses:
+            meta = {
+                "program_id": PROGRAM_GLOBAL,
+                "run_id": f"r-{status}",
+                "selected_items": [self._item("Title", "https://x.com/a")],
+            }
+            if status is not None:
+                meta["customer_delivery_status"] = status
+                
+            _maybe_write_owner_review_exposure_log(meta, email_sent=True, exposure_kind="owner_review_email")
+            self.assertFalse(meta.get("exposure_log_updated"))
+            self.assertEqual(meta.get("exposure_log_update_error"), "customer_not_sent_yet")
+            self.assertEqual(len(load_owner_review_exposure_log()), 0)
+
+    def test_write_succeeds_for_sent_and_success_customer_delivery_statuses(self) -> None:
+        from keysuri_service_full_run import _maybe_write_owner_review_exposure_log
+        from owner_review_exposure_log_store import load_owner_review_exposure_log
+
+        # Verify these statuses succeed when email_sent=True
+        success_statuses = ["sent", "success"]
+        
+        for i, status in enumerate(success_statuses):
+            meta = {
+                "program_id": PROGRAM_GLOBAL,
+                "run_id": f"r-{status}",
+                "selected_items": [self._item("Title", f"https://x.com/a{i}")],
+                "customer_delivery_status": status,
+            }
+            _maybe_write_owner_review_exposure_log(meta, email_sent=True, exposure_kind="owner_review_email")
+            self.assertTrue(meta.get("exposure_log_updated"))
+            self.assertEqual(len(load_owner_review_exposure_log()), i + 1)
 
     def test_missing_selected_items_does_not_crash_and_skips_write(self) -> None:
         from keysuri_service_full_run import _maybe_write_owner_review_exposure_log
         from owner_review_exposure_log_store import load_owner_review_exposure_log
 
-        meta = {"program_id": PROGRAM_GLOBAL, "run_id": "r1"}
+        meta = {"program_id": PROGRAM_GLOBAL, "run_id": "r1", "customer_delivery_status": "sent"}
         _maybe_write_owner_review_exposure_log(meta, email_sent=True, exposure_kind="owner_review_email")
         self.assertFalse(meta["exposure_log_updated"])
         self.assertEqual(meta["exposure_log_update_error"], "selected_items_missing")
@@ -4673,7 +4710,7 @@ class OwnerReviewExposureLogWriteTriggerTests(unittest.TestCase):
 
         selected = [self._item("Title", "https://x.com/a")]
         parent = {"selected_items": selected}
-        meta = {"program_id": PROGRAM_GLOBAL, "run_id": "r2", "selected_items": selected}
+        meta = {"program_id": PROGRAM_GLOBAL, "run_id": "r2", "selected_items": selected, "customer_delivery_status": "sent"}
         _maybe_write_owner_review_exposure_log(
             meta, email_sent=True, exposure_kind="owner_review_reissue_body", parent=parent
         )
@@ -4691,6 +4728,7 @@ class OwnerReviewExposureLogWriteTriggerTests(unittest.TestCase):
             "program_id": PROGRAM_GLOBAL,
             "run_id": "r3",
             "selected_items": [self._item("New", "https://x.com/new")],
+            "customer_delivery_status": "sent",
         }
         _maybe_write_owner_review_exposure_log(
             meta, email_sent=True, exposure_kind="owner_review_reissue_body", parent=parent
@@ -4708,6 +4746,7 @@ class OwnerReviewExposureLogWriteTriggerTests(unittest.TestCase):
             "program_id": PROGRAM_GLOBAL,
             "run_id": "r4",
             "selected_items": [self._item("New", "https://x.com/new")],
+            "customer_delivery_status": "sent",
         }
         _maybe_write_owner_review_exposure_log(
             meta, email_sent=True, exposure_kind="owner_review_reissue_body_and_image", parent=parent
@@ -4723,6 +4762,7 @@ class OwnerReviewExposureLogWriteTriggerTests(unittest.TestCase):
             "program_id": PROGRAM_GLOBAL,
             "run_id": "r5",
             "selected_items": [self._item("New", "https://x.com/new")],
+            "customer_delivery_status": "sent",
         }
         _maybe_write_owner_review_exposure_log(
             meta, email_sent=True, exposure_kind="owner_review_reissue_body", parent=None

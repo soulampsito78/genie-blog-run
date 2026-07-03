@@ -181,7 +181,7 @@ def build_keysuri_prompt_input(
         gate_result,
         recent_dedup_rows=extra_rows,
         sent_log_rows=list(sent_log_rows),
-        exposure_log_rows=list(exposure_log_rows),
+        exposure_log_rows=None,  # Owner-review exposure log is purely admin trace; do not use as production dedupe source
         trigger_source=trigger_source,
     )
     spec = get_program(pid)

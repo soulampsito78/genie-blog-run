@@ -21,6 +21,7 @@ from keysuri_news_contract import (
     validate_top_5_news_block,
 )
 from keysuri_source_gate import GateResult
+from keysuri_news_contract import is_korea_tech_irrelevant_headline
 
 
 def _news_item(rank: int, **overrides) -> dict:
@@ -67,6 +68,31 @@ class KeysuriNewsContractScopeTests(unittest.TestCase):
         schema = keysuri_output_schema_example("keysuri_korea_tech")
         self.assertIn("news_scope", schema["top_5_news"])
         self.assertEqual(schema["top_5_news"]["news_scope"], NEWS_SCOPE_KOREA)
+        self.assertEqual(schema["top_5_news"]["news_scope"], NEWS_SCOPE_KOREA)
+
+
+class KeysuriKoreaTechRelevanceTests(unittest.TestCase):
+    def test_irrelevant_foreign_accidents_rejected(self) -> None:
+        self.assertTrue(is_korea_tech_irrelevant_headline("태국에서 11세 소년이 트럭으로 승려 들이받아 9명 사망"))
+        self.assertTrue(is_korea_tech_irrelevant_headline("미국에서 총기 난사 사건으로 다수 사상자 발생"))
+        self.assertTrue(is_korea_tech_irrelevant_headline("일본 지진으로 여성 부상자 속출"))
+
+    def test_tech_anchored_news_accepted(self) -> None:
+        # Has tech anchors so even if it has accident words (unlikely but possible), it's accepted
+        self.assertFalse(is_korea_tech_irrelevant_headline("삼성전자, AI 반도체로 혁신", "미국 시장 진출"))
+        self.assertFalse(is_korea_tech_irrelevant_headline("엔비디아 주가 폭락, 국내 반도체 소부장 타격"))
+        self.assertFalse(is_korea_tech_irrelevant_headline("정부, 전력 인프라 확충... 데이터센터 화재 방지"))
+        
+    def test_general_tech_news_accepted(self) -> None:
+        self.assertFalse(is_korea_tech_irrelevant_headline("네이버 클라우드, 사우디에 기업용 플랫폼 수출"))
+        self.assertFalse(is_korea_tech_irrelevant_headline("카카오모빌리티 자율주행 택시 서비스 개시"))
+        self.assertFalse(is_korea_tech_irrelevant_headline("테슬라 로보택시 공개, 국내 배터리 업계 영향은"))
+
+    def test_validate_top_5_news_block_rejects_irrelevant_item(self) -> None:
+        block = _top5_block("keysuri_korea_tech")
+        block["items"][0]["headline"] = "태국에서 11세 소년이 트럭으로 승려 들이받아 9명 사망"
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        self.assertTrue(any(i["code"] == "korea_tech_top5_irrelevant_item" for i in issues))
 
 
 class KeysuriNewsContractValidationTests(unittest.TestCase):

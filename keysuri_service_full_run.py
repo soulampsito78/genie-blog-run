@@ -1608,7 +1608,8 @@ def _prepare_keysuri_reissue_prompt_input(
         ]
     except Exception:  # noqa: BLE001
         exposure_rows = []
-    hard_rows = list(parent_rows) + sent_rows + exposure_rows
+    # Owner-review exposure log is purely admin trace; do not use as production dedupe source in hard_rows
+    hard_rows = list(parent_rows) + sent_rows
     raw_claims = source_pack.get("claims") if isinstance(source_pack.get("claims"), list) else []
     raw_count = len(raw_claims)
     filtered_pack, kept_count, hard_stats = _filter_hard_duplicate_claims_with_stats(source_pack, hard_rows)
@@ -2542,6 +2543,14 @@ def _maybe_write_owner_review_exposure_log(
     only when the regenerated selection differs from the parent run's
     recorded selection, so a same-selection reissue is not counted twice.
     """
+    # Do not write owner-review exposure to production log unless customer_delivery_status is explicitly sent/success
+    # This ensures validation blocks, manual runs, and owner-review-only runs do not pollute dedupe memory.
+    status = str(meta.get("customer_delivery_status") or "").strip()
+    if status not in ("sent", "success"):
+        meta["exposure_log_updated"] = False
+        meta["exposure_log_update_error"] = "customer_not_sent_yet"
+        return
+    
     if not email_sent:
         meta["exposure_log_updated"] = False
         meta["exposure_log_update_error"] = "email_not_sent"
