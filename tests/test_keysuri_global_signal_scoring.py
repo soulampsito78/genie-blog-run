@@ -635,5 +635,90 @@ class KeysuriGlobalSignalScoringTests(unittest.TestCase):
         self.assertEqual(result["candidate_funnel_summary"]["post_diversity_selected_count"], 5)
 
 
+class EvergreenProfileHonorsGateTests(unittest.TestCase):
+    """Tribute/pioneer/honors profile articles are low-signal for Global TOP5,
+    unless a compound action phrase confirms a real news event. Bare single
+    verbs (launch/release/deployment/raises/invest) are deliberately excluded
+    from the override list — they rescue "launched a foundation in his honor"
+    just as easily as a real product launch."""
+
+    def test_tribute_with_bare_launched_still_hard_rejected(self) -> None:
+        scored = score_global_signal_item(
+            {
+                "source_id": "ieee-tribute-launched-1",
+                "title": "IEEE honors pioneer for launched career achievements",
+                "link": "https://spectrum.ieee.org/pioneer-launched-honors",
+                "published_at": _recent_iso(96),
+                "source_tier": "T3_QUALITY_PRESS",
+                "category": "robotics_automation_manufacturing",
+                "summary": (
+                    "IEEE recognizes a pioneer who launched many products over a legendary "
+                    "career, honoring his lifetime achievement and tribute."
+                ),
+            }
+        )
+        self.assertEqual(scored.classification, "hard_reject")
+        self.assertEqual(scored.hard_reject_reason, "evergreen_profile_low_signal")
+
+    def test_tribute_with_compound_product_launch_phrase_rescued(self) -> None:
+        scored = score_global_signal_item(
+            {
+                "source_id": "pioneer-product-launch-1",
+                "title": "Robotics pioneer honored, announces product launch for new platform",
+                "link": "https://example.com/pioneer-product-launch",
+                "published_at": _recent_iso(96),
+                "source_tier": "T3_QUALITY_PRESS",
+                "category": "robotics_automation_manufacturing",
+                "summary": "A robotics pioneer is honored this week with a product launch event.",
+            }
+        )
+        self.assertNotEqual(scored.hard_reject_reason, "evergreen_profile_low_signal")
+
+    def test_tribute_with_regulation_phrase_rescued(self) -> None:
+        scored = score_global_signal_item(
+            {
+                "source_id": "pioneer-regulation-1",
+                "title": "Policy pioneer honored as new AI regulation takes effect",
+                "link": "https://example.com/pioneer-regulation",
+                "published_at": _recent_iso(96),
+                "source_tier": "T3_QUALITY_PRESS",
+                "category": "policy_regulation_capital_supplychain",
+                "summary": "A policy pioneer is honored the same week new AI regulation takes effect.",
+            }
+        )
+        self.assertNotEqual(scored.hard_reject_reason, "evergreen_profile_low_signal")
+
+    def test_real_tsmc_launch_news_not_rejected_as_profile(self) -> None:
+        """No profile/tribute marker at all — must never hit the evergreen-profile gate."""
+        scored = score_global_signal_item(
+            {
+                "source_id": "tsmc-launch-1",
+                "title": "TSMC launches 2nm wafer production for enterprise AI chip customers",
+                "link": "https://www.tsmc.com/news/2nm-launch",
+                "published_at": _recent_iso(72),
+                "source_tier": "T1_OFFICIAL_SECONDARY",
+                "category": "semiconductor_chip_infra",
+                "summary": (
+                    "TSMC launches 2nm semiconductor chip production with new wafer fab capacity "
+                    "for AI accelerator and enterprise GPU customers."
+                ),
+            }
+        )
+        self.assertNotEqual(scored.hard_reject_reason, "evergreen_profile_low_signal")
+        self.assertNotEqual(scored.classification, "hard_reject")
+
+    def test_bare_removed_override_tokens_not_in_list(self) -> None:
+        from keysuri_global_signal_scoring import _EVERGREEN_TECH_OVERRIDE
+
+        for bare in (
+            "launch", "launches", "launched",
+            "release", "releases", "released",
+            "deployment", "deployed",
+            "raises", "raised",
+            "invest", "investment",
+        ):
+            self.assertNotIn(bare, _EVERGREEN_TECH_OVERRIDE)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
+# Error code for the real owner-review send path (keysuri_service_full_run.py) to
+# use when validate_global_post_render_visible_quality blocks SMTP dispatch.
+KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED = "keysuri_global_post_render_qa_blocked"
+
 from keysuri_contract_preview_quality import (
     FORBIDDEN_PHRASES,
     GENERIC_CLOSING_PHRASES,
@@ -1521,3 +1525,33 @@ def validate_briefing_content_gate(
 
     ok = len(issues) == 0
     return BriefingContentQualityResult(ok=ok, issues=issues, warnings=warnings)
+
+
+def validate_global_post_render_visible_quality(html: str) -> BriefingContentQualityResult:
+    """Public, self-contained entry point for the real owner-review send path.
+
+    Checks the FINAL rendered HTML text — works for both the premium preview
+    template (<article data-top-item>/<h4> markup) and the Gmail-safe
+    owner-review email template (<p>-only markup, no <article>/<h4> tags).
+    validate_briefing_content_gate's own filler-repeat check walks item_blocks
+    built from _extract_top_item_blocks()/_block_text(), which only match the
+    <article data-top-item>/<h4> structure — that structure never appears in
+    the Gmail email template, so a block-based check alone would silently
+    never fire on the real send path. Checking whole-plain-text occurrence
+    counts instead makes the same GLOBAL_COMMON_FILLER_SENTENCES /
+    global_repeated_common_filler check work on both templates.
+    """
+    plain = _plain_text(html)
+    issues: List[BriefingContentIssue] = []
+    for filler in GLOBAL_COMMON_FILLER_SENTENCES:
+        hits = plain.count(filler)
+        if hits >= GLOBAL_COMMON_FILLER_REPEAT_THRESHOLD:
+            issues.append(
+                BriefingContentIssue(
+                    "global_repeated_common_filler",
+                    f"Common filler sentence repeated {hits} times in final HTML: {filler!r}",
+                    section="top5",
+                    excerpt=filler[:100],
+                )
+            )
+    return BriefingContentQualityResult(ok=len(issues) == 0, issues=issues, warnings=[])

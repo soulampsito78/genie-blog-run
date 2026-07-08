@@ -3428,6 +3428,130 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         self.assertIn(KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED, saved_meta.get("visible_text_quality_issue_codes"))
         self.assertFalse(saved_meta.get("email_sent"))
 
+    @patch("keysuri_service_full_run.validate_global_post_render_visible_quality")
+    @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
+    @patch("keysuri_service_full_run.build_keysuri_prompt_input")
+    @patch("keysuri_service_full_run.save_run_artifact")
+    @patch("keysuri_service_full_run._generate_keysuri_service_image")
+    @patch("keysuri_service_full_run.generate_run_id")
+    def test_post_render_qa_is_called_on_final_email_html_in_real_send_path(
+        self,
+        mock_run_id: MagicMock,
+        mock_image: MagicMock,
+        mock_save: MagicMock,
+        mock_prompt_input: MagicMock,
+        mock_watermark: MagicMock,
+        mock_post_render_qa: MagicMock,
+    ) -> None:
+        """contract_preview=False real owner-review path must call the post-render QA
+        gate with the FINAL Gmail email HTML, before SMTP dispatch."""
+        from keysuri_briefing_content_quality import (
+            BriefingContentIssue,
+            BriefingContentQualityResult,
+        )
+        from keysuri_service_full_run import (
+            KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED,
+            run_keysuri_service_full_run,
+        )
+
+        repo = Path(__file__).resolve().parents[1]
+        run_id = "20260709_090000_keysuri_global_tech_ab12cd34"
+        mock_run_id.return_value = run_id
+        pack_path = repo / "output" / "keysuri_preview" / "test_pack_global_qa_wired.json"
+        pack_path.parent.mkdir(parents=True, exist_ok=True)
+        pack_path.write_text(json.dumps({"sources": [], "program_id": PROGRAM_GLOBAL}), encoding="utf-8")
+        raw_path = repo / "output" / "keysuri_preview" / "raw_global_qa_wired.txt"
+        raw_path.write_text("{}", encoding="utf-8")
+        image_rel = repo / "output" / "images" / "keysuri_global_service_qa_wired.jpg"
+        image_rel.parent.mkdir(parents=True, exist_ok=True)
+        image_rel.write_bytes(b"\xff\xd8\xff" + b"\x00" * 128)
+        mock_watermark.side_effect = _mock_keysuri_watermark
+        mock_image.return_value = ServiceImageOutcome(
+            called_image_api=True,
+            image_generation_status="generated",
+            image_source=IMAGE_SOURCE_GENERATED,
+            generated_image_path=str(image_rel.relative_to(repo)),
+        )
+        mock_prompt_input.return_value = {
+            "program_id": PROGRAM_GLOBAL,
+            "prompt_status": "ready_for_generation",
+            "source_pack": {"sources": []},
+        }
+        smoke = self._global_smoke(pack_path, raw_path)
+        # Deliberately thin/empty top_5_news so the ellipsis gate upstream has
+        # nothing to trip on — only the post-render QA gate should decide here.
+        smoke.generated_briefing = {
+            "top_5_news": {"items": []},
+            "title": "글로벌 브리핑",
+        }
+        mock_post_render_qa.return_value = BriefingContentQualityResult(
+            ok=False,
+            issues=[
+                BriefingContentIssue(
+                    "global_repeated_common_filler", "test forced block"
+                )
+            ],
+            warnings=[],
+        )
+        mock_send = MagicMock(return_value=True)
+
+        payload = run_keysuri_service_full_run(
+            PROGRAM_GLOBAL,
+            trigger_source="manual_service_full_run",
+            smoke_runner=lambda **_kw: smoke,
+            send_fn=mock_send,
+        )
+
+        mock_post_render_qa.assert_called_once()
+        called_html = mock_post_render_qa.call_args.args[0]
+        self.assertIn("<!DOCTYPE html>", called_html)
+        self.assertIn("글로벌 테크 TOP 5", called_html)
+
+        self.assertFalse(payload.get("ok"))
+        self.assertEqual(payload.get("error"), KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED)
+        self.assertIn("global_repeated_common_filler", payload.get("issue_codes") or [])
+        self.assertFalse(payload.get("email_sent"))
+        mock_send.assert_not_called()
+        saved_meta = mock_save.call_args.args[0]
+        self.assertEqual(saved_meta.get("validation_result"), "block")
+        self.assertFalse(saved_meta.get("email_sent"))
+        self.assertFalse(saved_meta.get("smtp_attempted"))
+
+    def test_final_gmail_html_with_repeated_filler_blocks_smtp(self) -> None:
+        """Two TOP5 items sharing the exact common filler sentence in the FINAL
+        Gmail owner-review HTML must be caught by validate_global_post_render_visible_quality
+        — the same function wired into the real send path — before SMTP would fire."""
+        from keysuri_contract_preview_renderer import (
+            IMAGE_MODE_EMAIL,
+            build_keysuri_global_gmail_owner_email_html,
+            prepare_contract_preview_fixture,
+        )
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+        from tests.test_keysuri_contract_preview_renderer import build_global_contract_fixture
+
+        repo = Path(__file__).resolve().parents[1]
+        fixture = build_global_contract_fixture()
+        fixture["top_shot_image_src"] = "cid:keysuri_topshot_global_qa_filler"
+        filler = "글로벌 테크는 AI만이 아니라 칩·인프라·로봇·에너지·정책이 함께 움직이는 날입니다."
+        for item in fixture["top_5_items"][:2]:
+            item["why_now"] = (
+                f"공식 발표와 비용 구조 변화가 겹치는 시점입니다. {filler} "
+                "후속 가격·API 조건을 확인해야 합니다."
+            )
+        prepare_contract_preview_fixture(fixture, repo_root=repo, image_mode=IMAGE_MODE_EMAIL)
+        email_html = build_keysuri_global_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Global Tech",
+            admin_url="https://example.com/admin/runs/test_final_filler",
+            run_id="test_final_filler",
+        )
+        result = validate_global_post_render_visible_quality(email_html)
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "global_repeated_common_filler",
+            {i.code for i in result.issues},
+        )
+
     def test_registry_image_cannot_pass_global_service_full_run_contract(self) -> None:
         outcome = ServiceImageOutcome(
             called_image_api=False,

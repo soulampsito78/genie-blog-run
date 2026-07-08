@@ -54,6 +54,10 @@ from keysuri_visible_text_quality import (
     validate_and_repair_keysuri_visible_text_quality,
     validate_keysuri_html_visible_text_quality,
 )
+from keysuri_briefing_content_quality import (
+    KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED,
+    validate_global_post_render_visible_quality,
+)
 from keysuri_live_source_smoke import (
     PROGRAM_GLOBAL,
     PROGRAM_KOREA,
@@ -3008,6 +3012,15 @@ def run_keysuri_text_only_reissue(
             "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
             "program_id": pid,
         }
+    if pid == PROGRAM_GLOBAL:
+        post_render_qa = validate_global_post_render_visible_quality(email_html)
+        if not post_render_qa.ok:
+            return {
+                "ok": False,
+                "error": KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED,
+                "issue_codes": [i.code for i in post_render_qa.issues],
+                "program_id": pid,
+            }
 
     smtp_attempted = False
     email_sent = False
@@ -3350,6 +3363,15 @@ def run_keysuri_text_and_image_reissue(
     )
     if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
         return {"ok": False, "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED, "program_id": pid}
+    if pid == PROGRAM_GLOBAL:
+        post_render_qa = validate_global_post_render_visible_quality(email_html)
+        if not post_render_qa.ok:
+            return {
+                "ok": False,
+                "error": KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED,
+                "issue_codes": [i.code for i in post_render_qa.issues],
+                "program_id": pid,
+            }
 
     smtp_attempted = False
     email_sent = False
@@ -3982,6 +4004,46 @@ def run_keysuri_service_full_run(
             "issue_codes": block_issue_codes,
             "html_path": html_rel,
         }
+    if pid == PROGRAM_GLOBAL:
+        post_render_qa = validate_global_post_render_visible_quality(email_html)
+        if not post_render_qa.ok:
+            post_render_issue_codes = _extend_unique(
+                issue_codes,
+                [i.code for i in post_render_qa.issues],
+            )
+            meta = build_service_artifact_fields(
+                run_id=run_id,
+                mode=pid,
+                program_id=pid,
+                trigger_source=trigger_source,
+                validation_result="block",
+                issue_codes=post_render_issue_codes,
+                called_gemini=True,
+                image_outcome=image_outcome,
+                html_path=html_rel,
+                owner_review_html_path=str(artifact_email_path(run_id)),
+                smtp_attempted=False,
+                email_sent=False,
+                workflow_status=smoke.preview_overall_status,
+                owner_review_url=owner_review_url or None,
+                artifact_storage_durable=storage_durable,
+                error_code=KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED,
+            )
+            meta.update(subject_fields)
+            save_run_artifact(meta, email_html="")
+            return {
+                "ok": False,
+                "run_id": run_id,
+                "program_id": pid,
+                "service_full_run": True,
+                "validation_result": "block",
+                "called_gemini": True,
+                "called_image_api": image_outcome.called_image_api,
+                "email_sent": False,
+                "error": KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED,
+                "issue_codes": post_render_issue_codes,
+                "html_path": html_rel,
+            }
 
     email_sent = False
     smtp_attempted = False

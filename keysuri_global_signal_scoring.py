@@ -84,6 +84,30 @@ CONSUMER_MOBILE_DEVICE_KEYWORDS: Tuple[str, ...] = (
     "온디바이스 ai", "스마트폰", "픽셀",
 )
 
+# Evergreen profile/honors/tribute articles (person recognition without a
+# breaking tech news event) are low-signal for Global TOP5.
+_EVERGREEN_PROFILE_MARKERS: Tuple[str, ...] = (
+    "lifetime achievement", "pioneer", "tribute", "obituary", "biography",
+    "honors", "honours", "award", "recognizes", "recognition",
+    "공로상", "평생 업적", "선구자", "인물 조명", "공로를 치하", "수상 소식",
+    "공로 인정", "인물상", "공로자", "기리기 위해", "기리는", "업적을 기념", "업적 조명",
+)
+
+# Only compound, action-specific phrases rescue an evergreen-profile-flagged
+# headline back to a real news event. Bare single verbs ("launch", "release",
+# "deployment", "raises", "invest", ...) are deliberately excluded — they
+# rescue tribute/profile articles that merely mention "launched a foundation
+# in his honor" or "raised funds for a scholarship", not a real news event.
+_EVERGREEN_TECH_OVERRIDE: Tuple[str, ...] = (
+    "unveil", "unveils", "funding", "acquisition", "merger", "regulation",
+    "policy", "security breach", "vulnerability", "vulnerability disclosure",
+    "ipo", "antitrust", "sanction", "export control",
+    "partnership launch", "product launch", "chip launch", "model release",
+    "api release", "platform launch", "funding round", "raises $", "raised $",
+    "enterprise deployment", "data center buildout", "model rollout",
+    "public preview", "general availability",
+)
+
 ROBOTICS_BATTERY_MATERIALS_CATEGORIES = frozenset(
     {
         "robotics_automation_manufacturing",
@@ -912,6 +936,15 @@ def score_global_signal_item(item: dict) -> ScoredGlobalSignal:
         hard_reject_reason = "no_date"
     elif any(g in text for g in _GENERIC_MARKETING) and _score_structural(text) < 6:
         hard_reject_reason = "marketing_only_no_strategic_signal"
+
+    # Evergreen profile/honors gate: person recognition without a breaking tech
+    # event is low-signal, unless a compound action phrase confirms real news.
+    is_profile_honors = any(m in text for m in _EVERGREEN_PROFILE_MARKERS)
+    if is_profile_honors and not hard_reject_reason:
+        has_tech_override = any(m in text for m in _EVERGREEN_TECH_OVERRIDE)
+        if not has_tech_override:
+            hard_reject_reason = "evergreen_profile_low_signal"
+            tags.append("evergreen_profile")
 
     hype_pen, hype_notes, hype_warning, is_case = _hype_penalty(text, url)
     is_sponsored, sponsored_pen, sponsored_notes = _sponsored_penalty(text)

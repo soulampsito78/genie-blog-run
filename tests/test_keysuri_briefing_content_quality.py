@@ -641,5 +641,89 @@ class GlobalRepeatedCommonFillerQualityTests(unittest.TestCase):
         self.assertNotIn("global_repeated_common_filler", codes)
 
 
+class GlobalPostRenderVisibleQualityWrapperTests(unittest.TestCase):
+    """validate_global_post_render_visible_quality: public entry point for the
+    real owner-review send path (keysuri_service_full_run.py).
+
+    validate_briefing_content_gate's own filler-repeat check only sees item text
+    via _extract_top_item_blocks()/_block_text(), which match the premium preview
+    template's <article data-top-item>/<h4> markup — the Gmail-safe owner-review
+    email template uses <p>-only markup and never matches that structure, so the
+    same check would silently never fire on the real send path. This wrapper
+    checks whole-plain-text occurrence counts instead, so it works on both.
+    """
+
+    _FILLER = "글로벌 테크는 AI만이 아니라 칩·인프라·로봇·에너지·정책이 함께 움직이는 날입니다."
+
+    def test_flags_filler_repeated_in_p_only_gmail_style_html(self) -> None:
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+
+        html = (
+            f"<p>항목1 본문입니다. {self._FILLER} 후속 확인이 필요합니다.</p>"
+            f"<p>항목2 본문입니다. {self._FILLER} 후속 확인이 필요합니다.</p>"
+        )
+        result = validate_global_post_render_visible_quality(html)
+        self.assertFalse(result.ok)
+        self.assertIn("global_repeated_common_filler", {i.code for i in result.issues})
+
+    def test_single_use_in_p_only_html_not_flagged(self) -> None:
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+
+        html = f"<p>항목1 본문입니다. {self._FILLER} 후속 확인이 필요합니다.</p><p>항목2는 다른 내용입니다.</p>"
+        result = validate_global_post_render_visible_quality(html)
+        self.assertTrue(result.ok)
+        self.assertNotIn("global_repeated_common_filler", {i.code for i in result.issues})
+
+    def test_real_gmail_owner_email_html_with_repeated_filler_is_flagged(self) -> None:
+        """Final Gmail owner-review email HTML (built by the real renderer function
+        used in keysuri_service_full_run.py) must be caught by the wrapper."""
+        from keysuri_contract_preview_renderer import (
+            IMAGE_MODE_EMAIL,
+            build_keysuri_global_gmail_owner_email_html,
+            prepare_contract_preview_fixture,
+        )
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+
+        repo = Path(__file__).resolve().parents[1]
+        fixture = build_global_contract_fixture()
+        fixture["top_shot_image_src"] = "cid:keysuri_topshot_global_wrapper_test"
+        for item in fixture["top_5_items"][:2]:
+            item["why_now"] = (
+                f"공식 발표와 비용 구조 변화가 겹치는 시점입니다. {self._FILLER} "
+                "후속 가격·API 조건을 확인해야 합니다."
+            )
+        prepare_contract_preview_fixture(fixture, repo_root=repo, image_mode=IMAGE_MODE_EMAIL)
+        email_html = build_keysuri_global_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Global Tech",
+            admin_url="https://example.com/admin/runs/test_wrapper_final_html",
+            run_id="test_wrapper_final_html",
+        )
+        result = validate_global_post_render_visible_quality(email_html)
+        self.assertFalse(result.ok)
+        self.assertIn("global_repeated_common_filler", {i.code for i in result.issues})
+
+    def test_clean_final_gmail_html_passes(self) -> None:
+        from keysuri_contract_preview_renderer import (
+            IMAGE_MODE_EMAIL,
+            build_keysuri_global_gmail_owner_email_html,
+            prepare_contract_preview_fixture,
+        )
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+
+        repo = Path(__file__).resolve().parents[1]
+        fixture = build_global_contract_fixture()
+        fixture["top_shot_image_src"] = "cid:keysuri_topshot_global_wrapper_clean"
+        prepare_contract_preview_fixture(fixture, repo_root=repo, image_mode=IMAGE_MODE_EMAIL)
+        email_html = build_keysuri_global_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Global Tech",
+            admin_url="https://example.com/admin/runs/test_wrapper_clean",
+            run_id="test_wrapper_clean",
+        )
+        result = validate_global_post_render_visible_quality(email_html)
+        self.assertTrue(result.ok, result.issues)
+
+
 if __name__ == "__main__":
     unittest.main()
