@@ -134,6 +134,37 @@ GLOBAL_COMMON_FILLER_SENTENCES: Tuple[str, ...] = (
     "사용자 접점·검색·쇼핑 경험 변화로 읽힙니다.",
 )
 
+# Known visible-text artifacts observed in production Gmail owner-review email —
+# a signal-chip/judgment label glued directly to the next word/title with no (or
+# only one) separating space, instead of a proper "·" separator between chips.
+# Literal known strings only (not a general grammar regex): a blanket "label
+# directly followed by any Hangul character" pattern would false-positive on
+# ordinary Korean sentences, since particles attach to nouns with no space
+# (e.g. "...판단은 사업 신호이며..." is normal grammar, not a glue defect).
+GLOBAL_SIGNAL_DISTRIBUTION_BROKEN_MARKERS: Tuple[str, ...] = (
+    "사업 신호IEEE",
+    "사업 신호 IEEE",
+    "활용 후보구글",
+    "활용 후보 구글",
+    "과장 주의메타",
+    "과장 주의 메타",
+)
+
+# Known "키수리 판단" judgment-row badge glued directly to the following
+# explanation text with no separating space/character.
+GLOBAL_BADGE_SPACING_BROKEN_MARKERS: Tuple[str, ...] = (
+    "키수리 판단 사업 신호AI",
+    "키수리 판단 활용 후보검증",
+    "키수리 판단 관찰프리미엄",
+)
+
+# Known visible typo artifact ("살펴보면" mistyped as "살보면") that must never
+# survive into the final owner-review email.
+GLOBAL_POST_RENDER_TYPO_ARTIFACT_MARKERS: Tuple[str, ...] = (
+    "살보면 됩니다",
+    "살보면 될",
+)
+
 GLOBAL_COMMON_FILLER_REPEAT_THRESHOLD = 2
 
 SPONSORED_FRAMING_MARKERS: Tuple[str, ...] = (
@@ -1540,6 +1571,11 @@ def validate_global_post_render_visible_quality(html: str) -> BriefingContentQua
     never fire on the real send path. Checking whole-plain-text occurrence
     counts instead makes the same GLOBAL_COMMON_FILLER_SENTENCES /
     global_repeated_common_filler check work on both templates.
+
+    Also blocks three known visible-text artifacts on the same final-HTML
+    plain text: signal-chip/title glue, "키수리 판단" badge/text glue, and the
+    "살보면" typo — regardless of whether the renderer/sanitizer upstream was
+    supposed to have already fixed them.
     """
     plain = _plain_text(html)
     issues: List[BriefingContentIssue] = []
@@ -1552,6 +1588,36 @@ def validate_global_post_render_visible_quality(html: str) -> BriefingContentQua
                     f"Common filler sentence repeated {hits} times in final HTML: {filler!r}",
                     section="top5",
                     excerpt=filler[:100],
+                )
+            )
+    for marker in GLOBAL_SIGNAL_DISTRIBUTION_BROKEN_MARKERS:
+        if marker in plain:
+            issues.append(
+                BriefingContentIssue(
+                    "global_signal_distribution_visible_text_broken",
+                    f"Signal-chip label glued to next word/title without separator: {marker!r}",
+                    section="visible_body",
+                    excerpt=marker,
+                )
+            )
+    for marker in GLOBAL_BADGE_SPACING_BROKEN_MARKERS:
+        if marker in plain:
+            issues.append(
+                BriefingContentIssue(
+                    "global_post_render_badge_spacing_broken",
+                    f"'키수리 판단' badge glued to explanation text without separator: {marker!r}",
+                    section="visible_body",
+                    excerpt=marker,
+                )
+            )
+    for marker in GLOBAL_POST_RENDER_TYPO_ARTIFACT_MARKERS:
+        if marker in plain:
+            issues.append(
+                BriefingContentIssue(
+                    "global_visible_text_typo_artifact",
+                    f"Known visible typo survived to final HTML: {marker!r}",
+                    section="visible_body",
+                    excerpt=marker,
                 )
             )
     return BriefingContentQualityResult(ok=len(issues) == 0, issues=issues, warnings=[])

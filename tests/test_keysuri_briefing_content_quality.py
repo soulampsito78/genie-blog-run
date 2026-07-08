@@ -725,5 +725,99 @@ class GlobalPostRenderVisibleQualityWrapperTests(unittest.TestCase):
         self.assertTrue(result.ok, result.issues)
 
 
+class GlobalPostRenderKnownArtifactDetectorTests(unittest.TestCase):
+    """Known visible-text artifacts (signal-chip glue, badge glue, typo) must be
+    caught by validate_global_post_render_visible_quality on the FINAL HTML —
+    the same wrapper already wired into the real owner-review send path."""
+
+    def test_signal_distribution_glue_zero_space_flagged(self) -> None:
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+
+        result = validate_global_post_render_visible_quality(
+            "<p>사업 신호IEEE, 신규 표준 초안을 공개했습니다.</p>"
+        )
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "global_signal_distribution_visible_text_broken", {i.code for i in result.issues}
+        )
+
+    def test_signal_distribution_glue_one_space_flagged(self) -> None:
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+
+        for html in (
+            "<p>사업 신호 IEEE 표준 초안을 공개했습니다.</p>",
+            "<p>활용 후보 구글 픽셀 11 공개.</p>",
+            "<p>과장 주의 메타 신규 발표.</p>",
+        ):
+            with self.subTest(html=html):
+                result = validate_global_post_render_visible_quality(html)
+                self.assertFalse(result.ok)
+                self.assertIn(
+                    "global_signal_distribution_visible_text_broken",
+                    {i.code for i in result.issues},
+                )
+
+    def test_badge_spacing_glue_flagged(self) -> None:
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+
+        for html in (
+            "<p>키수리 판단 사업 신호AI 에이전트 전용 하드웨어 신호입니다.</p>",
+            "<p>키수리 판단 활용 후보검증된 모델입니다.</p>",
+            "<p>키수리 판단 관찰프리미엄 사양입니다.</p>",
+        ):
+            with self.subTest(html=html):
+                result = validate_global_post_render_visible_quality(html)
+                self.assertFalse(result.ok)
+                self.assertIn(
+                    "global_post_render_badge_spacing_broken",
+                    {i.code for i in result.issues},
+                )
+
+    def test_typo_artifact_flagged(self) -> None:
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+
+        for html in (
+            "<p>인프라 비용 구조를 살보면 됩니다.</p>",
+            "<p>이 부분은 살보면 될 것 같습니다.</p>",
+        ):
+            with self.subTest(html=html):
+                result = validate_global_post_render_visible_quality(html)
+                self.assertFalse(result.ok)
+                self.assertIn(
+                    "global_visible_text_typo_artifact", {i.code for i in result.issues}
+                )
+
+    def test_properly_separated_badge_and_chip_text_not_flagged(self) -> None:
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+
+        result = validate_global_post_render_visible_quality(
+            "<p>키수리 판단 · 사업 신호 · AI 에이전트 전용 하드웨어 신호입니다.</p>"
+            "<p>사업 신호 · 구글 픽셀 11 공개.</p>"
+        )
+        self.assertTrue(result.ok, result.issues)
+
+    def test_default_global_gmail_email_has_no_known_artifacts(self) -> None:
+        """Real renderer output (default fixture) must not false-positive."""
+        from keysuri_contract_preview_renderer import (
+            IMAGE_MODE_EMAIL,
+            build_keysuri_global_gmail_owner_email_html,
+            prepare_contract_preview_fixture,
+        )
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+
+        repo = Path(__file__).resolve().parents[1]
+        fixture = build_global_contract_fixture()
+        fixture["top_shot_image_src"] = "cid:keysuri_topshot_global_artifact_clean"
+        prepare_contract_preview_fixture(fixture, repo_root=repo, image_mode=IMAGE_MODE_EMAIL)
+        email_html = build_keysuri_global_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Global Tech",
+            admin_url="https://example.com/admin/runs/test_artifact_clean",
+            run_id="test_artifact_clean",
+        )
+        result = validate_global_post_render_visible_quality(email_html)
+        self.assertTrue(result.ok, result.issues)
+
+
 if __name__ == "__main__":
     unittest.main()
