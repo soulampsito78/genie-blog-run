@@ -1,6 +1,7 @@
 """Unit tests for Kee-Suri internal owner-review job dispatch (Unit 6a)."""
 from __future__ import annotations
 
+import json
 import os
 import unittest
 from dataclasses import dataclass, field
@@ -304,6 +305,153 @@ class KeysuriInternalJobsNonDryRunTests(unittest.TestCase):
         self.assertFalse(body["ok"])
         self.assertEqual(body["error"], "orchestration_failed")
         self.assertEqual(body["error_type"], "RuntimeError")
+
+
+class KeysuriInternalJobsStructuredLoggingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = TestClient(app)
+        self._env_patch = mock.patch.dict(
+            os.environ,
+            {
+                "GENIE_INTERNAL_JOB_TOKEN": _TOKEN,
+                "SMTP_PASSWORD": "unit-test-secret-password",
+            },
+            clear=False,
+        )
+        self._env_patch.start()
+
+    def tearDown(self) -> None:
+        self._env_patch.stop()
+
+    def _post_with_payload_and_logs(self, payload: Dict[str, Any]):
+        with mock.patch(
+            "internal_jobs.create_keysuri_owner_review_job",
+            return_value=payload,
+        ):
+            with self.assertLogs("internal_jobs", level="INFO") as logs:
+                response = self.client.post(
+                    _ENDPOINT,
+                    json={
+                        "program_id": PROGRAM_GLOBAL,
+                        "service_full_run": True,
+                        "send_owner_email": True,
+                        "dry_run": False,
+                        "trigger_source": "scheduled_service_full_run",
+                    },
+                    headers=_auth_headers(),
+                )
+        return response, "\n".join(logs.output)
+
+    def _event_from_logs(self, log_text: str, event: str) -> Dict[str, Any]:
+        for line in log_text.splitlines():
+            if event not in line:
+                continue
+            start = line.find("{")
+            if start >= 0:
+                return json.loads(line[start:])
+        self.fail(f"missing structured log event: {event}\n{log_text}")
+
+    def test_safe_fail_payload_logs_structured_http_500_diagnostics(self) -> None:
+        payload = {
+            "ok": False,
+            "run_id": "20260708_123000_keysuri_global_tech_fail",
+            "program_id": PROGRAM_GLOBAL,
+            "service_full_run": True,
+            "validation_result": "block",
+            "issue_codes": ["deep_dive_key_implications_empty"],
+            "called_gemini": True,
+            "called_image_api": False,
+            "smtp_attempted": False,
+            "email_sent": False,
+            "customer_delivery_status": "not_sent",
+            "approve_customer_final_send": False,
+            "error": "validation_blocked",
+        }
+
+        response, log_text = self._post_with_payload_and_logs(payload)
+
+        self.assertEqual(response.status_code, 500)
+        body = response.json()
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["customer_delivery_status"], "not_sent")
+        self.assertFalse(body["approve_customer_final_send"])
+        event = self._event_from_logs(log_text, "keysuri_owner_review_safe_fail_http_500")
+        self.assertEqual(event["event"], "keysuri_owner_review_safe_fail_http_500")
+        self.assertEqual(event["http_status"], 500)
+        self.assertEqual(event["stage"], "validation")
+        self.assertEqual(event["run_id"], payload["run_id"])
+        self.assertEqual(event["validation_result"], "block")
+        self.assertEqual(event["issue_codes"], ["deep_dive_key_implications_empty"])
+        self.assertFalse(event["email_sent"])
+        self.assertFalse(event["approve_customer_final_send"])
+        self.assertNotIn(_TOKEN, log_text)
+        self.assertNotIn("unit-test-secret-password", log_text)
+
+    def test_success_payload_logs_structured_success_marker(self) -> None:
+        payload = {
+            "ok": True,
+            "run_id": "20260708_123000_keysuri_global_tech_ok",
+            "program_id": PROGRAM_GLOBAL,
+            "service_full_run": True,
+            "validation_result": "pass",
+            "called_gemini": True,
+            "called_image_api": True,
+            "image_source": "generated",
+            "artifact_status": "emailed",
+            "smtp_attempted": True,
+            "email_sent": True,
+            "customer_delivery_status": "not_sent",
+            "approve_customer_final_send": False,
+        }
+
+        response, log_text = self._post_with_payload_and_logs(payload)
+
+        self.assertEqual(response.status_code, 200)
+        event = self._event_from_logs(log_text, "keysuri_owner_review_success")
+        self.assertEqual(event["event"], "keysuri_owner_review_success")
+        self.assertEqual(event["http_status"], 200)
+        self.assertEqual(event["stage"], "success")
+        self.assertEqual(event["run_id"], payload["run_id"])
+        self.assertTrue(event["called_gemini"])
+        self.assertTrue(event["called_image_api"])
+        self.assertTrue(event["email_sent"])
+        self.assertEqual(event["artifact_status"], "emailed")
+        self.assertNotIn(_TOKEN, log_text)
+        self.assertNotIn("unit-test-secret-password", log_text)
+
+    def test_exception_path_logs_structured_exception_marker(self) -> None:
+        with mock.patch(
+            "internal_jobs.create_keysuri_owner_review_job",
+            side_effect=RuntimeError("mock boom"),
+        ):
+            with self.assertLogs("internal_jobs", level="INFO") as logs:
+                response = self.client.post(
+                    _ENDPOINT,
+                    json={
+                        "program_id": PROGRAM_KOREA,
+                        "service_full_run": True,
+                        "send_owner_email": True,
+                        "dry_run": False,
+                        "trigger_source": "scheduled_service_full_run",
+                    },
+                    headers=_auth_headers(),
+                )
+
+        self.assertEqual(response.status_code, 500)
+        body = response.json()
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["error"], "orchestration_failed")
+        self.assertEqual(body["error_type"], "RuntimeError")
+        log_text = "\n".join(logs.output)
+        event = self._event_from_logs(log_text, "keysuri_owner_review_endpoint_exception")
+        self.assertEqual(event["event"], "keysuri_owner_review_endpoint_exception")
+        self.assertEqual(event["http_status"], 500)
+        self.assertEqual(event["stage"], "endpoint_exception")
+        self.assertEqual(event["program_id"], PROGRAM_KOREA)
+        self.assertEqual(event["error_type"], "RuntimeError")
+        self.assertIn("mock boom", event["error_message"])
+        self.assertNotIn(_TOKEN, log_text)
+        self.assertNotIn("unit-test-secret-password", log_text)
 
 
 class KeysuriInternalJobsRegressionTests(unittest.TestCase):

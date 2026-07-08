@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import os
 from typing import Any, Callable, Dict, Optional
@@ -58,6 +59,23 @@ _FORBIDDEN_RESPONSE_KEYS = frozenset(
     }
 )
 
+_KEYSURI_JOB_LOG_SAFE_PAYLOAD_KEYS = (
+    "ok",
+    "run_id",
+    "validation_result",
+    "issue_codes",
+    "error",
+    "error_type",
+    "artifact_status",
+    "called_gemini",
+    "called_image_api",
+    "image_source",
+    "smtp_attempted",
+    "email_sent",
+    "customer_delivery_status",
+    "approve_customer_final_send",
+)
+
 
 class OwnerReviewJobRequest(BaseModel):
     service_full_run: bool = False
@@ -102,6 +120,91 @@ def _artifact_store_not_ready_response() -> JSONResponse:
         status_code=503,
         content={"ok": False, "error": "artifact_store_not_ready"},
     )
+
+
+def _bool_from_payload(payload: Dict[str, Any], *keys: str) -> bool:
+    for key in keys:
+        if key in payload:
+            return bool(payload.get(key))
+    return False
+
+
+def _list_from_payload(payload: Dict[str, Any], *keys: str) -> list[Any]:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+        if value:
+            return [value]
+    return []
+
+
+def _keysuri_owner_review_failure_stage(payload: Dict[str, Any]) -> str:
+    validation_result = str(payload.get("validation_result") or "").strip().lower()
+    issue_codes = _list_from_payload(payload, "issue_codes", "issues")
+    error_text = str(payload.get("error") or "").strip().lower()
+    if validation_result == "block" or issue_codes:
+        return "validation"
+    if _bool_from_payload(payload, "smtp_attempted", "owner_email_smtp_attempted") and not _bool_from_payload(
+        payload, "email_sent", "owner_review_email_sent"
+    ):
+        return "smtp"
+    if not _bool_from_payload(payload, "called_gemini") and any(
+        marker in error_text for marker in ("source", "fetch", "pre_generation", "pre-generation")
+    ):
+        return "source_or_pre_generation"
+    if _bool_from_payload(payload, "called_gemini") and not _bool_from_payload(payload, "called_image_api"):
+        return "generation_or_validation_before_image"
+    if _bool_from_payload(payload, "called_image_api") and not _bool_from_payload(
+        payload, "email_sent", "owner_review_email_sent"
+    ):
+        return "artifact_or_email"
+    return "unknown_safe_fail"
+
+
+def _keysuri_owner_review_log_fields(
+    *,
+    event: str,
+    program_id: str,
+    trigger_source: str,
+    service_full_run: bool,
+    send_owner_email: bool,
+    dry_run: bool,
+    http_status: int,
+    payload: Optional[Dict[str, Any]] = None,
+    stage: Optional[str] = None,
+    error_type: Optional[str] = None,
+    error_message: Optional[str] = None,
+) -> Dict[str, Any]:
+    safe_payload = payload if isinstance(payload, dict) else {}
+    fields: Dict[str, Any] = {
+        "event": event,
+        "program_id": program_id,
+        "trigger_source": trigger_source,
+        "service_full_run": bool(service_full_run),
+        "send_owner_email": bool(send_owner_email),
+        "dry_run": bool(dry_run),
+        "http_status": int(http_status),
+        "stage": stage,
+    }
+    for key in _KEYSURI_JOB_LOG_SAFE_PAYLOAD_KEYS:
+        if key in safe_payload:
+            fields[key] = safe_payload.get(key)
+    if "smtp_attempted" not in fields and "owner_email_smtp_attempted" in safe_payload:
+        fields["smtp_attempted"] = bool(safe_payload.get("owner_email_smtp_attempted"))
+    if "approve_customer_final_send" not in fields:
+        fields["approve_customer_final_send"] = bool(
+            safe_payload.get("approve_customer_final_send") or safe_payload.get("customer_approve_called")
+        )
+    if error_type:
+        fields["error_type"] = error_type
+    if error_message:
+        fields["error_message"] = str(error_message)[:300]
+    return {k: v for k, v in fields.items() if v is not None}
+
+
+def _log_keysuri_owner_review_job_event(**kwargs: Any) -> None:
+    logger.info(json.dumps(_keysuri_owner_review_log_fields(**kwargs), ensure_ascii=False, sort_keys=True))
 
 
 def _safe_owner_review_summary(
@@ -424,6 +527,18 @@ def create_keysuri_owner_review_endpoint(
             send_owner_email=body.send_owner_email,
         )
     except Exception as exc:
+        _log_keysuri_owner_review_job_event(
+            event="keysuri_owner_review_endpoint_exception",
+            program_id=normalized,
+            trigger_source=body.trigger_source,
+            service_full_run=body.service_full_run,
+            send_owner_email=body.send_owner_email,
+            dry_run=body.dry_run,
+            http_status=500,
+            stage="endpoint_exception",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
         logger.exception(
             "create_keysuri_owner_review failed program_id=%s error_type=%s",
             normalized,
@@ -440,4 +555,28 @@ def create_keysuri_owner_review_endpoint(
         )
 
     status_code = 200 if payload.get("ok", True) else 500
+    if status_code == 200:
+        _log_keysuri_owner_review_job_event(
+            event="keysuri_owner_review_success",
+            program_id=normalized,
+            trigger_source=body.trigger_source,
+            service_full_run=body.service_full_run,
+            send_owner_email=body.send_owner_email,
+            dry_run=body.dry_run,
+            http_status=status_code,
+            payload=payload,
+            stage="success",
+        )
+    else:
+        _log_keysuri_owner_review_job_event(
+            event="keysuri_owner_review_safe_fail_http_500",
+            program_id=normalized,
+            trigger_source=body.trigger_source,
+            service_full_run=body.service_full_run,
+            send_owner_email=body.send_owner_email,
+            dry_run=body.dry_run,
+            http_status=status_code,
+            payload=payload,
+            stage=_keysuri_owner_review_failure_stage(payload),
+        )
     return JSONResponse(status_code=status_code, content=payload)
