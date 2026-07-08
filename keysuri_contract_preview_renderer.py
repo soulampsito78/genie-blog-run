@@ -415,7 +415,7 @@ def _render_theme_top_insert(fixture: Mapping[str, Any], *, program_id: str) -> 
     for item in items[:5]:
         if isinstance(item, dict):
             chips.append(_signal_chip_text(item))
-    chip_html = "".join(f'<span class="signal-chip">{_esc(c)}</span>' for c in chips)
+    chip_html = " ".join(f'<span class="signal-chip">{_esc(c)}</span>' for c in chips)
     chip_row = f'<div class="signal-chip-row">{chip_html}</div>' if chip_html else ""
 
     if _is_korea_program(program_id):
@@ -1438,8 +1438,38 @@ def _gmail_render_global_signal_chips(fixture: Mapping[str, Any]) -> str:
         f'<p style="margin:0 0 8px 0;font-size:12px;font-weight:700;letter-spacing:0.04em;color:{_GMAIL_GLOBAL_COLORS["silver"]};">글로벌 신호 분포</p>'
         f'<p style="margin:0 0 12px 0;font-size:14px;line-height:1.6;color:{_GMAIL_GLOBAL_COLORS["dim"]};">'
         f'밝은 낮에 먼저 보는 세계 기술 지형도 — 오늘 신호가 어느 축에 몰렸는지입니다.</p>'
-        f'{"".join(chip_cells)}'
+        f'{" ".join(chip_cells)}'
         f'</td></tr></table>'
+    )
+
+
+def _gmail_judgment_html(
+    j_label: str,
+    j_text: str,
+    *,
+    color_dim: str,
+    color_accent: str,
+    badge_bg: str,
+) -> str:
+    """Render the '키수리 판단' badge row with a guaranteed separator.
+
+    The badge label and its explanation must never be concatenated without a
+    space/newline — e.g. '사업 신호구글 픽셀 11...' or '관찰프리미엄...' are
+    rendering bugs, not valid Korean text.
+    """
+    if not (j_label or j_text):
+        return ""
+    label_html = ""
+    if j_label:
+        label_html = (
+            f'<span style="display:inline-block;padding:2px 8px;margin:0 6px 0 0;border-radius:999px;'
+            f'background:{badge_bg};color:{color_accent};font-size:12px;font-weight:700;">{_esc(j_label)}</span>'
+        )
+    separator = " " if label_html and j_text else ""
+    return (
+        f'<p style="margin:0;font-size:13px;line-height:1.6;color:{color_dim};">'
+        f'<strong style="color:{color_accent};">키수리 판단</strong> '
+        f'{label_html}{separator}{_esc(j_text)}</p>'
     )
 
 
@@ -1504,15 +1534,9 @@ def _gmail_render_global_top_item(item: Mapping[str, Any], rank: int) -> str:
             f'</p>'
         )
 
-    judgment_html = ""
-    if j_label or j_text:
-        judgment_html = (
-            f'<p style="margin:0;font-size:13px;line-height:1.6;color:{c["dim"]};">'
-            f'<strong style="color:{c["accent"]};">키수리 판단</strong> '
-            f'<span style="display:inline-block;padding:2px 8px;margin:0 6px 0 0;border-radius:999px;'
-            f'background:#eef4fb;color:{c["accent"]};font-size:12px;font-weight:700;">{_esc(j_label)}</span>'
-            f'{_esc(j_text)}</p>'
-        )
+    judgment_html = _gmail_judgment_html(
+        j_label, j_text, color_dim=c["dim"], color_accent=c["accent"], badge_bg="#eef4fb"
+    )
 
     selection_html = _body(selection_reason) if selection_reason else ""
     if selection_reason:
@@ -1743,7 +1767,7 @@ def _gmail_render_korea_domestic_strip(fixture: Mapping[str, Any]) -> str:
         f'오늘 국내에서 움직인 것</p>'
         f'<p style="margin:0 0 12px 0;font-size:14px;line-height:1.6;color:{c["dim"]};">'
         f'오늘 한국 시장에서 돈·산업·정책이 움직인 축을 다섯 신호로 정리했습니다.</p>'
-        f'{"".join(chip_cells)}'
+        f'{" ".join(chip_cells)}'
         f'</td></tr></table>'
     )
 
@@ -1821,15 +1845,9 @@ def _gmail_render_korea_top_item(item: Mapping[str, Any], rank: int) -> str:
             f'</p>'
         )
 
-    judgment_html = ""
-    if j_label or j_text:
-        judgment_html = (
-            f'<p style="margin:0;font-size:13px;line-height:1.6;color:{c["dim"]};">'
-            f'<strong style="color:{c["accent"]};">키수리 판단</strong> '
-            f'<span style="display:inline-block;padding:2px 8px;margin:0 6px 0 0;border-radius:999px;'
-            f'background:{c["gold_soft"]};color:{c["accent"]};font-size:12px;font-weight:700;">{_esc(j_label)}</span>'
-            f'{_esc(j_text)}</p>'
-        )
+    judgment_html = _gmail_judgment_html(
+        j_label, j_text, color_dim=c["dim"], color_accent=c["accent"], badge_bg=c["gold_soft"]
+    )
 
     selection_html = ""
     if selection_reason:

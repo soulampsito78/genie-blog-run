@@ -582,5 +582,64 @@ class GlobalAbstractFillerQualityTests(unittest.TestCase):
         self.assertNotIn("global_abstract_filler_no_specifics", codes)
 
 
+class GlobalRepeatedCommonFillerQualityTests(unittest.TestCase):
+    """Reusing the same category-generic filler sentence across TOP5 items is low quality."""
+
+    _METADATA = {
+        "global_top5_selection": {"policy": "keysuri_global_top5_selection_v2_diversity"},
+        "claims": [{"selection_score": 70, "selection_rationale": "test"}] * 5,
+    }
+
+    _FILLER_AI_PLATFORM = "배포·워크플로·API 통제권 변화와 맞닿는 시점입니다."
+    _FILLER_BROAD_MOVEMENT = (
+        "글로벌 테크는 AI만이 아니라 칩·인프라·로봇·에너지·정책이 함께 움직이는 날입니다."
+    )
+
+    def test_filler_repeated_across_two_items_is_flagged(self) -> None:
+        fixture = build_global_contract_fixture()
+        for item in fixture["top_5_items"][:2]:
+            item["why_now"] = (
+                f"{self._FILLER_AI_PLATFORM} 이 항목은 배포 정책 변경과 직접 관련이 있습니다. "
+                "구체적인 일정은 아직 공개되지 않았습니다."
+            )
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        result = validate_briefing_content_gate(html, source_metadata=self._METADATA)
+        codes = {i.code for i in result.issues}
+        self.assertIn("global_repeated_common_filler", codes)
+
+    def test_filler_used_once_is_not_flagged(self) -> None:
+        fixture = build_global_contract_fixture()
+        item = fixture["top_5_items"][0]
+        item["why_now"] = (
+            f"{self._FILLER_AI_PLATFORM} 이 항목은 배포 정책 변경과 직접 관련이 있습니다. "
+            "구체적인 일정은 아직 공개되지 않았습니다."
+        )
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        result = validate_briefing_content_gate(html, source_metadata=self._METADATA)
+        codes = {i.code for i in result.issues}
+        self.assertNotIn("global_repeated_common_filler", codes)
+
+    def test_broad_movement_filler_repeated_is_flagged(self) -> None:
+        fixture = build_global_contract_fixture()
+        for item in fixture["top_5_items"][:3]:
+            item["why_now"] = (
+                f"{self._FILLER_BROAD_MOVEMENT} 이 항목의 개별 맥락은 후속 발표로 보완될 예정입니다."
+            )
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        result = validate_briefing_content_gate(html, source_metadata=self._METADATA)
+        codes = {i.code for i in result.issues}
+        self.assertIn("global_repeated_common_filler", codes)
+
+    def test_korea_items_not_subject_to_global_filler_repeat_gate(self) -> None:
+        fixture = build_korea_contract_fixture()
+        for item in fixture["top_5_items"][:2]:
+            item["why_now"] = self._FILLER_AI_PLATFORM
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        metadata = {"korea_top5_selection": {"policy": "x"}}
+        result = validate_briefing_content_gate(html, source_metadata=metadata)
+        codes = {i.code for i in result.issues}
+        self.assertNotIn("global_repeated_common_filler", codes)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1235,5 +1235,92 @@ class KeysuriKoreaMarketBriefingRenderTests(unittest.TestCase):
                 self.assertNotIn(score_term, email_html)
 
 
+class KeysuriBadgeChipSpacingTests(unittest.TestCase):
+    """Regression tests for badge/chip text concatenated without a separator.
+
+    Reproduces reported owner-review artifacts such as '사업 신호구글 픽셀 11...',
+    '키수리 판단 사업 신호AI 에이전트...', '키수리 판단 관찰프리미엄...', and
+    '키수리 판단 활용 후보검증된...'.
+    """
+
+    @_require_contract_renderer
+    def test_global_gmail_judgment_badge_has_separator_from_text(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        fixture = build_global_contract_fixture()
+        fixture["top_shot_image_src"] = "cid:keysuri_topshot_global_test"
+        fixture["top_5_items"][0]["keysuri_judgment_label"] = "사업 신호"
+        fixture["top_5_items"][0]["keysuri_judgment"] = "AI 에이전트 시장 진입이 가속화되고 있습니다."
+        fixture["top_5_items"][1]["keysuri_judgment_label"] = "관찰"
+        fixture["top_5_items"][1]["keysuri_judgment"] = "프리미엄 구독 매출 비중이 커지고 있습니다."
+        fixture["top_5_items"][2]["keysuri_judgment_label"] = "활용 후보"
+        fixture["top_5_items"][2]["keysuri_judgment"] = "검증된 벤치마크 결과를 참고할 만합니다."
+        mod.prepare_contract_preview_fixture(fixture, repo_root=_REPO, image_mode=mod.IMAGE_MODE_EMAIL)
+        email_html = mod.build_keysuri_global_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Global Tech",
+            admin_url="https://example.com/admin/runs/test_badge_spacing",
+            run_id="test_badge_spacing",
+        )
+        for broken in (
+            "사업 신호AI 에이전트",
+            "관찰프리미엄",
+            "활용 후보검증된",
+        ):
+            with self.subTest(broken=broken):
+                self.assertNotIn(broken, email_html)
+        self.assertIsNotNone(
+            re.search(r'>사업 신호</span>\s+AI 에이전트', email_html),
+            "expected a real separator between the judgment badge and its text",
+        )
+
+    @_require_contract_renderer
+    def test_korea_gmail_judgment_badge_has_separator_from_text(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        fixture = build_korea_contract_fixture()
+        fixture["top_shot_image_src"] = "cid:keysuri_topshot_korea_test"
+        fixture["top_5_items"][0]["keysuri_judgment_label"] = "사업 신호"
+        fixture["top_5_items"][0]["keysuri_judgment"] = "구글 픽셀 11 국내 출시 일정이 앞당겨졌습니다."
+        mod.prepare_contract_preview_fixture(fixture, repo_root=_REPO, image_mode=mod.IMAGE_MODE_EMAIL)
+        email_html = mod.build_keysuri_korea_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Korea Tech",
+            admin_url="https://example.com/admin/runs/test_badge_spacing_korea",
+            run_id="test_badge_spacing_korea",
+        )
+        self.assertNotIn("사업 신호구글 픽셀", email_html)
+        self.assertIsNotNone(
+            re.search(r'>사업 신호</span>\s+구글 픽셀', email_html),
+            "expected a real separator between the judgment badge and its text",
+        )
+
+    @_require_contract_renderer
+    def test_global_gmail_signal_chips_have_separator_between_spans(self) -> None:
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        fixture = build_global_contract_fixture()
+        fixture["top_shot_image_src"] = "cid:keysuri_topshot_global_test"
+        fixture["top_5_items"][0]["keysuri_judgment_label"] = "사업 신호"
+        fixture["top_5_items"][1]["keysuri_judgment_label"] = "관찰"
+        fixture["top_5_items"][1]["korean_title"] = "구글 픽셀 11 시리즈 국내 출시"
+        mod.prepare_contract_preview_fixture(fixture, repo_root=_REPO, image_mode=mod.IMAGE_MODE_EMAIL)
+        email_html = mod.build_keysuri_global_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Global Tech",
+            admin_url="https://example.com/admin/runs/test_chip_spacing",
+            run_id="test_chip_spacing",
+        )
+        self.assertNotIn("사업 신호구글 픽셀", email_html)
+
+    @_require_contract_renderer
+    def test_premium_preview_signal_chip_row_has_separator_between_spans(self) -> None:
+        html = _render_contract_html(_CONTRACT_RENDERER, build_global_contract_fixture())
+        chip_row_m = re.search(r'<div class="signal-chip-row">(.*?)</div>', html, flags=re.DOTALL)
+        self.assertIsNotNone(chip_row_m)
+        assert chip_row_m is not None
+        self.assertIn('</span> <span', chip_row_m.group(1))
+
+
 if __name__ == "__main__":
     unittest.main()

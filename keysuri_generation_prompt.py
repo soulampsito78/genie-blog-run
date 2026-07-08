@@ -851,6 +851,21 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
                 "operators/developers/founders/investors — never leave the reader at '그래서 어쩌자고?'.",
                 "- Do not stack abstract filler (중요합니다, 시사합니다, 촉진합니다, 보여줍니다, 필수적입니다) "
                 "without concrete facts, numbers, or named actors.",
+                "",
+                "GLOBAL TECH ITEM-UNIQUE IMPACT (mandatory — no shared boilerplate across TOP5)",
+                "- Do NOT reuse the same generic category sentence across multiple TOP5 items as filler, e.g. "
+                "'글로벌 테크는 AI만이 아니라 칩·인프라·로봇·에너지·정책이 함께 움직이는 날입니다.', "
+                "'배포·워크플로·API 통제권 변화와 맞닿는 시점입니다.', "
+                "'사용자 접점·검색·쇼핑 경험 변화로 읽힙니다.'",
+                "- Each item's why_now/owner_angle must describe that item's own specific fact, actor, or number — "
+                "not a category-level restatement that could apply to any item in the same category.",
+                "",
+                "GLOBAL TECH CATEGORY CLASSIFICATION GUARD (mandatory)",
+                "- Never classify Pixel/Google Pixel/Android/smartphone/phone/mobile device/on-device AI items as "
+                "항공우주·위성·방산 테크 (aerospace/satellite/defense). These are consumer devices — classify them as "
+                "하드웨어·디바이스·디스플레이 or AI·소프트웨어·플랫폼 instead.",
+                "- Only use 항공우주·위성·방산 테크 when the item explicitly involves satellite, space, defense, "
+                "missile, drone warfare, or aerospace/military content — not merely because a product 'launched'.",
                 "- Output exactly one JSON object; no prose, markdown, or second JSON object outside it.",
             ]
         )

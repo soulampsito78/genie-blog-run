@@ -50,9 +50,13 @@ CATEGORY_KEYWORD_GROUPS: Dict[str, Tuple[str, ...]] = {
     ),
     "aerospace_satellite_defense_tech": (
         "spacex", "satellite", "launch", "defense ai", "drone", "autonomous defense", "space internet",
+        "aerospace", "missile", "defense",
+        "위성", "우주", "방산", "국방", "미사일", "군사용",
     ),
     "hardware_device_display": (
         "smartphone", "xr", "wearable", "display", "oled", "sensor", "edge ai device", "gadget",
+        "pixel", "google pixel", "android", "phone", "mobile device", "on-device ai",
+        "온디바이스 ai", "스마트폰", "픽셀",
     ),
     "cybersecurity_cloud_datacenter": (
         "cybersecurity", "cloud infrastructure", "datacenter", "data center", "liquid cooling",
@@ -63,6 +67,22 @@ CATEGORY_KEYWORD_GROUPS: Dict[str, Tuple[str, ...]] = {
         "supply chain", "sanction", "policy", "capital",
     ),
 }
+
+# Guard: "aerospace_satellite_defense_tech" keyword hits (e.g. the generic word
+# "launch") are not sufficient on their own — a Google Pixel/Android launch is
+# not aerospace/defense. The category is only allowed through when one of these
+# unambiguous aerospace/defense/military terms is actually present.
+AEROSPACE_DEFENSE_REQUIRED_KEYWORDS: Tuple[str, ...] = (
+    "satellite", "space", "defense", "missile", "drone warfare", "aerospace",
+    "위성", "우주", "방산", "국방", "미사일", "군사용",
+)
+
+# Consumer device signals that must never fall through to aerospace/defense —
+# they belong to hardware_device_display / ai_software_platform instead.
+CONSUMER_MOBILE_DEVICE_KEYWORDS: Tuple[str, ...] = (
+    "pixel", "google pixel", "android", "smartphone", "phone", "mobile device",
+    "온디바이스 ai", "스마트폰", "픽셀",
+)
 
 ROBOTICS_BATTERY_MATERIALS_CATEGORIES = frozenset(
     {
@@ -604,8 +624,18 @@ def classify_global_tech_category(
         count = sum(1 for kw in keywords if kw in lower)
         if count:
             hits.append((cat, count))
+
+    # Guard: only allow aerospace/defense through when an unambiguous
+    # aerospace/defense/military term is present — a stray "launch" hit from a
+    # Pixel/Android/consumer-device headline must never win this category.
+    has_strict_aerospace_signal = any(kw in lower for kw in AEROSPACE_DEFENSE_REQUIRED_KEYWORDS)
+    if not has_strict_aerospace_signal:
+        hits = [(cat, n) for cat, n in hits if cat != "aerospace_satellite_defense_tech"]
+
     hits.sort(key=lambda pair: (-pair[1], pair[0]))
     if not hits:
+        if any(kw in lower for kw in CONSUMER_MOBILE_DEVICE_KEYWORDS):
+            return "hardware_device_display", [], 0.4, "consumer_device_keyword_fallback"
         legacy = (feed_default or "market_signal").strip()
         mapped = {
             "ai_product": AI_PRIMARY_CATEGORY,

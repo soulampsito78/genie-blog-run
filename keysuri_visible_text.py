@@ -335,9 +335,38 @@ _KOREA_DUPLICATE_IMPACT_VERB_RE = re.compile(
     r"(영향을)\s+미\s+(미(?:칠|칩니다|친|쳐|쳤|치는|치지|칠지)[가-힣]*)"
 )
 
+# Conservative repair: a possessive particle "의" left orphaned (not attached to a
+# preceding Hangul noun) before "사업 영역/분야" means the subject was dropped —
+# e.g. an empty-entity template produced "의 사업 영역" instead of "삼성전자의
+# 사업 영역". Never touches legitimate forms like "그의"/"삼성전자의" where a
+# Hangul noun already precedes "의".
+_ORPHAN_SUBJECT_BUSINESS_RE = re.compile(r"(?<![가-힣])의(\s*사업\s*(?:영역|분야))")
+
+# "주인님" mistakenly glued directly in front of a common-noun mention (e.g.
+# "주인님 빅테크 기업들의") instead of addressing 주인님 in a full sentence.
+_STRAY_OWNER_ADDRESS_BEFORE_NOUN_RE = re.compile(r"주인님\s+(빅테크)")
+
+# Korean large-number phrases occasionally drop the thousands comma and leave a
+# bare space instead — e.g. "1억 7 500만 달러" should read "1억 7,500만 달러".
+# Restricted to a 3-digit group immediately followed by a currency/count unit so
+# ordinary space-separated numbers/dates are never touched.
+_KOREAN_AMOUNT_THOUSANDS_SPACE_RE = re.compile(r"(\d+)\s(\d{3})(?=만|억|천|원|달러)")
+
 
 def _normalize_sentence_ws(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip())
+
+
+def _repair_orphan_possessive_subject(text: str) -> str:
+    return _ORPHAN_SUBJECT_BUSINESS_RE.sub(lambda m: f"주인님{m.group(0)}", text)
+
+
+def _repair_stray_owner_address(text: str) -> str:
+    return _STRAY_OWNER_ADDRESS_BEFORE_NOUN_RE.sub(r"\1", text)
+
+
+def _repair_korean_amount_thousands_separator(text: str) -> str:
+    return _KOREAN_AMOUNT_THOUSANDS_SPACE_RE.sub(r"\1,\2", text)
 
 
 def repair_obvious_korean_quality_artifacts(text: Any) -> str:
@@ -350,6 +379,9 @@ def repair_obvious_korean_quality_artifacts(text: Any) -> str:
         previous = out
         out = _KOREA_DUPLICATE_MORPHEME_RE.sub(r"\1", out)
         out = _KOREA_DUPLICATE_IMPACT_VERB_RE.sub(r"\1 \2", out)
+    out = _repair_orphan_possessive_subject(out)
+    out = _repair_stray_owner_address(out)
+    out = _repair_korean_amount_thousands_separator(out)
     out = re.sub(r"\s+([,.!?])", r"\1", out)
     return out.strip()
 

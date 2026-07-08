@@ -177,6 +177,39 @@ class KeysuriGlobalSignalScoringTests(unittest.TestCase):
         self.assertGreater(conf, 0.4)
         self.assertTrue(reason)
 
+    def test_pixel_launch_does_not_classify_as_aerospace_defense(self) -> None:
+        primary, _secondary, _conf, _reason = classify_global_tech_category(
+            "Google launches new Pixel 11 series with on-device AI features"
+        )
+        self.assertNotEqual(primary, "aerospace_satellite_defense_tech")
+        self.assertEqual(primary, "hardware_device_display")
+
+    def test_android_smartphone_variants_do_not_classify_as_aerospace_defense(self) -> None:
+        for text in (
+            "Samsung launches new Android smartphone with on-device AI",
+            "Apple launches new phone with mobile device AI upgrades",
+            "구글, 온디바이스 AI 탑재한 신규 스마트폰 픽셀 출시",
+        ):
+            with self.subTest(text=text):
+                primary, _secondary, _conf, _reason = classify_global_tech_category(text)
+                self.assertNotEqual(primary, "aerospace_satellite_defense_tech")
+
+    def test_actual_satellite_defense_keyword_still_allows_aerospace_category(self) -> None:
+        for text in (
+            "SpaceX launches new satellite constellation for defense communications",
+            "군사용 드론 방산 기업 국방 계약 체결",
+            "우주 발사체 위성 궤도 진입 성공",
+        ):
+            with self.subTest(text=text):
+                primary, _secondary, _conf, _reason = classify_global_tech_category(text)
+                self.assertEqual(primary, "aerospace_satellite_defense_tech")
+
+    def test_launch_alone_without_aerospace_keyword_does_not_win_category(self) -> None:
+        primary, _secondary, _conf, _reason = classify_global_tech_category(
+            "Startup launches new drone delivery service for retail logistics"
+        )
+        self.assertNotEqual(primary, "aerospace_satellite_defense_tech")
+
     def test_ai_capped_at_two_when_non_ai_qualify(self) -> None:
         items = [
             _item(

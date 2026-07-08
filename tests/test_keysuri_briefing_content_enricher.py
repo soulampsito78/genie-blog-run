@@ -120,12 +120,21 @@ class KeysuriBriefingContentEnricherTests(unittest.TestCase):
 
     def test_enriched_fixture_passes_content_gate(self) -> None:
         fixture = build_global_contract_fixture()
-        for item in fixture["top_5_items"]:
+        for idx, item in enumerate(fixture["top_5_items"], start=1):
+            # Prompt contract requires why_now to already carry 3+ Korean sentences
+            # of item-specific context; give each item distinct, sufficiently deep
+            # input so the enricher's thin-source fallback padding (which can repeat
+            # a shared category filler sentence across items) is never triggered.
+            why_now = (
+                f"{item['why_now']} "
+                f"항목 {idx}는 반도체 공급망 병목과 직접 연결되는 구체적 사례입니다. "
+                f"연산 자원 조달 일정이 지연되면 관련 파트너 비용에도 영향이 있습니다."
+            )
             enriched = enrich_top5_item_content(
                 {
                     "korean_title": item["korean_title"],
                     "what_happened": item["what_happened"],
-                    "why_now": item["why_now"],
+                    "why_now": why_now,
                     "owner_angle": item["owner_angle"],
                     "selection_reason": "선정 이유 첫 문장입니다. 두 번째 선정 문장입니다.",
                     "next_watch": "→ 첫 확인; → 둘째 확인",

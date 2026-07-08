@@ -98,6 +98,38 @@ class KeysuriVisibleTextTests(unittest.TestCase):
         out = repair_obvious_korean_quality_artifacts(raw)
         self.assertEqual(out, raw)
 
+    def test_repair_fixes_orphan_possessive_before_business_domain(self) -> None:
+        for raw, expected_prefix in (
+            ("의 사업 영역에서도 변화가 예상됩니다.", "주인님의 사업 영역에서도"),
+            ("의 사업 분야에 곧바로 영향을 줍니다.", "주인님의 사업 분야에"),
+        ):
+            with self.subTest(raw=raw):
+                out = repair_obvious_korean_quality_artifacts(raw)
+                self.assertTrue(out.startswith(expected_prefix), out)
+
+    def test_repair_keeps_legitimate_possessive_before_business_domain(self) -> None:
+        raw = "삼성전자의 사업 영역은 반도체와 가전으로 나뉩니다."
+        out = repair_obvious_korean_quality_artifacts(raw)
+        self.assertEqual(out, raw)
+        self.assertNotIn("주인님의 사업 영역", out)
+
+    def test_repair_removes_stray_owner_address_before_bigtech_noun(self) -> None:
+        raw = "주인님 빅테크 기업들의 투자 전략이 바뀌고 있습니다."
+        out = repair_obvious_korean_quality_artifacts(raw)
+        self.assertEqual(out, "빅테크 기업들의 투자 전략이 바뀌고 있습니다.")
+        self.assertNotIn("주인님 빅테크", out)
+
+    def test_repair_normalizes_missing_thousands_comma_in_amount(self) -> None:
+        raw = "이번 계약 규모는 1억 7 500만 달러로 추정됩니다."
+        out = repair_obvious_korean_quality_artifacts(raw)
+        self.assertIn("1억 7,500만 달러", out)
+        self.assertNotIn("7 500만", out)
+
+    def test_repair_amount_comma_fix_does_not_touch_unrelated_numbers(self) -> None:
+        raw = "지난해 3분기 매출은 전년 대비 4% 증가했습니다."
+        out = repair_obvious_korean_quality_artifacts(raw)
+        self.assertEqual(out, raw)
+
     def test_sanitize_visible_impact_line_removes_signal_signal(self) -> None:
         raw = "글로벌→한국 번역 신호 신호가 의사결정·미팅 우선순위에 반영될 수 있습니다."
         out = sanitize_visible_impact_line(raw, category="global_to_korea_translation")

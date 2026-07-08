@@ -109,6 +109,29 @@ class KeysuriGenerationPromptContractTests(unittest.TestCase):
         self.assertIn("sponsored_warning", prompt)
         self.assertIn("리스크 신호", prompt)
 
+    def test_global_prompt_forbids_repeated_common_filler_sentences(self) -> None:
+        prompt = build_keysuri_generation_prompt(_global_prompt())
+        self.assertIn("GLOBAL TECH ITEM-UNIQUE IMPACT", prompt)
+        for filler in (
+            "글로벌 테크는 AI만이 아니라 칩·인프라·로봇·에너지·정책이 함께 움직이는 날입니다.",
+            "배포·워크플로·API 통제권 변화와 맞닿는 시점입니다.",
+            "사용자 접점·검색·쇼핑 경험 변화로 읽힙니다.",
+        ):
+            with self.subTest(filler=filler):
+                self.assertIn(filler, prompt)
+
+    def test_global_prompt_forbids_pixel_android_as_aerospace_defense(self) -> None:
+        prompt = build_keysuri_generation_prompt(_global_prompt())
+        self.assertIn("GLOBAL TECH CATEGORY CLASSIFICATION GUARD", prompt)
+        for marker in ("Pixel", "Google Pixel", "Android", "smartphone", "on-device AI", "항공우주·위성·방산"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, prompt)
+
+    def test_korea_prompt_excludes_global_filler_and_category_guard_blocks(self) -> None:
+        prompt = build_keysuri_generation_prompt(_korea_prompt())
+        self.assertNotIn("GLOBAL TECH ITEM-UNIQUE IMPACT", prompt)
+        self.assertNotIn("GLOBAL TECH CATEGORY CLASSIFICATION GUARD", prompt)
+
     def test_korea_prompt_includes_korea_tech_1830_lens(self) -> None:
         prompt = build_keysuri_generation_prompt(_korea_prompt())
         self.assertIn("KOREA TECH 18:30 LENS", prompt)

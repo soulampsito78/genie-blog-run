@@ -120,6 +120,18 @@ GLOBAL_ABSTRACT_FILLER_MARKERS: Tuple[str, ...] = (
 # flag it as low quality.
 GLOBAL_ABSTRACT_FILLER_ITEM_THRESHOLD = 2
 
+# Category-generic "why now" padding sentences (see keysuri_briefing_content_enricher's
+# _WHY_NOW_CONTEXT / _BROAD_MOVEMENT). A single use is normal fallback copy; the
+# same sentence reused across 2+ of the 5 TOP items reads as a templated filler
+# rather than a signal-specific briefing.
+GLOBAL_COMMON_FILLER_SENTENCES: Tuple[str, ...] = (
+    "글로벌 테크는 AI만이 아니라 칩·인프라·로봇·에너지·정책이 함께 움직이는 날입니다.",
+    "배포·워크플로·API 통제권 변화와 맞닿는 시점입니다.",
+    "사용자 접점·검색·쇼핑 경험 변화로 읽힙니다.",
+)
+
+GLOBAL_COMMON_FILLER_REPEAT_THRESHOLD = 2
+
 SPONSORED_FRAMING_MARKERS: Tuple[str, ...] = (
     "스폰서",
     "파트너 콘텐츠",
@@ -985,6 +997,7 @@ def validate_briefing_content_gate(
     owner_angles: List[str] = []
     why_now_texts: List[str] = []
     top_headlines: List[str] = []
+    global_filler_item_texts: List[str] = []
     thin_detail_count = 0
     insufficient_marked = 0
 
@@ -1071,6 +1084,8 @@ def validate_briefing_content_gate(
                 )
 
         combined_item_text = f"{what} {why} {owner}".lower()
+        if use_global_scoring_rules:
+            global_filler_item_texts.append(combined_item_text)
         for filler in GENERIC_AI_FILLER:
             if filler.lower() in combined_item_text:
                 issues.append(
@@ -1302,6 +1317,20 @@ def validate_briefing_content_gate(
                 section="top5",
             )
         )
+
+    if use_global_scoring_rules and global_filler_item_texts:
+        for filler in GLOBAL_COMMON_FILLER_SENTENCES:
+            filler_lower = filler.lower()
+            hits = sum(1 for t in global_filler_item_texts if filler_lower in t)
+            if hits >= GLOBAL_COMMON_FILLER_REPEAT_THRESHOLD:
+                issues.append(
+                    BriefingContentIssue(
+                        "global_repeated_common_filler",
+                        f"Common filler sentence repeated across {hits} TOP5 items: {filler!r}",
+                        section="top5",
+                        excerpt=filler[:100],
+                    )
+                )
 
     deep_region = ""
     m = re.search(
