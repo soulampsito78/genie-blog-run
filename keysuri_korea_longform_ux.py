@@ -1006,39 +1006,56 @@ def build_korea_tomorrow_checkpoint_parts(item: Mapping[str, Any]) -> tuple[str,
         title = _short_title(_text(item.get("korean_title") or item.get("headline"))) or "핵심 신호"
         confirm = f"{title} 후속 발표·일정"
 
+    # The hold field states an unconfirmed assumption to withhold judgment on —
+    # it must never reuse the item's "키수리 판단" explanation verbatim (that
+    # copy-paste rendered the same risk sentence twice in one card).
     hold = ""
-    label, explanation = _item_judgment(item)
-    if label in _RISK_LABELS and explanation:
-        hold = clamp_action_line(_strip_keysuri_judgment_label_prefix(explanation), max_chars=90)
-    if not hold and _text(item.get("hype_caution")):
+    if _text(item.get("hype_caution")):
         hold = clamp_action_line(_text(item.get("hype_caution")), max_chars=90)
+    if not hold:
+        label, _explanation = _item_judgment(item)
+        if label in _RISK_LABELS:
+            hold = "실제 파급 범위·일정이 숫자로 확인되기 전의 예단"
     if not hold:
         hold = "숫자·일정이 확인되지 않은 기대감"
     return confirm, hold
 
 
 def build_korea_market_impact_summary(items: Sequence[Mapping[str, Any]]) -> List[Dict[str, str]]:
-    """Bottom-of-briefing market-impact summary rows (Korea only, ≥3 axes, no directives)."""
+    """Bottom-of-briefing market-impact summary rows (Korea only, ≥3 axes, no directives).
+
+    Anchored to TODAY's actual TOP5 theme/industries — the section must not read
+    as a fixed daily lesson board that repeats the same five sentences every day.
+    """
+    items = [i for i in items if isinstance(i, dict)]
+    theme = _theme_phrase(items)
+    industries: List[str] = []
+    for item in items:
+        cat = _korea_industry_label(_text(item.get("category_label_ko") or item.get("primary_category")))
+        if cat and cat not in industries:
+            industries.append(cat)
+    industry_phrase = "·".join(industries[:3]) if industries else "반도체·AI·정책"
     rows: List[Dict[str, str]] = [
         {
             "axis": "관련 업종",
-            "body": "반도체·AI·인프라 뉴스는 장비, 소재, 부품, 전력, 냉각처럼 주변 업종으로 내려오는 순서를 보겠습니다.",
+            "body": (
+                f"오늘은 {theme}를 중심으로 {industry_phrase} 축이 움직였습니다. "
+                "발주·일정이 주변 장비·부품·서비스 업종으로 이어지는지부터 보겠습니다."
+            ),
         },
         {
             "axis": "협력사/소부장",
-            "body": "대기업 투자와 정책 신호는 협력사, 소부장, 패키징, 테스트 물량으로 번질 때 체감 영향이 커집니다.",
-        },
-        {
-            "axis": "일자리/지역",
-            "body": "데이터센터·공장·정책 사업은 지역 채용, 교육, 공사, 유지보수 수요로 내려오는지 확인하겠습니다.",
+            "body": (
+                f"오늘 {industry_phrase} 쪽 투자·정책 신호가 협력사와 소부장 물량으로 "
+                "번지는지 확인하겠습니다."
+            ),
         },
         {
             "axis": "개인 투자자",
-            "body": "수혜주를 단정하기보다 관련 업종의 계약, 비용 구조, 도입 일정이 숫자로 확인되는지 보겠습니다.",
-        },
-        {
-            "axis": "사업자/프리랜서",
-            "body": "AI·클라우드·정책 변화는 외주 단가, SaaS 비용, 교육 수요, 중소기업 도입 일정으로 먼저 체감될 수 있습니다.",
+            "body": (
+                f"{theme} 관련 종목은 계약·비용 구조·도입 일정이 숫자로 확인된 뒤에 "
+                "판단하겠습니다."
+            ),
         },
     ]
     return rows
@@ -1046,9 +1063,13 @@ def build_korea_market_impact_summary(items: Sequence[Mapping[str, Any]]) -> Lis
 
 _FOLLOW_VERB_TAIL_RE = re.compile(
     r"\s*(?:을|를|여부를)?\s*(?:먼저\s*)?"
-    r"(?:확인하세요|확인하십시오|점검하세요|점검하십시오|확인해\s*보세요|보세요|보시면 됩니다|하시면 됩니다)"
+    r"(?:[가-힣]+(?:하세요|하십시오)|확인해\s*보세요|보세요|보시면 됩니다|하시면 됩니다)"
     r"[.!]?$"
 )
+
+# A follow-check item must never keep an imperative ending in front of the
+# appended "확인" — "…비교 분석하세요 확인" is the double-ending artifact.
+_TRAILING_IMPERATIVE_RE = re.compile(r"(?:하세요|하십시오)[.!]?$")
 
 
 def compress_to_follow_check_item(line: str) -> str:
@@ -1074,7 +1095,8 @@ def build_korea_follow_hold_blocks(items: Sequence[Mapping[str, Any]]) -> Dict[s
     for line in _collect_memo_action_lines(items):
         short = compress_to_follow_check_item(line)
         if short in memo_lines and not short.endswith(("확인", "점검")):
-            short = f"{short} 확인"
+            stem = _TRAILING_IMPERATIVE_RE.sub("", short).rstrip(" ,·")
+            short = f"{stem} 확인" if stem else short
         if short and short not in follow and short not in memo_lines:
             follow.append(short)
         if len(follow) >= 3:

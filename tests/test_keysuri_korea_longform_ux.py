@@ -461,7 +461,7 @@ class KeysuriKoreaMarketRendererHelpersTests(unittest.TestCase):
         self.assertGreaterEqual(len(rows), 3)
         axes = {row["axis"] for row in rows}
         self.assertEqual(KOREA_MARKET_SUMMARY_HEADING, "오늘 신호가 내려오는 곳")
-        for axis in ("관련 업종", "협력사/소부장", "일자리/지역", "개인 투자자", "사업자/프리랜서"):
+        for axis in ("관련 업종", "협력사/소부장", "개인 투자자"):
             with self.subTest(axis=axis):
                 self.assertIn(axis, axes)
         for row in rows:
@@ -469,6 +469,29 @@ class KeysuriKoreaMarketRendererHelpersTests(unittest.TestCase):
             self.assertNotIn("매수", row["body"])
             self.assertNotIn("매도", row["body"])
             self.assertNotIn("직접 영향은 제한적", row["body"])
+
+    def test_market_impact_summary_is_day_specific_not_static_lesson(self) -> None:
+        """Rows must be anchored to today's actual items, and the legacy fixed
+        daily-lesson sentences must never be emitted again."""
+        from keysuri_briefing_content_quality import KOREA_STATIC_LESSON_LEGACY_SENTENCES
+        from keysuri_korea_longform_ux import build_korea_market_impact_summary
+
+        rows = build_korea_market_impact_summary(_top_items())
+        bodies = " ".join(row["body"] for row in rows)
+        for legacy in KOREA_STATIC_LESSON_LEGACY_SENTENCES:
+            self.assertNotIn(legacy, bodies)
+
+        semis = build_korea_market_impact_summary(
+            [{"korean_title": "SK하이닉스 HBM 공급 계약", "primary_category": "domestic_semiconductor"}]
+        )
+        startups = build_korea_market_impact_summary(
+            [{"korean_title": "스타트업 투자 유치", "primary_category": "domestic_startup_investment"}]
+        )
+        self.assertNotEqual(
+            [r["body"] for r in semis],
+            [r["body"] for r in startups],
+            "market summary must change with the day's items",
+        )
 
     def test_everyday_impact_quality_helpers_flag_finance_only_copy(self) -> None:
         from keysuri_korea_longform_ux import (
@@ -534,6 +557,63 @@ class KeysuriKoreaMarketContractHardeningTests(unittest.TestCase):
         short = compress_to_follow_check_item(memo_line)
         self.assertNotEqual(short, memo_line)
         self.assertTrue(short.endswith("확인"))
+
+    def test_compress_follow_check_item_handles_any_imperative_verb(self) -> None:
+        """Generic '…하세요' endings (분석하세요/주시하세요/…) must compress cleanly —
+        the '…비교 분석하세요 확인' double-ending artifact came from unmatched verbs."""
+        from keysuri_korea_longform_ux import compress_to_follow_check_item
+
+        for memo_line in (
+            "국내 다른 대기업들의 AI 전략 발표와 방향성 변화를 비교 분석하세요",
+            "개인화된 AI 솔루션 개발 스타트업에 대한 투자 동향을 주시하세요",
+            "관련 공시 일정을 점검하십시오",
+        ):
+            with self.subTest(memo_line=memo_line):
+                short = compress_to_follow_check_item(memo_line)
+                self.assertTrue(short.endswith("확인"), short)
+                self.assertNotIn("하세요 확인", short)
+                self.assertNotIn("하십시오 확인", short)
+
+    def test_follow_blocks_never_contain_double_ending(self) -> None:
+        from keysuri_korea_longform_ux import build_korea_follow_hold_blocks
+
+        items = [
+            {
+                "korean_title": "국내 AI 전략 신호",
+                "next_watch": "국내 다른 대기업들의 AI 전략 발표와 방향성 변화를 비교 분석하세요",
+            },
+            {
+                "korean_title": "국내 투자 신호",
+                "next_watch": "개인화된 AI 솔루션 개발 스타트업에 대한 투자 동향을 주시하세요",
+            },
+        ]
+        follow = build_korea_follow_hold_blocks(items)["follow"]
+        self.assertTrue(follow)
+        for line in follow:
+            with self.subTest(line=line):
+                self.assertNotIn("하세요 확인", line)
+                self.assertNotIn("하십시오 확인", line)
+
+    def test_tomorrow_checkpoint_hold_never_copies_risk_judgment(self) -> None:
+        """The hold field must state an unconfirmed assumption — not repeat the
+        card's '키수리 판단' risk explanation verbatim (production defect)."""
+        from keysuri_korea_longform_ux import build_korea_tomorrow_checkpoint_parts
+
+        risk_explanation = (
+            "국내 주요 대기업의 노사 갈등이 장기화되며 생산 차질 및 공급망 불안정성으로 "
+            "이어질 수 있는 명확한 리스크 신호입니다."
+        )
+        item = {
+            "korean_title": "현대차 노사, 임단협 난항 2년 연속 파업 위기 고조",
+            "keysuri_judgment_label": "리스크 신호",
+            "keysuri_judgment_text": risk_explanation,
+            "next_watch": "현대차 노사 간 추가 교섭 일정 및 합의 여부를 확인하세요",
+        }
+        confirm, hold = build_korea_tomorrow_checkpoint_parts(item)
+        self.assertTrue(confirm)
+        self.assertTrue(hold)
+        self.assertNotEqual(hold, risk_explanation)
+        self.assertNotIn("리스크 신호입니다", hold)
 
     def test_follow_lines_never_verbatim_repeat_memo_action_lines(self) -> None:
         from keysuri_korea_longform_ux import (

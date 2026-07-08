@@ -819,5 +819,197 @@ class GlobalPostRenderKnownArtifactDetectorTests(unittest.TestCase):
         self.assertTrue(result.ok, result.issues)
 
 
+class KoreaPostRenderVisibleQualityTests(unittest.TestCase):
+    """validate_korea_post_render_visible_quality: Korea Tech counterpart of the
+    global post-render wrapper, wired into the real owner-review send path.
+    Targets the four visible defects observed in the 2026-07-08 Korea Tech
+    production owner-review email."""
+
+    @staticmethod
+    def _strip_html(chips: list[str]) -> str:
+        spans = " ".join(
+            f'<span style="display:inline-block;border-radius:999px;">{chip}</span>'
+            for chip in chips
+        )
+        return (
+            "<p>오늘 국내에서 움직인 것</p>"
+            "<p>오늘 한국 시장에서 돈·산업·정책이 움직인 축을 다섯 신호로 정리했습니다.</p>"
+            f"{spans}"
+            "<h2>국내 테크 TOP 5</h2><p>본문</p>"
+        )
+
+    def test_headline_fragment_chip_in_signal_strip_blocks(self) -> None:
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        html = self._strip_html(
+            ["삼성전자, '나를 아는 AI'가", "사업 신호", "사업 신호", "리스크 신호", "사업 신호"]
+        )
+        result = validate_korea_post_render_visible_quality(html)
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "korea_signal_distribution_badge_fragment", {i.code for i in result.issues}
+        )
+
+    def test_taxonomy_only_signal_strip_passes(self) -> None:
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        html = self._strip_html(["관찰", "사업 신호", "사업 신호", "리스크 신호", "과장 주의"])
+        result = validate_korea_post_render_visible_quality(html)
+        self.assertTrue(result.ok, result.issues)
+
+    def test_top5_card_badges_after_strip_are_not_scanned(self) -> None:
+        """Badges inside the TOP5 cards (e.g. '국내 적용') live outside the
+        strip window and must not be misread as strip chips."""
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        html = (
+            self._strip_html(["사업 신호", "리스크 신호"])
+            + '<span style="border-radius:999px;">국내 적용</span>'
+        )
+        result = validate_korea_post_render_visible_quality(html)
+        self.assertTrue(result.ok, result.issues)
+
+    def test_double_ending_imperative_plus_bare_check_blocks(self) -> None:
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        for text in (
+            "국내 다른 대기업들의 AI 전략 발표와 방향성 변화를 비교 분석하세요 확인",
+            "개인화된 AI 솔루션 개발 스타트업에 대한 투자 동향을 주시하세요 확인",
+            "후속 일정을 점검하십시오 확인",
+        ):
+            with self.subTest(text=text):
+                result = validate_korea_post_render_visible_quality(f"<li>{text}</li>")
+                self.assertFalse(result.ok)
+                self.assertIn(
+                    "korea_visible_text_double_ending_artifact",
+                    {i.code for i in result.issues},
+                )
+
+    def test_normal_imperative_and_normal_check_item_pass(self) -> None:
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        for text in (
+            "현대차 노사 간 추가 교섭 일정 및 합의 여부를 최우선으로 확인하세요",
+            "삼성전자의 AI 서비스 로드맵 및 실제 제품 적용 사례 확인",
+            "관련 공시를 먼저 확인하세요 확인이 필요한 항목은 별도로 표시했습니다",
+        ):
+            with self.subTest(text=text):
+                result = validate_korea_post_render_visible_quality(f"<li>{text}</li>")
+                self.assertTrue(result.ok, result.issues)
+
+    def test_hold_field_copy_of_judgment_blocks(self) -> None:
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        risk = (
+            "국내 주요 대기업의 노사 갈등이 장기화되며 생산 차질 및 공급망 불안정성으로 "
+            "이어질 수 있는 명확한 리스크 신호입니다."
+        )
+        html = (
+            f"<p><strong>키수리 판단</strong> <span>리스크 신호</span> {risk}</p>"
+            "<p><strong>내일 먼저 볼 것:</strong> 추가 교섭 일정 확인</p>"
+            f"<p><strong>아직 단정하지 말 것:</strong> {risk}</p>"
+            "<p>출처 ZDNet Korea</p>"
+        )
+        result = validate_korea_post_render_visible_quality(html)
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "korea_hold_field_duplicate_judgment", {i.code for i in result.issues}
+        )
+
+    def test_default_hold_text_with_distinct_judgment_passes(self) -> None:
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        html = (
+            "<p><strong>키수리 판단</strong> <span>사업 신호</span> "
+            "국내 로봇 기업이 시장을 확대하는 구체적인 신호입니다.</p>"
+            "<p><strong>내일 먼저 볼 것:</strong> 추가 수주 현황 확인</p>"
+            "<p><strong>아직 단정하지 말 것:</strong> 숫자·일정이 확인되지 않은 기대감</p>"
+            "<p>출처 로봇신문</p>"
+        )
+        result = validate_korea_post_render_visible_quality(html)
+        self.assertTrue(result.ok, result.issues)
+
+    def test_static_lesson_board_rendered_verbatim_blocks(self) -> None:
+        from keysuri_briefing_content_quality import (
+            KOREA_STATIC_LESSON_LEGACY_SENTENCES,
+            validate_korea_post_render_visible_quality,
+        )
+
+        html = "".join(f"<p>{s}</p>" for s in KOREA_STATIC_LESSON_LEGACY_SENTENCES)
+        result = validate_korea_post_render_visible_quality(html)
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "korea_static_lesson_section_overused", {i.code for i in result.issues}
+        )
+
+    def test_one_or_two_legacy_sentences_below_threshold_pass(self) -> None:
+        from keysuri_briefing_content_quality import (
+            KOREA_STATIC_LESSON_LEGACY_SENTENCES,
+            validate_korea_post_render_visible_quality,
+        )
+
+        html = "".join(f"<p>{s}</p>" for s in KOREA_STATIC_LESSON_LEGACY_SENTENCES[:2])
+        result = validate_korea_post_render_visible_quality(html)
+        self.assertTrue(result.ok, result.issues)
+
+    def test_clean_korea_final_gmail_email_html_passes(self) -> None:
+        """Normal Korea fixture rendered through the REAL Gmail owner-email
+        renderer (the exact function used on the send path) must pass."""
+        from keysuri_contract_preview_renderer import (
+            IMAGE_MODE_EMAIL,
+            build_keysuri_korea_gmail_owner_email_html,
+            prepare_contract_preview_fixture,
+        )
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        repo = Path(__file__).resolve().parents[1]
+        fixture = build_korea_contract_fixture()
+        fixture["top_shot_image_src"] = "cid:keysuri_topshot_korea_qa_clean"
+        prepare_contract_preview_fixture(fixture, repo_root=repo, image_mode=IMAGE_MODE_EMAIL)
+        email_html = build_keysuri_korea_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Korea Tech",
+            admin_url="https://example.com/admin/runs/test_korea_qa_clean",
+            run_id="test_korea_qa_clean",
+        )
+        result = validate_korea_post_render_visible_quality(email_html)
+        self.assertTrue(result.ok, result.issues)
+
+    def test_korea_gmail_strip_never_renders_headline_fragment_chips(self) -> None:
+        """Items whose judgment label is missing/관찰 must render a taxonomy chip
+        (관찰), never a truncated headline fragment — the production defect."""
+        from keysuri_contract_preview_renderer import (
+            IMAGE_MODE_EMAIL,
+            build_keysuri_korea_gmail_owner_email_html,
+            prepare_contract_preview_fixture,
+        )
+        from keysuri_briefing_content_quality import (
+            _korea_signal_strip_chip_texts,
+            KOREA_SIGNAL_BADGE_ALLOWED_LABELS,
+            validate_korea_post_render_visible_quality,
+        )
+
+        repo = Path(__file__).resolve().parents[1]
+        fixture = build_korea_contract_fixture()
+        fixture["top_shot_image_src"] = "cid:keysuri_topshot_korea_qa_chips"
+        fixture["top_5_items"][0]["korean_title"] = "삼성전자, '나를 아는 AI'가 가장 중요하다고 강조"
+        fixture["top_5_items"][0]["keysuri_judgment_label"] = "관찰"
+        fixture["top_5_items"][1].pop("keysuri_judgment_label", None)
+        prepare_contract_preview_fixture(fixture, repo_root=repo, image_mode=IMAGE_MODE_EMAIL)
+        email_html = build_keysuri_korea_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Korea Tech",
+            admin_url="https://example.com/admin/runs/test_korea_qa_chips",
+            run_id="test_korea_qa_chips",
+        )
+        chips = _korea_signal_strip_chip_texts(email_html)
+        self.assertTrue(chips)
+        for chip in chips:
+            self.assertIn(chip, KOREA_SIGNAL_BADGE_ALLOWED_LABELS, chips)
+        self.assertNotIn("삼성전자, '나를 아는 AI'가", email_html)
+        result = validate_korea_post_render_visible_quality(email_html)
+        self.assertTrue(result.ok, result.issues)
+
+
 if __name__ == "__main__":
     unittest.main()

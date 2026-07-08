@@ -1112,14 +1112,18 @@ class KeysuriKoreaMarketBriefingRenderTests(unittest.TestCase):
             for axis in (
                 "관련 업종",
                 "협력사/소부장",
-                "일자리/지역",
                 "개인 투자자",
-                "사업자/프리랜서",
             )
             if axis in html
         )
-        self.assertEqual(axes, 5)
+        self.assertEqual(axes, 3)
         self.assertNotIn("시장 영향 요약", html)
+        # The section must be anchored to today's items, never the legacy
+        # fixed daily lesson sentences.
+        from keysuri_briefing_content_quality import KOREA_STATIC_LESSON_LEGACY_SENTENCES
+
+        for legacy in KOREA_STATIC_LESSON_LEGACY_SENTENCES:
+            self.assertNotIn(legacy, html)
 
     @_require_contract_renderer
     def test_korea_follow_hold_section_renders_both_blocks(self) -> None:

@@ -10,6 +10,10 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 # use when validate_global_post_render_visible_quality blocks SMTP dispatch.
 KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED = "keysuri_global_post_render_qa_blocked"
 
+# Korea counterpart — used when validate_korea_post_render_visible_quality
+# blocks SMTP dispatch on the Korea Tech owner-review send path.
+KEYSURI_KOREA_POST_RENDER_QA_BLOCKED = "keysuri_korea_post_render_qa_blocked"
+
 from keysuri_contract_preview_quality import (
     FORBIDDEN_PHRASES,
     GENERIC_CLOSING_PHRASES,
@@ -1620,4 +1624,174 @@ def validate_global_post_render_visible_quality(html: str) -> BriefingContentQua
                     excerpt=marker,
                 )
             )
+    return BriefingContentQualityResult(ok=len(issues) == 0, issues=issues, warnings=[])
+
+
+# ---------------------------------------------------------------------------
+# Korea post-render visible QA (real owner-review send path)
+
+# Judgment-label taxonomy allowed inside the "오늘 국내에서 움직인 것" signal
+# strip — mirrors the keysuri_judgment.label contract in the generation prompt.
+# Anything else in a chip (e.g. a truncated headline fragment like
+# "삼성전자, '나를 아는 AI'가") is a rendering defect that must block SMTP.
+KOREA_SIGNAL_BADGE_ALLOWED_LABELS: Tuple[str, ...] = (
+    "기회",
+    "관찰",
+    "경계",
+    "활용 후보",
+    "사업 신호",
+    "리스크 신호",
+    "추가 확인 필요",
+    "과장 주의",
+)
+
+KOREA_DOMESTIC_STRIP_HEADING = "오늘 국내에서 움직인 것"
+_KOREA_TOP5_HEADING = "국내 테크 TOP 5"
+
+# Legacy fixed "lesson board" sentences that used to render verbatim every day
+# in the "오늘 신호가 내려오는 곳" section. build_korea_market_impact_summary now
+# generates day-specific rows; if this many of the old fixed sentences still
+# reach the final HTML, some path regressed to the static board.
+KOREA_STATIC_LESSON_LEGACY_SENTENCES: Tuple[str, ...] = (
+    "반도체·AI·인프라 뉴스는 장비, 소재, 부품, 전력, 냉각처럼 주변 업종으로 내려오는 순서를 보겠습니다.",
+    "대기업 투자와 정책 신호는 협력사, 소부장, 패키징, 테스트 물량으로 번질 때 체감 영향이 커집니다.",
+    "데이터센터·공장·정책 사업은 지역 채용, 교육, 공사, 유지보수 수요로 내려오는지 확인하겠습니다.",
+    "수혜주를 단정하기보다 관련 업종의 계약, 비용 구조, 도입 일정이 숫자로 확인되는지 보겠습니다.",
+    "AI·클라우드·정책 변화는 외주 단가, SaaS 비용, 교육 수요, 중소기업 도입 일정으로 먼저 체감될 수 있습니다.",
+)
+KOREA_STATIC_LESSON_SENTENCE_THRESHOLD = 3
+
+# Imperative ending glued to a bare "확인" — the "…비교 분석하세요 확인" /
+# "…주시하세요 확인" double-ending artifact. The (?![가-힣]) guard requires the
+# trailing 확인 token to stand alone, so a new sentence starting with 확인
+# after a normal imperative ("…하세요 확인이 필요한 부분은 …") does not match.
+_KOREA_DOUBLE_ENDING_RE = re.compile(r"[가-힣]+(?:하세요|하십시오)\s+확인(?![가-힣])")
+
+_KOREA_HOLD_FIELD_MARKER = "아직 단정하지 말 것"
+_KOREA_JUDGMENT_MARKER = "키수리 판단"
+_KOREA_HOLD_DUP_MIN_CHARS = 25
+
+
+def _korea_signal_strip_chip_texts(html: str) -> List[str]:
+    """Chip texts inside the Korea domestic signal strip of the FINAL HTML.
+
+    Works for both the Gmail email template (inline-styled <span> chips) and
+    the premium preview template (<span class="signal-chip">): every <span>
+    between the strip heading and the TOP5 heading is a chip.
+    """
+    idx = html.find(KOREA_DOMESTIC_STRIP_HEADING)
+    if idx < 0:
+        return []
+    window = html[idx:]
+    end = window.find(_KOREA_TOP5_HEADING)
+    if end > 0:
+        window = window[:end]
+    chips: List[str] = []
+    for m in re.finditer(r"<span[^>]*>(.*?)</span>", window, flags=re.S):
+        text = re.sub(r"\s+", " ", _plain_text(m.group(1))).strip()
+        if text:
+            chips.append(text)
+    return chips
+
+
+def _norm_visible_ko(text: str) -> str:
+    return re.sub(r"[^0-9A-Za-z가-힣]+", "", text or "")
+
+
+def _korea_hold_duplicate_judgment_excerpts(plain: str) -> List[str]:
+    """Hold-field texts that duplicate the same card's '키수리 판단' explanation.
+
+    Scans the plain text in document order: for each "아직 단정하지 말 것"
+    occurrence, compares its text against the nearest preceding "키수리 판단"
+    explanation. Near-duplicates count too (the hold field is clamped to 90
+    chars, so it may be a prefix of the judgment sentence rather than equal).
+    """
+    out: List[str] = []
+    for m in re.finditer(_KOREA_HOLD_FIELD_MARKER, plain):
+        seg = plain[m.end(): m.end() + 400].lstrip(" :：")
+        stop = len(seg)
+        for stop_marker in ("출처", _KOREA_JUDGMENT_MARKER, "내일 먼저 볼 것"):
+            j = seg.find(stop_marker)
+            if 0 <= j < stop:
+                stop = j
+        hold_text = seg[:stop].strip()
+
+        j_idx = plain.rfind(_KOREA_JUDGMENT_MARKER, 0, m.start())
+        if j_idx < 0:
+            continue
+        j_seg = plain[j_idx + len(_KOREA_JUDGMENT_MARKER): j_idx + len(_KOREA_JUDGMENT_MARKER) + 500]
+        j_stop = len(j_seg)
+        for stop_marker in ("내일 먼저 볼 것", _KOREA_HOLD_FIELD_MARKER, "출처"):
+            j2 = j_seg.find(stop_marker)
+            if 0 <= j2 < j_stop:
+                j_stop = j2
+        judgment_text = j_seg[:j_stop].strip()
+
+        norm_hold = _norm_visible_ko(hold_text)
+        norm_judgment = _norm_visible_ko(judgment_text)
+        if (
+            len(norm_hold) >= _KOREA_HOLD_DUP_MIN_CHARS
+            and norm_judgment
+            and (norm_hold in norm_judgment or norm_judgment in norm_hold)
+        ):
+            out.append(hold_text[:100])
+    return out
+
+
+def validate_korea_post_render_visible_quality(html: str) -> BriefingContentQualityResult:
+    """Korea Tech post-render QA on the FINAL owner-review email HTML.
+
+    Runs after rendering and before SMTP dispatch — mirrors
+    validate_global_post_render_visible_quality but targets the four visible
+    defects observed in the Korea Tech production owner-review email:
+    headline fragments in the signal-strip badge row, "…하세요 확인" double
+    endings, hold fields copy-pasted from the judgment sentence, and the
+    static daily lesson board rendered verbatim.
+    """
+    issues: List[BriefingContentIssue] = []
+    plain = _plain_text(html)
+
+    for chip in _korea_signal_strip_chip_texts(html):
+        if chip not in KOREA_SIGNAL_BADGE_ALLOWED_LABELS:
+            issues.append(
+                BriefingContentIssue(
+                    "korea_signal_distribution_badge_fragment",
+                    f"Signal strip badge is not an allowed judgment label: {chip!r}",
+                    section="signal_summary",
+                    excerpt=chip[:100],
+                )
+            )
+
+    for m in _KOREA_DOUBLE_ENDING_RE.finditer(plain):
+        issues.append(
+            BriefingContentIssue(
+                "korea_visible_text_double_ending_artifact",
+                f"Imperative ending directly followed by bare '확인' (double ending): {m.group(0)!r}",
+                section="visible_body",
+                excerpt=m.group(0),
+            )
+        )
+
+    for excerpt in _korea_hold_duplicate_judgment_excerpts(plain):
+        issues.append(
+            BriefingContentIssue(
+                "korea_hold_field_duplicate_judgment",
+                "'아직 단정하지 말 것' field duplicates the same card's '키수리 판단' text",
+                section="top5",
+                excerpt=excerpt,
+            )
+        )
+
+    static_hits = [s for s in KOREA_STATIC_LESSON_LEGACY_SENTENCES if s in plain]
+    if len(static_hits) >= KOREA_STATIC_LESSON_SENTENCE_THRESHOLD:
+        issues.append(
+            BriefingContentIssue(
+                "korea_static_lesson_section_overused",
+                f"{len(static_hits)} legacy fixed lesson sentences rendered verbatim — "
+                "the market-impact section regressed to the static daily board",
+                section="market_impact_summary",
+                excerpt=static_hits[0][:100],
+            )
+        )
+
     return BriefingContentQualityResult(ok=len(issues) == 0, issues=issues, warnings=[])

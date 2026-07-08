@@ -3830,6 +3830,116 @@ class KeysuriKoreaServiceFullRunBottomEmailTests(unittest.TestCase):
         self.assertEqual(meta.get("bottom_shot_fallback_reason"), "variation_explicitly_disabled")
         mock_generate.assert_not_called()
 
+    @patch("keysuri_service_full_run.validate_korea_post_render_visible_quality")
+    @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
+    @patch("keysuri_service_full_run.resolve_korea_bottom_email_asset_path")
+    @patch("keysuri_service_full_run.build_keysuri_prompt_input")
+    @patch("keysuri_service_full_run.save_run_artifact")
+    @patch("keysuri_service_full_run._generate_keysuri_service_image")
+    @patch("keysuri_service_full_run.generate_run_id")
+    def test_korea_post_render_qa_blocks_smtp_on_real_send_path(
+        self,
+        mock_run_id: MagicMock,
+        mock_image: MagicMock,
+        mock_save: MagicMock,
+        mock_prompt_input: MagicMock,
+        mock_bottom_asset: MagicMock,
+        mock_watermark: MagicMock,
+        mock_korea_qa: MagicMock,
+    ) -> None:
+        """Korea contract_preview=False real owner-review path must call the Korea
+        post-render QA gate with the FINAL Gmail email HTML and block SMTP
+        (email_sent=False, smtp_attempted=False, issue_codes exposed) on failure."""
+        from keysuri_briefing_content_quality import (
+            BriefingContentIssue,
+            BriefingContentQualityResult,
+        )
+        from keysuri_service_full_run import (
+            KEYSURI_KOREA_POST_RENDER_QA_BLOCKED,
+            run_keysuri_service_full_run,
+        )
+
+        repo = Path(__file__).resolve().parents[1]
+        run_id = "20260709_183000_keysuri_korea_tech_ab12cd35"
+        mock_run_id.return_value = run_id
+        pack_path = repo / "output" / "keysuri_preview" / "test_pack_korea_qa_wired.json"
+        pack_path.parent.mkdir(parents=True, exist_ok=True)
+        pack_path.write_text(json.dumps({"sources": [], "program_id": PROGRAM_KOREA}), encoding="utf-8")
+        raw_path = repo / "output" / "keysuri_preview" / "raw_korea_qa_wired.txt"
+        raw_path.write_text("{}", encoding="utf-8")
+        top_image = repo / "output" / "images" / "keysuri_korea_service_qa_wired.jpg"
+        top_image.parent.mkdir(parents=True, exist_ok=True)
+        top_image.write_bytes(b"\xff\xd8\xff" + b"\x00" * 128)
+        anchor_image = repo / "output" / "images" / "keysuri_korea_bottom_anchor_qa_wired.jpg"
+        anchor_image.write_bytes(b"\xff\xd8\xff" + b"\x11" * 128)
+        mock_bottom_asset.return_value = (anchor_image, [])
+        mock_watermark.side_effect = _mock_keysuri_watermark
+        mock_image.return_value = ServiceImageOutcome(
+            called_image_api=True,
+            image_generation_status="generated",
+            image_source=IMAGE_SOURCE_GENERATED,
+            generated_image_path=str(top_image.relative_to(repo)),
+        )
+        mock_prompt_input.return_value = {
+            "program_id": PROGRAM_KOREA,
+            "prompt_status": "ready_for_generation",
+            "source_pack": {"sources": []},
+        }
+        mock_korea_qa.return_value = BriefingContentQualityResult(
+            ok=False,
+            issues=[
+                BriefingContentIssue(
+                    "korea_signal_distribution_badge_fragment", "test forced block"
+                )
+            ],
+            warnings=[],
+        )
+        mock_send = MagicMock(return_value=True)
+
+        smoke = LiveSourceSmokeResult(
+            ok=True,
+            program_id=PROGRAM_KOREA,
+            source_pack_path=str(pack_path),
+            html_path=str(pack_path.parent / "k.html"),
+            fetched_item_count=5,
+            feed_urls_used=["https://example.com/feed"],
+            sample_marker_pass=True,
+            called_gemini=True,
+            use_gemini=True,
+            contract_preview=False,
+            parse_status="parsed_valid",
+            raw_response_path=str(raw_path),
+            preview_overall_status="PASS_OWNER_REVIEW_READY",
+            validation_status="PASS",
+            generated_briefing={"title": "국내 브리핑", "summary": "요약", "top_5_news": []},
+            side_effects={"called_gemini": True, "called_image_api": False},
+        )
+
+        with patch.dict(os.environ, {"KEYSURI_KOREA_BOTTOM_VARIATION_ENABLED": "off"}, clear=False):
+            payload = run_keysuri_service_full_run(
+                PROGRAM_KOREA,
+                smoke_runner=lambda **_kw: smoke,
+                send_fn=mock_send,
+            )
+
+        mock_korea_qa.assert_called_once()
+        called_html = mock_korea_qa.call_args.args[0]
+        self.assertIn("<!DOCTYPE html>", called_html)
+
+        self.assertFalse(payload.get("ok"))
+        self.assertEqual(payload.get("validation_result"), "block")
+        self.assertEqual(payload.get("error"), KEYSURI_KOREA_POST_RENDER_QA_BLOCKED)
+        self.assertIn(
+            "korea_signal_distribution_badge_fragment", payload.get("issue_codes") or []
+        )
+        self.assertFalse(payload.get("email_sent"))
+        self.assertFalse(payload.get("smtp_attempted"))
+        mock_send.assert_not_called()
+        saved_meta = mock_save.call_args.args[0]
+        self.assertEqual(saved_meta.get("validation_result"), "block")
+        self.assertFalse(saved_meta.get("email_sent"))
+        self.assertFalse(saved_meta.get("smtp_attempted"))
+
 
 class KeysuriGlobalOwnerReviewEmailDesignRestorationTests(unittest.TestCase):
     """Global service_full_run owner email must use Gmail-safe inline/table renderer."""

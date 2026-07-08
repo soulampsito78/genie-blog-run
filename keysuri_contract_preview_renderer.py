@@ -395,18 +395,27 @@ def _judgment_block(item: Mapping[str, Any]) -> tuple[str, str]:
     return label, text
 
 
+# Signal-strip chips may only carry judgment-taxonomy labels (the same set the
+# generation prompt allows for keysuri_judgment.label). Falling back to a
+# truncated headline produced broken fragments like "삼성전자, '나를 아는 AI'가"
+# sitting between "사업 신호" chips in the production owner-review email.
+_SIGNAL_CHIP_ALLOWED_LABELS = (
+    "기회",
+    "관찰",
+    "경계",
+    "활용 후보",
+    "사업 신호",
+    "리스크 신호",
+    "추가 확인 필요",
+    "과장 주의",
+)
+
+
 def _signal_chip_text(item: Mapping[str, Any]) -> str:
     label = _item_field(item, "keysuri_judgment_label", "judgment_label")
-    if label and label not in ("관찰", "키수리 판단"):
+    if label in _SIGNAL_CHIP_ALLOWED_LABELS:
         return label
-    title = _item_field(item, "korean_title", "headline")
-    if not title:
-        return "신호"
-    parts = re.split(r"[—\-:|]", title, maxsplit=1)
-    chip = parts[0].strip()
-    if len(chip) > 18:
-        chip = chip[:18].rstrip(" ,·.")
-    return chip or "신호"
+    return "관찰"
 
 
 def _render_theme_top_insert(fixture: Mapping[str, Any], *, program_id: str) -> str:
