@@ -9,6 +9,8 @@ from vertexai.generative_models import GenerationConfig, GenerativeModel
 
 DEFAULT_VERTEX_LOCATION = "global"
 DEFAULT_VERTEX_MODEL = "gemini-2.5-flash"
+KEYSURI_BODY_GEMINI_MODEL_ENV = "KEYSURI_BODY_GEMINI_MODEL"
+KEE_SURI_BODY_MODEL_ENV = "KEE_SURI_BODY_MODEL"
 KEYSURI_GEMINI_MODE = "keysuri_generation"
 
 
@@ -27,6 +29,17 @@ def resolve_vertex_project_id(project_id: Optional[str] = None) -> str:
     return pid
 
 
+def resolve_keysuri_body_model(model: Optional[str] = None) -> str:
+    """Resolve Kee-Suri text model without changing shared Today VERTEX_MODEL behavior."""
+    return (
+        (model or "").strip()
+        or os.getenv(KEYSURI_BODY_GEMINI_MODEL_ENV, "").strip()
+        or os.getenv(KEE_SURI_BODY_MODEL_ENV, "").strip()
+        or os.getenv("VERTEX_MODEL", "").strip()
+        or DEFAULT_VERTEX_MODEL
+    )
+
+
 def call_keysuri_gemini_text(
     prompt: str,
     *,
@@ -38,7 +51,7 @@ def call_keysuri_gemini_text(
     """Call Vertex Gemini for Kee-Suri JSON briefing generation."""
     pid = resolve_vertex_project_id(project_id)
     loc = (location or os.getenv("VERTEX_LOCATION") or DEFAULT_VERTEX_LOCATION).strip()
-    model_name = (model or os.getenv("VERTEX_MODEL") or DEFAULT_VERTEX_MODEL).strip()
+    model_name = resolve_keysuri_body_model(model)
     max_out = max_output_tokens or int(os.getenv("GENIE_MAX_OUTPUT_TOKENS", "12288"))
 
     try:
