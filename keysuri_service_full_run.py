@@ -1078,7 +1078,7 @@ def _regenerate_keysuri_text_from_snapshot(
         return None, None, err
     prompt_text = build_keysuri_generation_prompt(prompt_input)
     caller = text_caller or call_keysuri_gemini_text
-    raw_text = caller(prompt_text)
+    raw_text = caller(prompt_text, program_id=program_id)
     parse_result = parse_keysuri_generated_response(raw_text, program_id, prompt_input)
     if str(parse_result.get("parse_status") or "") != "parsed_valid":
         return None, None, "generated_briefing_regen_parse_failed"
@@ -2196,7 +2196,7 @@ def _regenerate_keysuri_text_from_source_pack(
     prompt_input["source_pack"] = source_pack
     prompt_text = build_keysuri_generation_prompt(prompt_input)
     caller = text_caller or call_keysuri_gemini_text
-    raw_text = caller(prompt_text)
+    raw_text = caller(prompt_text, program_id=program_id)
     parse_result = parse_keysuri_generated_response(raw_text, program_id, prompt_input)
 
     if is_reissue:

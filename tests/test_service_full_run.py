@@ -2218,7 +2218,7 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        text_caller.assert_called_once_with("PROMPT-BODY")
+        text_caller.assert_called_once_with("PROMPT-BODY", program_id="keysuri_korea_tech")
         mock_customer_final.assert_not_called()
         send_fn.assert_called_once()
         inline_parts = send_fn.call_args.kwargs["inline_jpeg_parts"]

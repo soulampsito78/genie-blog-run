@@ -1374,7 +1374,7 @@ def run_keysuri_live_source_smoke(
         prompt_text = build_keysuri_generation_prompt(prompt_input)
         caller = gemini_caller or call_keysuri_gemini_text
         try:
-            raw_text = caller(prompt_text, project_id=project_id, model=model)
+            raw_text = caller(prompt_text, project_id=project_id, model=model, program_id=program_id)
             side_effects["called_gemini"] = True
         except KeysuriGeminiError as exc:
             return LiveSourceSmokeResult(
