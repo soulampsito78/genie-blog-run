@@ -530,5 +530,57 @@ class KeysuriOverallStatusLogicTests(unittest.TestCase):
         self.assertFalse(ready)
 
 
+class GlobalAbstractFillerQualityTests(unittest.TestCase):
+    """Global items stacking abstract filler without concrete facts are low quality."""
+
+    _METADATA = {
+        "global_top5_selection": {"policy": "keysuri_global_top5_selection_v2_diversity"},
+        "claims": [{"selection_score": 70, "selection_rationale": "test"}] * 5,
+    }
+
+    def test_abstract_filler_without_specifics_flagged(self) -> None:
+        fixture = build_global_contract_fixture()
+        item = fixture["top_5_items"][0]
+        item["what_happened"] = (
+            "이번 랜섬웨어 공격은 보안 업계에 많은 것을 시사합니다. "
+            "방어 체계의 기반을 이해하는 데 필수적입니다. 관련 동향 파악이 중요합니다."
+        )
+        item["why_now"] = (
+            "이 흐름은 산업 전반의 변화를 보여줍니다. 지금의 대응 태세가 중요합니다. "
+            "생태계 협력을 촉진합니다."
+        )
+        item["owner_angle"] = (
+            "보안 태세 점검이 필수적입니다. 이 신호는 많은 것을 시사합니다. "
+            "흐름을 관찰하는 자세가 중요합니다."
+        )
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        result = validate_briefing_content_gate(html, source_metadata=self._METADATA)
+        codes = {i.code for i in result.issues}
+        self.assertIn("global_abstract_filler_no_specifics", codes)
+
+    def test_abstract_filler_with_concrete_specifics_not_flagged(self) -> None:
+        fixture = build_global_contract_fixture()
+        item = fixture["top_5_items"][0]
+        item["what_happened"] = (
+            "공격 그룹 FIN12가 2026년 6월 이후 12개 기업을 노렸다는 점을 시사합니다. "
+            "AI 도구로 침투 후 수동 암호화를 실행한 사실이 보고서에 담겼습니다. "
+            "피해 규모는 약 4,000만 달러로 추산됩니다."
+        )
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        result = validate_briefing_content_gate(html, source_metadata=self._METADATA)
+        codes = {i.code for i in result.issues}
+        self.assertNotIn("global_abstract_filler_no_specifics", codes)
+
+    def test_korea_items_not_subject_to_global_abstract_filler_gate(self) -> None:
+        fixture = build_korea_contract_fixture()
+        item = fixture["top_5_items"][0]
+        item["what_happened"] = "이 신호는 많은 것을 시사합니다. 대응이 중요합니다."
+        html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        metadata = {"korea_top5_selection": {"policy": "x"}}
+        result = validate_briefing_content_gate(html, source_metadata=metadata)
+        codes = {i.code for i in result.issues}
+        self.assertNotIn("global_abstract_filler_no_specifics", codes)
+
+
 if __name__ == "__main__":
     unittest.main()

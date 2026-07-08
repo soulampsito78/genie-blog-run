@@ -103,6 +103,23 @@ GENERIC_AI_FILLER: Tuple[str, ...] = (
     "기업들이 ai를 활용",
 )
 
+# Global Tech abstract-filler endings. Any single use is normal Korean prose; the
+# low-quality pattern is stacking these WITHOUT concrete facts (no numbers, dates,
+# named actors) — the "그래서 어쩌자고?" abstract-summary state.
+GLOBAL_ABSTRACT_FILLER_MARKERS: Tuple[str, ...] = (
+    "중요합니다",
+    "시사합니다",
+    "촉진합니다",
+    "보여줍니다",
+    "필수적입니다",
+    "영향력을 과시했습니다",
+    "기반을 이해하는 데 필수적입니다",
+)
+
+# Minimum abstract-filler hits in one item (with no digit-backed specifics) to
+# flag it as low quality.
+GLOBAL_ABSTRACT_FILLER_ITEM_THRESHOLD = 2
+
 SPONSORED_FRAMING_MARKERS: Tuple[str, ...] = (
     "스폰서",
     "파트너 콘텐츠",
@@ -1063,6 +1080,24 @@ def validate_briefing_content_gate(
                         section="top5",
                         item_index=idx,
                         excerpt=filler,
+                    )
+                )
+
+        if use_global_scoring_rules:
+            combined_raw = f"{what} {why} {owner}"
+            abstract_hits = sum(
+                combined_raw.count(marker) for marker in GLOBAL_ABSTRACT_FILLER_MARKERS
+            )
+            has_concrete_specifics = bool(re.search(r"\d", combined_raw))
+            if abstract_hits >= GLOBAL_ABSTRACT_FILLER_ITEM_THRESHOLD and not has_concrete_specifics:
+                issues.append(
+                    BriefingContentIssue(
+                        "global_abstract_filler_no_specifics",
+                        f"TOP item {idx} stacks abstract filler endings without concrete facts "
+                        "(no numbers/dates/actors — '그래서 어쩌자고?' state)",
+                        section="top5",
+                        item_index=idx,
+                        excerpt=combined_raw[:100],
                     )
                 )
 

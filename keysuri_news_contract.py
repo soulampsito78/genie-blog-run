@@ -713,6 +713,185 @@ def is_korea_tech_irrelevant_headline(headline: str, summary: str = "") -> bool:
     return False
 
 
+# --- Global Tech TOP5 signal-quality gate -----------------------------------
+# Global Tech TOP5 is a fresh-signal ranking, not a reading list. Evergreen
+# educational explainers, consumer-culture soft stories, and corporate blog /
+# conference recaps without a concrete change are rejected at selection time —
+# regardless of how famous the source outlet is (TechCrunch/NVIDIA/IEEE included).
+# The gate is content-based and runs in _claim_is_qualified, so the backfill pool
+# cannot bypass it either.
+
+# A/D. Evergreen educational explainer / generic technology background.
+GLOBAL_EVERGREEN_EXPLAINER_MARKERS: Tuple[str, ...] = (
+    "알아야 할",
+    "핵심 지식",
+    "기본 개념",
+    "기초 지식",
+    "기초 개념",
+    "입문",
+    "이해하기",
+    "이해하는 데",
+    "란 무엇",
+    "이란 무엇",
+    "무엇인가",
+    "용어 정리",
+    "총정리",
+    "what is ",
+    "what are ",
+    "understanding ",
+    "explained",
+    "explainer",
+    "guide to",
+    "tutorial",
+    "beginner",
+    "introduction to",
+    "everything you need to know",
+    "need to know",
+    "the basics",
+)
+
+# B. Consumer culture / entertainment soft story.
+GLOBAL_CONSUMER_CULTURE_MARKERS: Tuple[str, ...] = (
+    "몰아보기",
+    "binge",
+    "시청 습관",
+    "시청 문화",
+    "콘텐츠 소비",
+    "소비 문화",
+    "팬덤",
+    "문화 현상",
+    "streaming habits",
+    "watching habits",
+    "pop culture",
+    "meme culture",
+)
+
+# C. Corporate blog / conference recap markers — allowed only with a concrete change.
+GLOBAL_CORPORATE_RECAP_MARKERS: Tuple[str, ...] = (
+    "시사점",
+    "돌아보기",
+    "회고",
+    "recap",
+    "highlights from",
+    "takeaways",
+    "what we learned",
+    "lessons from",
+)
+
+# Concrete-change anchors that let a recap pass: an actual model/paper/benchmark/
+# open-source/product change must be named, not just event impressions.
+GLOBAL_RECAP_CONCRETE_ANCHORS: Tuple[str, ...] = (
+    "공개",
+    "출시",
+    "발표",
+    "릴리스",
+    "벤치마크",
+    "오픈소스",
+    "release",
+    "launch",
+    "benchmark",
+    "open source",
+    "open-source",
+)
+
+# Action anchors that rescue an explainer/culture-flagged headline: recent product,
+# policy, standard, regulation, pricing, security, or commercial-deployment moves.
+GLOBAL_SIGNAL_EXCEPTION_ANCHORS: Tuple[str, ...] = (
+    "출시",
+    "공개",
+    "발표",
+    "개정",
+    "규제",
+    "정책 변경",
+    "표준 제정",
+    "상용",
+    "계약",
+    "수주",
+    "인수",
+    "합병",
+    "투자 유치",
+    "상장",
+    "요금제",
+    "가격 인상",
+    "가격 인하",
+    "수익 모델",
+    "추천 알고리즘",
+    "알고리즘 변경",
+    "api 변경",
+    "보안 사고",
+    "침해",
+    "유출",
+    "취약점",
+    "패치",
+    "랜섬웨어",
+    "해킹",
+    "release",
+    "launch",
+    "acquisition",
+    "funding",
+    "ipo",
+    "breach",
+    "vulnerability",
+    "ransomware",
+    "pricing",
+    "ad tier",
+    "ad-supported",
+    "regulation",
+)
+
+
+def _explainer_marker_present(text: str, markers: Sequence[str]) -> bool:
+    """Match evergreen-explainer markers against lowercased text.
+
+    Single-token ASCII markers (e.g. "explained", "tutorial") match on a word
+    boundary so they do not fire inside a larger word — "explained" must NOT flag
+    "unexplained cloud outage". Korean markers and multi-word English phrases keep
+    substring semantics (Korean has no word boundaries; a phrase substring is
+    already specific enough).
+    """
+    for marker in markers:
+        token = marker.strip()
+        if not token:
+            continue
+        if " " in marker or not token.isascii():
+            if marker in text:
+                return True
+        elif re.search(rf"\b{re.escape(token)}\b", text):
+            return True
+    return False
+
+
+def is_global_tech_low_signal_headline(headline: str, summary: str = "") -> Tuple[bool, str]:
+    """Return (True, reason) when a Global Tech candidate is a low-signal story.
+
+    Covers: evergreen educational explainers, consumer-culture/entertainment soft
+    stories, and corporate blog/conference recaps without a concrete change. A
+    flagged headline is rescued only by explicit action anchors (release, policy,
+    regulation, pricing, security incident, commercial deployment).
+    """
+    raw = f"{headline} {summary}"
+    # 가이드라인 (policy guideline) must not trigger the 가이드 explainer marker.
+    text = raw.replace("가이드라인", "").lower()
+
+    has_exception = any(anchor in text for anchor in GLOBAL_SIGNAL_EXCEPTION_ANCHORS)
+
+    explainer_hit = "가이드" in text or _explainer_marker_present(
+        text, GLOBAL_EVERGREEN_EXPLAINER_MARKERS
+    )
+    if explainer_hit and not has_exception:
+        return True, "global_evergreen_explainer"
+
+    culture_hit = any(marker in text for marker in GLOBAL_CONSUMER_CULTURE_MARKERS)
+    if culture_hit and not has_exception:
+        return True, "global_consumer_culture_story"
+
+    recap_hit = any(marker in text for marker in GLOBAL_CORPORATE_RECAP_MARKERS)
+    if recap_hit and not any(anchor in text for anchor in GLOBAL_RECAP_CONCRETE_ANCHORS):
+        return True, "global_corporate_recap_no_concrete_change"
+
+    return False, ""
+
+
 def _claim_is_qualified(
     claim: Dict[str, Any],
     smap: Dict[str, Dict[str, Any]],
@@ -738,6 +917,12 @@ def _claim_is_qualified(
         summary = str(claim.get("summary") or "").strip()
         if is_korea_tech_irrelevant_headline(headline, summary):
             return False, "korea_tech_irrelevant_headline"
+    if program_id == "keysuri_global_tech":
+        headline = str(claim.get("headline") or claim.get("statement") or "").strip()
+        summary = str(claim.get("summary") or "").strip()
+        low_signal, reason = is_global_tech_low_signal_headline(headline, summary)
+        if low_signal:
+            return False, reason
     return True, "ok"
 
 

@@ -830,6 +830,28 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
                 "- FORBIDDEN generic filler: 'AI 도입이 가속화', '기업들이 AI를 활용', '업무 효율이 높아질 수 있습니다'.",
                 "- FORBIDDEN in all visible fields: 총점, 점수, 스코어, score, scoring — never expose internal evaluation numbers in reader-facing copy.",
                 "- Do NOT invent facts beyond provided source_pack and TOP_5_SELECTED metadata.",
+                "",
+                "GLOBAL TECH SIGNAL QUALITY (mandatory — TOP5 is a fresh-signal ranking, not a reading list)",
+                "- Select only fresh tech/industry/regulation/security/infra signals: AI model or agent releases, "
+                "security incidents with clear actor/tool/impact, cloud/datacenter/GPU/semiconductor/supply-chain "
+                "moves, platform policy/API/developer-ecosystem changes, open-source releases with concrete "
+                "artifacts, major funding/M&A/IPO, regulatory action, data-infrastructure/subsea-cable builds "
+                "tied to cloud or regional capacity.",
+                "- EXCLUDE evergreen educational explainers, guides, tutorials, 'what is X' primers, and generic "
+                "technology background (통신 주파수 일반론, 하드웨어 기본 개념, 역사/용어 설명).",
+                "- EXCLUDE consumer-culture / entertainment soft stories (몰아보기 문화, 시청 습관, 팬덤) unless "
+                "directly tied to pricing/ad tiers, recommendation algorithms, revenue model, platform policy, "
+                "regulation, or cloud/CDN cost.",
+                "- Corporate blog / conference recaps qualify ONLY when a concrete model, paper, benchmark, "
+                "open-source release, or product/infra change is named — state what actually changed.",
+                "- Do not select an item just because the source outlet is famous (TechCrunch/NVIDIA/IEEE included).",
+                "- Every item must answer 5W1H: 누가(기업/기관/공격자/연구자/규제기관), 언제, 무엇을, 어디서, "
+                "왜 중요한가(기술/시장/규제/보안/인프라 변화).",
+                "- Every item must state '그래서 볼 것': a concrete next-48-hours checkpoint for Korean "
+                "operators/developers/founders/investors — never leave the reader at '그래서 어쩌자고?'.",
+                "- Do not stack abstract filler (중요합니다, 시사합니다, 촉진합니다, 보여줍니다, 필수적입니다) "
+                "without concrete facts, numbers, or named actors.",
+                "- Output exactly one JSON object; no prose, markdown, or second JSON object outside it.",
             ]
         )
     sections.extend(

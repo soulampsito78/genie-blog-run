@@ -441,5 +441,38 @@ class KeysuriGenerationPromptFixtureAlignmentTests(unittest.TestCase):
         self.assertEqual(on_disk["allowed_source_ids"], built["allowed_source_ids"])
 
 
+class GlobalTechSignalQualityPromptTests(unittest.TestCase):
+    """Global prompt must demand fresh signals, 5W1H, and reject soft/evergreen stories."""
+
+    def test_global_prompt_includes_signal_quality_block(self) -> None:
+        prompt = build_keysuri_generation_prompt(_global_prompt())
+        self.assertIn("GLOBAL TECH SIGNAL QUALITY", prompt)
+        self.assertIn("EXCLUDE evergreen educational explainers", prompt)
+        self.assertIn("consumer-culture / entertainment soft stories", prompt)
+        self.assertIn("Corporate blog / conference recaps qualify ONLY", prompt)
+
+    def test_global_prompt_requires_5w1h_and_48h_checkpoint(self) -> None:
+        prompt = build_keysuri_generation_prompt(_global_prompt())
+        self.assertIn("5W1H", prompt)
+        self.assertIn("그래서 볼 것", prompt)
+        self.assertIn("next-48-hours checkpoint", prompt)
+
+    def test_global_prompt_forbids_famous_source_shortcut_and_abstract_filler(self) -> None:
+        prompt = build_keysuri_generation_prompt(_global_prompt())
+        self.assertIn("just because the source outlet is famous", prompt)
+        for marker in ("중요합니다", "시사합니다", "촉진합니다", "보여줍니다", "필수적입니다"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, prompt)
+
+    def test_global_prompt_reiterates_single_json_object(self) -> None:
+        prompt = build_keysuri_generation_prompt(_global_prompt())
+        self.assertIn("Output exactly one JSON object", prompt)
+        self.assertIn("Return exactly one JSON object", prompt)
+
+    def test_korea_prompt_excludes_global_signal_quality_block(self) -> None:
+        prompt = build_keysuri_generation_prompt(_korea_prompt())
+        self.assertNotIn("GLOBAL TECH SIGNAL QUALITY", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

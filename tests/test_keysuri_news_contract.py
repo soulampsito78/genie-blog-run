@@ -912,5 +912,214 @@ class KeysuriKoreaMarketSignalFieldContractTests(unittest.TestCase):
         self.assertTrue(notes)
 
 
+class GlobalTechLowSignalGateTests(unittest.TestCase):
+    """Global TOP5 must reject evergreen explainers, culture soft stories, and empty recaps."""
+
+    def _low(self, headline: str, summary: str = ""):
+        from keysuri_news_contract import is_global_tech_low_signal_headline
+
+        return is_global_tech_low_signal_headline(headline, summary)
+
+    def test_vhf_explainer_rejected(self) -> None:
+        low, reason = self._low("VHF 전파: 모든 RF 엔지니어가 알아야 할 핵심 지식")
+        self.assertTrue(low)
+        self.assertEqual(reason, "global_evergreen_explainer")
+
+    def test_english_understanding_explainer_rejected(self) -> None:
+        low, reason = self._low("Understanding VHF propagation for RF engineers")
+        self.assertTrue(low)
+        self.assertEqual(reason, "global_evergreen_explainer")
+
+    def test_guide_and_tutorial_rejected(self) -> None:
+        for headline in (
+            "클라우드 컴퓨팅 입문 가이드",
+            "A beginner tutorial: guide to Kubernetes networking",
+            "What is quantum computing and why it matters",
+        ):
+            with self.subTest(headline=headline):
+                low, reason = self._low(headline)
+                self.assertTrue(low)
+                self.assertEqual(reason, "global_evergreen_explainer")
+
+    def test_policy_guideline_revision_not_flagged_as_guide(self) -> None:
+        low, _ = self._low("정부, AI 데이터센터 전력 가이드라인 개정")
+        self.assertFalse(low)
+
+    def test_netflix_binge_culture_rejected(self) -> None:
+        low, reason = self._low(
+            "넷플릭스가 만든 '몰아보기' 문화, 이제는 한계를 맞이했을 수 있습니다"
+        )
+        self.assertTrue(low)
+        self.assertEqual(reason, "global_consumer_culture_story")
+
+    def test_english_binge_soft_story_rejected(self) -> None:
+        low, reason = self._low("Binge-watching culture may finally be fading")
+        self.assertTrue(low)
+        self.assertEqual(reason, "global_consumer_culture_story")
+
+    def test_culture_story_with_ad_tier_pricing_rescued(self) -> None:
+        low, _ = self._low("넷플릭스, 몰아보기 감소에 광고 요금제 개편")
+        self.assertFalse(low)
+
+    def test_ai_ransomware_with_actor_tool_impact_accepted(self) -> None:
+        low, _ = self._low(
+            "AI 기반 랜섬웨어 공격, 여전히 인간의 개입이 필요했습니다",
+            "공격 그룹이 AI 도구로 침투 후 수동으로 암호화를 실행했습니다.",
+        )
+        self.assertFalse(low)
+
+    def test_icml_recap_without_concrete_change_rejected(self) -> None:
+        low, reason = self._low("오픈 모델이 AI 연구를 이끄는 방식: ICML 2026의 시사점")
+        self.assertTrue(low)
+        self.assertEqual(reason, "global_corporate_recap_no_concrete_change")
+
+    def test_icml_recap_with_concrete_release_accepted(self) -> None:
+        low, _ = self._low(
+            "ICML 2026의 시사점: 새 오픈소스 벤치마크와 70B 모델 공개"
+        )
+        self.assertFalse(low)
+
+    def test_subsea_cable_infra_accepted(self) -> None:
+        low, _ = self._low(
+            "일본 IPS, 오사카 인근 와카야마에 1억 4,100만 달러 규모 해저 케이블 착륙국 건설 계획"
+        )
+        self.assertFalse(low)
+
+    def test_gate_is_source_agnostic(self) -> None:
+        """TechCrunch consumer culture and IEEE evergreen explainers are still rejected."""
+        low_tc, _ = self._low(
+            "TechCrunch: streaming habits and pop culture in 2026"
+        )
+        self.assertTrue(low_tc)
+        low_ieee, _ = self._low(
+            "IEEE Spectrum: the basics every RF engineer needs to know"
+        )
+        self.assertTrue(low_ieee)
+
+    def test_unexplained_incident_not_flagged_as_explainer(self) -> None:
+        """'explained' must match on a word boundary, not inside 'unexplained'."""
+        low, reason = self._low("Unexplained cloud outage disrupts API traffic")
+        self.assertFalse(low, reason)
+
+    def test_explained_as_word_still_rejected(self) -> None:
+        """A real explainer using the word 'explained' is still rejected."""
+        low, reason = self._low("explained VHF propagation basics")
+        self.assertTrue(low)
+        self.assertEqual(reason, "global_evergreen_explainer")
+        low2, reason2 = self._low("Understanding VHF propagation for RF engineers")
+        self.assertTrue(low2)
+        self.assertEqual(reason2, "global_evergreen_explainer")
+
+    def test_explainer_token_still_matches_on_boundary(self) -> None:
+        low, reason = self._low("AI model explainer article for newcomers")
+        self.assertTrue(low)
+        self.assertEqual(reason, "global_evergreen_explainer")
+
+
+class GlobalTechSelectionGateIntegrationTests(unittest.TestCase):
+    """Low-signal gate applies in select_top_5_news for both main pool and backfill."""
+
+    def _claim(self, cid: str, headline: str) -> dict:
+        return {
+            "claim_id": cid,
+            "statement": headline,
+            "headline": headline,
+            "summary": f"{headline} 관련 요약.",
+            "claim_type": "general",
+            "source_ids": [f"s-{cid}"],
+            "confidence_label": "reported",
+            "news_category": "startup",
+            "business_implication": f"Biz impl {cid}",
+        }
+
+    def _source(self, cid: str) -> dict:
+        return {
+            "source_id": f"s-{cid}",
+            "source_name": f"Outlet {cid}",
+            "source_url": f"https://global-{cid}.example.com/news/{cid}",
+            "source_tier": "T2_TIER1_WIRE",
+            "fetched_at": "2026-07-07T10:00:00+09:00",
+        }
+
+    def _good_headlines(self, n: int) -> list:
+        pool = [
+            "오픈AI, 신규 에이전트 API 정식 출시",
+            "AWS, 서울 리전 GPU 클러스터 증설 발표",
+            "EU, AI 플랫폼 규제 초안 확정",
+            "TSMC, 2나노 파운드리 양산 계약 수주",
+            "일본 IPS, 해저 케이블 착륙국 건설 계획",
+            "구글, 검색 API 정책 변경 공지",
+        ]
+        return pool[:n]
+
+    def test_explainer_claim_excluded_from_global_top5(self) -> None:
+        good = [
+            self._claim(f"good-{i}", h) for i, h in enumerate(self._good_headlines(5), 1)
+        ]
+        bad = self._claim("bad-explainer", "VHF 전파: 모든 RF 엔지니어가 알아야 할 핵심 지식")
+        claims = [bad] + good
+        pack = {
+            "program_id": "keysuri_global_tech",
+            "sources": [self._source(c["claim_id"]) for c in claims],
+            "claims": claims,
+        }
+        result = select_top_5_news(pack, GateResult(verdict="pass", issues=()))
+        self.assertEqual(result["verdict"], "pass")
+        ids = [item["news_id"] for item in result["top_5_news"]["items"]]
+        self.assertNotIn("bad-explainer", ids)
+        self.assertEqual(len(ids), 5)
+
+    def test_backfill_cannot_bypass_global_gate(self) -> None:
+        # 5 fresh candidates, one removed by cross-day dedup -> backfill pool is
+        # consulted; a low-signal backfill claim must be skipped, a good one used.
+        good = [
+            self._claim(f"good-{i}", h) for i, h in enumerate(self._good_headlines(5), 1)
+        ]
+        backfill = [
+            self._claim("bf-culture", "넷플릭스가 만든 몰아보기 문화, 한계를 맞았습니다"),
+            self._claim("bf-good", "MS, 클라우드 보안 취약점 긴급 패치 공개"),
+        ]
+        pack = {
+            "program_id": "keysuri_global_tech",
+            "sources": [self._source(c["claim_id"]) for c in good],
+            "claims": good,
+            "backfill_claims": backfill,
+            "backfill_sources": [self._source(c["claim_id"]) for c in backfill],
+        }
+        sent = [
+            {
+                "title": good[4]["headline"],
+                "url": "https://global-good-5.example.com/news/good-5",
+                "source": "Outlet good-5",
+            }
+        ]
+        result = select_top_5_news(
+            pack, GateResult(verdict="pass", issues=()), sent_log_rows=sent
+        )
+        self.assertEqual(result["verdict"], "pass", result.get("issues"))
+        ids = [item["news_id"] for item in result["top_5_news"]["items"]]
+        self.assertNotIn("bf-culture", ids)
+        self.assertIn("bf-good", ids)
+
+    def test_korea_selection_not_affected_by_global_gate(self) -> None:
+        """A tech-anchored explainer-style headline still qualifies for Korea Tech."""
+        claims = []
+        for i in range(1, 6):
+            claim = self._claim(f"k{i}", f"국내 반도체 공급망 뉴스 {i}")
+            claim["news_category"] = "korea_semiconductor"
+            claims.append(claim)
+        claims[0]["headline"] = "반도체 기초 개념 이해하기: 알아야 할 핵심 지식"
+        claims[0]["statement"] = claims[0]["headline"]
+        pack = {
+            "program_id": "keysuri_korea_tech",
+            "sources": [self._source(c["claim_id"]) for c in claims],
+            "claims": claims,
+        }
+        result = select_top_5_news(pack, GateResult(verdict="pass", issues=()))
+        self.assertEqual(result["verdict"], "pass", result.get("issues"))
+        ids = [item["news_id"] for item in result["top_5_news"]["items"]]
+        self.assertIn("k1", ids)
+
+
 if __name__ == "__main__":
     unittest.main()
