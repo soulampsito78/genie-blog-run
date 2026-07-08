@@ -47,6 +47,7 @@ from keysuri_generation_prompt import extract_json_candidates_from_model_text
 from keysuri_generation_prompt import parse_keysuri_generated_response
 from keysuri_generation_prompt import build_keysuri_generation_prompt
 from keysuri_gemini_client import call_keysuri_gemini_text
+from keysuri_cost_estimate import estimate_keysuri_gemini_cost
 from keysuri_email_identity import build_keysuri_subject_artifact_fields
 from keysuri_visible_text_quality import (
     KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
@@ -3617,12 +3618,14 @@ def run_keysuri_service_full_run(
 
     run_id = generate_run_id(pid)
     runner = smoke_runner or run_keysuri_live_source_smoke
+    gemini_usage_sink: Dict[str, Any] = {}
     smoke: LiveSourceSmokeResult = runner(
         program_id=pid,
         use_gemini=True,
         contract_preview=False,
         send=False,
         trigger_source=trigger_source,
+        usage_sink=gemini_usage_sink,
     )
     validation_result = _validation_result_from_smoke(smoke)
     if smoke.called_gemini and smoke.parse_status == "parsed_valid" and smoke.ok:
@@ -4192,6 +4195,22 @@ def run_keysuri_service_full_run(
     meta["regen_source_pack_snapshot"] = copy.deepcopy(source_pack)
     meta["regen_prompt_input_snapshot"] = copy.deepcopy(prompt_input)
     meta["regen_generated_briefing_snapshot"] = copy.deepcopy(generated_briefing)
+
+    # Best-effort cost estimate — never affects validation_result/HTTP status;
+    # see keysuri_cost_estimate.py for the estimate-only pricing model.
+    try:
+        cost_estimate = estimate_keysuri_gemini_cost(
+            gemini_usage_sink,
+            model=gemini_usage_sink.get("model"),
+            program_id=pid,
+            run_id=run_id,
+            image_generated_count=1 if image_outcome.called_image_api else 0,
+        )
+    except Exception:
+        cost_estimate = None
+    if cost_estimate is not None:
+        meta["cost_estimate"] = cost_estimate
+
     save_run_artifact(meta, email_html=email_html)
 
     ok = image_outcome.ok and (not send_owner_email or email_sent)
@@ -4218,4 +4237,5 @@ def run_keysuri_service_full_run(
         "smtp_attempted": smtp_attempted,
         "email_sent": email_sent,
         "korea_bottom_shot_status": meta.get("korea_bottom_shot_status"),
+        "cost_estimate": cost_estimate,
     }

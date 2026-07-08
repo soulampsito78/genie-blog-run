@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import Optional, Tuple
+from typing import Any, Dict, MutableMapping, Optional, Tuple
 
 import vertexai
 from vertexai.generative_models import GenerationConfig, GenerativeModel
@@ -140,6 +140,35 @@ def _extract_gemini_text_safe(response: object) -> str:
     return str(text)
 
 
+def extract_gemini_usage_metadata(response: object) -> Dict[str, Optional[int]]:
+    """Best-effort token-usage extraction from a Vertex generate_content response.
+
+    Never raises — usage_metadata shape/availability can vary by model/SDK
+    version, and a missing usage breakdown must not affect generation itself.
+    """
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None:
+        return {
+            "prompt_token_count": None,
+            "candidates_token_count": None,
+            "thoughts_token_count": None,
+            "total_token_count": None,
+        }
+    out: Dict[str, Optional[int]] = {}
+    for field in (
+        "prompt_token_count",
+        "candidates_token_count",
+        "thoughts_token_count",
+        "total_token_count",
+    ):
+        try:
+            value = getattr(usage, field, None)
+            out[field] = int(value) if value is not None else None
+        except Exception:
+            out[field] = None
+    return out
+
+
 def call_keysuri_gemini_text(
     prompt: str,
     *,
@@ -148,11 +177,17 @@ def call_keysuri_gemini_text(
     location: Optional[str] = None,
     max_output_tokens: Optional[int] = None,
     program_id: Optional[str] = None,
+    usage_sink: Optional[MutableMapping[str, Any]] = None,
 ) -> str:
     """Call Vertex Gemini for Kee-Suri JSON briefing generation.
 
     program_id (optional) selects a program-specific body model override —
     see resolve_keysuri_body_model. Omitting it preserves prior behavior.
+
+    usage_sink (optional): if provided, populated in place with the resolved
+    model name and best-effort token usage counts for cost-estimate logging
+    (see keysuri_cost_estimate.py). Never raises — a usage_sink populate
+    failure must not affect text generation.
     """
     pid = resolve_vertex_project_id(project_id)
     loc = (location or os.getenv("VERTEX_LOCATION") or DEFAULT_VERTEX_LOCATION).strip()
@@ -175,6 +210,13 @@ def call_keysuri_gemini_text(
         raise
     except Exception as exc:
         raise KeysuriGeminiError(f"Vertex Gemini call failed: {exc}") from exc
+
+    if usage_sink is not None:
+        try:
+            usage_sink["model"] = model_name
+            usage_sink.update(extract_gemini_usage_metadata(response))
+        except Exception:
+            pass
 
     try:
         return _extract_gemini_text_safe(response)

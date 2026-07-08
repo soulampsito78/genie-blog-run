@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Literal, MutableMapping, Optional, Sequence, Tuple
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
@@ -1192,6 +1192,7 @@ def run_keysuri_live_source_smoke(
     top_shot_image_path: Optional[Path] = None,
     global_selection_report_path: Optional[Path] = None,
     trigger_source: Optional[str] = None,
+    usage_sink: Optional[MutableMapping[str, Any]] = None,
 ) -> LiveSourceSmokeResult:
     repo = repo_root or Path(__file__).resolve().parent
     preview_dir = out_dir or (repo / "output" / "keysuri_preview")
@@ -1374,7 +1375,13 @@ def run_keysuri_live_source_smoke(
         prompt_text = build_keysuri_generation_prompt(prompt_input)
         caller = gemini_caller or call_keysuri_gemini_text
         try:
-            raw_text = caller(prompt_text, project_id=project_id, model=model, program_id=program_id)
+            raw_text = caller(
+                prompt_text,
+                project_id=project_id,
+                model=model,
+                program_id=program_id,
+                usage_sink=usage_sink,
+            )
             side_effects["called_gemini"] = True
         except KeysuriGeminiError as exc:
             return LiveSourceSmokeResult(

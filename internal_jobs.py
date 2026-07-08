@@ -74,6 +74,7 @@ _KEYSURI_JOB_LOG_SAFE_PAYLOAD_KEYS = (
     "email_sent",
     "customer_delivery_status",
     "approve_customer_final_send",
+    "cost_estimate",
 )
 
 

@@ -321,5 +321,110 @@ class KeysuriGeminiNoPartsSafeFailTests(unittest.TestCase):
         self.assertIn("keysuri_gemini_max_tokens_no_text", str(ctx.exception))
 
 
+class KeysuriGeminiUsageSinkTests(unittest.TestCase):
+    """usage_sink (optional) must be populated with token usage for cost
+    estimation, and must never affect text generation if populating fails."""
+
+    class _FakeUsage:
+        def __init__(self, **kwargs) -> None:
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    class _HealthyResponseWithUsage:
+        def __init__(self, *, usage) -> None:
+            self.candidates = [
+                KeysuriGeminiNoPartsSafeFailTests._FakeCandidate(
+                    finish_reason="STOP", parts=["part"]
+                )
+            ]
+            self.text = '{"ok": true}'
+            self.usage_metadata = usage
+
+    def test_extract_gemini_usage_metadata_reads_all_fields(self) -> None:
+        usage = self._FakeUsage(
+            prompt_token_count=12003,
+            candidates_token_count=478,
+            thoughts_token_count=11792,
+            total_token_count=24273,
+        )
+        response = self._HealthyResponseWithUsage(usage=usage)
+        result = keysuri_gemini_client.extract_gemini_usage_metadata(response)
+        self.assertEqual(result["prompt_token_count"], 12003)
+        self.assertEqual(result["candidates_token_count"], 478)
+        self.assertEqual(result["thoughts_token_count"], 11792)
+        self.assertEqual(result["total_token_count"], 24273)
+
+    def test_extract_gemini_usage_metadata_missing_usage_returns_all_none(self) -> None:
+        class _NoUsageResponse:
+            pass
+
+        result = keysuri_gemini_client.extract_gemini_usage_metadata(_NoUsageResponse())
+        self.assertIsNone(result["prompt_token_count"])
+        self.assertIsNone(result["thoughts_token_count"])
+
+    @mock.patch("keysuri_gemini_client.vertexai.init")
+    @mock.patch("keysuri_gemini_client.GenerativeModel")
+    def test_call_keysuri_gemini_text_populates_usage_sink(
+        self, mock_model_cls: mock.MagicMock, _mock_init: mock.MagicMock
+    ) -> None:
+        usage = self._FakeUsage(
+            prompt_token_count=1000, candidates_token_count=200,
+            thoughts_token_count=50, total_token_count=1250,
+        )
+        response = self._HealthyResponseWithUsage(usage=usage)
+        mock_instance = mock.MagicMock()
+        mock_instance.generate_content.return_value = response
+        mock_model_cls.return_value = mock_instance
+
+        sink: dict = {}
+        with mock.patch.dict(os.environ, {"PROJECT_ID": "test-project"}, clear=False):
+            text = keysuri_gemini_client.call_keysuri_gemini_text(
+                "prompt", model="gemini-2.5-flash", usage_sink=sink
+            )
+        self.assertEqual(text, '{"ok": true}')
+        self.assertEqual(sink.get("model"), "gemini-2.5-flash")
+        self.assertEqual(sink.get("prompt_token_count"), 1000)
+        self.assertEqual(sink.get("thoughts_token_count"), 50)
+
+    @mock.patch("keysuri_gemini_client.vertexai.init")
+    @mock.patch("keysuri_gemini_client.GenerativeModel")
+    def test_usage_sink_none_is_safe_default(
+        self, mock_model_cls: mock.MagicMock, _mock_init: mock.MagicMock
+    ) -> None:
+        usage = self._FakeUsage(prompt_token_count=1, candidates_token_count=1)
+        response = self._HealthyResponseWithUsage(usage=usage)
+        mock_instance = mock.MagicMock()
+        mock_instance.generate_content.return_value = response
+        mock_model_cls.return_value = mock_instance
+
+        with mock.patch.dict(os.environ, {"PROJECT_ID": "test-project"}, clear=False):
+            text = keysuri_gemini_client.call_keysuri_gemini_text("prompt")
+        self.assertEqual(text, '{"ok": true}')
+
+    @mock.patch("keysuri_gemini_client.vertexai.init")
+    @mock.patch("keysuri_gemini_client.GenerativeModel")
+    def test_usage_sink_populate_failure_does_not_break_generation(
+        self, mock_model_cls: mock.MagicMock, _mock_init: mock.MagicMock
+    ) -> None:
+        """A usage_sink that raises on assignment (e.g. a broken mapping) must
+        not prevent the text result from being returned."""
+
+        class _BrokenSink(dict):
+            def __setitem__(self, key, value):
+                raise RuntimeError("sink is broken")
+
+        usage = self._FakeUsage(prompt_token_count=1, candidates_token_count=1)
+        response = self._HealthyResponseWithUsage(usage=usage)
+        mock_instance = mock.MagicMock()
+        mock_instance.generate_content.return_value = response
+        mock_model_cls.return_value = mock_instance
+
+        with mock.patch.dict(os.environ, {"PROJECT_ID": "test-project"}, clear=False):
+            text = keysuri_gemini_client.call_keysuri_gemini_text(
+                "prompt", usage_sink=_BrokenSink()
+            )
+        self.assertEqual(text, '{"ok": true}')
+
+
 if __name__ == "__main__":
     unittest.main()

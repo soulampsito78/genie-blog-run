@@ -3369,6 +3369,108 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         self.assertIn("_mirai_on_watermarked", str(saved_meta.get("generated_image_path_watermarked")))
         self.assertFalse(saved_meta.get("artifact_storage_durable"))
 
+    @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
+    @patch("keysuri_service_full_run.build_keysuri_prompt_input")
+    @patch("keysuri_service_full_run.save_run_artifact")
+    @patch("keysuri_service_full_run.send_genie_email")
+    @patch("keysuri_service_full_run._generate_keysuri_service_image")
+    @patch("keysuri_service_full_run.generate_run_id")
+    def test_cost_estimate_attached_to_payload_and_artifact_meta(
+        self,
+        mock_run_id: MagicMock,
+        mock_image: MagicMock,
+        mock_send: MagicMock,
+        mock_save: MagicMock,
+        mock_prompt_input: MagicMock,
+        mock_watermark: MagicMock,
+    ) -> None:
+        """Response payload and saved artifact meta must carry a best-effort
+        cost_estimate (usage + optional totals) — never affecting ok/validation."""
+        from keysuri_service_full_run import run_keysuri_service_full_run
+
+        repo = Path(__file__).resolve().parents[1]
+        run_id = "20260611_150900_keysuri_global_tech_c0517234"
+        mock_run_id.return_value = run_id
+        pack_path = repo / "output" / "keysuri_preview" / "test_pack_global_cost.json"
+        pack_path.parent.mkdir(parents=True, exist_ok=True)
+        pack_path.write_text(json.dumps({"sources": [], "program_id": PROGRAM_GLOBAL}), encoding="utf-8")
+        raw_path = repo / "output" / "keysuri_preview" / "raw_global_cost.txt"
+        raw_path.write_text("{}", encoding="utf-8")
+
+        image_rel = repo / "output" / "images" / "keysuri_global_service_cost_test.jpg"
+        image_rel.parent.mkdir(parents=True, exist_ok=True)
+        image_rel.write_bytes(b"\xff\xd8\xff" + b"\x00" * 128)
+        mock_watermark.side_effect = _mock_keysuri_watermark
+        mock_image.return_value = ServiceImageOutcome(
+            called_image_api=True,
+            image_generation_status="generated",
+            image_source=IMAGE_SOURCE_GENERATED,
+            generated_image_path=str(image_rel.relative_to(repo)),
+        )
+        mock_prompt_input.return_value = {
+            "program_id": PROGRAM_GLOBAL,
+            "prompt_status": "ready_for_generation",
+            "source_pack": {"sources": []},
+        }
+        mock_send.return_value = True
+
+        def _smoke_with_usage(**kwargs):
+            sink = kwargs.get("usage_sink")
+            if isinstance(sink, dict):
+                sink.update(
+                    {
+                        "model": "gemini-3-flash-preview",
+                        "prompt_token_count": 12003,
+                        "candidates_token_count": 478,
+                        "thoughts_token_count": 11792,
+                        "total_token_count": 24273,
+                    }
+                )
+            return LiveSourceSmokeResult(
+                ok=True,
+                program_id=PROGRAM_GLOBAL,
+                source_pack_path=str(pack_path),
+                html_path=str(pack_path.parent / "h.html"),
+                fetched_item_count=5,
+                feed_urls_used=["https://example.com/feed"],
+                sample_marker_pass=True,
+                called_gemini=True,
+                use_gemini=True,
+                contract_preview=False,
+                parse_status="parsed_valid",
+                raw_response_path=str(raw_path),
+                preview_overall_status="PASS_OWNER_REVIEW_READY",
+                validation_status="PASS",
+                generated_briefing={"title": "글로벌 브리핑", "summary": "요약", "top_5_news": []},
+                side_effects={"called_gemini": True, "called_image_api": False},
+            )
+
+        with patch.dict(
+            os.environ,
+            {"GENIE_ADMIN_PUBLIC_BASE_URL": "https://example.com", "GENIE_OWNER_REVIEW_SEND": "1"},
+            clear=False,
+        ):
+            with patch("keysuri_service_full_run.email_sender.last_send_trace", return_value={}):
+                with patch("keysuri_service_full_run.email_sender.last_send_diagnostic", return_value=""):
+                    payload = run_keysuri_service_full_run(
+                        PROGRAM_GLOBAL,
+                        trigger_source="manual_service_full_run",
+                        smoke_runner=_smoke_with_usage,
+                        send_fn=mock_send,
+                    )
+
+        self.assertTrue(payload.get("ok"))
+        cost_estimate = payload.get("cost_estimate")
+        self.assertIsNotNone(cost_estimate)
+        self.assertTrue(cost_estimate.get("estimate_only"))
+        self.assertEqual(cost_estimate.get("model"), "gemini-3-flash-preview")
+        self.assertEqual(cost_estimate.get("run_id"), run_id)
+        self.assertEqual(cost_estimate["usage"]["prompt_token_count"], 12003)
+        self.assertEqual(cost_estimate["usage"]["thoughts_token_count"], 11792)
+
+        saved_meta = mock_save.call_args.args[0]
+        self.assertEqual(saved_meta.get("cost_estimate"), cost_estimate)
+
     @patch("keysuri_service_full_run.build_keysuri_prompt_input")
     @patch("keysuri_service_full_run.save_run_artifact")
     @patch("keysuri_service_full_run._generate_keysuri_service_image")
