@@ -494,6 +494,17 @@ def _parse_failure_diagnostics(parse_result: dict, prompt_input: dict) -> Dict[s
         "candidate_top_level_keys": parse_meta.get("candidate_top_level_keys"),
         "missing_required_keys": parse_meta.get("missing_required_keys"),
         "schema_error_summary": parse_meta.get("schema_error_summary"),
+        "schema_issue_codes": parse_meta.get("schema_issue_codes"),
+        "news_scope_actual": parse_meta.get("news_scope_actual"),
+        "section_heading_actual": parse_meta.get("section_heading_actual"),
+        "news_scope_actual_before_repair": parse_meta.get(
+            "news_scope_actual_before_repair"
+        ),
+        "section_heading_actual_before_repair": parse_meta.get(
+            "section_heading_actual_before_repair"
+        ),
+        "repair_applied": parse_meta.get("repair_applied"),
+        "repaired_fields": parse_meta.get("repaired_fields"),
         "first_300_chars_safe_excerpt": parse_meta.get("first_300_chars_safe_excerpt"),
         "parse_recovery_strategy": parse_meta.get("parse_recovery_strategy"),
         "parse_failure_stage": parse_meta.get("parse_failure_stage"),

@@ -12,6 +12,9 @@ from keysuri_generated_briefing import (
 )
 from keysuri_news_contract import (
     KEYSURI_MARKET_LENS_NORMALIZED_ISSUE_CODE,
+    KEYSURI_PROGRAM_IDS,
+    expected_news_scope_for_program,
+    expected_top5_heading_for_program,
     repair_korea_market_lens_fields_in_top5,
 )
 from keysuri_private_briefing import (
@@ -455,6 +458,76 @@ def _repair_korea_market_lens_for_parse(
     return out, diagnostics
 
 
+def _is_missing_or_blank(value: Any) -> bool:
+    """True when a top-level contract field is absent, null, or blank string."""
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    return False
+
+
+def _repair_top_level_scope_heading_for_parse(
+    obj: Dict[str, Any],
+    program_id: str,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Fill missing/blank top-level news_scope and section_heading from program_id.
+
+    Only grafts fields that are program-deterministic. Wrong non-empty values
+    (e.g. korea run with news_scope=\"global\") are left untouched so the
+    schema validator still blocks them. Never invents content blocks.
+    """
+    pid = (program_id or "").strip()
+    diagnostics: Dict[str, Any] = {
+        "top_level_scope_heading_repair_attempted": False,
+        "top_level_scope_heading_repair_applied": False,
+        "repair_applied": False,
+        "repaired_fields": [],
+        "news_scope_actual_before_repair": None,
+        "section_heading_actual_before_repair": None,
+        "news_scope_actual": None,
+        "section_heading_actual": None,
+    }
+    if not isinstance(obj, dict):
+        return obj, diagnostics
+    if pid not in KEYSURI_PROGRAM_IDS:
+        return obj, diagnostics
+
+    diagnostics["top_level_scope_heading_repair_attempted"] = True
+    raw_scope = obj.get("news_scope")
+    raw_heading = obj.get("section_heading")
+    diagnostics["news_scope_actual_before_repair"] = raw_scope
+    diagnostics["section_heading_actual_before_repair"] = raw_heading
+
+    expected_scope = expected_news_scope_for_program(pid)
+    expected_heading = expected_top5_heading_for_program(pid)
+    repaired_fields: List[str] = []
+    out = obj
+
+    if _is_missing_or_blank(raw_scope):
+        if out is obj:
+            out = copy.deepcopy(obj)
+        out["news_scope"] = expected_scope
+        repaired_fields.append("news_scope")
+    if _is_missing_or_blank(raw_heading):
+        if out is obj:
+            out = copy.deepcopy(obj)
+        out["section_heading"] = expected_heading
+        repaired_fields.append("section_heading")
+
+    if repaired_fields:
+        diagnostics["top_level_scope_heading_repair_applied"] = True
+        diagnostics["repair_applied"] = True
+        diagnostics["repaired_fields"] = repaired_fields
+        diagnostics["internal_issue_codes"] = ["keysuri_top_level_scope_heading_repaired"]
+
+    diagnostics["news_scope_actual"] = out.get("news_scope") if isinstance(out, dict) else None
+    diagnostics["section_heading_actual"] = (
+        out.get("section_heading") if isinstance(out, dict) else None
+    )
+    return out, diagnostics
+
+
 def _repair_parsed_candidate_for_parse(
     obj: Dict[str, Any],
     prompt_input: dict,
@@ -462,12 +535,15 @@ def _repair_parsed_candidate_for_parse(
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     repaired, deep_diag = _repair_deep_dive_key_implications_for_parse(obj, prompt_input)
     repaired, lens_diag = _repair_korea_market_lens_for_parse(repaired, program_id)
+    repaired, scope_diag = _repair_top_level_scope_heading_for_parse(repaired, program_id)
     diagnostics = dict(deep_diag)
     diagnostics.update(lens_diag)
-    deep_codes = list(diagnostics.get("internal_issue_codes") or [])
-    lens_codes = list(lens_diag.get("internal_issue_codes") or [])
-    if deep_codes or lens_codes:
-        diagnostics["internal_issue_codes"] = deep_codes + lens_codes
+    diagnostics.update(scope_diag)
+    merged_codes: List[str] = []
+    for diag in (deep_diag, lens_diag, scope_diag):
+        merged_codes.extend(list(diag.get("internal_issue_codes") or []))
+    if merged_codes:
+        diagnostics["internal_issue_codes"] = merged_codes
     return repaired, diagnostics
 
 
@@ -1117,6 +1193,7 @@ def _parse_meta(
     schema_error_summary: "str | None" = None,
     parse_recovery_strategy: "str | None" = None,
     parse_failure_stage: "str | None" = None,
+    schema_issue_codes: "Sequence[str] | None" = None,
 ) -> Dict[str, Any]:
     """Safe, PII-free metadata about the JSON extraction decision.
 
@@ -1140,8 +1217,19 @@ def _parse_meta(
         meta["candidate_top_level_keys"] = sorted(selected_candidate.keys())
         meta["missing_required_keys"] = _missing_required_keys(selected_candidate)
         meta["first_300_chars_safe_excerpt"] = _safe_candidate_excerpt(selected_candidate)
+        # Always surface post-repair actuals for operator diagnosis (never raw model text).
+        if "news_scope_actual" not in meta:
+            meta["news_scope_actual"] = selected_candidate.get("news_scope")
+        if "section_heading_actual" not in meta:
+            meta["section_heading_actual"] = selected_candidate.get("section_heading")
+        if "repair_applied" not in meta:
+            meta["repair_applied"] = bool(meta.get("top_level_scope_heading_repair_applied"))
+        if "repaired_fields" not in meta:
+            meta["repaired_fields"] = list(meta.get("repaired_fields") or [])
     if schema_error_summary is not None:
         meta["schema_error_summary"] = schema_error_summary
+    if schema_issue_codes is not None:
+        meta["schema_issue_codes"] = [str(c) for c in schema_issue_codes if c]
     if parse_recovery_strategy is not None:
         meta["parse_recovery_strategy"] = parse_recovery_strategy
     if parse_failure_stage is not None:
@@ -1328,5 +1416,10 @@ def parse_keysuri_generated_response(
             schema_error_summary=schema_summary,
             parse_recovery_strategy=parse_recovery_strategy,
             parse_failure_stage=parse_failure_stage,
+            schema_issue_codes=[
+                str(iss.get("code") or "")
+                for iss in validations[selected_index]["issues"]
+                if isinstance(iss, dict) and iss.get("code")
+            ],
         ),
     }

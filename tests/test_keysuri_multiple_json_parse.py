@@ -213,6 +213,83 @@ class MultipleJsonRecoveryTests(unittest.TestCase):
         self.assertEqual(top5["news_scope"], "korea")
         self.assertTrue(top5.get("_repaired_news_scope"))
 
+    def test_korea_empty_top_level_news_scope_repaired(self) -> None:
+        payload = _valid_korea_payload()
+        payload["news_scope"] = ""
+        pi = _korea_prompt_input(payload)
+        result = parse_keysuri_generated_response(
+            json.dumps(payload, ensure_ascii=False), "keysuri_korea_tech", pi
+        )
+        self.assertEqual(result["parse_status"], "parsed_valid", result.get("issues"))
+        self.assertEqual(result["generated_briefing"]["news_scope"], "korea")
+        meta = result["parse_meta"]
+        self.assertTrue(meta.get("repair_applied"))
+        self.assertIn("news_scope", meta.get("repaired_fields") or [])
+
+    def test_korea_empty_top_level_section_heading_repaired(self) -> None:
+        payload = _valid_korea_payload()
+        payload["section_heading"] = ""
+        pi = _korea_prompt_input(payload)
+        result = parse_keysuri_generated_response(
+            json.dumps(payload, ensure_ascii=False), "keysuri_korea_tech", pi
+        )
+        self.assertEqual(result["parse_status"], "parsed_valid", result.get("issues"))
+        self.assertEqual(result["generated_briefing"]["section_heading"], "국내 테크 TOP 5")
+        meta = result["parse_meta"]
+        self.assertTrue(meta.get("repair_applied"))
+        self.assertIn("section_heading", meta.get("repaired_fields") or [])
+
+    def test_korea_wrong_top_level_news_scope_not_overwritten(self) -> None:
+        payload = _valid_korea_payload()
+        payload["news_scope"] = "global"
+        pi = _korea_prompt_input(payload)
+        result = parse_keysuri_generated_response(
+            json.dumps(payload, ensure_ascii=False), "keysuri_korea_tech", pi
+        )
+        self.assertEqual(result["parse_status"], "parsed_invalid")
+        codes = [i.get("code") for i in result["issues"]]
+        self.assertIn("news_scope_mismatch", codes)
+        meta = result["parse_meta"]
+        self.assertEqual(meta.get("news_scope_actual"), "global")
+        self.assertNotIn("news_scope", meta.get("repaired_fields") or [])
+
+    def test_global_empty_top_level_scope_heading_repaired(self) -> None:
+        payload = _valid_global_payload()
+        payload["news_scope"] = ""
+        payload["section_heading"] = None
+        pi = _global_prompt_input(payload)
+        result = parse_keysuri_generated_response(
+            json.dumps(payload, ensure_ascii=False), "keysuri_global_tech", pi
+        )
+        self.assertEqual(result["parse_status"], "parsed_valid", result.get("issues"))
+        briefing = result["generated_briefing"]
+        self.assertEqual(briefing["news_scope"], "global")
+        self.assertEqual(briefing["section_heading"], "글로벌 테크 TOP 5")
+        meta = result["parse_meta"]
+        self.assertTrue(meta.get("repair_applied"))
+        self.assertEqual(
+            set(meta.get("repaired_fields") or []),
+            {"news_scope", "section_heading"},
+        )
+
+    def test_missing_top5_news_not_invented(self) -> None:
+        payload = _valid_korea_payload()
+        del payload["top_5_news"]
+        payload["news_scope"] = ""
+        payload["section_heading"] = ""
+        pi = _korea_prompt_input(_valid_korea_payload())
+        result = parse_keysuri_generated_response(
+            json.dumps(payload, ensure_ascii=False), "keysuri_korea_tech", pi
+        )
+        self.assertEqual(result["parse_status"], "parsed_invalid")
+        self.assertIsNone(result["generated_briefing"])
+        meta = result["parse_meta"]
+        # Scope/heading may be repaired, but top_5_news must not be fabricated.
+        self.assertIn("top_5_news", meta.get("missing_required_keys") or [])
+        self.assertNotIn("top_5_news", meta.get("repaired_fields") or [])
+        self.assertEqual(meta.get("news_scope_actual"), "korea")
+        self.assertEqual(meta.get("section_heading_actual"), "국내 테크 TOP 5")
+
     def test_two_invalid_objects_stays_validation_blocked(self) -> None:
         """Neither object is a valid payload: keep the validation_blocked outcome."""
         payload = _valid_korea_payload()
@@ -473,6 +550,17 @@ class UnrecoverableParseDiagnosticsTests(unittest.TestCase):
         meta = result["parse_meta"]
         self.assertEqual(meta["parse_recovery_strategy"], "single_object_no_recovery_needed")
         self.assertTrue(meta["missing_required_keys"])
+        self.assertIn("schema_issue_codes", meta)
+        self.assertTrue(meta["schema_issue_codes"])
+        # Empty/missing top-level scope/heading are repaired even on invalid payloads,
+        # so diagnostics show post-repair actuals plus before-repair blanks.
+        self.assertEqual(meta.get("news_scope_actual"), "korea")
+        self.assertEqual(meta.get("section_heading_actual"), "국내 테크 TOP 5")
+        self.assertTrue(meta.get("repair_applied"))
+        self.assertEqual(
+            set(meta.get("repaired_fields") or []),
+            {"news_scope", "section_heading"},
+        )
 
     def test_recoverable_case_does_not_add_failure_diagnostics(self) -> None:
         """A schema-valid recovery must stay clean — no failure-only fields leak
