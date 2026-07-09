@@ -24,6 +24,7 @@ from admin_store import (
     now_kst_iso,
     save_run_artifact,
 )
+from admin_cost_ledger import save_cost_record_best_effort
 from admin_urls import build_owner_review_admin_url
 import email_sender
 from email_sender import send_genie_email
@@ -4212,6 +4213,7 @@ def run_keysuri_service_full_run(
         cost_estimate = None
     if cost_estimate is not None:
         meta["cost_estimate"] = cost_estimate
+        meta.update(save_cost_record_best_effort(meta))
 
     save_run_artifact(meta, email_html=email_html)
 
@@ -4240,4 +4242,8 @@ def run_keysuri_service_full_run(
         "email_sent": email_sent,
         "korea_bottom_shot_status": meta.get("korea_bottom_shot_status"),
         "cost_estimate": cost_estimate,
+        "cost_record_path": meta.get("cost_record_path"),
+        "cost_ledger_path": meta.get("cost_ledger_path"),
+        "cost_record_saved": meta.get("cost_record_saved"),
+        "cost_ledger_saved": meta.get("cost_ledger_saved"),
     }

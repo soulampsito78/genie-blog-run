@@ -3084,9 +3084,12 @@ class TodayGenieServiceFullRunTests(unittest.TestCase):
         self.assertEqual(cost_estimate.get("service_family"), "today_genie")
         self.assertEqual(cost_estimate["usage"]["prompt_token_count"], 4000)
         self.assertEqual(cost_estimate["usage"]["generated_image_count"], 2)
+        self.assertTrue(payload.get("cost_record_path"))
+        self.assertTrue(payload.get("cost_ledger_path"))
 
         saved_meta = mock_save.call_args.args[0]
         self.assertEqual(saved_meta.get("cost_estimate"), cost_estimate)
+        self.assertEqual(saved_meta.get("cost_record_path"), payload.get("cost_record_path"))
 
     @patch("today_genie_service_full_run.save_run_artifact")
     @patch("today_genie_service_full_run.run_genie_job")
@@ -3596,9 +3599,12 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         self.assertEqual(cost_estimate.get("run_id"), run_id)
         self.assertEqual(cost_estimate["usage"]["prompt_token_count"], 12003)
         self.assertEqual(cost_estimate["usage"]["thoughts_token_count"], 11792)
+        self.assertTrue(payload.get("cost_record_path"))
+        self.assertTrue(payload.get("cost_ledger_path"))
 
         saved_meta = mock_save.call_args.args[0]
         self.assertEqual(saved_meta.get("cost_estimate"), cost_estimate)
+        self.assertEqual(saved_meta.get("cost_record_path"), payload.get("cost_record_path"))
 
     @patch("keysuri_service_full_run.build_keysuri_prompt_input")
     @patch("keysuri_service_full_run.save_run_artifact")

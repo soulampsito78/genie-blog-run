@@ -105,6 +105,60 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("베타 고객 수신자 관리", resp.text)
         self.assertIn('href="/admin/customer-recipients"', resp.text)
+        self.assertIn('href="/admin/costs"', resp.text)
+
+    def test_admin_costs_requires_login(self) -> None:
+        resp = self.client.get("/admin/costs", follow_redirects=False)
+        self.assertEqual(resp.status_code, 303)
+        self.assertIn("/admin", resp.headers.get("location", ""))
+
+    def test_admin_costs_page_and_csv_download(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        run_id = "20260709_183000_keysuri_korea_tech_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": run_id,
+                "mode": "keysuri_korea_tech",
+                "created_at": "2026-07-09T18:30:00+09:00",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+                "cost_estimate": {
+                    "estimate_only": True,
+                    "service_family": "keysuri",
+                    "program_id": "keysuri_korea_tech",
+                    "run_id": run_id,
+                    "model": {"text_model": "gemini-2.5-flash", "image_model": None},
+                    "usage": {
+                        "prompt_token_count": 1000,
+                        "candidates_token_count": 2000,
+                        "generated_image_count": 0,
+                    },
+                    "components": {
+                        "text_input_cost_usd": 0.0003,
+                        "text_output_cost_usd": 0.005,
+                    },
+                    "total_cost_usd": 0.0053,
+                    "total_cost_krw": None,
+                    "cost_estimate_status": "partial",
+                    "pricing_source": "env",
+                    "price_env_configured": True,
+                    "missing_price_env": ["GENIE_COST_KRW_PER_USD"],
+                },
+            }
+        )
+        from admin_cost_ledger import save_cost_record_best_effort
+
+        save_cost_record_best_effort(load_run_artifact(run_id) or {})
+        page = self.client.get("/admin/costs")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(run_id, page.text)
+        csv_resp = self.client.get("/admin/costs/ledger.csv?month=2026-07")
+        self.assertEqual(csv_resp.status_code, 200)
+        self.assertIn("text/csv", csv_resp.headers.get("content-type", ""))
+        self.assertIn(run_id, csv_resp.text)
+        self.assertIn("GENIE_COST_KRW_PER_USD", csv_resp.text)
 
     def test_run_detail_shows_beta_recipients_nav_link(self) -> None:
         self.client.post("/admin/login", data={"password": "test-admin-secret"})

@@ -17,6 +17,7 @@ from service_full_run_contract import (
     build_service_artifact_fields,
 )
 from service_image_api import DEFAULT_VERTEX_IMAGE_MODEL, invoke_vertex_image_generation
+from admin_cost_ledger import save_cost_record_best_effort
 from genie_cost_estimate import estimate_genie_generation_cost
 
 logger = logging.getLogger(__name__)
@@ -432,6 +433,7 @@ def run_today_genie_service_full_run(
         cost_estimate = None
     if cost_estimate is not None:
         meta["cost_estimate"] = cost_estimate
+        meta.update(save_cost_record_best_effort(meta))
         try:
             logger.info(
                 "today_genie_cost_estimate run_id=%s usage=%s total_cost_usd=%s pricing_source=%s",
@@ -468,4 +470,8 @@ def run_today_genie_service_full_run(
         "owner_review_html_path": meta.get("owner_review_html_path"),
         "smtp_attempted": smtp_attempted,
         "email_sent": email_sent,
+        "cost_record_path": meta.get("cost_record_path"),
+        "cost_ledger_path": meta.get("cost_ledger_path"),
+        "cost_record_saved": meta.get("cost_record_saved"),
+        "cost_ledger_saved": meta.get("cost_ledger_saved"),
     }

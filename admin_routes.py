@@ -40,6 +40,13 @@ from admin_store import (
     update_run_artifact,
     validate_run_id,
 )
+from admin_cost_ledger import (
+    COST_LEDGER_COLUMNS,
+    cost_ledger_display_path,
+    list_cost_records,
+    load_cost_ledger_csv,
+    month_from_run_meta,
+)
 from keysuri_service_full_run import (
     run_keysuri_image_only_reissue,
     run_keysuri_text_and_image_reissue,
@@ -184,6 +191,48 @@ def _render_reissue_dry_run_field(mode: str) -> str:
         '<input type="checkbox" name="dry_run_no_send" value="1"> '
         "QA dry-run으로 실행 — 운영자 검토(owner-review) 이메일을 발송하지 않습니다"
         "</label>"
+    )
+
+
+def _render_cost_estimate_section(meta: Dict[str, Any]) -> str:
+    cost = meta.get("cost_estimate")
+    if not isinstance(cost, dict):
+        return ""
+    usage = cost.get("usage") if isinstance(cost.get("usage"), dict) else {}
+    components = cost.get("components") if isinstance(cost.get("components"), dict) else {}
+    model = cost.get("model")
+    text_model = model.get("text_model") if isinstance(model, dict) else model
+    image_model = model.get("image_model") if isinstance(model, dict) else ""
+    rows = {
+        "status": cost.get("cost_estimate_status"),
+        "pricing_source": cost.get("pricing_source"),
+        "price_env_configured": cost.get("price_env_configured"),
+        "text_model": text_model,
+        "image_model": image_model,
+        "prompt_token_count": usage.get("prompt_token_count"),
+        "candidates_token_count": usage.get("candidates_token_count"),
+        "thoughts_token_count": usage.get("thoughts_token_count"),
+        "generated_image_count": usage.get("generated_image_count"),
+        "text_input_cost_usd": components.get("text_input_cost_usd"),
+        "text_output_cost_usd": components.get("text_output_cost_usd"),
+        "text_thoughts_cost_usd": components.get("text_thoughts_cost_usd"),
+        "image_cost_usd": components.get("image_cost_usd"),
+        "total_cost_usd": cost.get("total_cost_usd"),
+        "total_cost_krw": cost.get("total_cost_krw"),
+        "missing_price_env": "|".join(str(v) for v in cost.get("missing_price_env") or [])
+        if isinstance(cost.get("missing_price_env"), list)
+        else cost.get("missing_price_env"),
+        "cost_record_path": meta.get("cost_record_path"),
+        "cost_ledger_path": meta.get("cost_ledger_path"),
+    }
+    row_html = "".join(f"<dt>{_esc(k)}</dt><dd>{_esc(v)}</dd>" for k, v in rows.items())
+    month = month_from_run_meta(meta)
+    return (
+        '<div class="card">'
+        "<h2>Cost Estimate</h2>"
+        f'<dl class="meta">{row_html}</dl>'
+        f'<p><a href="/admin/costs/ledger.csv?month={_esc(month)}">월별 CSV ledger 다운로드</a></p>'
+        "</div>"
     )
 
 
@@ -693,6 +742,7 @@ def admin_runs_list(request: Request):
 <div class="page-head">
 <h1>최근 실행 기록</h1>
 <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+<a href="/admin/costs" class="btn" style="background:#0f172a;">비용 ledger</a>
 <a href="/admin/notices" class="btn" style="background:#0f172a;">공지 메일 관리</a>
 <a href="/admin/customer-recipients" class="btn" style="background:#0f172a;">베타 고객 수신자 관리</a>
 <form method="post" action="/admin/logout" style="margin:0;"><button class="btn" type="submit">로그아웃</button></form>
@@ -702,6 +752,70 @@ def admin_runs_list(request: Request):
 <div class="card"><div class="table-wrap">{table}</div></div>
 """
     return HTMLResponse(_layout("Runs", inner))
+
+
+@router.get("/admin/costs", response_class=HTMLResponse)
+def admin_costs(request: Request):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    records = list_cost_records(limit=100)
+    rows = []
+    for record in records:
+        rid = _esc(record.get("run_id"))
+        month = month_from_run_meta(record)
+        rows.append(
+            "<tr>"
+            f"<td><a href=\"/admin/runs/{rid}\">{rid}</a></td>"
+            f"<td>{_esc(record.get('created_at_kst'))}</td>"
+            f"<td>{_esc(record.get('service_family'))}</td>"
+            f"<td>{_esc(record.get('program_id'))}</td>"
+            f"<td>{_esc(record.get('cost_estimate_status'))}</td>"
+            f"<td>{_esc(record.get('total_cost_usd'))}</td>"
+            f"<td>{_esc(record.get('total_cost_krw'))}</td>"
+            f"<td><a href=\"/admin/costs/ledger.csv?month={_esc(month)}\">CSV</a></td>"
+            "</tr>"
+        )
+    table = (
+        "<table><thead><tr>"
+        "<th>run_id</th><th>created_at_kst</th><th>service</th><th>program</th>"
+        "<th>cost_status</th><th>USD</th><th>KRW</th><th>ledger</th>"
+        "</tr></thead><tbody>"
+        + ("".join(rows) if rows else "<tr><td colspan=\"8\">저장된 cost record가 없습니다.</td></tr>")
+        + "</tbody></table>"
+    )
+    month = month_from_run_meta(records[0]) if records else now_kst_iso()[:7]
+    inner = f"""
+<div class="page-head">
+<h1>비용 ledger</h1>
+<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+<a href="/admin/runs" class="btn" style="background:#475569;">← 실행 목록</a>
+<a href="/admin/costs/ledger.csv?month={_esc(month)}" class="btn" style="background:#0f172a;">현재 월 CSV 다운로드</a>
+</div>
+</div>
+<p class="break-long">월별 CSV 경로: <code>{_esc(cost_ledger_display_path(month))}</code></p>
+<div class="card"><div class="table-wrap">{table}</div></div>
+"""
+    return HTMLResponse(_layout("Cost Ledger", inner))
+
+
+@router.get("/admin/costs/ledger.csv")
+def admin_cost_ledger_csv(request: Request, month: str = "") -> Response:
+    need = _require_login(request)
+    if need is not None:
+        return need
+    selected_month = month if re.match(r"^[0-9]{4}-[0-9]{2}$", str(month or "")) else now_kst_iso()[:7]
+    content = load_cost_ledger_csv(selected_month)
+    if content is None:
+        header = ",".join(COST_LEDGER_COLUMNS) + "\n"
+        content = header
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="genie_cost_ledger_{selected_month}.csv"'
+        },
+    )
 
 
 @router.get("/admin/runs/{run_id}", response_class=HTMLResponse)
@@ -756,6 +870,7 @@ def admin_run_detail(request: Request, run_id: str):
             f'<div class="warn">재발행 차단: {_esc(_REISSUE_ERROR_MESSAGES.get(err_code, err_code))}</div>'
         )
     delivery_sections = _render_delivery_report_sections(meta)
+    cost_section = _render_cost_estimate_section(meta)
     meta_rows = "".join(
         f"<dt>{_esc(k)}</dt><dd>{_esc(v)}</dd>"
         for k, v in sorted(meta.items())
@@ -773,6 +888,7 @@ def admin_run_detail(request: Request, run_id: str):
 </div>
 {warn}
 {delivery_sections}
+{cost_section}
 <div class="card">
 <dl class="meta">{meta_rows}</dl>
 <p>{email_link}</p>
