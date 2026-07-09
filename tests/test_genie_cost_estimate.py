@@ -5,7 +5,7 @@ import os
 import unittest
 from unittest import mock
 
-from genie_cost_estimate import estimate_genie_generation_cost
+from genie_cost_estimate import estimate_genie_generation_cost, normalize_model_env_key
 
 
 def _clear_all_pricing_env():
@@ -17,6 +17,14 @@ def _clear_all_pricing_env():
             "GENIE_COST_THOUGHTS_USD_PER_1M_TOKENS": "",
             "GENIE_COST_IMAGE_USD_PER_IMAGE": "",
             "GENIE_COST_KRW_PER_USD": "",
+            "GENIE_COST_GEMINI_2_5_FLASH_INPUT_USD_PER_1M_TOKENS": "",
+            "GENIE_COST_GEMINI_2_5_FLASH_OUTPUT_USD_PER_1M_TOKENS": "",
+            "GENIE_COST_GEMINI_2_5_FLASH_THOUGHTS_USD_PER_1M_TOKENS": "",
+            "GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE": "",
+            "GENIE_COST_GEMINI_3_FLASH_PREVIEW_INPUT_USD_PER_1M_TOKENS": "",
+            "GENIE_COST_GEMINI_3_FLASH_PREVIEW_OUTPUT_USD_PER_1M_TOKENS": "",
+            "GENIE_COST_GEMINI_3_FLASH_PREVIEW_THOUGHTS_USD_PER_1M_TOKENS": "",
+            "GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE": "",
             "KEYSURI_COST_INPUT_USD_PER_1M_TOKENS": "",
             "KEYSURI_COST_OUTPUT_USD_PER_1M_TOKENS": "",
             "KEYSURI_COST_THOUGHTS_USD_PER_1M_TOKENS": "",
@@ -67,6 +75,56 @@ class ServiceFamilySchemaTests(unittest.TestCase):
 
 
 class EnvPriorityTests(unittest.TestCase):
+    def test_normalize_model_env_key(self) -> None:
+        self.assertEqual(normalize_model_env_key("gemini-2.5-flash"), "GEMINI_2_5_FLASH")
+        self.assertEqual(
+            normalize_model_env_key("gemini-3-flash-preview"),
+            "GEMINI_3_FLASH_PREVIEW",
+        )
+        self.assertEqual(
+            normalize_model_env_key("gemini-2.5-flash-image"),
+            "GEMINI_2_5_FLASH_IMAGE",
+        )
+
+    def test_model_specific_price_takes_priority_over_common_env(self) -> None:
+        with _clear_all_pricing_env(), mock.patch.dict(
+            os.environ,
+            {
+                "GENIE_COST_GEMINI_2_5_FLASH_INPUT_USD_PER_1M_TOKENS": "0.30",
+                "GENIE_COST_INPUT_USD_PER_1M_TOKENS": "9.00",
+            },
+            clear=False,
+        ):
+            result = estimate_genie_generation_cost(
+                {"prompt_token_count": 1_000_000},
+                service_family="today_genie",
+                text_model="gemini-2.5-flash",
+            )
+        self.assertAlmostEqual(result["unit_prices"]["input_usd_per_1m_tokens"], 0.30)
+        self.assertEqual(result["unit_prices"]["input_price_env"], "GENIE_COST_GEMINI_2_5_FLASH_INPUT_USD_PER_1M_TOKENS")
+        self.assertEqual(result["model_pricing"]["text_model_key"], "GEMINI_2_5_FLASH")
+
+    def test_gemini_3_preview_and_gemini_25_flash_can_use_different_prices(self) -> None:
+        env = {
+            "GENIE_COST_GEMINI_3_FLASH_PREVIEW_INPUT_USD_PER_1M_TOKENS": "0.90",
+            "GENIE_COST_GEMINI_3_FLASH_PREVIEW_OUTPUT_USD_PER_1M_TOKENS": "5.40",
+            "GENIE_COST_GEMINI_2_5_FLASH_INPUT_USD_PER_1M_TOKENS": "0.30",
+            "GENIE_COST_GEMINI_2_5_FLASH_OUTPUT_USD_PER_1M_TOKENS": "2.50",
+        }
+        with _clear_all_pricing_env(), mock.patch.dict(os.environ, env, clear=False):
+            global_result = estimate_genie_generation_cost(
+                {"prompt_token_count": 1_000_000, "candidates_token_count": 1_000_000},
+                service_family="keysuri",
+                text_model="gemini-3-flash-preview",
+            )
+            korea_result = estimate_genie_generation_cost(
+                {"prompt_token_count": 1_000_000, "candidates_token_count": 1_000_000},
+                service_family="keysuri",
+                text_model="gemini-2.5-flash",
+            )
+        self.assertAlmostEqual(global_result["total_cost_usd"], 6.30)
+        self.assertAlmostEqual(korea_result["total_cost_usd"], 2.80)
+
     def test_genie_cost_env_takes_priority_over_legacy_keysuri_env(self) -> None:
         with _clear_all_pricing_env(), mock.patch.dict(
             os.environ,
@@ -98,6 +156,7 @@ class EnvPriorityTests(unittest.TestCase):
                 service_family="today_genie",
             )
         self.assertEqual(result["pricing_source"], "unknown")
+        self.assertEqual(result["cost_estimate_status"], "usage_only")
         self.assertIsNone(result["total_cost_usd"])
         self.assertEqual(result["usage"]["prompt_token_count"], 12003)
         self.assertEqual(result["usage"]["thoughts_token_count"], 11792)
@@ -114,6 +173,96 @@ class ImageCostTests(unittest.TestCase):
         self.assertAlmostEqual(result["components"]["image_cost_usd"], 0.04)
         self.assertAlmostEqual(result["total_cost_usd"], 0.04)
         self.assertEqual(result["usage"]["generated_image_count"], 2)
+
+    def test_gemini_flash_image_does_not_use_generic_per_image_fallback(self) -> None:
+        with _clear_all_pricing_env(), mock.patch.dict(
+            os.environ, {"GENIE_COST_IMAGE_USD_PER_IMAGE": "0.02"}, clear=False
+        ):
+            result = estimate_genie_generation_cost(
+                {},
+                service_family="today_genie",
+                image_model="gemini-2.5-flash-image",
+                image_generated_count=2,
+            )
+        self.assertIsNone(result["components"]["image_cost_usd"])
+        self.assertIsNone(result["unit_prices"]["image_usd_per_image"])
+        self.assertEqual(
+            result["model_pricing"]["image_pricing_status"],
+            "unsupported_or_unconfigured",
+        )
+        self.assertIn("image cost not calculated", result["pricing_note"])
+
+    def test_gemini_flash_image_uses_model_specific_per_image_env_only(self) -> None:
+        with _clear_all_pricing_env(), mock.patch.dict(
+            os.environ,
+            {"GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE": "0.04"},
+            clear=False,
+        ):
+            result = estimate_genie_generation_cost(
+                {},
+                service_family="today_genie",
+                image_model="gemini-2.5-flash-image",
+                image_generated_count=2,
+            )
+        self.assertAlmostEqual(result["components"]["image_cost_usd"], 0.08)
+        self.assertEqual(result["unit_prices"]["image_price_env"], "GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE")
+        self.assertEqual(result["model_pricing"]["image_pricing_status"], "configured")
+
+
+class CostEstimateStatusTests(unittest.TestCase):
+    def test_usage_without_prices_is_usage_only(self) -> None:
+        with _clear_all_pricing_env():
+            result = estimate_genie_generation_cost(
+                {"prompt_token_count": 1_000},
+                service_family="today_genie",
+                text_model="gemini-2.5-flash",
+            )
+        self.assertEqual(result["cost_estimate_status"], "usage_only")
+        self.assertFalse(result["price_env_configured"])
+
+    def test_no_usage_is_unavailable(self) -> None:
+        with _clear_all_pricing_env():
+            result = estimate_genie_generation_cost(None, service_family="today_genie")
+        self.assertEqual(result["cost_estimate_status"], "unavailable")
+
+    def test_text_price_without_krw_is_partial(self) -> None:
+        with _clear_all_pricing_env(), mock.patch.dict(
+            os.environ,
+            {
+                "GENIE_COST_GEMINI_2_5_FLASH_INPUT_USD_PER_1M_TOKENS": "0.30",
+                "GENIE_COST_GEMINI_2_5_FLASH_OUTPUT_USD_PER_1M_TOKENS": "2.50",
+            },
+            clear=False,
+        ):
+            result = estimate_genie_generation_cost(
+                {"prompt_token_count": 1_000_000, "candidates_token_count": 1_000_000},
+                service_family="today_genie",
+                text_model="gemini-2.5-flash",
+            )
+        self.assertEqual(result["cost_estimate_status"], "partial")
+        self.assertIn("GENIE_COST_KRW_PER_USD", result["missing_price_env"])
+
+    def test_text_image_and_krw_prices_are_estimated(self) -> None:
+        with _clear_all_pricing_env(), mock.patch.dict(
+            os.environ,
+            {
+                "GENIE_COST_GEMINI_2_5_FLASH_INPUT_USD_PER_1M_TOKENS": "0.30",
+                "GENIE_COST_GEMINI_2_5_FLASH_OUTPUT_USD_PER_1M_TOKENS": "2.50",
+                "GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE": "0.04",
+                "GENIE_COST_KRW_PER_USD": "1400",
+            },
+            clear=False,
+        ):
+            result = estimate_genie_generation_cost(
+                {"prompt_token_count": 1_000_000, "candidates_token_count": 1_000_000},
+                service_family="today_genie",
+                text_model="gemini-2.5-flash",
+                image_model="gemini-2.5-flash-image",
+                image_generated_count=1,
+            )
+        self.assertEqual(result["cost_estimate_status"], "estimated")
+        self.assertAlmostEqual(result["total_cost_usd"], 2.84)
+        self.assertAlmostEqual(result["total_cost_krw"], 3976.0)
 
 
 class NeverRaisesTests(unittest.TestCase):

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Optional
 
-from genie_cost_estimate import _read_price
+from genie_cost_estimate import estimate_genie_generation_cost
 
 # Legacy env var names — still documented here since KeeSuri operators may
 # already have these set; genie_cost_estimate._read_price checks the common
@@ -33,6 +33,7 @@ def estimate_keysuri_gemini_cost(
     usage: Optional[Mapping[str, Any]],
     *,
     model: Optional[str] = None,
+    image_model: Optional[str] = None,
     program_id: Optional[str] = None,
     run_id: Optional[str] = None,
     image_generated_count: int = 0,
@@ -45,95 +46,25 @@ def estimate_keysuri_gemini_cost(
     validation_result, HTTP status, or customer-send decisions.
     """
     try:
-        usage = dict(usage or {})
-        prompt_tokens = usage.get("prompt_token_count")
-        candidates_tokens = usage.get("candidates_token_count")
-        thoughts_tokens = usage.get("thoughts_token_count")
-        total_tokens = usage.get("total_token_count")
-
-        input_price = _read_price("input")
-        output_price = _read_price("output")
-        thoughts_price = _read_price("thoughts")
-        image_price = _read_price("image")
-        krw_per_usd = _read_price("krw_per_usd")
-
-        pricing_note = "estimate only; actual billing may differ"
-        thoughts_price_used = thoughts_price
-        if thoughts_tokens and thoughts_price is None and output_price is not None:
-            thoughts_price_used = output_price
-            pricing_note += (
-                f"; {ENV_THOUGHTS_USD_PER_1M} not set, thoughts tokens billed at "
-                f"{ENV_OUTPUT_USD_PER_1M} rate as fallback"
-            )
-
-        text_input_cost = (
-            (prompt_tokens / 1_000_000.0) * input_price
-            if prompt_tokens is not None and input_price is not None
-            else None
+        common = estimate_genie_generation_cost(
+            usage,
+            service_family="keysuri",
+            text_model=model,
+            image_model=image_model,
+            program_id=program_id,
+            run_id=run_id,
+            image_generated_count=image_generated_count,
         )
-        text_output_cost = (
-            (candidates_tokens / 1_000_000.0) * output_price
-            if candidates_tokens is not None and output_price is not None
-            else None
-        )
-        text_thoughts_cost = (
-            (thoughts_tokens / 1_000_000.0) * thoughts_price_used
-            if thoughts_tokens is not None and thoughts_price_used is not None
-            else None
-        )
-        image_cost = (
-            image_generated_count * image_price
-            if image_generated_count and image_price is not None
-            else (0.0 if image_price is not None else None)
-        )
-
-        cost_components = [text_input_cost, text_output_cost, text_thoughts_cost, image_cost]
-        known_components = [c for c in cost_components if c is not None]
-        total_cost_usd = sum(known_components) if known_components else None
-
-        total_cost_krw = (
-            total_cost_usd * krw_per_usd
-            if total_cost_usd is not None and krw_per_usd is not None
-            else None
-        )
-
-        env_prices_set = [p for p in (input_price, output_price, thoughts_price, image_price) if p is not None]
-        if not env_prices_set:
-            pricing_source = "unknown"
-        elif None in (input_price, output_price):
-            pricing_source = "partial"
-        else:
-            pricing_source = "env"
-
+        common_usage = common.get("usage") if isinstance(common.get("usage"), dict) else {}
         return {
-            "estimate_only": True,
-            "currency": "USD",
-            "program_id": program_id,
-            "run_id": run_id,
+            **common,
             "model": model,
             "usage": {
-                "prompt_token_count": prompt_tokens,
-                "candidates_token_count": candidates_tokens,
-                "thoughts_token_count": thoughts_tokens,
-                "total_token_count": total_tokens,
+                "prompt_token_count": common_usage.get("prompt_token_count"),
+                "candidates_token_count": common_usage.get("candidates_token_count"),
+                "thoughts_token_count": common_usage.get("thoughts_token_count"),
+                "total_token_count": common_usage.get("total_token_count"),
             },
-            "unit_prices": {
-                "input_usd_per_1m_tokens": input_price,
-                "output_usd_per_1m_tokens": output_price,
-                "thoughts_usd_per_1m_tokens": thoughts_price,
-                "image_usd_per_image": image_price,
-                "krw_per_usd": krw_per_usd,
-            },
-            "components": {
-                "text_input_cost_usd": text_input_cost,
-                "text_output_cost_usd": text_output_cost,
-                "text_thoughts_cost_usd": text_thoughts_cost,
-                "image_cost_usd": image_cost,
-            },
-            "total_cost_usd": total_cost_usd,
-            "total_cost_krw": total_cost_krw,
-            "pricing_source": pricing_source,
-            "pricing_note": pricing_note,
         }
     except Exception as exc:  # pragma: no cover - defensive, cost estimate is best-effort
         return {
@@ -148,5 +79,9 @@ def estimate_keysuri_gemini_cost(
             "total_cost_usd": None,
             "total_cost_krw": None,
             "pricing_source": "unknown",
+            "cost_estimate_status": "error",
+            "price_env_configured": False,
+            "model_pricing": {},
+            "missing_price_env": [],
             "pricing_note": f"cost estimate failed: {exc}",
         }

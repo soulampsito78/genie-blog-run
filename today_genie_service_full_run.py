@@ -16,7 +16,7 @@ from service_full_run_contract import (
     TodayGenieServiceImageBundle,
     build_service_artifact_fields,
 )
-from service_image_api import invoke_vertex_image_generation
+from service_image_api import DEFAULT_VERTEX_IMAGE_MODEL, invoke_vertex_image_generation
 from genie_cost_estimate import estimate_genie_generation_cost
 
 logger = logging.getLogger(__name__)
@@ -423,6 +423,7 @@ def run_today_genie_service_full_run(
             text_model=(text_cost_estimate.get("model") or {}).get("text_model")
             if isinstance(text_cost_estimate.get("model"), dict)
             else None,
+            image_model=DEFAULT_VERTEX_IMAGE_MODEL,
             mode="today_genie",
             run_id=run_id,
             image_generated_count=generated_image_count,

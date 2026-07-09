@@ -48,6 +48,7 @@ from keysuri_generation_prompt import parse_keysuri_generated_response
 from keysuri_generation_prompt import build_keysuri_generation_prompt
 from keysuri_gemini_client import call_keysuri_gemini_text
 from keysuri_cost_estimate import estimate_keysuri_gemini_cost
+from service_image_api import DEFAULT_VERTEX_IMAGE_MODEL
 from keysuri_email_identity import build_keysuri_subject_artifact_fields
 from keysuri_visible_text_quality import (
     KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
@@ -4202,6 +4203,7 @@ def run_keysuri_service_full_run(
         cost_estimate = estimate_keysuri_gemini_cost(
             gemini_usage_sink,
             model=gemini_usage_sink.get("model"),
+            image_model=DEFAULT_VERTEX_IMAGE_MODEL,
             program_id=pid,
             run_id=run_id,
             image_generated_count=1 if image_outcome.called_image_api else 0,
