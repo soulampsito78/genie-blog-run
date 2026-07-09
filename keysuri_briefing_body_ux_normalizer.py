@@ -5,6 +5,10 @@ import copy
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from keysuri_briefing_content_enricher import (
+    _GLOBAL_FILLER_SANITIZER_KEY,
+    sanitize_global_repeated_common_filler,
+)
 from keysuri_contract_preview_quality import _sentence_count
 from keysuri_korea_longform_ux import (
     build_korea_evening_memo,
@@ -459,6 +463,27 @@ def normalize_generated_briefing_visible_prose(
                     fallback=_text(normalized.get("korean_title") or normalized.get("headline")),
                 )
         normalized_items.append(normalized)
+
+    if not is_korea and program_id == PROGRAM_GLOBAL:
+        # Second pass after per-item UX polish — keep common filler ≤1 across TOP5.
+        normalized_items, filler_diag = sanitize_global_repeated_common_filler(normalized_items)
+        prev = out.get(_GLOBAL_FILLER_SANITIZER_KEY) if isinstance(out.get(_GLOBAL_FILLER_SANITIZER_KEY), dict) else {}
+        merged = {
+            "sanitizer_applied": bool(prev.get("sanitizer_applied") or filler_diag.get("sanitizer_applied")),
+            "sanitizer_removed_count": int(prev.get("sanitizer_removed_count") or 0)
+            + int(filler_diag.get("sanitizer_removed_count") or 0),
+            "sanitizer_rewritten_count": int(prev.get("sanitizer_rewritten_count") or 0)
+            + int(filler_diag.get("sanitizer_rewritten_count") or 0),
+            "repeated_phrases": list(prev.get("repeated_phrases") or [])
+            + list(filler_diag.get("repeated_phrases") or []),
+            "affected_item_ids": list(
+                dict.fromkeys(
+                    list(prev.get("affected_item_ids") or [])
+                    + list(filler_diag.get("affected_item_ids") or [])
+                )
+            ),
+        }
+        out[_GLOBAL_FILLER_SANITIZER_KEY] = merged
 
     if isinstance(top, dict):
         out["top_5_news"] = {**top, "items": normalized_items}

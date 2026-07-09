@@ -5,6 +5,7 @@ import copy
 import re
 from typing import Any, Dict, List, Optional, Tuple  # Any used for next_watch list input
 
+from keysuri_briefing_content_quality import GLOBAL_COMMON_FILLER_SENTENCES
 from keysuri_contract_preview_quality import _sentence_count
 from keysuri_visible_text import (
     KEYSURI_DEEP_DIVE_UNCERTAINTY,
@@ -63,6 +64,88 @@ _OWNER_CONTEXT: Dict[str, str] = {
 _BROAD_MOVEMENT = (
     "글로벌 테크는 AI만이 아니라 칩·인프라·로봇·에너지·정책이 함께 움직이는 날입니다."
 )
+
+# Per-category concrete why_now padding (used when a repeated common filler is stripped).
+_WHY_NOW_CONCRETE_BY_CAT: Dict[str, str] = {
+    "ai_software_platform": "확인 포인트는 API 공개 일정·엔터프라이즈 도입·가격 조건입니다.",
+    "semiconductor_chip_infra": "확인 포인트는 공급 일정·파운드리/벤더 고객·벤치마크입니다.",
+    "semiconductor_equipment_materials": "확인 포인트는 장비 납기·소재 수급·양산 일정입니다.",
+    "robotics_automation_manufacturing": "확인 포인트는 현장 배치 일정·고객 레퍼런스·운영 지표입니다.",
+    "battery_ev_energy_grid": "확인 포인트는 전력 조달·ESS 계약·그리드 연계 일정입니다.",
+    "aerospace_satellite_defense_tech": "확인 포인트는 계약 규모·발사/납품 일정·파트너십입니다.",
+    "hardware_device_display": "확인 포인트는 출시 일정·유통 채널·사용자 접점 변화입니다.",
+    "cybersecurity_cloud_datacenter": "확인 포인트는 캡엑스·리전 확장·엔터프라이즈 계약입니다.",
+    "policy_regulation_capital_supplychain": "확인 포인트는 시행 시점·적용 범위·기업 대응입니다.",
+}
+
+# Category-specific next_watch fallbacks (Global only). Avoids repeating generic
+# "후속 발표를 확인하세요" across every TOP5 item.
+_NEXT_WATCH_BY_CAT: Dict[str, Tuple[str, str]] = {
+    "ai_software_platform": (
+        "API 공개·엔터프라이즈 도입 일정",
+        "가격·파트너/고객 발표",
+    ),
+    "semiconductor_chip_infra": (
+        "공급 일정·파운드리/벤더 고객 발표",
+        "벤치마크·양산 일정",
+    ),
+    "semiconductor_equipment_materials": (
+        "장비 납기·소재 수급 일정",
+        "고객 인증·양산 전환 발표",
+    ),
+    "robotics_automation_manufacturing": (
+        "현장 배치·파일럿 확대 일정",
+        "고객 레퍼런스·운영 효율 지표",
+    ),
+    "battery_ev_energy_grid": (
+        "전력 조달·ESS 계약 일정",
+        "그리드 연계·규제 후속",
+    ),
+    "aerospace_satellite_defense_tech": (
+        "계약 규모·발사/납품 일정",
+        "파트너십·후속 수주",
+    ),
+    "hardware_device_display": (
+        "출시·유통 일정",
+        "가격·사용자 접점 변화",
+    ),
+    "cybersecurity_cloud_datacenter": (
+        "캡엑스·리전 확장 발표",
+        "전력 조달·엔터프라이즈 계약",
+    ),
+    "policy_regulation_capital_supplychain": (
+        "시행 시점·컴플라이언스 범위",
+        "기업 대응·투자/M&A 후속",
+    ),
+}
+
+_GENERIC_NEXT_WATCH_MARKERS: Tuple[str, ...] = (
+    "확인해야 합니다",
+    "지켜봐야 합니다",
+    "단정하지",
+    "확인하는 것이 중요",
+    "다음 확인 지점입니다",
+    "흐름을 봐야 합니다",
+    "시장 반응을 지켜봐야",
+    "아직 단정하지",
+    "후속 공식 발표·원문 업데이트",
+    "경쟁사·공급망·규제 후속 보도",
+    "한국 시장·운영 환경에 적용",
+)
+
+# Soft filler endings that read as templated when repeated across TOP5 items.
+_GLOBAL_SOFT_FILLER_PHRASES: Tuple[str, ...] = (
+    "계속 확인해야 합니다.",
+    "지켜봐야 합니다.",
+    "단정하지 말아야 합니다.",
+    "확인하는 것이 중요합니다.",
+    "다음 확인 지점입니다.",
+    "흐름을 봐야 합니다.",
+    "시장 반응을 지켜봐야 합니다.",
+    "아직 단정하지 말 것.",
+)
+
+_GLOBAL_FILLER_SANITIZER_KEY = "_global_filler_sanitizer"
 
 _KOREA_CATEGORY_KO: Dict[str, str] = {
     "korea_ai_enterprise": "국내 AI / 기업 AI 도입",
@@ -277,13 +360,21 @@ def _build_what_happened(item: dict, meta: dict) -> Tuple[str, bool]:
 
 
 def _build_why_now(item: dict, meta: dict) -> str:
+    """Pad why_now without stacking the same GLOBAL_COMMON_FILLER across items.
+
+    Prefer category-specific concrete checkpoints over ``_BROAD_MOVEMENT`` /
+    shared ``_WHY_NOW_CONTEXT`` sentences. Cross-item dedupe still runs in
+    ``sanitize_global_repeated_common_filler`` after all TOP5 items are enriched.
+    """
     existing = _get_field(item, "why_now", "why_it_matters")
     cat = _category_key(meta, item)
-    padding = [
-        existing,
-        _WHY_NOW_CONTEXT.get(cat, _BROAD_MOVEMENT),
-        _BROAD_MOVEMENT,
-    ]
+    concrete = _WHY_NOW_CONCRETE_BY_CAT.get(cat, "확인 포인트는 후속 공식 발표·일정입니다.")
+    category = _category_label(meta, item)
+    follow = f"{category} 후속 일정과 공식 발표만 확인하면 됩니다."
+    # Avoid injecting GLOBAL_COMMON_FILLER_SENTENCES as default padding; those
+    # phrases are reserved for rare single-use fallbacks and are stripped when
+    # repeated across TOP5 by sanitize_global_repeated_common_filler.
+    padding = [existing, concrete, follow]
     return _ensure_sentence_depth(
         existing,
         min_sentences=MIN_SECTION_SENTENCES,
@@ -337,16 +428,39 @@ def _next_watch_items(text: Any) -> List[str]:
     return []
 
 
+def _looks_generic_next_watch(text: str) -> bool:
+    stripped = _text(text)
+    if not stripped:
+        return True
+    lower = stripped.lower()
+    return any(marker.lower() in lower for marker in _GENERIC_NEXT_WATCH_MARKERS)
+
+
+def _concrete_next_watch_pair(meta: dict, item: dict) -> Tuple[str, str]:
+    cat = _category_key(meta, item)
+    pair = _NEXT_WATCH_BY_CAT.get(cat)
+    if pair:
+        return pair
+    category = _category_label(meta, item)
+    return (
+        f"{category} 후속 일정·공식 발표",
+        f"{category} 파트너·고객·규제 반응",
+    )
+
+
 def _build_next_watch(item: dict, meta: dict) -> str:
     items = _next_watch_items(_raw_field(item, "next_watch", "next_check_point"))
-    source = _text(meta.get("source_name"))
-    category = _category_label(meta, item)
+    concrete_a, concrete_b = _concrete_next_watch_pair(meta, item)
+    # Drop generic filler bullets so category-specific checkpoints can replace them.
+    kept: List[str] = []
+    for it in items:
+        if it and not _looks_generic_next_watch(it):
+            kept.append(it)
+    items = kept
     if len(items) < MIN_NEXT_WATCH_ITEMS:
-        items.append(f"{source or '해당 출처'}의 후속 공식 발표·원문 업데이트를 확인하세요.")
+        items.append(concrete_a)
     if len(items) < MIN_NEXT_WATCH_ITEMS:
-        items.append(f"{category} 분야 경쟁사·공급망·규제 후속 보도를 추적하세요.")
-    if len(items) < MIN_NEXT_WATCH_ITEMS:
-        items.append("한국 시장·운영 환경에 적용 가능한지 점검하세요.")
+        items.append(concrete_b)
     deduped: List[str] = []
     for it in items:
         if it and it not in deduped:
@@ -362,6 +476,134 @@ def _short_title(item: dict) -> str:
             cut = cut.rsplit(" ", 1)[0]
         return cut.rstrip(" ,·.")
     return title
+
+
+def _item_prose_blob(item: dict) -> str:
+    parts = [
+        _get_field(item, "selection_reason", "selection_rationale"),
+        _get_field(item, "what_happened"),
+        _get_field(item, "why_now", "why_it_matters"),
+        _get_field(item, "owner_angle", "business_implication"),
+        _get_field(item, "next_watch", "next_check_point"),
+        _get_field(item, "hype_caution"),
+    ]
+    return " ".join(p for p in parts if p)
+
+
+def _remove_phrase_once(text: str, phrase: str) -> Tuple[str, bool]:
+    """Remove the first occurrence of ``phrase`` from ``text``; keep prose non-empty."""
+    raw = _text(text)
+    if not raw or not phrase or phrase not in raw:
+        return raw, False
+    cleaned = raw.replace(phrase, " ", 1)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" .")
+    cleaned = re.sub(r"\.\s*\.", ".", cleaned).strip()
+    if cleaned and not cleaned.endswith((".", "!", "?")):
+        cleaned += "."
+    return cleaned, True
+
+
+def _replace_or_pad_after_filler_removal(
+    text: str,
+    *,
+    removed: bool,
+    cat: str,
+    field: str,
+) -> str:
+    out = dedupe_sentences_in_paragraph(dedupe_repeated_paragraph(_text(text)))
+    if not removed:
+        return out
+    if _sentence_count(out) >= 2:
+        return out
+    concrete = _WHY_NOW_CONCRETE_BY_CAT.get(cat, "확인 포인트는 후속 공식 발표·일정입니다.")
+    if field == "owner_angle":
+        concrete = _OWNER_CONTEXT.get(
+            cat,
+            "운영·파트너·서비스 의사결정에 어떤 경계가 생기는지 보면 됩니다.",
+        )
+    if concrete and concrete not in out:
+        if out:
+            out = f"{out.rstrip('.')}. {concrete}"
+        else:
+            out = concrete
+    if out and not out.endswith((".", "!", "?")):
+        out += "."
+    return dedupe_sentences_in_paragraph(out)
+
+
+_GLOBAL_PROSE_FIELDS: Tuple[Tuple[str, ...], ...] = (
+    ("why_now", "why_it_matters"),
+    ("what_happened",),
+    ("owner_angle", "business_implication"),
+    ("selection_reason", "selection_rationale"),
+)
+
+
+def sanitize_global_repeated_common_filler(items: List[dict]) -> Tuple[List[dict], Dict[str, Any]]:
+    """Keep each GLOBAL_COMMON_FILLER / soft filler phrase to at most one TOP5 item.
+
+    First occurrence is kept; later items drop the phrase and, when needed, get a
+    category-specific concrete checkpoint so the section does not go empty.
+    Does not invent facts — only removes templated padding or swaps in known
+    category checkpoint copy.
+    """
+    diagnostics: Dict[str, Any] = {
+        "sanitizer_applied": False,
+        "sanitizer_removed_count": 0,
+        "sanitizer_rewritten_count": 0,
+        "repeated_phrases": [],
+        "affected_item_ids": [],
+    }
+    if not items:
+        return items, diagnostics
+
+    working = [copy.deepcopy(i) if isinstance(i, dict) else i for i in items]
+    dict_items = [i for i in working if isinstance(i, dict)]
+    phrases = list(GLOBAL_COMMON_FILLER_SENTENCES) + list(_GLOBAL_SOFT_FILLER_PHRASES)
+
+    for phrase in phrases:
+        hit_indices = [
+            idx for idx, item in enumerate(dict_items) if phrase in _item_prose_blob(item)
+        ]
+        if len(hit_indices) < 2:
+            continue
+        diagnostics["sanitizer_applied"] = True
+        diagnostics["repeated_phrases"].append(
+            {"phrase": phrase[:120], "count_before": len(hit_indices)}
+        )
+        # Keep first; strip from subsequent items.
+        for idx in hit_indices[1:]:
+            item = dict_items[idx]
+            cat = _category_key(item, item)
+            item_touched = False
+            for keys in _GLOBAL_PROSE_FIELDS:
+                primary = keys[0]
+                current = _get_field(item, *keys)
+                if phrase not in current:
+                    continue
+                cleaned, removed = _remove_phrase_once(current, phrase)
+                if not removed:
+                    continue
+                cleaned = _replace_or_pad_after_filler_removal(
+                    cleaned,
+                    removed=True,
+                    cat=cat,
+                    field=primary,
+                )
+                _set_field(item, primary, cleaned)
+                if primary == "why_now":
+                    _set_field(item, "why_it_matters", cleaned)
+                if primary == "owner_angle":
+                    _set_field(item, "business_implication", cleaned)
+                diagnostics["sanitizer_removed_count"] += 1
+                diagnostics["sanitizer_rewritten_count"] += 1
+                item_touched = True
+            if item_touched:
+                nid = _text(item.get("news_id") or item.get("rank") or f"item_{idx}")
+                if nid and nid not in diagnostics["affected_item_ids"]:
+                    diagnostics["affected_item_ids"].append(nid)
+
+    return working, diagnostics
 
 
 def enrich_deep_dive_content(
@@ -612,6 +854,10 @@ def enrich_generated_briefing_content(
             enriched_items.append(enrich_korea_top5_item_content(item, meta=meta))
         else:
             enriched_items.append(enrich_top5_item_content(item, meta=meta))
+
+    if not is_korea:
+        enriched_items, filler_diag = sanitize_global_repeated_common_filler(enriched_items)
+        out[_GLOBAL_FILLER_SANITIZER_KEY] = filler_diag
 
     out["top_5_news"] = {**top, "items": enriched_items}
 

@@ -291,14 +291,18 @@ class BriefingContentQualityResult:
     issues: List[BriefingContentIssue] = field(default_factory=list)
     warnings: List[BriefingContentIssue] = field(default_factory=list)
     manual_review_required: bool = False
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "ok": self.ok,
             "manual_review_required": self.manual_review_required,
             "issues": [i.__dict__ for i in self.issues],
             "warnings": [w.__dict__ for w in self.warnings],
         }
+        if self.diagnostics:
+            out["diagnostics"] = self.diagnostics
+        return out
 
 
 def _judgment_label(block: str) -> str:
@@ -1582,7 +1586,11 @@ def validate_briefing_content_gate(
     return BriefingContentQualityResult(ok=ok, issues=issues, warnings=warnings)
 
 
-def validate_global_post_render_visible_quality(html: str) -> BriefingContentQualityResult:
+def validate_global_post_render_visible_quality(
+    html: str,
+    *,
+    sanitizer_diagnostics: Optional[Dict[str, Any]] = None,
+) -> BriefingContentQualityResult:
     """Public, self-contained entry point for the real owner-review send path.
 
     Checks the FINAL rendered HTML text — works for both the premium preview
@@ -1600,9 +1608,14 @@ def validate_global_post_render_visible_quality(html: str) -> BriefingContentQua
     plain text: signal-chip/title glue, "키수리 판단" badge/text glue, and the
     "살보면" typo — regardless of whether the renderer/sanitizer upstream was
     supposed to have already fixed them.
+
+    When ``sanitizer_diagnostics`` is provided (from the Global filler
+    sanitizer), failed results include repeated-phrase / count / section
+    metadata for artifacts — never raw Gemini text.
     """
     plain = _plain_text(html)
     issues: List[BriefingContentIssue] = []
+    repeated_diag: List[Dict[str, Any]] = []
     for filler in GLOBAL_COMMON_FILLER_SENTENCES:
         hits = plain.count(filler)
         if hits >= GLOBAL_COMMON_FILLER_REPEAT_THRESHOLD:
@@ -1613,6 +1626,14 @@ def validate_global_post_render_visible_quality(html: str) -> BriefingContentQua
                     section="top5",
                     excerpt=filler[:100],
                 )
+            )
+            repeated_diag.append(
+                {
+                    "issue_code": "global_repeated_common_filler",
+                    "phrase": filler[:120],
+                    "repeated_count": hits,
+                    "section": "top5",
+                }
             )
     for marker in GLOBAL_SIGNAL_DISTRIBUTION_BROKEN_MARKERS:
         if marker in plain:
@@ -1644,7 +1665,18 @@ def validate_global_post_render_visible_quality(html: str) -> BriefingContentQua
                     excerpt=marker,
                 )
             )
-    return BriefingContentQualityResult(ok=len(issues) == 0, issues=issues, warnings=[])
+    result = BriefingContentQualityResult(ok=len(issues) == 0, issues=issues, warnings=[])
+    san = sanitizer_diagnostics if isinstance(sanitizer_diagnostics, dict) else {}
+    result.diagnostics = {
+        "issue_codes": [i.code for i in issues],
+        "repeated_phrases": repeated_diag,
+        "sanitizer_applied": bool(san.get("sanitizer_applied")),
+        "sanitizer_removed_count": int(san.get("sanitizer_removed_count") or 0),
+        "sanitizer_rewritten_count": int(san.get("sanitizer_rewritten_count") or 0),
+        "affected_item_ids": list(san.get("affected_item_ids") or []),
+        "sanitizer_repeated_phrases": list(san.get("repeated_phrases") or []),
+    }
+    return result
 
 
 # ---------------------------------------------------------------------------

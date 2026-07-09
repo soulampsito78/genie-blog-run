@@ -42,7 +42,10 @@ from keysuri_contract_preview_renderer import (
     prepare_contract_preview_fixture,
     render_keysuri_contract_preview_html,
 )
-from keysuri_briefing_content_enricher import enrich_generated_briefing_content
+from keysuri_briefing_content_enricher import (
+    _GLOBAL_FILLER_SANITIZER_KEY,
+    enrich_generated_briefing_content,
+)
 from keysuri_bottom_shot_generation import generate_keysuri_korea_bottom_v6
 from keysuri_generation_prompt import (
     build_keysuri_generation_prompt,
@@ -825,6 +828,31 @@ def _extend_unique(values: List[str], extras: List[str]) -> List[str]:
         if text and text not in out:
             out.append(text)
     return out
+
+
+def _global_filler_sanitizer_diagnostics(briefing: Optional[dict]) -> Dict[str, Any]:
+    if not isinstance(briefing, dict):
+        return {}
+    raw = briefing.get(_GLOBAL_FILLER_SANITIZER_KEY)
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _post_render_qa_diagnostic_fields(qa_result: Any) -> Dict[str, Any]:
+    """Safe post-render QA diagnostics for artifacts (no raw Gemini body)."""
+    diag = getattr(qa_result, "diagnostics", None)
+    if not isinstance(diag, dict) or not diag:
+        return {}
+    return {
+        "post_render_qa_diagnostics": {
+            "issue_codes": list(diag.get("issue_codes") or []),
+            "repeated_phrases": list(diag.get("repeated_phrases") or []),
+            "sanitizer_applied": bool(diag.get("sanitizer_applied")),
+            "sanitizer_removed_count": int(diag.get("sanitizer_removed_count") or 0),
+            "sanitizer_rewritten_count": int(diag.get("sanitizer_rewritten_count") or 0),
+            "affected_item_ids": list(diag.get("affected_item_ids") or []),
+            "sanitizer_repeated_phrases": list(diag.get("sanitizer_repeated_phrases") or []),
+        }
+    }
 
 
 def _build_service_keysuri_image_prompt(program_id: str) -> str:
@@ -3030,13 +3058,16 @@ def run_keysuri_text_only_reissue(
             "program_id": pid,
         }
     if pid == PROGRAM_GLOBAL:
-        post_render_qa = validate_global_post_render_visible_quality(email_html)
+        post_render_qa = validate_global_post_render_visible_quality(
+            email_html,
+            sanitizer_diagnostics=_global_filler_sanitizer_diagnostics(generated_briefing),
+        )
         post_render_error = KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED
     else:
         post_render_qa = validate_korea_post_render_visible_quality(email_html)
         post_render_error = KEYSURI_KOREA_POST_RENDER_QA_BLOCKED
     if not post_render_qa.ok:
-        return {
+        failure = {
             "ok": False,
             "error": post_render_error,
             "issue_codes": [i.code for i in post_render_qa.issues],
@@ -3044,6 +3075,8 @@ def run_keysuri_text_only_reissue(
             "smtp_attempted": False,
             "email_sent": False,
         }
+        failure.update(_post_render_qa_diagnostic_fields(post_render_qa))
+        return failure
 
     smtp_attempted = False
     email_sent = False
@@ -3387,13 +3420,16 @@ def run_keysuri_text_and_image_reissue(
     if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
         return {"ok": False, "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED, "program_id": pid}
     if pid == PROGRAM_GLOBAL:
-        post_render_qa = validate_global_post_render_visible_quality(email_html)
+        post_render_qa = validate_global_post_render_visible_quality(
+            email_html,
+            sanitizer_diagnostics=_global_filler_sanitizer_diagnostics(generated_briefing),
+        )
         post_render_error = KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED
     else:
         post_render_qa = validate_korea_post_render_visible_quality(email_html)
         post_render_error = KEYSURI_KOREA_POST_RENDER_QA_BLOCKED
     if not post_render_qa.ok:
-        return {
+        failure = {
             "ok": False,
             "error": post_render_error,
             "issue_codes": [i.code for i in post_render_qa.issues],
@@ -3401,6 +3437,8 @@ def run_keysuri_text_and_image_reissue(
             "smtp_attempted": False,
             "email_sent": False,
         }
+        failure.update(_post_render_qa_diagnostic_fields(post_render_qa))
+        return failure
 
     smtp_attempted = False
     email_sent = False
@@ -4060,7 +4098,10 @@ def run_keysuri_service_full_run(
             "html_path": html_rel,
         }
     if pid == PROGRAM_GLOBAL:
-        post_render_qa = validate_global_post_render_visible_quality(email_html)
+        post_render_qa = validate_global_post_render_visible_quality(
+            email_html,
+            sanitizer_diagnostics=_global_filler_sanitizer_diagnostics(generated_briefing),
+        )
         post_render_error = KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED
     else:
         post_render_qa = validate_korea_post_render_visible_quality(email_html)
@@ -4089,8 +4130,9 @@ def run_keysuri_service_full_run(
             error_code=post_render_error,
         )
         meta.update(subject_fields)
+        meta.update(_post_render_qa_diagnostic_fields(post_render_qa))
         save_run_artifact(meta, email_html="")
-        return {
+        failure = {
             "ok": False,
             "run_id": run_id,
             "program_id": pid,
@@ -4104,6 +4146,8 @@ def run_keysuri_service_full_run(
             "issue_codes": post_render_issue_codes,
             "html_path": html_rel,
         }
+        failure.update(_post_render_qa_diagnostic_fields(post_render_qa))
+        return failure
 
     email_sent = False
     smtp_attempted = False

@@ -674,6 +674,31 @@ class GlobalPostRenderVisibleQualityWrapperTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertNotIn("global_repeated_common_filler", {i.code for i in result.issues})
 
+    def test_post_render_diagnostics_include_sanitizer_fields(self) -> None:
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+
+        html = (
+            f"<p>항목1. {self._FILLER} 후속 확인이 필요합니다.</p>"
+            f"<p>항목2. {self._FILLER} 후속 확인이 필요합니다.</p>"
+        )
+        result = validate_global_post_render_visible_quality(
+            html,
+            sanitizer_diagnostics={
+                "sanitizer_applied": True,
+                "sanitizer_removed_count": 0,
+                "sanitizer_rewritten_count": 0,
+                "affected_item_ids": ["n2"],
+                "repeated_phrases": [{"phrase": self._FILLER[:40], "count_before": 2}],
+            },
+        )
+        self.assertFalse(result.ok)
+        diag = result.diagnostics
+        self.assertIn("global_repeated_common_filler", diag.get("issue_codes") or [])
+        self.assertTrue(diag.get("sanitizer_applied"))
+        self.assertEqual(diag.get("affected_item_ids"), ["n2"])
+        phrases = diag.get("repeated_phrases") or []
+        self.assertEqual(phrases[0].get("repeated_count"), 2)
+
     def test_real_gmail_owner_email_html_with_repeated_filler_is_flagged(self) -> None:
         """Final Gmail owner-review email HTML (built by the real renderer function
         used in keysuri_service_full_run.py) must be caught by the wrapper."""
