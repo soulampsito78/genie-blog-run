@@ -707,6 +707,14 @@ class KeysuriLiveSourceSmokeTests(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertIn("Gemini parse failed", result.error or "")
             self.assertTrue(result.raw_response_path)
+            # Enriched diagnostics: validation_issues carries full issue codes
+            # (not just the single truncated `error` string), and parse_diagnostics
+            # exposes the schema-error summary and missing-required-keys detail.
+            self.assertTrue(result.validation_issues)
+            self.assertIn("gemini_json_missing_required_keys", result.validation_issues)
+            self.assertIn("gemini_json_schema_validation_failed", result.validation_issues)
+            self.assertTrue(result.parse_diagnostics.get("missing_required_keys"))
+            self.assertTrue(result.parse_diagnostics.get("schema_error_summary"))
             html_path = Path(result.html_path)
             if html_path.exists():
                 html = html_path.read_text(encoding="utf-8")

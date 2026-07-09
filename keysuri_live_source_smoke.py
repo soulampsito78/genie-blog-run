@@ -486,6 +486,17 @@ def _parse_failure_diagnostics(parse_result: dict, prompt_input: dict) -> Dict[s
         "repair_success": bool(
             parse_meta.get("deep_dive_key_implications_repair_success")
         ),
+        # Multi-JSON-object diagnostics (see keysuri_generation_prompt._parse_meta) —
+        # surfaced here so an unrecoverable multi-object parse failure is
+        # diagnosable from the safe-fail artifact/response alone.
+        "json_object_count": parse_meta.get("json_object_count"),
+        "candidate_index": parse_meta.get("candidate_index"),
+        "candidate_top_level_keys": parse_meta.get("candidate_top_level_keys"),
+        "missing_required_keys": parse_meta.get("missing_required_keys"),
+        "schema_error_summary": parse_meta.get("schema_error_summary"),
+        "first_300_chars_safe_excerpt": parse_meta.get("first_300_chars_safe_excerpt"),
+        "parse_recovery_strategy": parse_meta.get("parse_recovery_strategy"),
+        "parse_failure_stage": parse_meta.get("parse_failure_stage"),
     }
 
 
@@ -1437,6 +1448,14 @@ def run_keysuri_live_source_smoke(
             issue_text = "; ".join(
                 f"{i.get('code')}: {i.get('message')}" for i in issues[:5] if isinstance(i, dict)
             )
+            # Full issue-code list (not just the first-5 summary baked into
+            # `error`) so a multi-JSON-object failure exposes every diagnostic
+            # code (gemini_json_missing_required_keys, gemini_json_recovery_failed,
+            # etc.) through validation_issues -> issue_codes in the safe-fail
+            # response, instead of only one truncated string.
+            validation_issue_codes = [
+                str(i.get("code")) for i in issues if isinstance(i, dict) and i.get("code")
+            ]
             prompt_internal_codes = [
                 str(code) for code in (prompt_input.get("internal_issue_codes") or []) if code
             ]
@@ -1455,6 +1474,7 @@ def run_keysuri_live_source_smoke(
                 parse_status=parse_status,
                 parse_meta=parse_meta,
                 parse_diagnostics=_parse_failure_diagnostics(parse_result, prompt_input),
+                validation_issues=validation_issue_codes,
                 raw_response_path=raw_response_path,
                 side_effects=side_effects,
                 candidate_funnel_summary=(

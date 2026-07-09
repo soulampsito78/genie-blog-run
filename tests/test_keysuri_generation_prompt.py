@@ -84,6 +84,22 @@ class KeysuriGenerationPromptContractTests(unittest.TestCase):
         self.assertIn("Do not wrap in markdown fences", prompt)
         self.assertIn("Do not add explanations", prompt)
 
+    def test_generated_prompt_forbids_multiple_drafts_and_marks_schema_as_reference_only(self) -> None:
+        """Reproduces the keysuri_korea_tech production incident where Gemini
+        returned 6 JSON objects and none passed schema — the prompt must
+        explicitly forbid drafts/alternatives and mark the embedded example
+        schema as reference-only so the model does not echo/repeat it."""
+        for prompt_input in (_global_prompt(), _korea_prompt()):
+            with self.subTest(program_id=prompt_input.get("program_id")):
+                prompt = build_keysuri_generation_prompt(prompt_input)
+                self.assertIn("multiple drafts", prompt.lower())
+                self.assertIn("alternative", prompt.lower())
+                self.assertIn("do not copy", prompt.lower())
+                self.assertIn(
+                    "REQUIRED OUTPUT JSON SCHEMA (field reference only", prompt
+                )
+                self.assertIn("No drafts, no alternatives", prompt)
+
     def test_generated_prompt_identity_title(self) -> None:
         prompt = build_keysuri_generation_prompt(_global_prompt())
         self.assertIn(IDENTITY_TITLE, prompt)

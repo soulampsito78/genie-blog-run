@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import re
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Sequence, Set, Tuple
 
 from keysuri_generated_briefing import (
     GENERATED_STATUS_REQUIRED,
@@ -161,6 +161,8 @@ PARSE_RULES: List[str] = [
     "Do not add explanations before or after the JSON object.",
     "Do not return a JSON array as the top-level response.",
     "Do not return an empty JSON object.",
+    "Do not return multiple drafts, alternatives, or retries — only the single final JSON object.",
+    "Each required schema field must appear exactly once, inside the one JSON object.",
 ]
 
 
@@ -613,6 +615,9 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
         "- Do not add explanations, preface, or postscript outside the JSON.",
         "- No second corrected JSON. No duplicate JSON object.",
         "- If correcting, output only the final corrected JSON object.",
+        "- Do not output multiple drafts, alternative versions, or retry attempts — one JSON object, final answer only.",
+        "- The REQUIRED OUTPUT JSON SCHEMA section below is a structure/field reference only — "
+        "do not copy it, repeat it, or echo it back as part of your answer.",
         "- Do not use external sources beyond the provided source_pack and allowed_source_ids.",
         "- Do not invent sources, dates, numbers, or legal/policy certainty.",
         "- Do not output unsupported numbers.",
@@ -887,13 +892,13 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
             "TOP_5_SELECTED (preserve rank and news_id sequence; includes selection metadata)",
             json.dumps(top_5_for_prompt, ensure_ascii=False, indent=2),
             "",
-            "REQUIRED OUTPUT JSON SCHEMA",
+            "REQUIRED OUTPUT JSON SCHEMA (field reference only — do not copy or repeat this block)",
             json.dumps(contract.get("required_output_schema"), ensure_ascii=False, indent=2),
             "",
             "FIXED SECTION LABELS",
             json.dumps(contract.get("fixed_section_labels"), ensure_ascii=False, indent=2),
             "",
-            "END — respond with JSON object only.",
+            "END — respond with exactly one final JSON object only. No drafts, no alternatives, no repeated schema.",
         ]
     )
     return "\n".join(sections)
@@ -1048,22 +1053,76 @@ def validate_parsed_keysuri_generated_briefing(
     return {"valid": len(issues) == 0, "issues": issues}
 
 
+def _missing_required_keys(obj: Any) -> List[str]:
+    """Expected top-level keys absent or empty on a candidate — operator-facing
+    diagnostic, not a schema authority (validate_keysuri_generated_briefing is)."""
+    if not isinstance(obj, dict):
+        return list(KEYSURI_EXPECTED_TOP_LEVEL_KEYS)
+    return [
+        key for key in KEYSURI_EXPECTED_TOP_LEVEL_KEYS
+        if obj.get(key) in (None, "", [], {})
+    ]
+
+
+def _schema_error_summary(issues: Sequence[Dict[str, Any]], *, limit: int = 5) -> str:
+    codes = [iss.get("code", "unknown") for iss in issues[:limit]]
+    if len(issues) > limit:
+        codes.append(f"+{len(issues) - limit} more")
+    return ", ".join(codes) if codes else "no schema issues reported"
+
+
+def _safe_candidate_excerpt(obj: Any, *, max_chars: int = 300) -> str:
+    """Bounded excerpt from the RE-SERIALIZED parsed candidate — never the raw
+    model text — so diagnostics stay useful without echoing arbitrary/long
+    model output into logs or the safe-fail payload."""
+    if not isinstance(obj, dict):
+        return ""
+    try:
+        text = json.dumps(obj, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return ""
+    return text[:max_chars]
+
+
 def _parse_meta(
     *,
     candidate_count: int,
     selected_index: "int | None",
     recovery_used: bool,
     selected_repair_diagnostics: "Dict[str, Any] | None" = None,
+    selected_candidate: Any = None,
+    schema_error_summary: "str | None" = None,
+    parse_recovery_strategy: "str | None" = None,
+    parse_failure_stage: "str | None" = None,
 ) -> Dict[str, Any]:
-    """Safe, PII-free metadata about the JSON extraction decision."""
-    meta = {
+    """Safe, PII-free metadata about the JSON extraction decision.
+
+    When a selected_candidate is provided, adds candidate_top_level_keys,
+    missing_required_keys, and a bounded first_300_chars_safe_excerpt built
+    from the re-serialized (not raw) candidate — so an unrecoverable multi-JSON
+    failure is diagnosable from parse_meta/issue_codes alone, without dumping
+    the full raw Gemini response into logs.
+    """
+    meta: Dict[str, Any] = {
         "multiple_json_objects_detected": candidate_count > 1,
         "json_candidate_count": candidate_count,
+        "json_object_count": candidate_count,
+        "candidate_index": selected_index,
         "selected_json_candidate_index": selected_index,
         "parser_recovery_used": recovery_used,
     }
     if isinstance(selected_repair_diagnostics, dict):
         meta.update(selected_repair_diagnostics)
+    if isinstance(selected_candidate, dict):
+        meta["candidate_top_level_keys"] = sorted(selected_candidate.keys())
+        meta["missing_required_keys"] = _missing_required_keys(selected_candidate)
+        meta["first_300_chars_safe_excerpt"] = _safe_candidate_excerpt(selected_candidate)
+    if schema_error_summary is not None:
+        meta["schema_error_summary"] = schema_error_summary
+    if parse_recovery_strategy is not None:
+        meta["parse_recovery_strategy"] = parse_recovery_strategy
+    if parse_failure_stage is not None:
+        meta["parse_failure_stage"] = parse_failure_stage
     return meta
 
 
@@ -1151,9 +1210,16 @@ def parse_keysuri_generated_response(
 
     # No fully valid candidate or ambiguous candidates: surface the best schema match
     selected_index = best_index
+    selected_candidate = repaired_candidates[selected_index]
     issues = list(validations[selected_index]["issues"])
+    schema_summary = _schema_error_summary(issues)
+    missing_keys = _missing_required_keys(selected_candidate)
+    parse_recovery_strategy = "single_object_no_recovery_needed"
+    parse_failure_stage = "schema_validation"
     if multiple:
         if len(valid_indices) > 1:
+            parse_recovery_strategy = "ambiguous_multiple_valid_candidates"
+            parse_failure_stage = "candidate_selection"
             issues.insert(
                 0,
                 _issue(
@@ -1163,11 +1229,22 @@ def parse_keysuri_generated_response(
                 ),
             )
         else:
+            parse_recovery_strategy = "best_score_candidate_selected_but_invalid"
+            parse_failure_stage = "schema_validation"
             issues.insert(
                 0,
                 _issue(
                     "parse_multiple_json_objects_unrecoverable",
                     f"{candidate_count} JSON objects found; none passed schema validation",
+                    "raw_text",
+                ),
+            )
+            issues.insert(
+                1,
+                _issue(
+                    "gemini_multiple_json_objects_no_valid_schema",
+                    f"json_object_count={candidate_count}; candidate_index={selected_index} "
+                    f"(best schema-key match) still failed validation: {schema_summary}",
                     "raw_text",
                 ),
             )
@@ -1181,6 +1258,37 @@ def parse_keysuri_generated_response(
                             "raw_text"
                         )
                     )
+            issues.append(
+                _issue(
+                    "gemini_json_recovery_failed",
+                    f"Recovery attempted across {candidate_count} candidates; "
+                    f"none satisfied the required schema — parse_recovery_strategy={parse_recovery_strategy}",
+                    "raw_text",
+                )
+            )
+    if missing_keys:
+        issues.append(
+            _issue(
+                "gemini_json_missing_required_keys",
+                f"Selected candidate (index {selected_index}) missing required top-level keys: "
+                f"{', '.join(missing_keys)}",
+                "raw_text",
+            )
+        )
+    if any(iss.get("code") not in (
+        "parse_multiple_json_objects_ambiguous",
+        "parse_multiple_json_objects_unrecoverable",
+        "gemini_multiple_json_objects_no_valid_schema",
+        "gemini_json_missing_required_keys",
+        "gemini_json_recovery_failed",
+    ) for iss in validations[selected_index]["issues"]):
+        issues.append(
+            _issue(
+                "gemini_json_schema_validation_failed",
+                f"Schema validation failed for selected candidate: {schema_summary}",
+                "raw_text",
+            )
+        )
     return {
         "parse_status": "parsed_invalid",
         "program_id": pid,
@@ -1193,5 +1301,9 @@ def parse_keysuri_generated_response(
             selected_repair_diagnostics=repair_diagnostics[selected_index]
             if repair_diagnostics
             else None,
+            selected_candidate=selected_candidate,
+            schema_error_summary=schema_summary,
+            parse_recovery_strategy=parse_recovery_strategy,
+            parse_failure_stage=parse_failure_stage,
         ),
     }

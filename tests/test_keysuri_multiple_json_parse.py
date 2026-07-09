@@ -416,5 +416,76 @@ class ExtractorContractTests(unittest.TestCase):
         self.assertEqual(extract_json_object_from_model_text('{"a": 1}'), {"a": 1})
 
 
+class UnrecoverableParseDiagnosticsTests(unittest.TestCase):
+    """Reproduces the production incident (6 JSON objects, none passed schema)
+    and asserts the safe-fail payload carries enough diagnostic detail to
+    explain WHY — not just an unclear 'none passed schema' summary."""
+
+    def test_six_invalid_objects_none_valid_gets_full_diagnostics(self) -> None:
+        pi = _korea_prompt_input(_valid_korea_payload())
+        text = "\n".join(
+            json.dumps({"draft": i, "explanation": f"attempt {i}"}, ensure_ascii=False)
+            for i in range(6)
+        )
+        result = parse_keysuri_generated_response(text, "keysuri_korea_tech", pi)
+        self.assertEqual(result["parse_status"], "parsed_invalid")
+        codes = [i.get("code") for i in result["issues"]]
+
+        self.assertIn("parse_multiple_json_objects_unrecoverable", codes)
+        self.assertIn("gemini_multiple_json_objects_no_valid_schema", codes)
+        self.assertIn("gemini_json_recovery_failed", codes)
+        self.assertIn("gemini_json_missing_required_keys", codes)
+
+        meta = result["parse_meta"]
+        self.assertEqual(meta["json_object_count"], 6)
+        self.assertIsInstance(meta["candidate_index"], int)
+        self.assertIsInstance(meta["candidate_top_level_keys"], list)
+        self.assertTrue(meta["missing_required_keys"])
+        self.assertTrue(meta["schema_error_summary"])
+        self.assertTrue(meta["first_300_chars_safe_excerpt"])
+        self.assertLessEqual(len(meta["first_300_chars_safe_excerpt"]), 300)
+        self.assertEqual(
+            meta["parse_recovery_strategy"], "best_score_candidate_selected_but_invalid"
+        )
+        self.assertEqual(meta["parse_failure_stage"], "schema_validation")
+
+        # Never dump the full raw model text verbatim as a single field.
+        self.assertNotEqual(meta["first_300_chars_safe_excerpt"], text)
+
+    def test_ambiguous_multiple_valid_marks_recovery_strategy_and_stage(self) -> None:
+        payload1 = _valid_korea_payload()
+        payload2 = _valid_korea_payload()
+        payload2["top_5_news"]["items"][0]["headline"] = "Different but also valid headline"
+        pi = _korea_prompt_input(payload1)
+        text = json.dumps(payload1, ensure_ascii=False) + "\n" + json.dumps(payload2, ensure_ascii=False)
+        result = parse_keysuri_generated_response(text, "keysuri_korea_tech", pi)
+        meta = result["parse_meta"]
+        self.assertEqual(meta["parse_recovery_strategy"], "ambiguous_multiple_valid_candidates")
+        self.assertEqual(meta["parse_failure_stage"], "candidate_selection")
+
+    def test_single_invalid_object_still_gets_missing_keys_and_schema_summary(self) -> None:
+        pi = _korea_prompt_input(_valid_korea_payload())
+        result = parse_keysuri_generated_response('{"a": 1}', "keysuri_korea_tech", pi)
+        codes = [i.get("code") for i in result["issues"]]
+        self.assertNotIn("parse_multiple_json_objects_unrecoverable", codes)
+        self.assertIn("gemini_json_missing_required_keys", codes)
+        self.assertIn("gemini_json_schema_validation_failed", codes)
+        meta = result["parse_meta"]
+        self.assertEqual(meta["parse_recovery_strategy"], "single_object_no_recovery_needed")
+        self.assertTrue(meta["missing_required_keys"])
+
+    def test_recoverable_case_does_not_add_failure_diagnostics(self) -> None:
+        """A schema-valid recovery must stay clean — no failure-only fields leak
+        into a successful parse_meta."""
+        payload = _valid_korea_payload()
+        pi = _korea_prompt_input(payload)
+        text = '{"error": "retry"}\n' + json.dumps(payload, ensure_ascii=False)
+        result = parse_keysuri_generated_response(text, "keysuri_korea_tech", pi)
+        self.assertEqual(result["parse_status"], "parsed_valid")
+        self.assertEqual(result["issues"], [])
+        self.assertNotIn("parse_recovery_strategy", result["parse_meta"])
+        self.assertNotIn("schema_error_summary", result["parse_meta"])
+
+
 if __name__ == "__main__":
     unittest.main()
