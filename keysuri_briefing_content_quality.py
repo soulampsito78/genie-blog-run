@@ -1671,6 +1671,30 @@ _KOREA_HOLD_FIELD_MARKER = "아직 단정하지 말 것"
 _KOREA_JUDGMENT_MARKER = "키수리 판단"
 _KOREA_HOLD_DUP_MIN_CHARS = 25
 
+# Event words that must never appear in the synthesis sections (시장 판단 이후)
+# unless today's TOP5 cards themselves mention them — the production defect was
+# "엔비디아 방한 이슈" injected as background knowledge into the market frame
+# while no TOP5 article said anything about a visit. Narrow, literal tokens
+# only: this is a safety net, not the fix (generation-side grounding is).
+_KOREA_UNGROUNDED_EVENT_TOKENS: Tuple[str, ...] = ("방한",)
+_KOREA_SYNTHESIS_HEADING = "키수리의 시장 판단"
+
+
+def _korea_ungrounded_event_tokens(plain: str) -> List[str]:
+    """Event tokens present after the synthesis heading but absent from the
+    TOP5 cards region (which contains today's headlines/summaries/sources)."""
+    cards_start = plain.find(_KOREA_TOP5_HEADING)
+    synthesis_start = plain.find(_KOREA_SYNTHESIS_HEADING)
+    if cards_start < 0 or synthesis_start < 0 or synthesis_start <= cards_start:
+        return []
+    cards = plain[cards_start:synthesis_start]
+    synthesis = plain[synthesis_start:]
+    return [
+        token
+        for token in _KOREA_UNGROUNDED_EVENT_TOKENS
+        if token in synthesis and token not in cards
+    ]
+
 
 def _korea_signal_strip_chip_texts(html: str) -> List[str]:
     """Chip texts inside the Korea domestic signal strip of the FINAL HTML.
@@ -1779,6 +1803,17 @@ def validate_korea_post_render_visible_quality(html: str) -> BriefingContentQual
                 "'아직 단정하지 말 것' field duplicates the same card's '키수리 판단' text",
                 section="top5",
                 excerpt=excerpt,
+            )
+        )
+
+    for token in _korea_ungrounded_event_tokens(plain):
+        issues.append(
+            BriefingContentIssue(
+                "korea_ungrounded_event_context",
+                f"Synthesis section mentions event {token!r} that no TOP5 card contains "
+                "(background knowledge injected as today's signal)",
+                section="market_judgment",
+                excerpt=token,
             )
         )
 

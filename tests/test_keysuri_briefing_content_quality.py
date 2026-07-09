@@ -929,6 +929,43 @@ class KoreaPostRenderVisibleQualityTests(unittest.TestCase):
         result = validate_korea_post_render_visible_quality(html)
         self.assertTrue(result.ok, result.issues)
 
+    def test_ungrounded_event_in_synthesis_blocks(self) -> None:
+        """'방한' appearing in the market-judgment synthesis while no TOP5 card
+        mentions it = background knowledge injected as today's signal."""
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        html = (
+            "<h2>국내 테크 TOP 5</h2>"
+            "<p>1. 삼성전자, AI 전략 발표</p><p>출처 삼성전자 뉴스룸</p>"
+            "<h2>키수리의 시장 판단</h2>"
+            "<p>오늘 다섯 신호를 하나로 보면, 엔비디아 방한 이슈를 축으로 움직이는 구조입니다.</p>"
+        )
+        result = validate_korea_post_render_visible_quality(html)
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "korea_ungrounded_event_context", {i.code for i in result.issues}
+        )
+
+    def test_grounded_event_mentioned_by_top5_card_passes(self) -> None:
+        """If a TOP5 card itself reports the visit, the synthesis may reference it."""
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        html = (
+            "<h2>국내 테크 TOP 5</h2>"
+            "<p>1. 젠슨 황 CEO 방한, 국내 반도체 협력 논의</p><p>출처 ZDNet Korea</p>"
+            "<h2>키수리의 시장 판단</h2>"
+            "<p>방한 이후 실제 계약이 따라오는지가 핵심입니다.</p>"
+        )
+        result = validate_korea_post_render_visible_quality(html)
+        self.assertTrue(result.ok, result.issues)
+
+    def test_ungrounded_event_check_skips_when_sections_missing(self) -> None:
+        """Fragments without both section headings must not trip the net."""
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        result = validate_korea_post_render_visible_quality("<p>방한 관련 안내문</p>")
+        self.assertTrue(result.ok, result.issues)
+
     def test_static_lesson_board_rendered_verbatim_blocks(self) -> None:
         from keysuri_briefing_content_quality import (
             KOREA_STATIC_LESSON_LEGACY_SENTENCES,

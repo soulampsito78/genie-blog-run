@@ -100,6 +100,33 @@ class KeysuriGenerationPromptContractTests(unittest.TestCase):
                 )
                 self.assertIn("No drafts, no alternatives", prompt)
 
+    def test_korea_prompt_carries_editorial_voice_and_grounding_principles(self) -> None:
+        """The Korea prompt must teach the voice/thinking order, not just list
+        blockers: private-secretary tone, selection over explanation, the A–D
+        thinking order, and source-grounding as a principle (no background
+        events like 방한/협력 that today's articles don't contain)."""
+        prompt = build_keysuri_generation_prompt(_korea_prompt())
+        self.assertIn("KOREA EDITORIAL VOICE — PRIVATE TECH SECRETARY", prompt)
+        self.assertIn("private tech secretary", prompt)
+        self.assertIn("설명보다 선별", prompt)
+        self.assertIn("관찰 포인트", prompt)
+        self.assertIn("'~하세요 확인' 같은 명령형+확인 이중 종결 문장 절대 금지", prompt)
+        self.assertIn("같은 문장 구조를 매일 반복하지 말 것", prompt)
+        self.assertIn("KOREA SOURCE-GROUNDING AS A THINKING PRINCIPLE", prompt)
+        self.assertIn("오늘 입력 TOP5에 없는 회사명/방문/투자/계약/수주/협력 이벤트를 배경지식으로 보태지 말 것", prompt)
+        self.assertIn("과거에 알려진 이슈라도 오늘 입력 기사에 없으면 오늘 신호처럼 쓰지 말 것", prompt)
+        self.assertIn("아직 확인할 단계", prompt)
+        for step in ("A) 이 뉴스가 오늘 실제로 말하는 것", "B) 이 뉴스가 돈/사업/일/도입으로 내려오는 경로",
+                     "C) 아직 단정하지 말 것", "D) 바로 볼 것"):
+            with self.subTest(step=step):
+                self.assertIn(step, prompt)
+        self.assertIn("'오늘 신호가 내려오는 곳'은 고정 교훈문이 아니다", prompt)
+
+    def test_global_prompt_not_affected_by_korea_voice_block(self) -> None:
+        prompt = build_keysuri_generation_prompt(_global_prompt())
+        self.assertNotIn("KOREA EDITORIAL VOICE — PRIVATE TECH SECRETARY", prompt)
+        self.assertNotIn("KOREA SOURCE-GROUNDING AS A THINKING PRINCIPLE", prompt)
+
     def test_generated_prompt_identity_title(self) -> None:
         prompt = build_keysuri_generation_prompt(_global_prompt())
         self.assertIn(IDENTITY_TITLE, prompt)

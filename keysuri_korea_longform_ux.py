@@ -463,11 +463,18 @@ def _expand_action_candidates(lines: Sequence[str], *, max_chars: int) -> List[s
 
 
 def _theme_phrase(items: Sequence[Mapping[str, Any]]) -> str:
+    """Topic phrase derived ONLY from what today's headlines actually mention.
+
+    Never names an event (방한/협력/수주 등) the input articles may not contain —
+    a keyword hit like "엔비디아" or "삼성" says the TOPIC moved today, not that
+    a visit or partnership happened. Phrases end in "이슈" so the 를/가 particles
+    at every call site stay grammatical.
+    """
     blob = " ".join(_text(i.get("korean_title") or i.get("headline")) for i in items if isinstance(i, dict))
     if any(k in blob for k in ("젠슨 황", "엔비디아", "NVIDIA", "nvidia")):
-        return "엔비디아 방한 이슈"
+        return "AI 반도체·GPU 이슈"
     if any(k in blob for k in ("HBM", "반도체", "삼성", "SK하이닉스")):
-        return "반도체·HBM 협력 이슈"
+        return "반도체 산업 이슈"
     if any(k in blob for k in ("스타트업", "투자", "아토믹")):
         return "국내 투자·딥테크 이슈"
     return "국내 테크 핵심 이슈"
@@ -1006,8 +1013,8 @@ def build_korea_tomorrow_checkpoint_parts(item: Mapping[str, Any]) -> tuple[str,
         title = _short_title(_text(item.get("korean_title") or item.get("headline"))) or "핵심 신호"
         confirm = f"{title} 후속 발표·일정"
 
-    # The hold field states an unconfirmed assumption to withhold judgment on —
-    # it must never reuse the item's "키수리 판단" explanation verbatim (that
+    # The hold field names what is NOT yet confirmed (숫자/일정/계약/실행) —
+    # never a verbatim reuse of the card's "키수리 판단" explanation (that
     # copy-paste rendered the same risk sentence twice in one card).
     hold = ""
     if _text(item.get("hype_caution")):
@@ -1015,7 +1022,9 @@ def build_korea_tomorrow_checkpoint_parts(item: Mapping[str, Any]) -> tuple[str,
     if not hold:
         label, _explanation = _item_judgment(item)
         if label in _RISK_LABELS:
-            hold = "실제 파급 범위·일정이 숫자로 확인되기 전의 예단"
+            hold = "실제 파급 범위와 일정 — 아직 숫자로 확인되지 않았습니다"
+        elif label in _OPPORTUNITY_LABELS:
+            hold = "계약·수주·실적 숫자가 따라오는지는 아직 확인되지 않았습니다"
     if not hold:
         hold = "숫자·일정이 확인되지 않은 기대감"
     return confirm, hold
@@ -1035,56 +1044,64 @@ def build_korea_market_impact_summary(items: Sequence[Mapping[str, Any]]) -> Lis
         if cat and cat not in industries:
             industries.append(cat)
     industry_phrase = "·".join(industries[:3]) if industries else "반도체·AI·정책"
+    # Observation-point tone, not a daily lesson board: each row states where
+    # TODAY's signals would land and what number/schedule decides it — no
+    # "확인하겠습니다/보겠습니다" recitation, no fixed sentences.
     rows: List[Dict[str, str]] = [
         {
             "axis": "관련 업종",
             "body": (
-                f"오늘은 {theme}를 중심으로 {industry_phrase} 축이 움직였습니다. "
-                "발주·일정이 주변 장비·부품·서비스 업종으로 이어지는지부터 보겠습니다."
+                f"오늘 신호는 {industry_phrase} 축에 몰렸습니다. "
+                "기술 발표 자체보다 발주·일정이 주변 장비·부품·서비스 업종으로 이어지는지가 핵심입니다."
             ),
         },
         {
             "axis": "협력사/소부장",
             "body": (
-                f"오늘 {industry_phrase} 쪽 투자·정책 신호가 협력사와 소부장 물량으로 "
-                "번지는지 확인하겠습니다."
+                f"{industry_phrase} 쪽 신호가 협력사·소부장 물량으로 번지는지가 "
+                "체감 영향의 기준입니다."
             ),
         },
         {
             "axis": "개인 투자자",
             "body": (
-                f"{theme} 관련 종목은 계약·비용 구조·도입 일정이 숫자로 확인된 뒤에 "
-                "판단하겠습니다."
+                f"{theme} 관련 종목은 수혜주 이름보다 계약·비용 구조·도입 일정이 "
+                "숫자로 따라오는지가 판단 기준입니다."
             ),
         },
     ]
     return rows
 
 
+# Note: "여부를" is NOT in the particle group — "…공개 여부를 확인하세요" must
+# compress to "…공개 여부" (the 여부 IS the observation point), not "…공개".
 _FOLLOW_VERB_TAIL_RE = re.compile(
-    r"\s*(?:을|를|여부를)?\s*(?:먼저\s*)?"
+    r"\s*(?:을|를)?\s*(?:먼저\s*)?"
     r"(?:[가-힣]+(?:하세요|하십시오)|확인해\s*보세요|보세요|보시면 됩니다|하시면 됩니다)"
     r"[.!]?$"
 )
 
-# A follow-check item must never keep an imperative ending in front of the
-# appended "확인" — "…비교 분석하세요 확인" is the double-ending artifact.
+# Safety net: a follow item must never end in an imperative — "…비교 분석하세요
+# 확인" was the production double-ending artifact.
 _TRAILING_IMPERATIVE_RE = re.compile(r"(?:하세요|하십시오)[.!]?$")
 
 
 def compress_to_follow_check_item(line: str) -> str:
-    """Compress a memo-style action sentence into a short follow-check item.
+    """Compress a memo-style action sentence into a noun/observation phrase.
 
-    바로 볼 것 entries must not repeat the evening memo verbatim: the memo keeps the
-    full closing sentence, the follow block gets the shorter check-item form.
+    바로 볼 것 entries are observation points, not commands: the memo keeps the
+    full "…를 확인하세요" closing sentence, the follow block gets the bare
+    subject ("협력사·소부장 물량으로 번지는지", "후속 공시 일정"). Nothing is
+    glued onto the stem — the old "{stem} 확인" suffix produced the
+    "…하세요 확인" artifact whenever the verb tail wasn't recognized.
     """
     out = _text(line).rstrip(".")
     match = _FOLLOW_VERB_TAIL_RE.search(out)
     if match:
         prefix = out[: match.start()].rstrip(" ,·")
         if prefix:
-            return f"{prefix} 확인"
-    return out
+            return prefix
+    return _TRAILING_IMPERATIVE_RE.sub("", out).rstrip(" ,·") or out
 
 
 def build_korea_follow_hold_blocks(items: Sequence[Mapping[str, Any]]) -> Dict[str, List[str]]:
@@ -1094,9 +1111,10 @@ def build_korea_follow_hold_blocks(items: Sequence[Mapping[str, Any]]) -> Dict[s
     follow: List[str] = []
     for line in _collect_memo_action_lines(items):
         short = compress_to_follow_check_item(line)
-        if short in memo_lines and not short.endswith(("확인", "점검")):
-            stem = _TRAILING_IMPERATIVE_RE.sub("", short).rstrip(" ,·")
-            short = f"{stem} 확인" if stem else short
+        if short in memo_lines:
+            # Noun-style memo line survived compression verbatim — mark it as
+            # an observation point rather than repeating the memo line.
+            short = f"{short} 여부"
         if short and short not in follow and short not in memo_lines:
             follow.append(short)
         if len(follow) >= 3:
@@ -1106,20 +1124,25 @@ def build_korea_follow_hold_blocks(items: Sequence[Mapping[str, Any]]) -> Dict[s
 
     hold: List[str] = []
     for item in items:
-        label, explanation = _item_judgment(item)
-        if label in _RISK_LABELS and explanation:
-            line = _declarative_risk_statement(explanation)
-            if line and line not in hold:
-                hold.append(line)
+        # The hold list states what is NOT yet confirmed — never a verbatim
+        # copy of the card's "키수리 판단" risk sentence (the same sentence
+        # would then appear three times in one briefing: judgment, 위험 요인,
+        # 보류할 것).
+        label, _explanation = _item_judgment(item)
+        line = ""
+        if label in _RISK_LABELS:
+            subject = _short_title(_text(item.get("korean_title") or item.get("headline")))
+            if subject:
+                line = f"{subject} — 실제 파급 규모는 아직 숫자로 확인되지 않았습니다."
         elif _text(item.get("hype_caution")):
             line = _declarative_risk_statement(_text(item.get("hype_caution")))
-            if line and line not in hold:
-                hold.append(line)
+        if line and line not in hold:
+            hold.append(line)
         if len(hold) >= 3:
             break
     for default in (
         "숫자·일정이 확인되지 않은 기대감은 아직 단정하지 않겠습니다.",
-        "정책 발표와 실제 예산·조달 집행은 분리해서 확인하겠습니다.",
+        "정책 발표와 실제 예산·조달 집행은 분리해서 보겠습니다.",
     ):
         if len(hold) >= 2:
             break
@@ -1169,7 +1192,23 @@ def _collect_memo_action_lines(items: Sequence[Mapping[str, Any]]) -> List[str]:
         fallback = clamp_action_line(f"{title} 관련 후속 확인")
         if fallback and fallback not in action_lines:
             action_lines.append(fallback)
+        else:
+            # Same fallback already collected (e.g. a single item with no watch
+            # lines) — no further progress is possible; do not spin forever.
+            break
     return action_lines[:3]
+
+
+def _memo_summary_line(items: Sequence[Mapping[str, Any]], theme: str) -> str:
+    """Evening-memo opener anchored to TODAY's industries — never a fixed
+    'HBM·파운드리·국내 AI 투자' recitation that ignores what actually ran."""
+    industries: List[str] = []
+    for item in items:
+        cat = _korea_industry_label(_text(item.get("category_label_ko") or item.get("primary_category")))
+        if cat and cat not in industries:
+            industries.append(cat)
+    industry_phrase = "·".join(industries[:3]) if industries else "국내 테크"
+    return f"오늘은 {theme}가 {industry_phrase} 흐름을 한 번에 묶었습니다."
 
 
 def build_korea_evening_memo(
@@ -1181,9 +1220,7 @@ def build_korea_evening_memo(
     theme = _theme_phrase(items)
     action_lines = _collect_memo_action_lines(items)
     memo: Dict[str, Any] = {
-        "summary": (
-            f"오늘은 {theme}가 HBM·파운드리·국내 AI 투자 흐름을 한 번에 묶었습니다."
-        ),
+        "summary": _memo_summary_line(items, theme),
         "action_intro": "내일은 세 가지만 확인하시면 됩니다.",
         "action_lines": action_lines,
         "caution": "확정되지 않은 수치와 일정은 아직 조심해서 보겠습니다.",

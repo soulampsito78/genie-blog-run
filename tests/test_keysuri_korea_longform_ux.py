@@ -551,16 +551,20 @@ class KeysuriKoreaMarketContractHardeningTests(unittest.TestCase):
         self.assertIn("금리", line)
 
     def test_compress_follow_check_item_shortens_memo_sentence(self) -> None:
+        """Follow items are noun/observation phrases — the imperative tail is
+        dropped and nothing (especially not '확인') is glued onto the stem."""
         from keysuri_korea_longform_ux import compress_to_follow_check_item
 
         memo_line = "항목 1 관련 공식 발표·가격·일정 공개 여부를 확인하세요"
         short = compress_to_follow_check_item(memo_line)
         self.assertNotEqual(short, memo_line)
-        self.assertTrue(short.endswith("확인"))
+        self.assertEqual(short, "항목 1 관련 공식 발표·가격·일정 공개 여부")
+        self.assertNotIn("하세요", short)
 
     def test_compress_follow_check_item_handles_any_imperative_verb(self) -> None:
-        """Generic '…하세요' endings (분석하세요/주시하세요/…) must compress cleanly —
-        the '…비교 분석하세요 확인' double-ending artifact came from unmatched verbs."""
+        """Generic '…하세요' endings (분석하세요/주시하세요/…) must compress into
+        bare observation phrases — no imperative remnant, nothing glued on
+        (the '…비교 분석하세요 확인' production artifact)."""
         from keysuri_korea_longform_ux import compress_to_follow_check_item
 
         for memo_line in (
@@ -570,7 +574,9 @@ class KeysuriKoreaMarketContractHardeningTests(unittest.TestCase):
         ):
             with self.subTest(memo_line=memo_line):
                 short = compress_to_follow_check_item(memo_line)
-                self.assertTrue(short.endswith("확인"), short)
+                self.assertTrue(short, memo_line)
+                self.assertNotIn("하세요", short)
+                self.assertNotIn("하십시오", short)
                 self.assertNotIn("하세요 확인", short)
                 self.assertNotIn("하십시오 확인", short)
 
@@ -593,6 +599,73 @@ class KeysuriKoreaMarketContractHardeningTests(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertNotIn("하세요 확인", line)
                 self.assertNotIn("하십시오 확인", line)
+
+    def test_theme_phrase_never_names_ungrounded_events(self) -> None:
+        """A keyword hit (엔비디아/삼성) says the TOPIC moved — it must never
+        become a fabricated EVENT claim like 방한(visit) or 협력(partnership)."""
+        from keysuri_korea_longform_ux import _theme_phrase
+
+        nvidia_items = [{"korean_title": "엔비디아, 신형 GPU 아키텍처 공개"}]
+        samsung_items = [{"korean_title": "삼성전자, '나를 아는 AI'가 가장 중요하다고 강조"}]
+        robot_items = [{"korean_title": "나우로보틱스, K-뷰티 로봇 자동화 설비 공급"}]
+        for items in (nvidia_items, samsung_items, robot_items):
+            with self.subTest(items=items):
+                theme = _theme_phrase(items)
+                self.assertNotIn("방한", theme)
+                self.assertNotIn("협력", theme)
+        # No NVIDIA in today's items → the word must not appear at all.
+        self.assertNotIn("엔비디아", _theme_phrase(robot_items))
+
+    def test_evening_memo_summary_anchored_to_todays_industries(self) -> None:
+        """The 퇴근 전 메모 opener must reflect today's actual items — never the
+        fixed 'HBM·파운드리·국내 AI 투자' recitation from the old template."""
+        from keysuri_korea_longform_ux import build_korea_evening_memo
+
+        robot_items = [
+            {"korean_title": "나우로보틱스, K-뷰티 로봇 자동화 설비 공급",
+             "primary_category": "domestic_robotics"},
+        ]
+        memo = build_korea_evening_memo(robot_items)
+        self.assertNotIn("HBM·파운드리·국내 AI 투자", memo["summary"])
+        self.assertNotIn("방한", memo["summary"])
+        self.assertIn("흐름을 한 번에 묶었습니다", memo["summary"])
+
+    def test_hold_list_never_copies_risk_judgment_verbatim(self) -> None:
+        """보류할 것 entries must state what is not yet confirmed — not repeat
+        the card's risk judgment sentence a third time."""
+        from keysuri_korea_longform_ux import build_korea_follow_hold_blocks
+
+        risk_sentence = (
+            "국내 주요 대기업의 노사 갈등이 장기화되며 생산 차질 및 공급망 불안정성으로 "
+            "이어질 수 있는 명확한 리스크 신호입니다."
+        )
+        items = [
+            {
+                "korean_title": "현대차 노사, 임단협 난항 2년 연속 파업 위기 고조",
+                "keysuri_judgment_label": "리스크 신호",
+                "keysuri_judgment_text": risk_sentence,
+            }
+        ]
+        hold = build_korea_follow_hold_blocks(items)["hold"]
+        self.assertTrue(hold)
+        for line in hold:
+            with self.subTest(line=line):
+                self.assertNotEqual(line, risk_sentence)
+                self.assertNotIn("명확한 리스크 신호입니다", line)
+        self.assertTrue(any("확인되지 않" in line for line in hold), hold)
+
+    def test_market_impact_summary_tone_is_observational_not_recitation(self) -> None:
+        """Rows are judgment/observation statements, at most 3, without the
+        daily '확인하겠습니다/보겠습니다' recitation endings."""
+        from keysuri_korea_longform_ux import build_korea_market_impact_summary
+
+        rows = build_korea_market_impact_summary(_top_items())
+        self.assertLessEqual(len(rows), 3)
+        for row in rows:
+            with self.subTest(axis=row["axis"]):
+                self.assertNotIn("확인하겠습니다", row["body"])
+                self.assertNotIn("보겠습니다", row["body"])
+                self.assertNotIn("하세요", row["body"])
 
     def test_tomorrow_checkpoint_hold_never_copies_risk_judgment(self) -> None:
         """The hold field must state an unconfirmed assumption — not repeat the

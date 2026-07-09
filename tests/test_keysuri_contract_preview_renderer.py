@@ -283,7 +283,7 @@ def build_korea_contract_fixture(*, review_state: str = "preview_pending") -> di
         "evening_memo_heading": KOREA_EVENING_MEMO_HEADING,
         "korea_evening_memo": evening_memo,
         "evening_memo_body": evening_memo_text,
-        "one_line_checkpoint": "글로벌·국내 TOP5를 종합하면, 엔비디아 방한 이슈·국내 투자 축에서 한국 시장의 관건은 기회와 리스크가 동시에 이동하고 있습니다.",
+        "one_line_checkpoint": "글로벌·국내 TOP5를 종합하면, 국내 인프라·조달 축에서 한국 시장의 관건은 기회와 리스크가 동시에 이동하고 있습니다.",
         "closing_message": "오늘 신호는 여기까지 정리해 두었습니다. 출처는 아래에 그대로 남깁니다.",
         "source_list": [
             {
