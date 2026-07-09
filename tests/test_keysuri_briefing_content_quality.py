@@ -953,6 +953,54 @@ class KoreaPostRenderVisibleQualityTests(unittest.TestCase):
         result = validate_korea_post_render_visible_quality(html)
         codes = {i.code for i in result.issues}
         self.assertNotIn("korea_visible_text_slash_taxonomy_artifact", codes)
+        self.assertNotIn("korea_visible_text_customer_slash_label_artifact", codes)
+
+    def test_customer_slash_label_blocks(self) -> None:
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        for text in (
+            "협력사/소부장 물량으로 번지는지",
+            "반도체 공급망·로봇/에이전트 AI 축",
+            "파트너/고객/입찰 움직임",
+        ):
+            with self.subTest(text=text):
+                result = validate_korea_post_render_visible_quality(f"<p>{text}</p>")
+                self.assertFalse(result.ok)
+                self.assertIn(
+                    "korea_visible_text_customer_slash_label_artifact",
+                    {i.code for i in result.issues},
+                )
+
+    def test_weak_startup_support_overpromoted_blocks(self) -> None:
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        html = (
+            "<h2>국내 테크 TOP 5</h2>"
+            "<h3>3. B-스타트업 챌린지, 5개 팀에 3억 원 지분투자 및 참가기업 모집</h3>"
+            "<p>키수리 판단 사업 신호 지역 기반 스타트업 생태계 활성화와 "
+            "유망 기술 및 사업 모델을 가진 스타트업과의 협력 기회를 모색할 수 있습니다.</p>"
+            "<h2>키수리의 시장 판단</h2>"
+        )
+        result = validate_korea_post_render_visible_quality(html)
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "korea_tech_scope_weak_startup_support_overpromoted",
+            {i.code for i in result.issues},
+        )
+
+    def test_weak_startup_support_observation_tone_passes(self) -> None:
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        html = (
+            "<h2>국내 테크 TOP 5</h2>"
+            "<h3>5. B-스타트업 챌린지, 5개 팀에 3억 원 지분투자 및 참가기업 모집</h3>"
+            "<p>키수리 판단 관찰 기술 분야가 특정되지 않은 지역 스타트업 지원사업이므로, "
+            "직접 수혜보다는 모집 요건과 선정 분야만 확인하면 됩니다.</p>"
+            "<h2>키수리의 시장 판단</h2>"
+        )
+        result = validate_korea_post_render_visible_quality(html)
+        codes = {i.code for i in result.issues}
+        self.assertNotIn("korea_tech_scope_weak_startup_support_overpromoted", codes)
 
     def test_normal_observation_yeobu_and_imperative_pass_hamnida_gate(self) -> None:
         from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality

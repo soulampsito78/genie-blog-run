@@ -12,6 +12,7 @@ from keysuri_visible_text import (
     sanitize_visible_impact_line,
     strip_watch_arrow_prefixes,
 )
+from keysuri_korea_signal_scoring import is_weak_startup_support_signal
 
 KOREA_DEEP_MAX_PARAGRAPH_CHARS = 220
 KOREA_CLOSING_PARAGRAPH_MAX_CHARS = 220
@@ -593,6 +594,39 @@ _KOREA_SLASH_LABEL_TO_PROSE: Dict[str, str] = {
     "국내 소비자 테크·모빌리티": "소비자 테크·모빌리티",
 }
 
+# Compact customer-facing slash labels (no spaces around /) that still leak
+# into market-summary axes and deep-dive copy. Longest keys first at apply time.
+_KOREA_INLINE_SLASH_TO_PROSE: Dict[str, str] = {
+    "파트너/고객/입찰": "파트너·고객·입찰",
+    "협력사/소부장": "소부장 협력사",
+    "로봇/에이전트 AI": "로봇과 AI 에이전트",
+    "로봇/에이전트": "로봇과 AI 에이전트",
+    "로봇/AI": "로봇과 AI",
+    "AI/로봇": "AI와 로봇",
+    "정책/공공": "정책·공공",
+    "투자/지원": "투자와 지원",
+    "장비/소재": "장비와 소재",
+    "일자리/지역": "일자리·지역",
+}
+
+_WEAK_STARTUP_OVERPROMOTE_MARKERS: Tuple[str, ...] = (
+    "사업 신호",
+    "핵심 신호",
+    "핵심 사업",
+    "성장 동력",
+    "국내 테크 시장의 중심",
+    "유망 기술",
+    "협력 기회를 모색",
+)
+
+_WEAK_STARTUP_OBSERVATION_JUDGMENT = (
+    "기술 분야가 특정되지 않은 지역 스타트업 지원사업이므로, "
+    "직접 수혜보다는 모집 요건과 선정 분야만 확인하면 됩니다."
+)
+_WEAK_STARTUP_OBSERVATION_WATCH = (
+    "후속 투자 일정과 지원사업 공지만 확인하면 됩니다."
+)
+
 # Imperative / homework closings → observational secretary tone.
 _KOREA_IMPERATIVE_SOFTEN_RES: tuple[tuple[re.Pattern[str], str], ...] = (
     (
@@ -667,10 +701,20 @@ def _sanitize_korea_customer_label(value: str) -> str:
         return ""
     if raw in _KOREA_SLASH_LABEL_TO_PROSE:
         return _KOREA_SLASH_LABEL_TO_PROSE[raw]
+    if raw in _KOREA_INLINE_SLASH_TO_PROSE:
+        return _KOREA_INLINE_SLASH_TO_PROSE[raw]
     if raw in _KOREA_INDUSTRY_LABELS:
         return _KOREA_INDUSTRY_LABELS[raw]
     if " / " in raw:
         return raw.replace(" / ", "·")
+    if "/" in raw and "://" not in raw:
+        for src, dst in sorted(
+            _KOREA_INLINE_SLASH_TO_PROSE.items(), key=lambda kv: len(kv[0]), reverse=True
+        ):
+            if src in raw:
+                raw = raw.replace(src, dst)
+        if "/" in raw and "://" not in raw:
+            raw = raw.replace("/", "·")
     return raw
 
 
@@ -692,11 +736,108 @@ def _soften_korea_imperative_prose(text: str) -> str:
     return " ".join(p for p in softened if p)
 
 
+def _apply_inline_slash_prose(text: str) -> str:
+    """Replace compact slash labels while protecting URL schemes."""
+    out = _text(text)
+    if not out:
+        return ""
+    placeholders: List[str] = []
+
+    def _stash(match: re.Match[str]) -> str:
+        placeholders.append(match.group(0))
+        return f"\x00URL{len(placeholders) - 1}\x00"
+
+    protected = re.sub(r"https?://[^\s<>\"']+", _stash, out)
+    for src, dst in sorted(
+        _KOREA_INLINE_SLASH_TO_PROSE.items(), key=lambda kv: len(kv[0]), reverse=True
+    ):
+        if src in protected:
+            protected = protected.replace(src, dst)
+    for idx, url in enumerate(placeholders):
+        protected = protected.replace(f"\x00URL{idx}\x00", url)
+    return protected
+
+
+def is_weak_startup_support_item(text: str) -> bool:
+    """Regional contest / recruitment / generic equity-support without tech focus."""
+    return is_weak_startup_support_signal(text)
+
+
+def soften_weak_startup_support_prose(text: str, *, force: bool = False) -> str:
+    """Keep weak regional support items observational — never core-business tone."""
+    out = _text(text)
+    if not out:
+        return out
+    if not force and not is_weak_startup_support_item(out):
+        return out
+    replacements = (
+        ("사업 신호", "참고 신호"),
+        ("핵심 신호", "참고 신호"),
+        ("핵심 사업 신호", "참고 신호"),
+        ("국내 경제 성장 동력 확보에 중요합니다", "모집 요건과 선정 분야만 확인하면 됩니다"),
+        ("성장 동력 확보에 중요", "모집 요건과 선정 분야 확인이 우선"),
+        (
+            "유망 기술 및 사업 모델을 가진 스타트업과의 협력 기회를 모색할 수 있습니다",
+            "AI·딥테크 기업이 실제 선정되는지 확인되기 전까지는 참고 신호로 보는 편이 안전합니다",
+        ),
+        ("협력 기회를 모색할 수 있습니다", "모집 요건과 선정 분야만 확인하면 됩니다"),
+        ("긍정적인 신호입니다", "지원사업 일정 확인용 참고 신호입니다"),
+    )
+    for src, dst in replacements:
+        if src in out:
+            out = out.replace(src, dst)
+    return out
+
+
+def polish_weak_startup_support_item_fields(item: Mapping[str, Any]) -> Dict[str, Any]:
+    """Downgrade judgment/watch tone for weak regional startup-support cards."""
+    if not isinstance(item, dict):
+        return {}
+    blob = " ".join(
+        _text(item.get(key))
+        for key in (
+            "korean_title",
+            "headline",
+            "what_happened",
+            "why_now",
+            "why_it_matters",
+            "owner_angle",
+            "selection_reason",
+            "keysuri_judgment_text",
+            "keysuri_judgment",
+        )
+    )
+    if not is_weak_startup_support_item(blob):
+        return dict(item)
+    out = dict(item)
+    label, explanation = _item_judgment(item)
+    if label in _OPPORTUNITY_LABELS or not label:
+        out["keysuri_judgment_label"] = "관찰"
+    if explanation:
+        out["keysuri_judgment_text"] = soften_weak_startup_support_prose(
+            explanation, force=True
+        )
+    else:
+        out["keysuri_judgment_text"] = _WEAK_STARTUP_OBSERVATION_JUDGMENT
+    for key in ("why_it_matters", "owner_angle", "selection_reason", "what_happened", "why_now"):
+        if _text(out.get(key)):
+            out[key] = soften_weak_startup_support_prose(_text(out.get(key)), force=True)
+    watch = _text(out.get("next_watch") or out.get("next_check_point"))
+    if watch:
+        out["next_watch"] = (
+            soften_weak_startup_support_prose(watch, force=True)
+            or _WEAK_STARTUP_OBSERVATION_WATCH
+        )
+    else:
+        out["next_watch"] = _WEAK_STARTUP_OBSERVATION_WATCH
+    return out
+
+
 def sanitize_korea_customer_prose(text: str) -> str:
     """Customer-facing Korea prose: no slash taxonomy, fewer imperative closings.
 
     Replaces known slash taxonomy labels and residual " / " separators in prose.
-    Does not rewrite URL schemes (https://) — only the spaced taxonomy form.
+    Protects URL schemes (https://) before compact slash-label rewrites.
     """
     out = _text(text)
     if not out:
@@ -707,7 +848,9 @@ def sanitize_korea_customer_prose(text: str) -> str:
         if src in out:
             out = out.replace(src, dst)
     out = out.replace(" / ", "·")
+    out = _apply_inline_slash_prose(out)
     out = re.sub(r"·+", "·", out)
+    out = soften_weak_startup_support_prose(out)
     out = _soften_korea_imperative_prose(out)
     return re.sub(r"\s+", " ", out).strip()
 
@@ -819,7 +962,7 @@ def _build_global_impact_block(
         global_pressure.append("글로벌 공급망·인프라 변화")
     pressure = "·".join(global_pressure[:2]) if global_pressure else "글로벌 AI 인프라·플랫폼 경쟁"
     body = (
-        f"글로벌 AI 인프라·플랫폼 경쟁과 반도체 공급망·로봇/에이전트 AI 축은 "
+        f"글로벌 AI 인프라·플랫폼 경쟁과 반도체 공급망·로봇과 AI 에이전트 축은 "
         f"{pressure}와 맞물려 한국 기업·스타트업·공급망과 정책·자본시장에 압력을 전달합니다. "
         f"한국 쪽에서는 해외 인프라·조달 구조 변화에 맞춰 투자·조달·파트너십 우선순위를 "
         f"재배치해야 하는 단계입니다."
@@ -848,10 +991,19 @@ def _build_opportunity_block(items: Sequence[Mapping[str, Any]]) -> str:
     for item in items:
         if not isinstance(item, dict):
             continue
-        label, explanation = _item_judgment(item)
+        polished = polish_weak_startup_support_item_fields(item)
+        label, explanation = _item_judgment(polished)
+        # Weak regional support contests are observation-only — never opportunity bullets.
+        if is_weak_startup_support_item(
+            " ".join(
+                _text(polished.get(k))
+                for k in ("korean_title", "headline", "what_happened", "why_now")
+            )
+        ):
+            continue
         if label in _OPPORTUNITY_LABELS:
             line = explanation or _first_sentences(
-                _text(item.get("owner_angle") or item.get("next_day_impact_line")), 1
+                _text(polished.get("owner_angle") or polished.get("next_day_impact_line")), 1
             )
             line = remove_truncated_headline_fragments(line)
             if line and line not in lines:
@@ -859,6 +1011,10 @@ def _build_opportunity_block(items: Sequence[Mapping[str, Any]]) -> str:
     if not lines:
         for item in items[:2]:
             if not isinstance(item, dict):
+                continue
+            if is_weak_startup_support_item(
+                " ".join(_text(item.get(k)) for k in ("korean_title", "headline", "what_happened"))
+            ):
                 continue
             impact = sanitize_visible_impact_line(
                 _text(item.get("next_day_impact_line") or item.get("owner_action_line")),
@@ -1225,9 +1381,9 @@ def build_korea_market_impact_summary(items: Sequence[Mapping[str, Any]]) -> Lis
             ),
         },
         {
-            "axis": "협력사/소부장",
+            "axis": "소부장 협력사",
             "body": (
-                f"{industry_phrase} 쪽 신호가 협력사·소부장 물량으로 번지는지가 "
+                f"{industry_phrase} 쪽 신호가 소부장 협력사 물량으로 번지는지가 "
                 "체감 영향의 기준입니다."
             ),
         },

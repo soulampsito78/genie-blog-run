@@ -1716,6 +1716,23 @@ _KOREA_SLASH_TAXONOMY_RE = re.compile(
     r"(?:기업\s*AI\s*도입|장비|소재|스마트팩토리|EV|에너지|클라우드|SaaS|규제|공공|투자|M&A|디바이스|모빌리티)"
 )
 
+# Compact customer-facing slash labels that must never reach the email body.
+_KOREA_CUSTOMER_SLASH_LABEL_RE = re.compile(
+    r"(?:협력사/소부장|로봇/에이전트|로봇/AI|AI/로봇|정책/공공|투자/지원|"
+    r"장비/소재|파트너/고객/입찰|일자리/지역)"
+)
+
+_KOREA_WEAK_STARTUP_SUPPORT_TITLE_RE = re.compile(
+    r"(?:B-?스타트업\s*챌린지|참가기업\s*모집|창업\s*경진|공모전|"
+    r"지분\s*투자.{0,12}모집|지원사업.{0,12}모집)",
+    re.IGNORECASE,
+)
+
+_KOREA_WEAK_STARTUP_OVERPROMOTE_RE = re.compile(
+    r"(?:사업\s*신호|핵심\s*신호|핵심\s*사업|성장\s*동력|"
+    r"국내\s*테크\s*시장의\s*중심|유망\s*기술|협력\s*기회를\s*모색)"
+)
+
 _KOREA_HOLD_FIELD_MARKER = "아직 단정하지 말 것"
 _KOREA_JUDGMENT_MARKER = "키수리 판단"
 _KOREA_HOLD_DUP_MIN_CHARS = 25
@@ -1895,6 +1912,48 @@ def validate_korea_post_render_visible_quality(html: str) -> BriefingContentQual
             )
         )
 
+    for m in _KOREA_CUSTOMER_SLASH_LABEL_RE.finditer(plain_no_urls):
+        issues.append(
+            BriefingContentIssue(
+                "korea_visible_text_customer_slash_label_artifact",
+                f"Customer-facing slash label leaked into prose: {m.group(0)!r}",
+                section="visible_body",
+                excerpt=m.group(0),
+            )
+        )
+
+    # Weak regional startup-support contests must not be overpromoted as core signals.
+    top5_start = plain.find(_KOREA_TOP5_HEADING)
+    synthesis_start = plain.find(_KOREA_SYNTHESIS_HEADING)
+    cards_region = ""
+    if top5_start >= 0:
+        end = synthesis_start if synthesis_start > top5_start else len(plain)
+        cards_region = plain[top5_start:end]
+    if cards_region and _KOREA_WEAK_STARTUP_SUPPORT_TITLE_RE.search(cards_region):
+        # Look for overpromotion near the weak-support card text.
+        for card_m in _KOREA_WEAK_STARTUP_SUPPORT_TITLE_RE.finditer(cards_region):
+            window = cards_region[max(0, card_m.start() - 80) : card_m.end() + 500]
+            if _KOREA_WEAK_STARTUP_OVERPROMOTE_RE.search(window):
+                issues.append(
+                    BriefingContentIssue(
+                        "korea_tech_scope_weak_startup_support_overpromoted",
+                        "Weak regional startup-support item overpromoted as core tech signal",
+                        section="top5",
+                        excerpt=card_m.group(0)[:80],
+                    )
+                )
+                break
+
+    for excerpt in _korea_hold_duplicate_judgment_excerpts(plain):
+        issues.append(
+            BriefingContentIssue(
+                "korea_hold_field_duplicate_judgment",
+                "'아직 단정하지 말 것' field duplicates the same card's '키수리 판단' text",
+                section="top5",
+                excerpt=excerpt,
+            )
+        )
+
     # Safety-net QA if selection gate missed an out-of-scope story.
     if any(m in plain for m in KOREA_SCOPE_LEAK_CASINO_MARKERS) and not any(
         t in plain.lower() for t in ("ai", "인공지능", "플랫폼", "보안", "데이터", "핀테크")
@@ -1925,16 +1984,6 @@ def validate_korea_post_render_visible_quality(html: str) -> BriefingContentQual
                 "Finance-only story incorrectly attached semiconductor HBM/foundry template",
                 section="top5",
                 excerpt="HBM·파운드리",
-            )
-        )
-
-    for excerpt in _korea_hold_duplicate_judgment_excerpts(plain):
-        issues.append(
-            BriefingContentIssue(
-                "korea_hold_field_duplicate_judgment",
-                "'아직 단정하지 말 것' field duplicates the same card's '키수리 판단' text",
-                section="top5",
-                excerpt=excerpt,
             )
         )
 

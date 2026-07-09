@@ -147,6 +147,53 @@ _STRONG_TECH_MARKERS: Tuple[str, ...] = (
     "플랫폼", "스타트업", "상장", "수주", "설비투자", "증설", "휴머노이드",
 )
 
+# Regional contest / recruitment / generic equity-support without tech focus.
+# These may still enter TOP5 as weak_tech observation items, but must not be
+# treated as strong_tech or occupy TOP1–TOP3 promotion slots.
+_WEAK_STARTUP_SUPPORT_MARKERS: Tuple[str, ...] = (
+    "챌린지",
+    "참가기업 모집",
+    "참가 기업 모집",
+    "창업 경진",
+    "지분투자",
+    "지분 투자",
+    "지원사업",
+    "지원 사업",
+    "공모전",
+    "창업대회",
+    "창업 대회",
+    "fly asia",
+    "b-스타트업",
+    "b 스타트업",
+)
+
+_WEAK_STARTUP_TECH_PRODUCT_MARKERS: Tuple[str, ...] = (
+    "ai 스타트업",
+    "딥테크",
+    "반도체",
+    "로봇",
+    "llm",
+    "npu",
+    "hbm",
+    "saas",
+    "클라우드",
+    "보안",
+    "자율주행",
+    "핀테크",
+    "바이오",
+)
+
+_WEAK_STARTUP_REAL_INVESTMENT_MARKERS: Tuple[str, ...] = (
+    "시리즈",
+    "라운드",
+    "팁스",
+    "tips",
+    "vc",
+    "cvc",
+    "시드",
+    "프리에이",
+)
+
 _SEMICONDUCTOR_ENTITY_ONLY: Tuple[str, ...] = (
     "삼성전자", "sk하이닉스", "sk hynix", "samsung",
 )
@@ -786,9 +833,50 @@ def is_strong_korea_tech_signal(text: str) -> bool:
         return False
     if is_global_vendor_core_without_korea(text):
         return False
+    if is_weak_startup_support_signal(text):
+        return False
     return _has_any(text, _STRONG_TECH_MARKERS) and (
         has_korea_direct_link(text) or _has_any(text, _SEMICONDUCTOR_REAL_SIGNAL)
     )
+
+
+def is_weak_startup_support_signal(text: str) -> bool:
+    """Regional contest / recruitment / generic equity-support without tech focus.
+
+    Not a hard reject — may still appear as weak_tech observation — but must not
+    be promoted as strong_tech or occupy TOP1–TOP3 as a core business signal.
+    """
+    blob = str(text or "").lower()
+    if not blob:
+        return False
+    if not _has_any(blob, _WEAK_STARTUP_SUPPORT_MARKERS):
+        return False
+    # Named tech-product investment (Series A into an AI/robotics startup, etc.)
+    # is a real signal — keep it out of the weak-support bucket.
+    if _has_any(blob, _WEAK_STARTUP_TECH_PRODUCT_MARKERS) and _has_any(
+        blob, _WEAK_STARTUP_REAL_INVESTMENT_MARKERS
+    ):
+        return False
+    # Contest/recruitment framing wins even when a tech keyword appears once.
+    if _has_any(
+        blob,
+        (
+            "챌린지",
+            "참가기업 모집",
+            "참가 기업 모집",
+            "공모전",
+            "창업 경진",
+            "창업대회",
+            "창업 대회",
+        ),
+    ):
+        return True
+    # Generic support-program copy without a tech product focus.
+    if _has_any(blob, ("지원사업", "지원 사업", "지분투자", "지분 투자")) and not _has_any(
+        blob, _WEAK_STARTUP_TECH_PRODUCT_MARKERS
+    ):
+        return True
+    return False
 
 
 def evaluate_korea_tech_scope(text: str) -> Tuple[Optional[str], str]:
@@ -804,6 +892,9 @@ def evaluate_korea_tech_scope(text: str) -> Tuple[Optional[str], str]:
         return KOREA_TECH_SCOPE_FINANCE_ONLY, "finance_only"
     if is_global_vendor_core_without_korea(blob):
         return KOREA_TECH_SCOPE_GLOBAL_LEAK, "global_leak"
+    if is_weak_startup_support_signal(blob):
+        # Observation-only: never strong_tech, never TOP1–TOP3 promotion.
+        return None, "weak_tech"
     if is_strong_korea_tech_signal(blob):
         return None, "strong_tech"
     if _has_any(blob, _STRONG_TECH_MARKERS) or has_korea_direct_link(blob):
@@ -1104,6 +1195,10 @@ def score_korea_tech_item(item: dict) -> ScoredKoreaSignal:
     domestic_boost, boost_tags = _domestic_relevance_boost(scope_text, primary)
     tags.extend(boost_tags)
     tags.append(f"korea_tech_scope:{scope_status}")
+    if is_weak_startup_support_signal(scope_text):
+        tags.append("weak_startup_support")
+        if scope_status == "weak_tech":
+            tags.append("observation_only")
 
     scores = KoreaScoreBreakdown()
     scores.freshness_score = _score_freshness(published_at)
@@ -1382,7 +1477,34 @@ def select_korea_top5(
             item.reason_not_selected = KOREA_TECH_SCOPE_WEAK_TOP1
             decisions.append(f"skipped_weak_without_top1:{item.title[:50]}")
             continue
+        # Weak regional startup-support contests must not occupy TOP1–TOP3.
+        # Prefer later slots (4–5) when stronger candidates still remain.
+        if (
+            is_weak_startup_support_signal(item.title + " " + item.summary)
+            and len(selected) < 3
+            and any(
+                _is_qualifying_candidate(s)
+                and _key(s) not in selected_keys
+                and not is_weak_startup_support_signal(s.title + " " + s.summary)
+                and s.korea_tech_scope_status in ("strong_tech", "weak_tech")
+                for s in ranked
+            )
+        ):
+            decisions.append(f"deferred_weak_startup_support:{item.title[:50]}")
+            continue
         _try_add(item, "score_rank")
+
+    # Second pass: fill remaining slots, allowing deferred weak startup support.
+    for item in ranked:
+        if len(selected) >= max_items:
+            break
+        if _key(item) in selected_keys:
+            continue
+        if item.korea_tech_scope_status not in ("strong_tech", "weak_tech"):
+            continue
+        if not selected and item.korea_tech_scope_status != "strong_tech":
+            continue
+        _try_add(item, "score_rank_fill")
 
     if not diversity_limited:
         non_ai_selected = sum(1 for s in selected if not s.is_ai_category)

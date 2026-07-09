@@ -461,11 +461,13 @@ class KeysuriKoreaMarketRendererHelpersTests(unittest.TestCase):
         self.assertGreaterEqual(len(rows), 3)
         axes = {row["axis"] for row in rows}
         self.assertEqual(KOREA_MARKET_SUMMARY_HEADING, "오늘 신호가 내려오는 곳")
-        for axis in ("관련 업종", "협력사/소부장", "개인 투자자"):
+        for axis in ("관련 업종", "소부장 협력사", "개인 투자자"):
             with self.subTest(axis=axis):
                 self.assertIn(axis, axes)
         for row in rows:
             self.assertTrue(row["body"])
+            self.assertNotIn("협력사/소부장", row["axis"])
+            self.assertNotIn("협력사/소부장", row["body"])
             self.assertNotIn("매수", row["body"])
             self.assertNotIn("매도", row["body"])
             self.assertNotIn("직접 영향은 제한적", row["body"])
@@ -786,11 +788,21 @@ class KeysuriKoreaMarketContractHardeningTests(unittest.TestCase):
                 "내일 먼저 볼 것: 현대차그룹의 로봇 관련 투자 및 협력사 발표 일정을 확인해야 합니다",
                 "다음 확인 지점입니다",
             ),
+            (
+                "협력사/소부장 물량으로 번지는지",
+                "소부장 협력사",
+            ),
+            (
+                "반도체 공급망·로봇/에이전트 AI 축",
+                "로봇과 AI 에이전트",
+            ),
         )
         for raw, expected_fragment in cases:
             with self.subTest(raw=raw):
                 out = sanitize_korea_customer_prose(raw)
                 self.assertNotIn(" / ", out)
+                self.assertNotIn("협력사/소부장", out)
+                self.assertNotIn("로봇/에이전트", out)
                 self.assertNotIn("점검하세요", out)
                 self.assertNotIn("확인해야 합니다", out)
                 self.assertNotIn("주시하십시오", out)
@@ -798,6 +810,44 @@ class KeysuriKoreaMarketContractHardeningTests(unittest.TestCase):
                 finalized = finalize_korea_visible_field(raw)
                 self.assertNotIn(" / ", finalized)
                 self.assertNotIn("점검하세요", finalized)
+
+    def test_sanitize_preserves_https_urls(self) -> None:
+        from keysuri_korea_longform_ux import sanitize_korea_customer_prose
+
+        raw = "출처 https://www.etnews.com/news/articleView.html?idxno=1 협력사/소부장"
+        out = sanitize_korea_customer_prose(raw)
+        self.assertIn("https://www.etnews.com/news/articleView.html?idxno=1", out)
+        self.assertNotIn("협력사/소부장", out)
+        self.assertIn("소부장 협력사", out)
+
+    def test_weak_startup_support_prose_is_observational(self) -> None:
+        from keysuri_korea_longform_ux import (
+            is_weak_startup_support_item,
+            polish_weak_startup_support_item_fields,
+            soften_weak_startup_support_prose,
+        )
+
+        title = "B-스타트업 챌린지, 5개 팀에 3억 원 지분투자 및 참가기업 모집"
+        self.assertTrue(is_weak_startup_support_item(title))
+        over = (
+            "지역 기반 스타트업 생태계 활성화와 투자 기회 발굴에 긍정적인 신호입니다. "
+            "유망 기술 및 사업 모델을 가진 스타트업과의 협력 기회를 모색할 수 있습니다."
+        )
+        soft = soften_weak_startup_support_prose(title + " " + over)
+        self.assertNotIn("협력 기회를 모색할 수 있습니다", soft)
+        self.assertTrue(
+            "참고 신호" in soft or "모집 요건" in soft or "선정 분야" in soft,
+            soft,
+        )
+        polished = polish_weak_startup_support_item_fields(
+            {
+                "korean_title": title,
+                "keysuri_judgment_label": "사업 신호",
+                "keysuri_judgment_text": over,
+            }
+        )
+        self.assertEqual(polished["keysuri_judgment_label"], "관찰")
+        self.assertNotIn("사업 신호", polished.get("keysuri_judgment_text") or "")
 
     def test_theme_phrase_avoids_deeptech_bleed_for_generic_startup(self) -> None:
         from keysuri_korea_longform_ux import _theme_phrase

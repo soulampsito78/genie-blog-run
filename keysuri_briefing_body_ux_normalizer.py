@@ -11,6 +11,7 @@ from keysuri_korea_longform_ux import (
     build_korea_one_line_checkpoint,
     finalize_korea_visible_field,
     korea_evening_memo_too_thin,
+    polish_weak_startup_support_item_fields,
     remove_internal_glue,
     structure_korea_deep_dive,
 )
@@ -430,6 +431,7 @@ def normalize_generated_briefing_visible_prose(
         thin = bool(item.get("detail_insufficient"))
         normalized = normalize_visible_item_fields(item, thin_source=thin, korea_program=is_korea)
         if is_korea:
+            normalized = polish_weak_startup_support_item_fields(normalized)
             meta_stub = {
                 "primary_category": normalized.get("primary_category"),
                 "selection_reason_tags": normalized.get("selection_reason_tags"),

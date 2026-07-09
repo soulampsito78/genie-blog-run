@@ -743,6 +743,76 @@ class KoreaTechScopeGateTests(unittest.TestCase):
         self.assertTrue(all(s.korea_tech_scope_status in ("strong_tech", "weak_tech") for s in result.selected_top5))
         self.assertEqual(result.selected_top5[0].korea_tech_scope_status, "strong_tech")
 
+    def test_b_startup_challenge_is_weak_tech_not_strong(self) -> None:
+        from keysuri_korea_signal_scoring import is_weak_startup_support_signal
+
+        text = (
+            "B-스타트업 챌린지, 5개 팀에 3억 원 지분투자 및 참가기업 모집 "
+            "부산시 BNK부산은행 공동 주최"
+        )
+        self.assertTrue(is_weak_startup_support_signal(text))
+        reject, status = evaluate_korea_tech_scope(text)
+        self.assertIsNone(reject)
+        self.assertEqual(status, "weak_tech")
+
+    def test_named_ai_startup_series_investment_remains_strong(self) -> None:
+        from keysuri_korea_signal_scoring import is_weak_startup_support_signal
+
+        text = (
+            "네이버 D2SF, 국내 AI 스타트업에 시리즈A 투자 — "
+            "LLM 플랫폼·클라우드 SaaS 제품 상용화"
+        )
+        self.assertFalse(is_weak_startup_support_signal(text))
+        reject, status = evaluate_korea_tech_scope(text)
+        self.assertIsNone(reject)
+        self.assertEqual(status, "strong_tech")
+
+    def test_weak_startup_support_deferred_from_top3_when_stronger_exist(self) -> None:
+        items = [
+            _item(
+                "challenge",
+                "B-스타트업 챌린지, 5개 팀에 3억 원 지분투자 및 참가기업 모집",
+                summary="부산시·BNK부산은행 공동 주최 창업 경진대회 참가기업 모집.",
+                category="korea_startup_investment",
+            ),
+            _item(
+                "semi-1",
+                "삼성전자 HBM 파운드리 장비 수주와 국내 증설",
+                summary="삼성전자 SK하이닉스 HBM DRAM 패키징 장비 수주 국내 공급망.",
+                category="korea_semiconductor",
+            ),
+            _item(
+                "npu-1",
+                "모빌린트, 2세대 NPU 레귤러스 연말 대량 양산 목표",
+                summary="국내 AI 반도체 NPU 양산, 피지컬 AI 인프라 국산화.",
+                category="korea_semiconductor",
+            ),
+            _item(
+                "policy-1",
+                "과기정통부 국내 AI 규제·조달 정책 발표",
+                summary="정부가 국내 AI 정책과 공공 조달 입찰 일정을 발표.",
+                category="korea_policy_regulation",
+            ),
+            _item(
+                "naver-1",
+                "네이버, 국내 클라우드·AI 플랫폼 기업 고객 도입 확대",
+                summary="네이버가 국내 기업 AI·클라우드 SaaS 도입 계약을 확대.",
+                category="korea_platform_cloud_saas",
+            ),
+        ]
+        result = score_korea_signal_candidates(items)
+        top3_titles = [s.title for s in result.selected_top5[:3]]
+        self.assertTrue(result.selected_top5)
+        self.assertTrue(
+            all("챌린지" not in t and "참가기업" not in t for t in top3_titles),
+            top3_titles,
+        )
+        # May still appear in TOP4–TOP5 as observation, but never as strong_tech.
+        for s in result.selected_top5:
+            if "챌린지" in s.title:
+                self.assertEqual(s.korea_tech_scope_status, "weak_tech")
+                self.assertIn("weak_startup_support", s.selection_reason_tags)
+
 
 if __name__ == "__main__":
     unittest.main()

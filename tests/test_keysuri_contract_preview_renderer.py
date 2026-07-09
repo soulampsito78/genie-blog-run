@@ -1111,12 +1111,14 @@ class KeysuriKoreaMarketBriefingRenderTests(unittest.TestCase):
             1
             for axis in (
                 "관련 업종",
-                "협력사/소부장",
+                "소부장 협력사",
                 "개인 투자자",
             )
             if axis in html
         )
         self.assertEqual(axes, 3)
+        self.assertNotIn("협력사/소부장", html)
+        self.assertNotIn("로봇/에이전트", html)
         self.assertNotIn("시장 영향 요약", html)
         # The section must be anchored to today's items, never the legacy
         # fixed daily lesson sentences.
