@@ -1687,10 +1687,26 @@ KOREA_STATIC_LESSON_SENTENCE_THRESHOLD = 3
 # after a normal imperative ("…하세요 확인이 필요한 부분은 …") does not match.
 _KOREA_DOUBLE_ENDING_RE = re.compile(r"[가-힣]+(?:하세요|하십시오)\s+확인(?![가-힣])")
 
-# "…해야 합니다 여부" / "…필요합니다 여부" — declarative clause + glued 여부.
+# "…해야 합니다 여부" / "…입니다 여부" / "…보면 됩니다 여부" — finished clause + glued 여부.
 _KOREA_HAMNIDA_YEOBU_RE = re.compile(
     r"(?:확인해야\s*합니다|주시해야\s*합니다|점검해야\s*합니다|"
-    r"해야\s*합니다|필요합니다|중요합니다|합니다)\s+여부"
+    r"해야\s*합니다|필요합니다|중요합니다|합니다|"
+    r"입니다|됩니다|있습니다|보겠습니다|"
+    r"보면\s*됩니다|확인\s*지점입니다)\s+여부"
+)
+
+# Broader modal-noun glue: any finished declarative ending + "여부".
+_KOREA_MODAL_NOUN_YEOBU_RE = re.compile(
+    r"(?:입니다|됩니다|있습니다|하겠습니다|보겠습니다|"
+    r"합니다|필요합니다|중요합니다|"
+    r"보면\s*됩니다|좁혀\s*보면\s*됩니다|이어서\s*보면\s*됩니다|"
+    r"확인\s*지점입니다)\s+여부"
+)
+
+# Truncated follow/checkpoint tails that must never reach customer HTML.
+_KOREA_TRUNCATED_FOLLOW_TAIL_RE = re.compile(
+    r"(?:지속적으로|통해|따라|중심으로)[.!…]?\s*$",
+    re.MULTILINE,
 )
 
 # Slash taxonomy labels leaking into customer prose (not URL schemes).
@@ -1836,6 +1852,34 @@ def validate_korea_post_render_visible_quality(html: str) -> BriefingContentQual
                 f"Declarative ending glued to '여부' (prose glue): {m.group(0)!r}",
                 section="visible_body",
                 excerpt=m.group(0),
+            )
+        )
+
+    for m in _KOREA_MODAL_NOUN_YEOBU_RE.finditer(plain):
+        # Avoid double-counting the same span already flagged as hamnida_yeobu.
+        if _KOREA_HAMNIDA_YEOBU_RE.search(m.group(0)):
+            continue
+        issues.append(
+            BriefingContentIssue(
+                "korea_visible_text_modal_noun_glue_artifact",
+                f"Finished clause glued to '여부' (modal-noun glue): {m.group(0)!r}",
+                section="visible_body",
+                excerpt=m.group(0),
+            )
+        )
+
+    for m in _KOREA_TRUNCATED_FOLLOW_TAIL_RE.finditer(plain):
+        # Only flag when the truncated tail is a standalone line / list item end,
+        # not mid-sentence "관련 기업" etc. Match end-of-line or end-of-string.
+        excerpt = m.group(0).strip()
+        # Skip common complete phrases that legitimately end near these tokens
+        # inside longer sentences — the regex already anchors to line end.
+        issues.append(
+            BriefingContentIssue(
+                "korea_visible_text_truncated_follow_item",
+                f"Follow/checkpoint item ends in incomplete clause tail: {excerpt!r}",
+                section="visible_body",
+                excerpt=excerpt,
             )
         )
 

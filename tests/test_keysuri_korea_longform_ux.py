@@ -631,12 +631,108 @@ class KeysuriKoreaMarketContractHardeningTests(unittest.TestCase):
             "점검해야 합니다 여부",
             "필요합니다 여부",
             "중요합니다 여부",
+            "입니다 여부",
+            "됩니다 여부",
         ):
             self.assertNotIn(forbidden, blob)
         for line in follow:
             with self.subTest(line=line):
                 self.assertNotRegex(line, r"합니다\s+여부")
                 self.assertNotIn("하세요", line)
+
+    def test_finalize_follow_strips_finished_sentence_yeobu_glue(self) -> None:
+        from keysuri_korea_longform_ux import (
+            _finalize_follow_check_item,
+            compress_to_follow_check_item,
+        )
+
+        cases = (
+            (
+                "정부의 구체적인 '전기국가' 실현 계획 및 예산 배정 현황이 다음 확인 지점입니다 여부",
+                "다음 확인 지점입니다.",
+            ),
+            (
+                "전력 효율화 기술 및 청정 에너지 솔루션 관련 기업들의 동향만 이어서 보면 됩니다 여부",
+                "보면 됩니다.",
+            ),
+        )
+        for raw, expected_tail in cases:
+            with self.subTest(raw=raw):
+                out = _finalize_follow_check_item(
+                    compress_to_follow_check_item(raw),
+                    memo_lines=set(),
+                )
+                self.assertTrue(out.endswith(expected_tail), out)
+                self.assertNotIn("여부", out)
+
+    def test_finalize_follow_completes_truncated_continuously_tail(self) -> None:
+        from keysuri_korea_longform_ux import (
+            _finalize_follow_check_item,
+            compress_to_follow_check_item,
+        )
+
+        raw = (
+            "AI 데이터센터 및 반도체 팹 증설에 따른 전력 수요 증가와 "
+            "공급망 변화를 지속적으로"
+        )
+        out = _finalize_follow_check_item(
+            compress_to_follow_check_item(raw),
+            memo_lines=set(),
+        )
+        self.assertFalse(out.rstrip(".!").endswith("지속적으로"), out)
+        self.assertIn("이어서 보면 됩니다", out)
+        self.assertTrue(out.endswith("."), out)
+
+    def test_finalize_follow_preserves_noun_phrase_yeobu(self) -> None:
+        from keysuri_korea_longform_ux import _finalize_follow_check_item
+
+        for stem in ("예산 배정 여부", "후속 발표 여부", "실제 계약 여부"):
+            with self.subTest(stem=stem):
+                out = _finalize_follow_check_item(stem, memo_lines={stem})
+                self.assertEqual(out, stem)
+
+    def test_follow_blocks_reject_production_yeobu_and_truncation(self) -> None:
+        from keysuri_korea_longform_ux import (
+            build_korea_evening_memo,
+            build_korea_follow_hold_blocks,
+        )
+
+        items = [
+            {
+                "korean_title": "전기국가 전략",
+                "next_watch": (
+                    "정부의 구체적인 '전기국가' 실현 계획 및 예산 배정 현황이 "
+                    "다음 확인 지점입니다"
+                ),
+            },
+            {
+                "korean_title": "전력 수요",
+                "next_watch": (
+                    "AI 데이터센터 및 반도체 팹 증설에 따른 전력 수요 증가와 "
+                    "공급망 변화를 지속적으로 관찰해야 합니다"
+                ),
+            },
+            {
+                "korean_title": "전력 효율",
+                "next_watch": (
+                    "전력 효율화 기술 및 청정 에너지 솔루션 관련 기업들의 "
+                    "동향만 이어서 보면 됩니다"
+                ),
+            },
+        ]
+        follow = build_korea_follow_hold_blocks(items)["follow"]
+        memo = build_korea_evening_memo(items)["action_lines"]
+        for lines in (follow, memo):
+            blob = "\n".join(lines)
+            with self.subTest(blob=blob):
+                self.assertNotIn("됩니다 여부", blob)
+                self.assertNotIn("입니다 여부", blob)
+                self.assertNotIn("합니다 여부", blob)
+                for line in lines:
+                    self.assertFalse(
+                        line.rstrip(".!").endswith("지속적으로"),
+                        line,
+                    )
 
     def test_longform_industry_labels_never_expose_slash_taxonomy(self) -> None:
         from keysuri_korea_longform_ux import (
@@ -821,17 +917,31 @@ class KeysuriKoreaMarketContractHardeningTests(unittest.TestCase):
         self.assertNotIn("리스크 신호입니다", hold)
 
     def test_follow_lines_never_verbatim_repeat_memo_action_lines(self) -> None:
+        """Noun-style watch items: follow may add '여부', memo keeps the stem.
+
+        Finished observational sentences may legitimately appear in both blocks
+        after finalize — that is preferred over gluing '여부' onto them.
+        """
         from keysuri_korea_longform_ux import (
             build_korea_evening_memo,
             build_korea_follow_hold_blocks,
         )
 
-        items = _top_items()
+        items = [
+            {
+                "korean_title": "국내 반도체 공급망 신호",
+                "next_watch": "삼성전자 HBM4 후속 일정; 국내 팹 투자 발표",
+            }
+        ]
         follow = build_korea_follow_hold_blocks(items)["follow"]
         memo_lines = build_korea_evening_memo(items)["action_lines"]
         overlap = set(follow) & set(memo_lines)
         self.assertEqual(overlap, set(), overlap)
         self.assertGreaterEqual(len(follow), 1)
+        for line in follow + memo_lines:
+            with self.subTest(line=line):
+                self.assertNotRegex(line, r"(?:입니다|됩니다|합니다)\s+여부")
+                self.assertFalse(line.rstrip(".!").endswith("지속적으로"))
 
     def test_follow_lines_differ_even_for_noun_style_watch_items(self) -> None:
         from keysuri_korea_longform_ux import (
@@ -848,6 +958,7 @@ class KeysuriKoreaMarketContractHardeningTests(unittest.TestCase):
         follow = build_korea_follow_hold_blocks(items)["follow"]
         memo_lines = build_korea_evening_memo(items)["action_lines"]
         self.assertEqual(set(follow) & set(memo_lines), set())
+        self.assertTrue(any(line.endswith("여부") for line in follow), follow)
 
     def test_fixture_mapper_passes_market_fields_for_korea_only(self) -> None:
         from keysuri_contract_preview_fixture import _map_top_item

@@ -1177,7 +1177,10 @@ def build_korea_tomorrow_checkpoint_parts(item: Mapping[str, Any]) -> tuple[str,
     if not confirm:
         title = _short_title(_text(item.get("korean_title") or item.get("headline"))) or "핵심 신호"
         confirm = f"{title} 후속 발표·일정"
-    confirm = sanitize_korea_customer_prose(confirm)
+    confirm = _finalize_follow_check_item(
+        compress_to_follow_check_item(sanitize_korea_customer_prose(confirm)),
+        memo_lines=set(),
+    )
 
     # The hold field names what is NOT yet confirmed (숫자/일정/계약/실행) —
     # never a verbatim reuse of the card's "키수리 판단" explanation (that
@@ -1267,14 +1270,30 @@ _TRAILING_IMPERATIVE_RE = re.compile(r"(?:하세요|하십시오)[.!]?$")
 
 # Complete-sentence endings that must never receive a glued " 여부".
 _COMPLETE_SENTENCE_TAIL_RE = re.compile(
-    r"(?:합니다|해야\s*합니다|필요합니다|중요합니다|하세요|하십시오)[.!]?$"
+    r"(?:"
+    r"합니다|해야\s*합니다|필요합니다|중요합니다|"
+    r"입니다|됩니다|있습니다|보겠습니다|"
+    r"보면\s*됩니다|좁혀\s*보면\s*됩니다|이어서\s*보면\s*됩니다|"
+    r"함께\s*보면\s*됩니다|확인\s*지점입니다|"
+    r"하세요|하십시오"
+    r")[.!]?$"
 )
 
+# Finished clause + glued "여부" — never allowed in customer follow/checkpoint text.
 _FORBIDDEN_YEUBU_GLUE_RE = re.compile(
-    r"(?:합니다|해야\s*합니다|필요합니다|중요합니다)\s+여부"
+    r"(?:"
+    r"합니다|해야\s*합니다|필요합니다|중요합니다|"
+    r"입니다|됩니다|있습니다|보겠습니다|"
+    r"보면\s*됩니다|확인\s*지점입니다"
+    r")\s+여부"
 )
 
-_FOLLOW_FALLBACK = "후속 일정은 아직 확인되지 않았습니다"
+# Incomplete clause tails that must not reach the customer follow list.
+_INCOMPLETE_FOLLOW_TAIL_RE = re.compile(
+    r"(?:지속적으로|계속|관련|중심으로|통해|따라|이어지는|변화|동향)$"
+)
+
+_FOLLOW_FALLBACK = "후속 일정은 아직 확인되지 않았습니다."
 
 
 def compress_to_follow_check_item(line: str) -> str:
@@ -1287,8 +1306,16 @@ def compress_to_follow_check_item(line: str) -> str:
     "…하세요 확인" artifact whenever the verb tail wasn't recognized.
     Declarative tails ("…해야 합니다" / "…필요합니다") are stripped the same way
     so build_korea_follow_hold_blocks never glues " 여부" onto a finished clause.
+
+    Finished observational closings ("…입니다" / "…보면 됩니다") are kept intact —
+    they must not be compressed into stems that then receive a glued "여부".
     """
-    out = _text(line).rstrip(".")
+    out = _strip_glued_yeobu(_text(line)).rstrip(".")
+    if re.search(
+        r"(?:입니다|됩니다|있습니다|보겠습니다|보면\s*됩니다|확인\s*지점입니다)[.!]?$",
+        out,
+    ):
+        return out
     for pattern in (_FOLLOW_VERB_TAIL_RE, _FOLLOW_DECLARATIVE_TAIL_RE):
         match = pattern.search(out)
         if match:
@@ -1311,24 +1338,90 @@ def _follow_item_may_receive_yeobu(short: str) -> bool:
         return False
     if _FORBIDDEN_YEUBU_GLUE_RE.search(text):
         return False
+    if _INCOMPLETE_FOLLOW_TAIL_RE.search(text):
+        return False
+    if has_incomplete_korean_sentence_ending(text):
+        return False
     return True
 
 
+def _strip_glued_yeobu(text: str) -> str:
+    """Remove '여부' glued onto a finished clause; keep legitimate noun-phrase 여부."""
+    out = _text(text)
+    if not out:
+        return ""
+    return _FORBIDDEN_YEUBU_GLUE_RE.sub(
+        lambda m: m.group(0)[: -len("여부")].rstrip(),
+        out,
+    ).rstrip(" ,·")
+
+
+def _ensure_follow_sentence_period(text: str) -> str:
+    out = _text(text)
+    if not out:
+        return ""
+    if out.endswith((".", "!", "?")):
+        return out
+    if _COMPLETE_SENTENCE_TAIL_RE.search(out):
+        return f"{out}."
+    return out
+
+
+def _complete_incomplete_follow_stem(text: str) -> str:
+    """Turn a truncated follow stem into a safe observational sentence."""
+    out = _text(text).rstrip(" ,·")
+    if not out:
+        return _FOLLOW_FALLBACK
+
+    if out.endswith("지속적으로"):
+        stem = out[: -len("지속적으로")].rstrip(" ,·")
+        if not stem:
+            return _FOLLOW_FALLBACK
+        return _ensure_follow_sentence_period(f"{stem} 이어서 보면 됩니다")
+
+    if out.endswith(("통해", "따라", "중심으로", "관련", "계속")):
+        return _ensure_follow_sentence_period(f"{out} 후속 일정을 이어서 보면 됩니다")
+
+    if out.endswith(("이어지는", "변화", "동향")):
+        return _ensure_follow_sentence_period(f"{out}만 이어서 보면 됩니다")
+
+    if has_incomplete_korean_sentence_ending(out) or _INCOMPLETE_FOLLOW_TAIL_RE.search(out):
+        return _FOLLOW_FALLBACK
+
+    return out
+
+
 def _finalize_follow_check_item(short: str, *, memo_lines: set[str]) -> str:
-    """Turn a compressed stem into a follow-list entry without prose-glue artifacts."""
-    text = _text(short)
+    """Turn a compressed stem into a complete follow-list entry (no 여부 glue)."""
+    text = _strip_glued_yeobu(_text(short))
     if not text:
         return _FOLLOW_FALLBACK
-    if _FORBIDDEN_YEUBU_GLUE_RE.search(text):
-        return _FOLLOW_FALLBACK
+
+    # Already a finished sentence (…입니다 / …됩니다 / …보면 됩니다) — keep it.
+    if _COMPLETE_SENTENCE_TAIL_RE.search(text):
+        # Imperative leftovers should not reach the customer list.
+        if re.search(r"(?:하세요|하십시오)[.!]?$", text):
+            return _FOLLOW_FALLBACK
+        if re.search(
+            r"(?:해야\s*합니다|확인해야\s*합니다|주시해야\s*합니다|"
+            r"점검해야\s*합니다|필요합니다|중요합니다)[.!]?$",
+            text,
+        ) and not re.search(
+            r"(?:입니다|됩니다|있습니다|보겠습니다|보면\s*됩니다|확인\s*지점입니다)[.!]?$",
+            text,
+        ):
+            return _FOLLOW_FALLBACK
+        return _ensure_follow_sentence_period(text)
+
+    if _INCOMPLETE_FOLLOW_TAIL_RE.search(text) or has_incomplete_korean_sentence_ending(text):
+        return _complete_incomplete_follow_stem(text)
+
     if text in memo_lines and _follow_item_may_receive_yeobu(text):
         candidate = f"{text} 여부"
         if _FORBIDDEN_YEUBU_GLUE_RE.search(candidate):
             return _FOLLOW_FALLBACK
         return candidate
-    if _COMPLETE_SENTENCE_TAIL_RE.search(text):
-        # Compression failed to strip a finished clause — never surface it.
-        return _FOLLOW_FALLBACK
+
     if len(text) < 4:
         return _FOLLOW_FALLBACK
     return text
@@ -1342,7 +1435,7 @@ def build_korea_follow_hold_blocks(items: Sequence[Mapping[str, Any]]) -> Dict[s
     for line in _collect_memo_action_lines(items):
         short = compress_to_follow_check_item(line)
         short = _finalize_follow_check_item(short, memo_lines=memo_lines)
-        if short and short not in follow and short not in memo_lines:
+        if short and short not in follow:
             follow.append(short)
         if len(follow) >= 3:
             break
@@ -1408,6 +1501,10 @@ def _collect_memo_action_lines(items: Sequence[Mapping[str, Any]]) -> List[str]:
     for item in items:
         for line in _item_watch_lines(item):
             cleaned = clamp_action_line(remove_truncated_headline_fragments(line))
+            cleaned = _finalize_follow_check_item(
+                compress_to_follow_check_item(cleaned),
+                memo_lines=set(),
+            )
             if cleaned and cleaned not in action_lines:
                 action_lines.append(cleaned)
             if len(action_lines) >= 3:
@@ -1416,7 +1513,10 @@ def _collect_memo_action_lines(items: Sequence[Mapping[str, Any]]) -> List[str]:
         idx = len(action_lines)
         item = items[min(idx, len(items) - 1)]
         title = _short_title(_text(item.get("korean_title") or item.get("headline"))) or "핵심 신호"
-        fallback = clamp_action_line(f"{title} 관련 후속 확인")
+        fallback = _finalize_follow_check_item(
+            compress_to_follow_check_item(clamp_action_line(f"{title} 관련 후속 확인")),
+            memo_lines=set(),
+        )
         if fallback and fallback not in action_lines:
             action_lines.append(fallback)
         else:

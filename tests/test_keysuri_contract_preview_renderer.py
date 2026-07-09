@@ -1178,6 +1178,10 @@ class KeysuriKoreaMarketBriefingRenderTests(unittest.TestCase):
 
     @_require_contract_renderer
     def test_korea_follow_lines_do_not_repeat_memo_lines_in_html(self) -> None:
+        """Noun-style follow items may add '여부'; finished sentences may match memo.
+
+        Regression guard: never glue '입니다/됩니다 여부' or leave '지속적으로' tails.
+        """
         from keysuri_korea_longform_ux import extract_korea_memo_action_lines_from_html
 
         html = _render_contract_html(_CONTRACT_RENDERER, build_korea_contract_fixture())
@@ -1194,8 +1198,29 @@ class KeysuriKoreaMarketBriefingRenderTests(unittest.TestCase):
         }
         memo_lines = set(extract_korea_memo_action_lines_from_html(html))
         self.assertTrue(follow_lines)
-        self.assertEqual(follow_lines & memo_lines, set())
-
+        for line in follow_lines | memo_lines:
+            with self.subTest(line=line):
+                self.assertNotRegex(line, r"(?:입니다|됩니다|합니다)\s+여부")
+                self.assertFalse(line.rstrip(".!").endswith("지속적으로"))
+        # Noun-stem watch items still differentiate via trailing 여부 on follow.
+        noun_fixture = build_korea_contract_fixture()
+        for item in noun_fixture.get("top_5_items") or []:
+            item["next_watch"] = "삼성전자 HBM4 후속 일정"
+        noun_html = _render_contract_html(_CONTRACT_RENDERER, noun_fixture)
+        noun_follow_m = re.search(
+            r'<div class="follow-block">.*?<ul class="follow-hold-list">(.*?)</ul>',
+            noun_html,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(noun_follow_m)
+        assert noun_follow_m is not None
+        noun_follow = {
+            re.sub(r"<[^>]+>", "", li).strip()
+            for li in re.findall(r"<li>(.*?)</li>", noun_follow_m.group(1), flags=re.DOTALL)
+        }
+        noun_memo = set(extract_korea_memo_action_lines_from_html(noun_html))
+        self.assertEqual(noun_follow & noun_memo, set())
+        self.assertTrue(any(line.endswith("여부") for line in noun_follow), noun_follow)
     @_require_contract_renderer
     def test_korea_html_contains_no_buy_sell_directives(self) -> None:
         html = _render_contract_html(_CONTRACT_RENDERER, build_korea_contract_fixture())

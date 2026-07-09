@@ -893,12 +893,36 @@ class KoreaPostRenderVisibleQualityTests(unittest.TestCase):
             "수주 동향을 주시해야 합니다 여부",
             "관련 정책 일정을 점검해야 합니다 여부",
             "후속 확인이 필요합니다 여부",
+            "다음 확인 지점입니다 여부",
+            "동향만 이어서 보면 됩니다 여부",
+        ):
+            with self.subTest(text=text):
+                result = validate_korea_post_render_visible_quality(f"<li>{text}</li>")
+                self.assertFalse(result.ok)
+                codes = {i.code for i in result.issues}
+                self.assertTrue(
+                    {
+                        "korea_visible_text_hamnida_yeobu_artifact",
+                        "korea_visible_text_modal_noun_glue_artifact",
+                    }
+                    & codes,
+                    codes,
+                )
+
+    def test_truncated_follow_item_tail_blocks(self) -> None:
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        for text in (
+            "AI 데이터센터 및 반도체 팹 증설에 따른 전력 수요 증가와 공급망 변화를 지속적으로",
+            "관련 정책 변화를 통해",
+            "투자 일정을 따라",
+            "반도체 공급망을 중심으로",
         ):
             with self.subTest(text=text):
                 result = validate_korea_post_render_visible_quality(f"<li>{text}</li>")
                 self.assertFalse(result.ok)
                 self.assertIn(
-                    "korea_visible_text_hamnida_yeobu_artifact",
+                    "korea_visible_text_truncated_follow_item",
                     {i.code for i in result.issues},
                 )
 
