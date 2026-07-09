@@ -1667,6 +1667,12 @@ KOREA_STATIC_LESSON_SENTENCE_THRESHOLD = 3
 # after a normal imperative ("…하세요 확인이 필요한 부분은 …") does not match.
 _KOREA_DOUBLE_ENDING_RE = re.compile(r"[가-힣]+(?:하세요|하십시오)\s+확인(?![가-힣])")
 
+# "…해야 합니다 여부" / "…필요합니다 여부" — declarative clause + glued 여부.
+_KOREA_HAMNIDA_YEOBU_RE = re.compile(
+    r"(?:확인해야\s*합니다|주시해야\s*합니다|점검해야\s*합니다|"
+    r"해야\s*합니다|필요합니다|중요합니다|합니다)\s+여부"
+)
+
 _KOREA_HOLD_FIELD_MARKER = "아직 단정하지 말 것"
 _KOREA_JUDGMENT_MARKER = "키수리 판단"
 _KOREA_HOLD_DUP_MIN_CHARS = 25
@@ -1791,6 +1797,16 @@ def validate_korea_post_render_visible_quality(html: str) -> BriefingContentQual
             BriefingContentIssue(
                 "korea_visible_text_double_ending_artifact",
                 f"Imperative ending directly followed by bare '확인' (double ending): {m.group(0)!r}",
+                section="visible_body",
+                excerpt=m.group(0),
+            )
+        )
+
+    for m in _KOREA_HAMNIDA_YEOBU_RE.finditer(plain):
+        issues.append(
+            BriefingContentIssue(
+                "korea_visible_text_hamnida_yeobu_artifact",
+                f"Declarative ending glued to '여부' (prose glue): {m.group(0)!r}",
                 section="visible_body",
                 excerpt=m.group(0),
             )

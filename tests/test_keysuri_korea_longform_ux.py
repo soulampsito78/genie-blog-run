@@ -580,6 +580,93 @@ class KeysuriKoreaMarketContractHardeningTests(unittest.TestCase):
                 self.assertNotIn("하세요 확인", short)
                 self.assertNotIn("하십시오 확인", short)
 
+    def test_compress_follow_strips_declarative_hamnida_tails(self) -> None:
+        """'…해야 합니다 / …필요합니다' must compress to observation stems —
+        never survive to become '합니다 여부' glue."""
+        from keysuri_korea_longform_ux import compress_to_follow_check_item
+
+        cases = (
+            ("SK하이닉스의 투자 계획 발표를 확인해야 합니다", "SK하이닉스의 투자 계획 발표"),
+            ("관련 정책 일정을 점검해야 합니다", "관련 정책 일정"),
+            ("수주 동향을 주시해야 합니다", "수주 동향"),
+            ("후속 확인이 필요합니다", "후속 확인"),
+            ("후속 가격·API 조건을 확인해야 합니다.", "후속 가격·API 조건"),
+        )
+        for memo_line, expected in cases:
+            with self.subTest(memo_line=memo_line):
+                short = compress_to_follow_check_item(memo_line)
+                self.assertEqual(short, expected)
+                self.assertNotIn("합니다", short)
+                self.assertNotIn("여부", short)
+
+    def test_follow_blocks_never_glue_hamnida_yeobu(self) -> None:
+        from keysuri_korea_longform_ux import build_korea_follow_hold_blocks
+
+        items = [
+            {
+                "korean_title": "투자 계획 신호",
+                "next_watch": "SK하이닉스의 투자 계획 발표를 확인해야 합니다",
+            },
+            {
+                "korean_title": "수주 동향 신호",
+                "next_watch": "수주 동향을 주시해야 합니다",
+            },
+            {
+                "korean_title": "정책 일정 신호",
+                "next_watch": "관련 정책 일정을 점검해야 합니다",
+            },
+            {
+                "korean_title": "후속 확인 신호",
+                "next_watch": "후속 확인이 필요합니다",
+            },
+        ]
+        follow = build_korea_follow_hold_blocks(items)["follow"]
+        self.assertTrue(follow)
+        blob = "\n".join(follow)
+        for forbidden in (
+            "합니다 여부",
+            "해야 합니다 여부",
+            "확인해야 합니다 여부",
+            "주시해야 합니다 여부",
+            "점검해야 합니다 여부",
+            "필요합니다 여부",
+            "중요합니다 여부",
+        ):
+            self.assertNotIn(forbidden, blob)
+        for line in follow:
+            with self.subTest(line=line):
+                self.assertNotRegex(line, r"합니다\s+여부")
+                self.assertNotIn("하세요", line)
+
+    def test_longform_industry_labels_never_expose_slash_taxonomy(self) -> None:
+        from keysuri_korea_longform_ux import (
+            _memo_summary_line,
+            build_korea_market_frame_line,
+        )
+
+        items = [
+            {
+                "korean_title": "정책 조달 신호",
+                "category_label_ko": "국내 정책 / 규제 / 공공",
+            },
+            {
+                "korean_title": "반도체 장비 신호",
+                "category_label_ko": "국내 반도체 / 장비 / 소재",
+            },
+            {
+                "korean_title": "기업 AI 도입 신호",
+                "category_label_ko": "국내 AI / 기업 AI 도입",
+            },
+        ]
+        summary = _memo_summary_line(items, "정책·반도체")
+        frame = build_korea_market_frame_line(items)
+        for text in (summary, frame):
+            with self.subTest(text=text):
+                self.assertNotIn("정책 / 규제", text)
+                self.assertNotIn("반도체 / 장비", text)
+                self.assertNotIn("공공·국내", text)
+                self.assertNotIn(" / ", text)
+
     def test_follow_blocks_never_contain_double_ending(self) -> None:
         from keysuri_korea_longform_ux import build_korea_follow_hold_blocks
 

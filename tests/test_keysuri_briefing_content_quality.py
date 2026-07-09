@@ -885,6 +885,36 @@ class KoreaPostRenderVisibleQualityTests(unittest.TestCase):
                     {i.code for i in result.issues},
                 )
 
+    def test_hamnida_yeobu_prose_glue_blocks(self) -> None:
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        for text in (
+            "SK하이닉스의 투자 계획 발표를 확인해야 합니다 여부",
+            "수주 동향을 주시해야 합니다 여부",
+            "관련 정책 일정을 점검해야 합니다 여부",
+            "후속 확인이 필요합니다 여부",
+        ):
+            with self.subTest(text=text):
+                result = validate_korea_post_render_visible_quality(f"<li>{text}</li>")
+                self.assertFalse(result.ok)
+                self.assertIn(
+                    "korea_visible_text_hamnida_yeobu_artifact",
+                    {i.code for i in result.issues},
+                )
+
+    def test_normal_observation_yeobu_and_imperative_pass_hamnida_gate(self) -> None:
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        for text in (
+            "공식 발표·가격·일정 공개 여부",
+            "삼성전자 HBM4 후속 일정 여부",
+            "현대차 노사 간 추가 교섭 일정 및 합의 여부를 최우선으로 확인하세요",
+        ):
+            with self.subTest(text=text):
+                result = validate_korea_post_render_visible_quality(f"<li>{text}</li>")
+                codes = {i.code for i in result.issues}
+                self.assertNotIn("korea_visible_text_hamnida_yeobu_artifact", codes)
+
     def test_normal_imperative_and_normal_check_item_pass(self) -> None:
         from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
 

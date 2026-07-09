@@ -566,6 +566,21 @@ _KOREA_INDUSTRY_LABELS: Dict[str, str] = {
     "global_to_korea_translation": "글로벌→한국 번역 신호",
 }
 
+# Slash taxonomy display labels (scoring/enricher) → prose-friendly longform labels.
+# Longform output only — does not change scoring or enricher structures.
+_KOREA_SLASH_LABEL_TO_PROSE: Dict[str, str] = {
+    "국내 AI / 기업 AI 도입": "국내 AI·기업 도입",
+    "국내 반도체 / 장비 / 소재": "국내 반도체·장비·소재",
+    "국내 로보틱스 / 스마트팩토리": "국내 로보틱스·스마트팩토리",
+    "국내 배터리 / EV / 에너지": "국내 배터리·에너지",
+    "국내 플랫폼 / 클라우드 / SaaS": "국내 플랫폼·클라우드",
+    "국내 정책 / 규제 / 공공": "국내 정책·규제",
+    "국내 스타트업 / 투자 / M&A": "국내 스타트업·투자",
+    "국내 대기업 테크 전략": "국내 대기업 테크 전략",
+    "국내 소비자 테크 / 디바이스 / 모빌리티": "국내 소비자 테크·모빌리티",
+    "글로벌→한국 번역 신호": "글로벌→한국 번역 신호",
+}
+
 
 def _korea_top_axis(items: Sequence[Mapping[str, Any]]) -> str:
     titles = [
@@ -582,14 +597,41 @@ def _korea_top_axis(items: Sequence[Mapping[str, Any]]) -> str:
 
 
 def _korea_industry_label(value: str) -> str:
+    """Map category slug or slash taxonomy display label to prose-friendly Korean.
+
+    Scoring/enricher may store slash labels like "국내 정책 / 규제 / 공공".
+    Longform customer copy must never expose those slash strings.
+    """
     raw = _text(value)
     if not raw:
         return ""
     if raw in _KOREA_INDUSTRY_LABELS:
         return _KOREA_INDUSTRY_LABELS[raw]
+    if raw in _KOREA_SLASH_LABEL_TO_PROSE:
+        return _KOREA_SLASH_LABEL_TO_PROSE[raw]
     if "_" in raw:
         return ""
+    # Last-resort sanitize: collapse " / " taxonomy separators without inventing meaning.
+    if " / " in raw:
+        return raw.replace(" / ", "·")
     return raw
+
+
+def _join_korea_industry_phrase(industries: Sequence[str], *, sep: str = "·") -> str:
+    """Join industry labels without repeating the leading '국내 ' after the first item.
+
+    Prevents artifacts like "공공·국내" when "국내 정책·규제" · "국내 반도체…" are joined.
+    """
+    cleaned: List[str] = []
+    for idx, label in enumerate(industries):
+        text = _text(label)
+        if not text:
+            continue
+        if idx > 0 and text.startswith("국내 "):
+            text = text[len("국내 ") :]
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return sep.join(cleaned)
 
 
 def _strip_keysuri_judgment_label_prefix(text: str) -> str:
@@ -669,7 +711,7 @@ def _build_domestic_industry_block(items: Sequence[Mapping[str, Any]]) -> str:
         cat = _korea_industry_label(_text(item.get("category_label_ko") or item.get("primary_category")))
         if cat and cat not in industries:
             industries.append(cat)
-    industry_phrase = ", ".join(industries[:3]) if industries else "반도체·AI·정책·투자"
+    industry_phrase = _join_korea_industry_phrase(industries[:3], sep=", ") or "반도체·AI·정책·투자"
     body = (
         f"국내 TOP5를 묶으면 {industry_phrase} 축이 동시에 움직이며 "
         f"산업 일정·자본 배분·규제 대응이 겹칩니다. "
@@ -1043,7 +1085,7 @@ def build_korea_market_impact_summary(items: Sequence[Mapping[str, Any]]) -> Lis
         cat = _korea_industry_label(_text(item.get("category_label_ko") or item.get("primary_category")))
         if cat and cat not in industries:
             industries.append(cat)
-    industry_phrase = "·".join(industries[:3]) if industries else "반도체·AI·정책"
+    industry_phrase = _join_korea_industry_phrase(industries[:3], sep="·") or "반도체·AI·정책"
     # Observation-point tone, not a daily lesson board: each row states where
     # TODAY's signals would land and what number/schedule decides it — no
     # "확인하겠습니다/보겠습니다" recitation, no fixed sentences.
@@ -1081,9 +1123,34 @@ _FOLLOW_VERB_TAIL_RE = re.compile(
     r"[.!]?$"
 )
 
+# Declarative closings that must also compress to observation stems.
+# Without this, "…확인해야 합니다" survived compression and then got " 여부"
+# glued on → "확인해야 합니다 여부".
+_FOLLOW_DECLARATIVE_TAIL_RE = re.compile(
+    r"\s*(?:을|를)?\s*(?:먼저\s*)?"
+    r"(?:"
+    r"확인해야\s*합니다|주시해야\s*합니다|점검해야\s*합니다|"
+    r"살펴봐야\s*합니다|봐야\s*합니다|"
+    r"필요합니다|중요합니다|"
+    r"[가-힣]+해야\s*합니다"
+    r")"
+    r"[.!]?$"
+)
+
 # Safety net: a follow item must never end in an imperative — "…비교 분석하세요
 # 확인" was the production double-ending artifact.
 _TRAILING_IMPERATIVE_RE = re.compile(r"(?:하세요|하십시오)[.!]?$")
+
+# Complete-sentence endings that must never receive a glued " 여부".
+_COMPLETE_SENTENCE_TAIL_RE = re.compile(
+    r"(?:합니다|해야\s*합니다|필요합니다|중요합니다|하세요|하십시오)[.!]?$"
+)
+
+_FORBIDDEN_YEUBU_GLUE_RE = re.compile(
+    r"(?:합니다|해야\s*합니다|필요합니다|중요합니다)\s+여부"
+)
+
+_FOLLOW_FALLBACK = "후속 일정은 아직 확인되지 않았습니다"
 
 
 def compress_to_follow_check_item(line: str) -> str:
@@ -1094,14 +1161,53 @@ def compress_to_follow_check_item(line: str) -> str:
     subject ("협력사·소부장 물량으로 번지는지", "후속 공시 일정"). Nothing is
     glued onto the stem — the old "{stem} 확인" suffix produced the
     "…하세요 확인" artifact whenever the verb tail wasn't recognized.
+    Declarative tails ("…해야 합니다" / "…필요합니다") are stripped the same way
+    so build_korea_follow_hold_blocks never glues " 여부" onto a finished clause.
     """
     out = _text(line).rstrip(".")
-    match = _FOLLOW_VERB_TAIL_RE.search(out)
-    if match:
-        prefix = out[: match.start()].rstrip(" ,·")
-        if prefix:
-            return prefix
-    return _TRAILING_IMPERATIVE_RE.sub("", out).rstrip(" ,·") or out
+    for pattern in (_FOLLOW_VERB_TAIL_RE, _FOLLOW_DECLARATIVE_TAIL_RE):
+        match = pattern.search(out)
+        if match:
+            prefix = out[: match.start()].rstrip(" ,·")
+            prefix = re.sub(r"(?:을|를|이|가|은|는|에)$", "", prefix).rstrip(" ,·")
+            if prefix:
+                return prefix
+    stripped = _TRAILING_IMPERATIVE_RE.sub("", out).rstrip(" ,·")
+    return stripped or out
+
+
+def _follow_item_may_receive_yeobu(short: str) -> bool:
+    """Only bare noun/observation stems may get a trailing '여부' marker."""
+    text = _text(short)
+    if not text:
+        return False
+    if text.endswith("여부"):
+        return False
+    if _COMPLETE_SENTENCE_TAIL_RE.search(text):
+        return False
+    if _FORBIDDEN_YEUBU_GLUE_RE.search(text):
+        return False
+    return True
+
+
+def _finalize_follow_check_item(short: str, *, memo_lines: set[str]) -> str:
+    """Turn a compressed stem into a follow-list entry without prose-glue artifacts."""
+    text = _text(short)
+    if not text:
+        return _FOLLOW_FALLBACK
+    if _FORBIDDEN_YEUBU_GLUE_RE.search(text):
+        return _FOLLOW_FALLBACK
+    if text in memo_lines and _follow_item_may_receive_yeobu(text):
+        candidate = f"{text} 여부"
+        if _FORBIDDEN_YEUBU_GLUE_RE.search(candidate):
+            return _FOLLOW_FALLBACK
+        return candidate
+    if _COMPLETE_SENTENCE_TAIL_RE.search(text):
+        # Compression failed to strip a finished clause — never surface it.
+        return _FOLLOW_FALLBACK
+    if len(text) < 4:
+        return _FOLLOW_FALLBACK
+    return text
 
 
 def build_korea_follow_hold_blocks(items: Sequence[Mapping[str, Any]]) -> Dict[str, List[str]]:
@@ -1111,10 +1217,7 @@ def build_korea_follow_hold_blocks(items: Sequence[Mapping[str, Any]]) -> Dict[s
     follow: List[str] = []
     for line in _collect_memo_action_lines(items):
         short = compress_to_follow_check_item(line)
-        if short in memo_lines:
-            # Noun-style memo line survived compression verbatim — mark it as
-            # an observation point rather than repeating the memo line.
-            short = f"{short} 여부"
+        short = _finalize_follow_check_item(short, memo_lines=memo_lines)
         if short and short not in follow and short not in memo_lines:
             follow.append(short)
         if len(follow) >= 3:
@@ -1160,7 +1263,7 @@ def build_korea_market_frame_line(items: Sequence[Mapping[str, Any]]) -> str:
         cat = _korea_industry_label(_text(item.get("category_label_ko") or item.get("primary_category")))
         if cat and cat not in industries:
             industries.append(cat)
-    industry_phrase = ", ".join(industries[:3]) if industries else "반도체·AI·정책·투자"
+    industry_phrase = _join_korea_industry_phrase(industries[:3], sep=", ") or "반도체·AI·정책·투자"
     return (
         f"오늘 다섯 신호를 하나로 보면, {theme}를 축으로 {industry_phrase} 흐름이 "
         f"같은 방향으로 움직이는 시장 구조입니다. 개별 뉴스보다 발주·일정·정책 확인 순서가 먼저입니다."
@@ -1207,7 +1310,7 @@ def _memo_summary_line(items: Sequence[Mapping[str, Any]], theme: str) -> str:
         cat = _korea_industry_label(_text(item.get("category_label_ko") or item.get("primary_category")))
         if cat and cat not in industries:
             industries.append(cat)
-    industry_phrase = "·".join(industries[:3]) if industries else "국내 테크"
+    industry_phrase = _join_korea_industry_phrase(industries[:3], sep="·") or "국내 테크"
     return f"오늘은 {theme}가 {industry_phrase} 흐름을 한 번에 묶었습니다."
 
 
