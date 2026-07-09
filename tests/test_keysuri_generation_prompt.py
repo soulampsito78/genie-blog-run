@@ -11,8 +11,10 @@ from keysuri_generation_prompt import (
     FORBIDDEN_RETIRED,
     IDENTITY_TITLE,
     build_keysuri_generation_prompt,
+    build_keysuri_generation_prompt_compact,
     build_keysuri_generation_prompt_contract,
     extract_json_object_from_model_text,
+    generate_keysuri_body_raw_text,
     parse_keysuri_generated_response,
     validate_parsed_keysuri_generated_briefing,
 )
@@ -538,6 +540,94 @@ class GlobalTechSignalQualityPromptTests(unittest.TestCase):
     def test_korea_prompt_excludes_global_signal_quality_block(self) -> None:
         prompt = build_keysuri_generation_prompt(_korea_prompt())
         self.assertNotIn("GLOBAL TECH SIGNAL QUALITY", prompt)
+
+
+class KeysuriGlobalMaxTokensRecoveryTests(unittest.TestCase):
+    def test_compact_prompt_is_shorter_than_full_global_prompt(self) -> None:
+        full = build_keysuri_generation_prompt(_global_prompt())
+        compact = build_keysuri_generation_prompt_compact(_global_prompt())
+        self.assertLess(len(compact), len(full))
+        self.assertIn("Compact Generation Prompt", compact)
+        self.assertIn("TOP_5_SELECTED", compact)
+        self.assertNotIn("GLOBAL TECH BREADTH", compact)
+
+    def test_global_max_tokens_empty_triggers_one_internal_retry(self) -> None:
+        from keysuri_gemini_client import KeysuriGeminiError
+
+        calls: list = []
+
+        def fake_caller(prompt, **kwargs):
+            calls.append({"prompt": prompt, "kwargs": kwargs})
+            if len(calls) == 1:
+                raise KeysuriGeminiError(
+                    "keysuri_gemini_max_tokens_no_text: Gemini hit max_output_tokens "
+                    "before producing any text (finish_reason=MAX_TOKENS)",
+                    diagnostics={
+                        "finish_reason": "MAX_TOKENS",
+                        "text_length": 0,
+                        "candidate_count": 1,
+                        "max_output_tokens": kwargs.get("max_output_tokens"),
+                    },
+                )
+            return '{"ok": true, "program_id": "keysuri_global_tech"}'
+
+        raw, diag = generate_keysuri_body_raw_text(
+            _global_prompt(),
+            gemini_caller=fake_caller,
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertIn("Compact Generation Prompt", calls[1]["prompt"])
+        self.assertTrue(diag.get("retry_applied"))
+        self.assertEqual(diag.get("retry_reason"), "max_tokens_empty_text")
+        self.assertEqual(diag.get("retry_result"), "success")
+        self.assertTrue(diag.get("compact_prompt_used"))
+        self.assertNotIn("raw_text", diag)
+        self.assertIn("ok", raw)
+
+    def test_global_retry_failure_keeps_max_tokens_block(self) -> None:
+        from keysuri_gemini_client import KeysuriGeminiError
+
+        calls: list = []
+
+        def always_fail(prompt, **kwargs):
+            calls.append(1)
+            raise KeysuriGeminiError(
+                "keysuri_gemini_max_tokens_no_text: Gemini hit max_output_tokens "
+                "before producing any text (finish_reason=MAX_TOKENS)",
+                diagnostics={
+                    "finish_reason": "MAX_TOKENS",
+                    "text_length": 0,
+                    "candidate_count": 1,
+                },
+            )
+
+        with self.assertRaises(KeysuriGeminiError) as ctx:
+            generate_keysuri_body_raw_text(_global_prompt(), gemini_caller=always_fail)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("keysuri_gemini_max_tokens_no_text", str(ctx.exception))
+        diag = getattr(ctx.exception, "diagnostics", {}) or {}
+        self.assertTrue(diag.get("retry_applied"))
+        self.assertEqual(diag.get("retry_result"), "failed")
+        self.assertIn("keysuri_gemini_max_tokens_no_text", diag.get("issue_codes") or [])
+        self.assertNotIn("raw_text", diag)
+        self.assertNotIn("prompt", diag)
+
+    def test_korea_max_tokens_does_not_retry(self) -> None:
+        from keysuri_gemini_client import KeysuriGeminiError
+
+        calls: list = []
+
+        def always_fail(prompt, **kwargs):
+            calls.append(1)
+            raise KeysuriGeminiError(
+                "keysuri_gemini_max_tokens_no_text: Gemini hit max_output_tokens "
+                "before producing any text (finish_reason=MAX_TOKENS)",
+                diagnostics={"finish_reason": "MAX_TOKENS", "text_length": 0, "candidate_count": 1},
+            )
+
+        with self.assertRaises(KeysuriGeminiError):
+            generate_keysuri_body_raw_text(_korea_prompt(), gemini_caller=always_fail)
+        self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":

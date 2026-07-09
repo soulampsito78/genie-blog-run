@@ -44,9 +44,12 @@ from keysuri_contract_preview_renderer import (
 )
 from keysuri_briefing_content_enricher import enrich_generated_briefing_content
 from keysuri_bottom_shot_generation import generate_keysuri_korea_bottom_v6
-from keysuri_generation_prompt import extract_json_candidates_from_model_text
-from keysuri_generation_prompt import parse_keysuri_generated_response
-from keysuri_generation_prompt import build_keysuri_generation_prompt
+from keysuri_generation_prompt import (
+    build_keysuri_generation_prompt,
+    extract_json_candidates_from_model_text,
+    generate_keysuri_body_raw_text,
+    parse_keysuri_generated_response,
+)
 from keysuri_gemini_client import call_keysuri_gemini_text
 from keysuri_cost_estimate import estimate_keysuri_gemini_cost
 from service_image_api import DEFAULT_VERTEX_IMAGE_MODEL
@@ -2201,7 +2204,16 @@ def _regenerate_keysuri_text_from_source_pack(
     prompt_input["source_pack"] = source_pack
     prompt_text = build_keysuri_generation_prompt(prompt_input)
     caller = text_caller or call_keysuri_gemini_text
-    raw_text = caller(prompt_text, program_id=program_id)
+    # Prefer Global MAX_TOKENS recovery helper when using the real Gemini client.
+    # Injected text_caller mocks (tests/reissue harness) keep the legacy
+    # caller(prompt, program_id=...) contract.
+    if text_caller is None:
+        raw_text, _gen_diag = generate_keysuri_body_raw_text(
+            prompt_input,
+            gemini_caller=caller,
+        )
+    else:
+        raw_text = caller(prompt_text, program_id=program_id)
     parse_result = parse_keysuri_generated_response(raw_text, program_id, prompt_input)
 
     if is_reissue:
@@ -3659,6 +3671,30 @@ def run_keysuri_service_full_run(
         parse_diagnostics = getattr(smoke, "parse_diagnostics", None)
         if isinstance(parse_diagnostics, dict) and parse_diagnostics:
             meta.update(copy.deepcopy(parse_diagnostics))
+        generation_diagnostics = getattr(smoke, "generation_diagnostics", None)
+        if isinstance(generation_diagnostics, dict) and generation_diagnostics:
+            # Safe generation diagnostics only (no raw Gemini body).
+            safe_gen = {
+                k: generation_diagnostics.get(k)
+                for k in (
+                    "program_id",
+                    "finish_reason",
+                    "text_length",
+                    "candidate_count",
+                    "max_output_tokens",
+                    "retry_applied",
+                    "retry_reason",
+                    "retry_result",
+                    "compact_prompt_used",
+                    "issue_codes",
+                )
+                if k in generation_diagnostics
+            }
+            if safe_gen:
+                meta["generation_diagnostics"] = safe_gen
+                for k, v in safe_gen.items():
+                    if k != "issue_codes" and k not in meta:
+                        meta[k] = v
         smoke_internal_codes = [
             str(code) for code in (getattr(smoke, "internal_issue_codes", []) or []) if code
         ]

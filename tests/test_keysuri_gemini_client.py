@@ -210,6 +210,70 @@ class KeysuriGeminiClientModelRoutingTests(unittest.TestCase):
                 )
 
 
+class KeysuriBodyMaxOutputTokensTests(unittest.TestCase):
+    def test_global_program_uses_elevated_default_budget(self) -> None:
+        with mock.patch.dict(os.environ, {"GENIE_MAX_OUTPUT_TOKENS": ""}, clear=False):
+            self.assertEqual(
+                keysuri_gemini_client.resolve_keysuri_body_max_output_tokens(
+                    "keysuri_global_tech"
+                ),
+                keysuri_gemini_client.KEYSURI_GLOBAL_BODY_MAX_OUTPUT_TOKENS,
+            )
+
+    def test_korea_program_keeps_shared_default_budget(self) -> None:
+        with mock.patch.dict(os.environ, {"GENIE_MAX_OUTPUT_TOKENS": ""}, clear=False):
+            self.assertEqual(
+                keysuri_gemini_client.resolve_keysuri_body_max_output_tokens(
+                    "keysuri_korea_tech"
+                ),
+                keysuri_gemini_client.KEYSURI_DEFAULT_BODY_MAX_OUTPUT_TOKENS,
+            )
+
+    def test_explicit_max_output_tokens_arg_wins(self) -> None:
+        self.assertEqual(
+            keysuri_gemini_client.resolve_keysuri_body_max_output_tokens(
+                "keysuri_global_tech", max_output_tokens=4096
+            ),
+            4096,
+        )
+
+    @mock.patch("keysuri_gemini_client.vertexai.init")
+    @mock.patch("keysuri_gemini_client.GenerativeModel")
+    @mock.patch("keysuri_gemini_client.GenerationConfig")
+    def test_call_keysuri_gemini_text_passes_global_budget(
+        self,
+        mock_gen_cfg: mock.MagicMock,
+        mock_model_cls: mock.MagicMock,
+        _mock_init: mock.MagicMock,
+    ) -> None:
+        class _HealthyResponse:
+            def __init__(self) -> None:
+                self.candidates = [
+                    KeysuriGeminiNoPartsSafeFailTests._FakeCandidate(
+                        finish_reason="STOP", parts=["part"]
+                    )
+                ]
+                self.text = '{"ok": true}'
+
+        mock_instance = mock.MagicMock()
+        mock_instance.generate_content.return_value = _HealthyResponse()
+        mock_model_cls.return_value = mock_instance
+        mock_gen_cfg.return_value = mock.MagicMock(name="GenerationConfig")
+
+        with mock.patch.dict(
+            os.environ, {"PROJECT_ID": "test-project", "GENIE_MAX_OUTPUT_TOKENS": ""}, clear=False
+        ):
+            keysuri_gemini_client.call_keysuri_gemini_text(
+                "prompt", program_id="keysuri_global_tech"
+            )
+        self.assertTrue(mock_gen_cfg.called)
+        cfg_kwargs = mock_gen_cfg.call_args.kwargs
+        self.assertEqual(
+            cfg_kwargs.get("max_output_tokens"),
+            keysuri_gemini_client.KEYSURI_GLOBAL_BODY_MAX_OUTPUT_TOKENS,
+        )
+
+
 class KeysuriGeminiNoPartsSafeFailTests(unittest.TestCase):
     """finish_reason=MAX_TOKENS / no-parts responses must raise KeysuriGeminiError
     with a clear issue code — never a raw SDK ValueError."""

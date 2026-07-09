@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import re
-from typing import Any, Dict, List, Sequence, Set, Tuple
+from typing import Any, Dict, List, MutableMapping, Optional, Sequence, Set, Tuple
 
 from keysuri_generated_briefing import (
     GENERATED_STATUS_REQUIRED,
@@ -1118,6 +1118,239 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
         ]
     )
     return "\n".join(sections)
+
+
+def _compact_top5_for_global_retry(top_5: Any) -> Dict[str, Any]:
+    """Shrink TOP5 payload for Global MAX_TOKENS empty-text recovery."""
+    if not isinstance(top_5, dict):
+        return {"items": []}
+    items = top_5.get("items") if isinstance(top_5.get("items"), list) else []
+    compact_items: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        compact_items.append(
+            {
+                "rank": item.get("rank"),
+                "news_id": item.get("news_id"),
+                "title": item.get("title") or item.get("headline") or item.get("korean_title"),
+                "summary": _safe_visible_snippet(
+                    item.get("summary") or item.get("what_happened") or "",
+                    max_chars=160,
+                ),
+                "source_id": item.get("source_id"),
+                "category": item.get("category"),
+            }
+        )
+    out = {
+        "news_scope": top_5.get("news_scope"),
+        "section_heading": top_5.get("section_heading"),
+        "items": compact_items,
+    }
+    return out
+
+
+def build_keysuri_generation_prompt_compact(
+    prompt_input: dict,
+    *,
+    reason: str = "max_tokens_empty_retry",
+) -> str:
+    """Build a shorter Global-oriented generation prompt for internal MAX_TOKENS retry.
+
+    Keeps required JSON schema and TOP5 identity, but drops long prose instructions
+    and shrinks source/TOP5 payloads so the model can emit JSON within budget.
+    Does not invent briefing content — still requires a real Gemini JSON response.
+    """
+    if not isinstance(prompt_input, dict):
+        raise ValueError("prompt_input must be a dict")
+    contract = build_keysuri_generation_prompt_contract(prompt_input)
+    program_id = str(contract.get("program_id") or "").strip()
+    top_5_for_prompt = _compact_top5_for_global_retry(
+        _enrich_top5_with_selection_metadata(prompt_input)
+        if program_id in (PROGRAM_GLOBAL, PROGRAM_KOREA) or _is_korea_program(program_id)
+        else contract.get("top_5_news")
+    )
+    source_summary = contract.get("source_pack_summary") or {}
+    compact_sources = []
+    for src in (source_summary.get("sources") or [])[:8]:
+        if not isinstance(src, dict):
+            continue
+        compact_sources.append(
+            {
+                "source_id": src.get("source_id"),
+                "source_name": src.get("source_name"),
+            }
+        )
+    compact_source_pack = {
+        "program_id": source_summary.get("program_id"),
+        "source_count": source_summary.get("source_count"),
+        "claim_count": source_summary.get("claim_count"),
+        "sources": compact_sources,
+    }
+    labels = contract.get("fixed_section_labels") or {}
+    sections = [
+        "=== Kee-Suri Compact Generation Prompt (MAX_TOKENS recovery) ===",
+        f"Identity: {IDENTITY_TITLE} — private tech secretary.",
+        f"program_id: {program_id}",
+        f"news_scope: {contract.get('news_scope')}",
+        f"section_heading: {contract.get('section_heading')}",
+        f"compact_reason: {reason}",
+        "",
+        "OUTPUT RULES",
+        "- Return exactly one JSON object. No markdown. No preface/postscript.",
+        "- Keep top_5_news rank/news_id sequence exactly as provided.",
+        "- All reader-facing prose in Korean. Address 주인님 in opening/closing.",
+        "- Keep fields short: what_happened/why_now/owner_angle 1-2 sentences each.",
+        "- deep_dive.body: 3-5 short Korean sentences. key_implications: 2 short sentences.",
+        "- one_line_checkpoint and closing_message: one short sentence each.",
+        "- Do not invent sources, numbers, or dates.",
+        f"- Use section labels: {labels.get('deep_dive')!r}, "
+        f"{labels.get('one_line_checkpoint')!r}, {labels.get('closing_sources')!r}",
+        "",
+        "ALLOWED SOURCE IDS",
+        json.dumps(contract.get("allowed_source_ids"), ensure_ascii=False),
+        "",
+        "SOURCE PACK SUMMARY (compact)",
+        json.dumps(compact_source_pack, ensure_ascii=False),
+        "",
+        "TOP_5_SELECTED (compact — preserve rank/news_id)",
+        json.dumps(top_5_for_prompt, ensure_ascii=False),
+        "",
+        "REQUIRED OUTPUT JSON SCHEMA (field reference only)",
+        json.dumps(contract.get("required_output_schema"), ensure_ascii=False),
+        "",
+        "END — one final JSON object only.",
+    ]
+    return "\n".join(sections)
+
+
+def generate_keysuri_body_raw_text(
+    prompt_input: dict,
+    *,
+    gemini_caller: Any = None,
+    project_id: Optional[str] = None,
+    model: Optional[str] = None,
+    usage_sink: Optional[MutableMapping[str, Any]] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Generate Kee-Suri body JSON text with Global-only MAX_TOKENS empty retry.
+
+    Returns ``(raw_text, generation_diagnostics)``. Diagnostics never include the
+    raw Gemini response body. On persistent empty MAX_TOKENS failure the original
+    KeysuriGeminiError is re-raised with diagnostics attached — callers must keep
+    treating that as validation block (never invent a fake briefing).
+    """
+    from keysuri_gemini_client import (
+        KEYSURI_GLOBAL_BODY_MAX_OUTPUT_TOKENS_RETRY,
+        KeysuriGeminiError,
+        call_keysuri_gemini_text,
+        is_max_tokens_no_text_error,
+        resolve_keysuri_body_max_output_tokens,
+    )
+
+    if not isinstance(prompt_input, dict):
+        raise ValueError("prompt_input must be a dict")
+    program_id = str(prompt_input.get("program_id") or "").strip()
+    caller = gemini_caller or call_keysuri_gemini_text
+    max_out = resolve_keysuri_body_max_output_tokens(program_id)
+    prompt_text = build_keysuri_generation_prompt(prompt_input)
+    diagnostics: Dict[str, Any] = {
+        "program_id": program_id or None,
+        "max_output_tokens": max_out,
+        "retry_applied": False,
+        "retry_reason": None,
+        "retry_result": None,
+        "finish_reason": None,
+        "text_length": None,
+        "candidate_count": None,
+        "compact_prompt_used": False,
+    }
+
+    try:
+        raw_text = caller(
+            prompt_text,
+            project_id=project_id,
+            model=model,
+            program_id=program_id,
+            max_output_tokens=max_out,
+            usage_sink=usage_sink,
+        )
+        diagnostics["text_length"] = len(str(raw_text or ""))
+        diagnostics["retry_result"] = "not_needed"
+        return str(raw_text), diagnostics
+    except KeysuriGeminiError as first_exc:
+        first_diag = dict(getattr(first_exc, "diagnostics", None) or {})
+        for key in ("finish_reason", "text_length", "candidate_count", "max_output_tokens"):
+            if key in first_diag and diagnostics.get(key) in (None, False, ""):
+                diagnostics[key] = first_diag.get(key)
+        diagnostics.setdefault("issue_codes", [])
+        if isinstance(diagnostics["issue_codes"], list):
+            code = "keysuri_gemini_max_tokens_no_text" if is_max_tokens_no_text_error(first_exc) else None
+            if code and code not in diagnostics["issue_codes"]:
+                diagnostics["issue_codes"].append(code)
+
+        is_global = program_id == PROGRAM_GLOBAL or program_id.startswith("keysuri_global")
+        if not (is_global and is_max_tokens_no_text_error(first_exc)):
+            try:
+                first_exc.diagnostics = {**first_diag, **diagnostics, **first_diag}
+            except Exception:
+                pass
+            raise
+
+        # Global-only internal recovery: one compact prompt + expanded budget retry.
+        diagnostics["retry_applied"] = True
+        diagnostics["retry_reason"] = "max_tokens_empty_text"
+        diagnostics["compact_prompt_used"] = True
+        retry_max = max(max_out, KEYSURI_GLOBAL_BODY_MAX_OUTPUT_TOKENS_RETRY)
+        diagnostics["max_output_tokens"] = retry_max
+        compact_prompt = build_keysuri_generation_prompt_compact(
+            prompt_input, reason="max_tokens_empty_retry"
+        )
+        try:
+            raw_text = caller(
+                compact_prompt,
+                project_id=project_id,
+                model=model,
+                program_id=program_id,
+                max_output_tokens=retry_max,
+                usage_sink=usage_sink,
+            )
+            diagnostics["retry_result"] = "success"
+            diagnostics["text_length"] = len(str(raw_text or ""))
+            diagnostics["finish_reason"] = diagnostics.get("finish_reason") or "STOP"
+            return str(raw_text), diagnostics
+        except KeysuriGeminiError as retry_exc:
+            retry_diag = dict(getattr(retry_exc, "diagnostics", None) or {})
+            diagnostics["retry_result"] = "failed"
+            for key in ("finish_reason", "text_length", "candidate_count"):
+                if key in retry_diag:
+                    diagnostics[key] = retry_diag.get(key)
+            if "keysuri_gemini_max_tokens_no_text" not in str(retry_exc):
+                # Preserve the original MAX_TOKENS issue code as primary signal.
+                pass
+            merged = {**retry_diag, **diagnostics}
+            merged["issue_codes"] = list(
+                dict.fromkeys(
+                    list(diagnostics.get("issue_codes") or [])
+                    + (
+                        ["keysuri_gemini_max_tokens_no_text"]
+                        if is_max_tokens_no_text_error(first_exc)
+                        else []
+                    )
+                )
+            )
+            # Never expose raw prompt/response bodies in diagnostics.
+            for banned in ("raw_text", "prompt", "compact_prompt", "response", "raw_response"):
+                merged.pop(banned, None)
+            try:
+                retry_exc.diagnostics = merged
+            except Exception:
+                pass
+            # Re-raise the first MAX_TOKENS error (canonical issue code) with merged diag.
+            try:
+                first_exc.diagnostics = merged
+            except Exception:
+                pass
+            raise first_exc from retry_exc
 
 
 def _strip_markdown_fences(text: str) -> str:

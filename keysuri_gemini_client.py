@@ -13,6 +13,13 @@ KEYSURI_BODY_GEMINI_MODEL_ENV = "KEYSURI_BODY_GEMINI_MODEL"
 KEE_SURI_BODY_MODEL_ENV = "KEE_SURI_BODY_MODEL"
 KEYSURI_GEMINI_MODE = "keysuri_generation"
 
+# Body generation output budgets. Global Tech (gemini-3-flash-preview) can burn
+# most of a shared budget on thoughts and return MAX_TOKENS with empty parts —
+# give Global a higher default without raising Korea's budget.
+KEYSURI_DEFAULT_BODY_MAX_OUTPUT_TOKENS = 12288
+KEYSURI_GLOBAL_BODY_MAX_OUTPUT_TOKENS = 16384
+KEYSURI_GLOBAL_BODY_MAX_OUTPUT_TOKENS_RETRY = 16384
+
 # Program-specific body-model overrides. These take priority over the shared
 # KEYSURI_BODY_GEMINI_MODEL so Global Tech (working on gemini-3-flash-preview)
 # and Korea Tech (needing a different model after a gemini-3-flash-preview
@@ -35,6 +42,20 @@ _KOREA_PROGRAM_ENV_NAMES: Tuple[str, ...] = (
 
 class KeysuriGeminiError(RuntimeError):
     """Raised when Kee-Suri Gemini/Vertex text generation fails."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostics: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.diagnostics: Dict[str, Any] = dict(diagnostics or {})
+
+
+def is_max_tokens_no_text_error(exc: BaseException) -> bool:
+    """True when Gemini hit MAX_TOKENS before emitting any usable text."""
+    return "keysuri_gemini_max_tokens_no_text" in str(exc)
 
 
 def resolve_vertex_project_id(project_id: Optional[str] = None) -> str:
@@ -86,6 +107,28 @@ def resolve_keysuri_body_model(
     )
 
 
+def resolve_keysuri_body_max_output_tokens(
+    program_id: Optional[str] = None,
+    *,
+    max_output_tokens: Optional[int] = None,
+) -> int:
+    """Resolve body generation max_output_tokens for a Kee-Suri program.
+
+    Priority: explicit arg > GENIE_MAX_OUTPUT_TOKENS env > Global program default
+    (KEYSURI_GLOBAL_BODY_MAX_OUTPUT_TOKENS) > shared default
+    (KEYSURI_DEFAULT_BODY_MAX_OUTPUT_TOKENS). Korea keeps the shared default.
+    """
+    if max_output_tokens is not None:
+        return int(max_output_tokens)
+    env_raw = os.getenv("GENIE_MAX_OUTPUT_TOKENS", "").strip()
+    if env_raw:
+        return int(env_raw)
+    pid = (program_id or "").strip()
+    if pid == "keysuri_global_tech" or pid.startswith("keysuri_global"):
+        return KEYSURI_GLOBAL_BODY_MAX_OUTPUT_TOKENS
+    return KEYSURI_DEFAULT_BODY_MAX_OUTPUT_TOKENS
+
+
 def _finish_reason_name(candidate: object) -> str:
     reason = getattr(candidate, "finish_reason", None)
     if reason is None:
@@ -107,36 +150,66 @@ def _extract_gemini_text_safe(response: object) -> str:
     with a clear issue code baked into the message.
     """
     candidates = getattr(response, "candidates", None) or []
+    candidate_count = len(candidates) if hasattr(candidates, "__len__") else 0
     if not candidates:
         raise KeysuriGeminiError(
-            "keysuri_gemini_response_no_parts: Gemini response has no candidates"
+            "keysuri_gemini_response_no_parts: Gemini response has no candidates",
+            diagnostics={
+                "finish_reason": "",
+                "text_length": 0,
+                "candidate_count": 0,
+            },
         )
 
     candidate = candidates[0]
     finish_reason = _finish_reason_name(candidate)
     content = getattr(candidate, "content", None)
     parts = getattr(content, "parts", None) if content is not None else None
+    base_diag: Dict[str, Any] = {
+        "finish_reason": finish_reason or "",
+        "text_length": 0,
+        "candidate_count": candidate_count,
+    }
 
     if not parts:
         if "MAX_TOKENS" in finish_reason:
             raise KeysuriGeminiError(
                 "keysuri_gemini_max_tokens_no_text: Gemini hit max_output_tokens "
-                f"before producing any text (finish_reason={finish_reason})"
+                f"before producing any text (finish_reason={finish_reason})",
+                diagnostics=base_diag,
             )
         raise KeysuriGeminiError(
             "keysuri_gemini_response_no_parts: Gemini response candidate has no "
-            f"content parts (finish_reason={finish_reason or 'unknown'})"
+            f"content parts (finish_reason={finish_reason or 'unknown'})",
+            diagnostics=base_diag,
         )
 
     try:
         text = response.text
     except ValueError as exc:
         if "MAX_TOKENS" in finish_reason:
-            raise KeysuriGeminiError(f"keysuri_gemini_max_tokens_no_text: {exc}") from exc
-        raise KeysuriGeminiError(f"keysuri_gemini_response_no_parts: {exc}") from exc
+            raise KeysuriGeminiError(
+                f"keysuri_gemini_max_tokens_no_text: {exc}",
+                diagnostics=base_diag,
+            ) from exc
+        raise KeysuriGeminiError(
+            f"keysuri_gemini_response_no_parts: {exc}",
+            diagnostics=base_diag,
+        ) from exc
 
     if not text or not str(text).strip():
-        raise KeysuriGeminiError("Gemini returned empty text response")
+        empty_diag = dict(base_diag)
+        empty_diag["text_length"] = 0
+        if "MAX_TOKENS" in finish_reason:
+            raise KeysuriGeminiError(
+                "keysuri_gemini_max_tokens_no_text: Gemini hit max_output_tokens "
+                f"before producing any text (finish_reason={finish_reason})",
+                diagnostics=empty_diag,
+            )
+        raise KeysuriGeminiError(
+            "Gemini returned empty text response",
+            diagnostics=empty_diag,
+        )
     return str(text)
 
 
@@ -192,7 +265,9 @@ def call_keysuri_gemini_text(
     pid = resolve_vertex_project_id(project_id)
     loc = (location or os.getenv("VERTEX_LOCATION") or DEFAULT_VERTEX_LOCATION).strip()
     model_name = resolve_keysuri_body_model(model, program_id=program_id)
-    max_out = max_output_tokens or int(os.getenv("GENIE_MAX_OUTPUT_TOKENS", "12288"))
+    max_out = resolve_keysuri_body_max_output_tokens(
+        program_id, max_output_tokens=max_output_tokens
+    )
 
     try:
         vertexai.init(project=pid, location=loc)
@@ -214,13 +289,23 @@ def call_keysuri_gemini_text(
     if usage_sink is not None:
         try:
             usage_sink["model"] = model_name
+            usage_sink["max_output_tokens"] = max_out
+            usage_sink["program_id"] = (program_id or "").strip() or None
             usage_sink.update(extract_gemini_usage_metadata(response))
         except Exception:
             pass
 
     try:
         return _extract_gemini_text_safe(response)
-    except KeysuriGeminiError:
+    except KeysuriGeminiError as exc:
+        # Attach generation budget to diagnostics without exposing raw response.
+        try:
+            diag = dict(getattr(exc, "diagnostics", None) or {})
+            diag.setdefault("max_output_tokens", max_out)
+            diag.setdefault("program_id", (program_id or "").strip() or None)
+            exc.diagnostics = diag
+        except Exception:
+            pass
         raise
     except Exception as exc:
         raise KeysuriGeminiError(f"Vertex Gemini text extraction failed: {exc}") from exc

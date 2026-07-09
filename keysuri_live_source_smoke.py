@@ -36,8 +36,8 @@ from keysuri_contract_preview_renderer import (
     render_keysuri_contract_preview_html,
 )
 from keysuri_generation_prompt import (
-    build_keysuri_generation_prompt,
     extract_json_object_from_model_text,
+    generate_keysuri_body_raw_text,
     parse_keysuri_generated_response,
 )
 from keysuri_gemini_client import KeysuriGeminiError, call_keysuri_gemini_text
@@ -343,6 +343,7 @@ class LiveSourceSmokeResult:
     parse_status: Optional[str] = None
     parse_meta: Dict[str, Any] = field(default_factory=dict)
     parse_diagnostics: Dict[str, Any] = field(default_factory=dict)
+    generation_diagnostics: Dict[str, Any] = field(default_factory=dict)
     raw_response_path: Optional[str] = None
     generated_body: Dict[str, str] = field(default_factory=dict)
     generated_briefing: Optional[dict] = None
@@ -401,6 +402,7 @@ class LiveSourceSmokeResult:
             "parse_status": self.parse_status,
             "parse_meta": self.parse_meta,
             "parse_diagnostics": self.parse_diagnostics,
+            "generation_diagnostics": self.generation_diagnostics,
             "raw_response_path": self.raw_response_path,
             "generated_body": self.generated_body,
             "generated_briefing": self.generated_briefing,
@@ -1392,20 +1394,30 @@ def run_keysuri_live_source_smoke(
     parse_internal_codes: List[str] = []
     raw_response_path: Optional[str] = None
     generated_body: Dict[str, str] = {}
+    generation_diagnostics: Dict[str, Any] = {}
 
     if use_gemini:
-        prompt_text = build_keysuri_generation_prompt(prompt_input)
         caller = gemini_caller or call_keysuri_gemini_text
         try:
-            raw_text = caller(
-                prompt_text,
+            raw_text, generation_diagnostics = generate_keysuri_body_raw_text(
+                prompt_input,
+                gemini_caller=caller,
                 project_id=project_id,
                 model=model,
-                program_id=program_id,
                 usage_sink=usage_sink,
             )
             side_effects["called_gemini"] = True
         except KeysuriGeminiError as exc:
+            gen_diag = dict(getattr(exc, "diagnostics", None) or {})
+            issue_codes = []
+            msg = str(exc)
+            if "keysuri_gemini_max_tokens_no_text" in msg:
+                issue_codes.append("keysuri_gemini_max_tokens_no_text")
+            elif "keysuri_gemini_response_no_parts" in msg:
+                issue_codes.append("keysuri_gemini_response_no_parts")
+            for code in gen_diag.get("issue_codes") or []:
+                if code and code not in issue_codes:
+                    issue_codes.append(str(code))
             return LiveSourceSmokeResult(
                 ok=False,
                 program_id=program_id,
@@ -1418,6 +1430,8 @@ def run_keysuri_live_source_smoke(
                 fetched_live_news=True,
                 use_gemini=True,
                 side_effects=side_effects,
+                generation_diagnostics=gen_diag,
+                validation_issues=issue_codes,
                 candidate_funnel_summary=(
                     prompt_input.get("candidate_funnel_summary")
                     if isinstance(prompt_input.get("candidate_funnel_summary"), dict)
@@ -1712,6 +1726,7 @@ def run_keysuri_live_source_smoke(
         called_gemini=side_effects["called_gemini"],
         parse_status=parse_status,
         parse_meta=parse_meta,
+        generation_diagnostics=generation_diagnostics if use_gemini else {},
         raw_response_path=raw_response_path,
         generated_body=generated_body,
         generated_briefing=generated_briefing if isinstance(generated_briefing, dict) else None,
