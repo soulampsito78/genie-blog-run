@@ -837,6 +837,21 @@ def _global_filler_sanitizer_diagnostics(briefing: Optional[dict]) -> Dict[str, 
     return dict(raw) if isinstance(raw, dict) else {}
 
 
+def _generated_briefing_top_items(briefing: Optional[dict]) -> List[Dict[str, Any]]:
+    if not isinstance(briefing, dict):
+        return []
+    top = briefing.get("top_5_news")
+    if isinstance(top, dict):
+        items = top.get("items")
+    elif isinstance(top, list):
+        items = top
+    else:
+        items = briefing.get("top_5_items")
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
 def _post_render_qa_diagnostic_fields(qa_result: Any) -> Dict[str, Any]:
     """Safe post-render QA diagnostics for artifacts (no raw Gemini body)."""
     diag = getattr(qa_result, "diagnostics", None)
@@ -844,8 +859,17 @@ def _post_render_qa_diagnostic_fields(qa_result: Any) -> Dict[str, Any]:
         return {}
     return {
         "post_render_qa_diagnostics": {
+            "final_visible_email_text_checked": bool(
+                diag.get("final_visible_email_text_checked")
+            ),
+            "checked_surface": str(diag.get("checked_surface") or ""),
             "issue_codes": list(diag.get("issue_codes") or []),
             "repeated_phrases": list(diag.get("repeated_phrases") or []),
+            "affected_sections": list(diag.get("affected_sections") or []),
+            "truncated_visible_lines": list(diag.get("truncated_visible_lines") or []),
+            "category_next_watch_mismatches": list(
+                diag.get("category_next_watch_mismatches") or []
+            ),
             "sanitizer_applied": bool(diag.get("sanitizer_applied")),
             "sanitizer_removed_count": int(diag.get("sanitizer_removed_count") or 0),
             "sanitizer_rewritten_count": int(diag.get("sanitizer_rewritten_count") or 0),
@@ -3061,6 +3085,7 @@ def run_keysuri_text_only_reissue(
         post_render_qa = validate_global_post_render_visible_quality(
             email_html,
             sanitizer_diagnostics=_global_filler_sanitizer_diagnostics(generated_briefing),
+            briefing_items=_generated_briefing_top_items(generated_briefing),
         )
         post_render_error = KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED
     else:
@@ -3423,6 +3448,7 @@ def run_keysuri_text_and_image_reissue(
         post_render_qa = validate_global_post_render_visible_quality(
             email_html,
             sanitizer_diagnostics=_global_filler_sanitizer_diagnostics(generated_briefing),
+            briefing_items=_generated_briefing_top_items(generated_briefing),
         )
         post_render_error = KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED
     else:
@@ -4101,6 +4127,7 @@ def run_keysuri_service_full_run(
         post_render_qa = validate_global_post_render_visible_quality(
             email_html,
             sanitizer_diagnostics=_global_filler_sanitizer_diagnostics(generated_briefing),
+            briefing_items=_generated_briefing_top_items(generated_briefing),
         )
         post_render_error = KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED
     else:

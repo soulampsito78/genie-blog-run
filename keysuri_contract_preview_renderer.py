@@ -418,12 +418,33 @@ def _signal_chip_text(item: Mapping[str, Any]) -> str:
     return "관찰"
 
 
-def _render_theme_top_insert(fixture: Mapping[str, Any], *, program_id: str) -> str:
-    items = fixture.get("top_5_items") or []
-    chips: list[str] = []
+def _global_signal_chip_counts(items: Sequence[Any]) -> list[str]:
+    """Unique judgment labels with counts for the GLOBAL signal-distribution strip.
+
+    Five items sharing one label must render as one "관찰 5건" chip — never
+    "관찰 관찰 관찰 관찰 관찰" (2026-07-10 production visible-text defect).
+    Korea's domestic strip keeps per-item chips (its post-render QA validates
+    taxonomy-only chip text), so this is applied to global strips only.
+    """
+    counts: dict[str, int] = {}
     for item in items[:5]:
         if isinstance(item, dict):
-            chips.append(_signal_chip_text(item))
+            label = _signal_chip_text(item)
+            counts[label] = counts.get(label, 0) + 1
+    return [
+        label if count == 1 else f"{label} {count}건"
+        for label, count in counts.items()
+    ]
+
+
+def _render_theme_top_insert(fixture: Mapping[str, Any], *, program_id: str) -> str:
+    items = fixture.get("top_5_items") or []
+    if _is_korea_program(program_id):
+        chips = [
+            _signal_chip_text(item) for item in items[:5] if isinstance(item, dict)
+        ]
+    else:
+        chips = _global_signal_chip_counts(items)
     chip_html = " ".join(f'<span class="signal-chip">{_esc(c)}</span>' for c in chips)
     chip_row = f'<div class="signal-chip-row">{chip_html}</div>' if chip_html else ""
 
@@ -1427,10 +1448,7 @@ def _gmail_spacer(height: int = 16) -> str:
 
 def _gmail_render_global_signal_chips(fixture: Mapping[str, Any]) -> str:
     items = fixture.get("top_5_items") or []
-    chips: list[str] = []
-    for item in items[:5]:
-        if isinstance(item, dict):
-            chips.append(_signal_chip_text(item))
+    chips = _global_signal_chip_counts(items)
     if not chips:
         return ""
     chip_cells = []

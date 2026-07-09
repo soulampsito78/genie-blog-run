@@ -5,7 +5,12 @@ import copy
 import re
 from typing import Any, Dict, List, Optional, Tuple  # Any used for next_watch list input
 
-from keysuri_briefing_content_quality import GLOBAL_COMMON_FILLER_SENTENCES
+from keysuri_briefing_content_quality import (
+    GLOBAL_COMMON_FILLER_SENTENCES,
+    GLOBAL_EXACT_REPEATED_FILLER_PHRASES,
+    GLOBAL_ENERGY_NEXT_WATCH_MARKERS,
+    GLOBAL_STARTUP_FOUNDER_MARKERS,
+)
 from keysuri_contract_preview_quality import _sentence_count
 from keysuri_visible_text import (
     KEYSURI_DEEP_DIVE_UNCERTAINTY,
@@ -55,7 +60,7 @@ _WHY_NOW_CONTEXT: Dict[str, str] = {
 
 _OWNER_CONTEXT: Dict[str, str] = {
     "ai_software_platform": "API·파트너·제품 로드맵에 단기 비용·배포 제약이 생기는지 보면 됩니다.",
-    "semiconductor_chip_infra": "인프라·연산 조달·파트너 조건이 비용 구조에 미치는지 살보면 됩니다.",
+    "semiconductor_chip_infra": "인프라·연산 조달·파트너 조건이 비용 구조에 미치는지 살펴보면 됩니다.",
     "robotics_automation_manufacturing": "자동화·운영 흐름에 물리 AI·로봇 적용 여지가 있는지 보면 됩니다.",
     "battery_ev_energy_grid": "전력·에너지 비용 민감도가 있는 사업에 반영할지 점검하면 됩니다.",
     "hardware_device_display": "사용자 접점·검색·쇼핑 경험 변화가 기획에 주는 시사점을 보면 됩니다.",
@@ -320,16 +325,99 @@ def _build_hype_caution(meta: dict) -> str:
     return ""
 
 
+def _item_title_hook(item: dict, meta: dict, *, max_len: int = 30) -> str:
+    """Short title fragment used to anchor padding sentences to THIS item.
+
+    Identical category-level padding across TOP5 items produced the 2026-07-10
+    repeated-filler Gmail; a title anchor keeps each padded sentence distinct
+    without inventing facts."""
+    title = _get_field(item, "korean_title", "headline") or _text(meta.get("statement"))
+    title = _text(title).rstrip(".")
+    if len(title) <= max_len:
+        return title
+    cut = title[:max_len].rstrip()
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut.rstrip(" ,·.")
+
+
+def _looks_startup_founder_item(item: dict, meta: dict) -> bool:
+    blob = " ".join(
+        _text(v)
+        for v in (
+            _get_field(item, "korean_title", "headline"),
+            meta.get("statement"),
+            meta.get("summary"),
+            item.get("summary"),
+            item.get("what_happened"),
+            meta.get("source_name"),
+            item.get("source_name"),
+        )
+    ).lower()
+    return any(marker in blob for marker in GLOBAL_STARTUP_FOUNDER_MARKERS)
+
+
+_STARTUP_NEXT_WATCH_PAIR: Tuple[str, str] = (
+    "투자 환경·후속 라운드(팔로우온) 흐름",
+    "창업자 실행 리스크·번 레이트·GTM 후속",
+)
+_STARTUP_CATEGORY_KEY = "policy_regulation_capital_supplychain"
+_STARTUP_CATEGORY_LABEL = "스타트업·자본·운영 리스크"
+
+
+def _repair_startup_founder_category(item: dict, meta: dict) -> Tuple[dict, dict]:
+    """Do not let founder/startup advice inherit an energy/EV category."""
+    if not _looks_startup_founder_item(item, meta):
+        return item, meta
+    category = _category_key(meta, item)
+    label = _category_label(meta, item)
+    if category != "battery_ev_energy_grid" and "배터리" not in label:
+        return item, meta
+    fixed_item = dict(item)
+    fixed_meta = dict(meta)
+    fixed_item["primary_category"] = _STARTUP_CATEGORY_KEY
+    fixed_item["category_label_ko"] = _STARTUP_CATEGORY_LABEL
+    fixed_meta["primary_category"] = _STARTUP_CATEGORY_KEY
+    fixed_meta["category_label_ko"] = _STARTUP_CATEGORY_LABEL
+    fixed_meta["category_display_label"] = _STARTUP_CATEGORY_LABEL
+    fixed_item["category_repair_reason"] = "startup_founder_not_energy"
+    return fixed_item, fixed_meta
+
+
+def _item_specific_checkpoint(item: dict, meta: dict, *, style: str) -> str:
+    """Padding sentence anchored on this item's title + category checkpoints.
+
+    Replaces the shared per-category constants (_WHY_NOW_CONCRETE_BY_CAT /
+    _OWNER_CONTEXT / category follow sentences) as default padding — those
+    repeated verbatim across same-category items."""
+    hook = _item_title_hook(item, meta)
+    checkpoint_a, checkpoint_b = _concrete_next_watch_pair(meta, item)
+    if not hook:
+        hook = _category_label(meta, item)
+    if style == "why_now":
+        return f"「{hook}」 확인 포인트는 {checkpoint_a}, 그리고 {checkpoint_b}입니다."
+    if style == "owner":
+        return f"「{hook}」 후속은 {checkpoint_a} 중심으로 보면 됩니다."
+    if style == "what":
+        return f"「{hook}」 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다."
+    if style == "decision":
+        return f"「{hook}」가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다."
+    return f"「{hook}」 후속 일정과 공식 발표부터 보면 됩니다."
+
+
 def _build_selection_reason(item: dict, meta: dict) -> str:
     existing = _get_field(item, "selection_reason", "selection_rationale")
     title = _get_field(item, "korean_title", "headline") or _text(meta.get("statement"))
     category = _category_label(meta, item)
     source = _text(meta.get("source_name") or item.get("source_name"))
+    hook = _item_title_hook(item, meta)
     padding = [
         existing,
         _text(meta.get("selection_rationale")),
-        f"오늘 흐름에서 {category} 축과 맞닿는 공식 보도라 포함했습니다.",
-        f"{source} 공개 요약 범위 안에서 의사결정과 연결되는 신호입니다." if source else "",
+        f"「{hook}」를 {category} 축에서 먼저 볼 신호로 골라 포함했습니다."
+        if hook
+        else f"오늘 흐름에서 {category} 축과 맞닿는 공식 보도라 포함했습니다.",
+        f"{source} 공식 보도 기준으로 의사결정과 연결되는 신호입니다." if source else "",
     ]
     if meta.get("hype_warning") or meta.get("sponsored_warning"):
         padding.append("다만 마케팅·사례·스폰서 성격이 있을 수 있어 해석에 주의가 필요합니다.")
@@ -345,9 +433,14 @@ def _build_what_happened(item: dict, meta: dict) -> Tuple[str, bool]:
     title = _get_field(item, "korean_title", "headline") or _text(meta.get("statement"))
     source = _text(meta.get("source_name") or item.get("source_name"))
     thin = _is_thin_source(meta, existing)
+    # Never pad the same disclaimer into every item ("공개된 요약 범위 안에서만
+    # 정리했습니다" ×5 in the 2026-07-10 Gmail) — the supplement is anchored on
+    # this item's title so each item's padding stays distinct. Any model-written
+    # disclaimer repeats are deduped by sanitize_global_repeated_common_filler
+    # (keep-first, ≤1 per briefing) and hard-blocked by the final email QA.
     padding = [
         f"{source} 공개 요약에 따르면 「{title}」 관련 변화가 보고되었습니다." if title and source else "",
-        "공개된 요약 범위 안에서만 정리했습니다.",
+        _item_specific_checkpoint(item, meta, style="what"),
     ]
     if thin:
         padding.append(_UNCERTAINTY_MARKER)
@@ -367,13 +460,12 @@ def _build_why_now(item: dict, meta: dict) -> str:
     ``sanitize_global_repeated_common_filler`` after all TOP5 items are enriched.
     """
     existing = _get_field(item, "why_now", "why_it_matters")
-    cat = _category_key(meta, item)
-    concrete = _WHY_NOW_CONCRETE_BY_CAT.get(cat, "확인 포인트는 후속 공식 발표·일정입니다.")
-    category = _category_label(meta, item)
-    follow = f"{category} 후속 일정과 공식 발표만 확인하면 됩니다."
-    # Avoid injecting GLOBAL_COMMON_FILLER_SENTENCES as default padding; those
-    # phrases are reserved for rare single-use fallbacks and are stripped when
-    # repeated across TOP5 by sanitize_global_repeated_common_filler.
+    # Item-anchored checkpoints — the shared per-category constants repeated
+    # verbatim across same-category items ("확인 포인트는 API 공개 일정·엔터프라이즈
+    # 도입·가격 조건입니다" / "{category} 후속 일정과 공식 발표만 확인하면 됩니다"
+    # ×3 each in the 2026-07-10 Gmail).
+    concrete = _item_specific_checkpoint(item, meta, style="why_now")
+    follow = _item_specific_checkpoint(item, meta, style="follow")
     padding = [existing, concrete, follow]
     return _ensure_sentence_depth(
         existing,
@@ -384,14 +476,13 @@ def _build_why_now(item: dict, meta: dict) -> str:
 
 def _build_owner_angle(item: dict, meta: dict) -> str:
     existing = _get_field(item, "owner_angle", "business_implication")
-    cat = _category_key(meta, item)
+    # No shared contrast sentence ("단기 과장과 구조 변화는 구분해 보시면 됩니다"
+    # ×5) and no shared per-category owner context — pad with this item's own
+    # checkpoint sentence instead.
     padding = [
         existing,
-        _OWNER_CONTEXT.get(
-            cat,
-            "운영·파트너·서비스 의사결정에 어떤 경계가 생기는지 보면 됩니다.",
-        ),
-        "단기 과장과 구조 변화는 구분해 보시면 됩니다.",
+        _item_specific_checkpoint(item, meta, style="owner"),
+        _item_specific_checkpoint(item, meta, style="decision"),
     ]
     return _ensure_sentence_depth(
         existing,
@@ -437,6 +528,10 @@ def _looks_generic_next_watch(text: str) -> bool:
 
 
 def _concrete_next_watch_pair(meta: dict, item: dict) -> Tuple[str, str]:
+    # Startup/founder/investor articles must never carry energy checkpoints
+    # (2026-07-10 TOP4: founder-advice article got 전력/ESS/그리드 next_watch).
+    if _looks_startup_founder_item(item, meta):
+        return _STARTUP_NEXT_WATCH_PAIR
     cat = _category_key(meta, item)
     pair = _NEXT_WATCH_BY_CAT.get(cat)
     if pair:
@@ -451,11 +546,19 @@ def _concrete_next_watch_pair(meta: dict, item: dict) -> Tuple[str, str]:
 def _build_next_watch(item: dict, meta: dict) -> str:
     items = _next_watch_items(_raw_field(item, "next_watch", "next_check_point"))
     concrete_a, concrete_b = _concrete_next_watch_pair(meta, item)
-    # Drop generic filler bullets so category-specific checkpoints can replace them.
+    startup_item = _looks_startup_founder_item(item, meta)
+    # Drop generic filler bullets so category-specific checkpoints can replace
+    # them; on startup/founder items also drop energy/EV/grid bullets left by a
+    # miscategorized model output.
     kept: List[str] = []
     for it in items:
-        if it and not _looks_generic_next_watch(it):
-            kept.append(it)
+        if not it or _looks_generic_next_watch(it):
+            continue
+        if startup_item and any(
+            marker in it.lower() for marker in GLOBAL_ENERGY_NEXT_WATCH_MARKERS
+        ):
+            continue
+        kept.append(it)
     items = kept
     if len(items) < MIN_NEXT_WATCH_ITEMS:
         items.append(concrete_a)
@@ -559,7 +662,11 @@ def sanitize_global_repeated_common_filler(items: List[dict]) -> Tuple[List[dict
 
     working = [copy.deepcopy(i) if isinstance(i, dict) else i for i in items]
     dict_items = [i for i in working if isinstance(i, dict)]
-    phrases = list(GLOBAL_COMMON_FILLER_SENTENCES) + list(_GLOBAL_SOFT_FILLER_PHRASES)
+    phrases = (
+        list(GLOBAL_COMMON_FILLER_SENTENCES)
+        + list(GLOBAL_EXACT_REPEATED_FILLER_PHRASES)
+        + list(_GLOBAL_SOFT_FILLER_PHRASES)
+    )
 
     for phrase in phrases:
         hit_indices = [
@@ -644,6 +751,7 @@ def enrich_top5_item_content(
 ) -> dict:
     """Enrich one TOP5 item to meet Korean depth requirements."""
     out = copy.deepcopy(item)
+    out, meta = _repair_startup_founder_category(out, meta)
     selection_reason = _build_selection_reason(out, meta)
     what_happened, thin = _build_what_happened(out, meta)
     why_now = _build_why_now(out, meta)

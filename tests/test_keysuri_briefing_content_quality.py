@@ -749,6 +749,122 @@ class GlobalPostRenderVisibleQualityWrapperTests(unittest.TestCase):
         result = validate_global_post_render_visible_quality(email_html)
         self.assertTrue(result.ok, result.issues)
 
+    def test_exact_repeated_filler_with_html_entities_is_flagged(self) -> None:
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+
+        html = (
+            "<p>항목1. 공개된&nbsp;요약 범위 안에서만 정리했습니다.</p>"
+            "<p>항목2. 공개된 요약&nbsp;범위 안에서만 정리했습니다</p>"
+            "<p>항목3. API&nbsp;· 파트너&nbsp;· 제품 로드맵에 단기 비용&nbsp;· 배포 제약이 생기는지 보면 됩니다.</p>"
+            "<p>항목4. API·파트너·제품 로드맵에 단기 비용·배포 제약이 생기는지 보면 됩니다</p>"
+        )
+        result = validate_global_post_render_visible_quality(html)
+        self.assertFalse(result.ok)
+        codes = {i.code for i in result.issues}
+        self.assertIn("global_repeated_common_filler", codes)
+        phrases = result.diagnostics.get("repeated_phrases") or []
+        self.assertGreaterEqual(len(phrases), 2)
+        self.assertTrue(result.diagnostics.get("final_visible_email_text_checked"))
+        self.assertEqual(result.diagnostics.get("checked_surface"), "email_visible_text")
+
+    def test_final_email_gate_blocks_even_when_preview_has_no_filler_issue(self) -> None:
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+
+        fixture = build_global_contract_fixture()
+        preview_html = render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        preview_result = validate_briefing_content_gate(
+            preview_html,
+            source_metadata={
+                "global_top5_selection": {
+                    "policy": "keysuri_global_top5_selection_v2_diversity"
+                },
+                "claims": [{"selection_score": 70, "selection_rationale": "test"}] * 5,
+            },
+        )
+        preview_codes = {i.code for i in preview_result.issues}
+        self.assertNotIn("global_repeated_common_filler", preview_codes)
+
+        email_html = (
+            "<p>실제 Gmail 렌더 본문입니다. 단기 과장과 구조 변화는 구분해 보시면 됩니다.</p>"
+            "<p>다른 카드도 같은 문장을 반복합니다. 단기 과장과 구조 변화는 구분해 보시면 됩니다.</p>"
+        )
+        email_result = validate_global_post_render_visible_quality(email_html)
+        self.assertFalse(email_result.ok)
+        self.assertIn(
+            "global_repeated_common_filler",
+            {i.code for i in email_result.issues},
+        )
+
+    def test_selection_reason_template_repeated_three_times_is_flagged(self) -> None:
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+
+        html = "".join(
+            "<p>선정 이유: 이 흐름은 AI·소프트웨어·플랫폼 변화와 직접 연결되어 "
+            "주인님께 먼저 확인하실 만한 신호로 판단되었습니다.</p>"
+            for _ in range(3)
+        )
+        result = validate_global_post_render_visible_quality(html)
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "global_repeated_selection_reason_template",
+            {i.code for i in result.issues},
+        )
+
+    def test_label_accumulation_is_flagged(self) -> None:
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+
+        result = validate_global_post_render_visible_quality(
+            "<p>글로벌 신호 분포</p><p>관찰 관찰 관찰 관찰 관찰</p>"
+        )
+        self.assertFalse(result.ok)
+        self.assertIn("global_visible_label_accumulation", {i.code for i in result.issues})
+
+    def test_visible_truncation_blocks_but_url_ellipsis_is_exempt(self) -> None:
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+
+        url_only = validate_global_post_render_visible_quality(
+            "<p>출처: https://example.com/articles/a...b</p>"
+        )
+        self.assertTrue(url_only.ok, url_only.issues)
+
+        for html in (
+            "<p>앞으로 AI는 도구를 넘어 ... 도입 기준이</p>",
+            "<p>앞으로 AI 도입 기준은 엔터프라이즈 배포 조건과 비용 구조에</p>",
+            "<p>앞으로 AI 도입 기준은 엔터프라이즈 배포 조건과 비용 구조에 ..</p>",
+        ):
+            with self.subTest(html=html):
+                result = validate_global_post_render_visible_quality(html)
+                self.assertFalse(result.ok)
+                self.assertIn(
+                    "global_visible_text_truncated_deep_dive",
+                    {i.code for i in result.issues},
+                )
+
+    def test_startup_founder_article_energy_next_watch_mismatch_is_flagged(self) -> None:
+        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
+
+        items = [
+            {
+                "news_id": "n4",
+                "korean_title": "찰스 허드슨이 전하는 초기 스타트업의 흔한 실수",
+                "source_name": "TechCrunch Startups",
+                "primary_category": "battery_ev_energy_grid",
+                "category_label_ko": "배터리·EV·에너지·전력 변화",
+                "next_watch": "전력 조달·ESS 계약·그리드 연계 일정",
+            }
+        ]
+        result = validate_global_post_render_visible_quality(
+            "<p>깨끗한 글로벌 브리핑 본문입니다. 문장은 정상적으로 끝납니다.</p>",
+            briefing_items=items,
+        )
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "global_category_next_watch_mismatch",
+            {i.code for i in result.issues},
+        )
+        mismatches = result.diagnostics.get("category_next_watch_mismatches") or []
+        self.assertEqual(mismatches[0].get("item_id"), "n4")
+
 
 class GlobalPostRenderKnownArtifactDetectorTests(unittest.TestCase):
     """Known visible-text artifacts (signal-chip glue, badge glue, typo) must be

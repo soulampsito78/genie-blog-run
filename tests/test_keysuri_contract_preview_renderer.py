@@ -1346,11 +1346,54 @@ class KeysuriBadgeChipSpacingTests(unittest.TestCase):
 
     @_require_contract_renderer
     def test_premium_preview_signal_chip_row_has_separator_between_spans(self) -> None:
-        html = _render_contract_html(_CONTRACT_RENDERER, build_global_contract_fixture())
+        fixture = build_global_contract_fixture()
+        fixture["top_5_items"][0]["keysuri_judgment_label"] = "사업 신호"
+        html = _render_contract_html(_CONTRACT_RENDERER, fixture)
         chip_row_m = re.search(r'<div class="signal-chip-row">(.*?)</div>', html, flags=re.DOTALL)
         self.assertIsNotNone(chip_row_m)
         assert chip_row_m is not None
         self.assertIn('</span> <span', chip_row_m.group(1))
+
+    @_require_contract_renderer
+    def test_global_signal_strip_dedupes_repeated_labels_to_counts(self) -> None:
+        """Five 관찰 items must render one '관찰 5건' chip — never the
+        '관찰 관찰 관찰 관찰 관찰' accumulation from the 2026-07-10 Gmail."""
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        fixture = build_global_contract_fixture()
+        for item in fixture["top_5_items"]:
+            item["keysuri_judgment_label"] = "관찰"
+        fixture["top_shot_image_src"] = "cid:keysuri_topshot_global_chip_dedupe"
+        mod.prepare_contract_preview_fixture(fixture, repo_root=_REPO, image_mode=mod.IMAGE_MODE_EMAIL)
+        email_html = mod.build_keysuri_global_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Global Tech",
+            admin_url="https://example.com/admin/runs/test_chip_dedupe",
+            run_id="test_chip_dedupe",
+        )
+        self.assertIn("관찰 5건", email_html)
+        self.assertNotIn("관찰 관찰", re.sub(r"<[^>]+>", " ", email_html))
+        # Premium preview strip too (global branch of _render_theme_top_insert)
+        html = _render_contract_html(mod, fixture)
+        chip_row_m = re.search(r'<div class="signal-chip-row">(.*?)</div>', html, flags=re.DOTALL)
+        assert chip_row_m is not None
+        self.assertIn("관찰 5건", chip_row_m.group(1))
+        self.assertNotIn("관찰 관찰", re.sub(r"<[^>]+>", " ", chip_row_m.group(1)))
+
+    @_require_contract_renderer
+    def test_korea_domestic_strip_keeps_per_item_taxonomy_chips(self) -> None:
+        """Korea strip is unchanged: one taxonomy chip per item (its own QA
+        validates chip text against the taxonomy list)."""
+        mod = _CONTRACT_RENDERER
+        assert mod is not None
+        fixture = build_korea_contract_fixture()
+        for item in fixture["top_5_items"]:
+            item["keysuri_judgment_label"] = "관찰"
+        html = _render_contract_html(mod, fixture)
+        chip_row_m = re.search(r'<div class="signal-chip-row">(.*?)</div>', html, flags=re.DOTALL)
+        assert chip_row_m is not None
+        self.assertEqual(chip_row_m.group(1).count("<span"), 5)
+        self.assertNotIn("건", chip_row_m.group(1))
 
 
 if __name__ == "__main__":

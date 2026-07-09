@@ -620,15 +620,17 @@ def _global_visible_selection_reason(
     item: Mapping[str, Any],
     meta: Mapping[str, Any],
 ) -> str:
+    # Anchored on the item's title hook: the old template dropped the title and
+    # produced the identical sentence for every item ("이 흐름은 {axis} 변화와
+    # 직접 연결되어 주인님께 먼저 확인하실 만한 신호로 판단되었습니다" ×5 in
+    # the 2026-07-10 Gmail). Title anchoring keeps each reason distinct
+    # without inventing facts.
     axis = _global_axis_from_item(item, meta)
     title = _entity_hook_from_title(
         str(item.get("korean_title") or item.get("headline") or meta.get("statement") or "")
     )
     if title:
-        return (
-            f"이 흐름은 {axis} 변화와 직접 연결되어 주인님께 먼저 확인하실 만한 "
-            f"신호로 판단되었습니다."
-        )
+        return f"「{title}」 신호가 {axis} 판단 기준과 맞닿아 있어 먼저 확인 대상으로 골랐습니다."
     return f"이 신호는 {axis} 축에서 우선적으로 확인할 필요가 있는 소식으로 분류되었습니다."
 
 

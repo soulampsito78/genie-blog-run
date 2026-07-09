@@ -352,6 +352,29 @@ class GlobalRepeatedFillerSanitizerTests(unittest.TestCase):
         self.assertNotIn(self._FILLER_BROAD, out[1]["why_now"])
         self.assertIn("공급 일정", out[1]["why_now"])
 
+    def test_sanitizer_reduces_exact_production_filler_to_one(self) -> None:
+        from keysuri_briefing_content_enricher import sanitize_global_repeated_common_filler
+
+        filler = "공개된 요약 범위 안에서만 정리했습니다"
+        items = [
+            {
+                "news_id": "n1",
+                "primary_category": "ai_software_platform",
+                "what_happened": f"NVIDIA 발표를 요약했습니다. {filler}.",
+            },
+            {
+                "news_id": "n2",
+                "primary_category": "hardware_device_display",
+                "what_happened": f"Google 발표를 요약했습니다. {filler}.",
+            },
+        ]
+        out, diag = sanitize_global_repeated_common_filler(items)
+        blob = " ".join(i.get("what_happened", "") for i in out)
+        self.assertEqual(blob.count(filler), 1)
+        self.assertTrue(diag["sanitizer_applied"])
+        self.assertGreaterEqual(diag["sanitizer_removed_count"], 1)
+        self.assertIn("n2", diag["affected_item_ids"])
+
     def test_sanitizer_then_post_render_qa_passes(self) -> None:
         from keysuri_briefing_content_enricher import sanitize_global_repeated_common_filler
         from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
@@ -415,6 +438,29 @@ class GlobalRepeatedFillerSanitizerTests(unittest.TestCase):
         self.assertIn("API", watch)
         self.assertNotIn("시장 반응을 지켜봐야", watch)
         self.assertGreaterEqual(_watch_checkpoint_count(watch), 2)
+
+    def test_startup_founder_advice_repairs_energy_category_and_next_watch(self) -> None:
+        item = {
+            "news_id": "n4",
+            "korean_title": "찰스 허드슨이 전하는 초기 스타트업의 흔한 실수",
+            "next_watch": "전력 조달·ESS 계약·그리드 연계 일정",
+            "source_name": "TechCrunch Startups",
+            "primary_category": "battery_ev_energy_grid",
+        }
+        meta = {
+            "source_name": "TechCrunch Startups",
+            "primary_category": "battery_ev_energy_grid",
+            "category_label_ko": "배터리·EV·에너지·전력 변화",
+        }
+        enriched = enrich_top5_item_content(item, meta=meta)
+        self.assertEqual(
+            enriched["primary_category"], "policy_regulation_capital_supplychain"
+        )
+        self.assertEqual(enriched["category_label_ko"], "스타트업·자본·운영 리스크")
+        self.assertEqual(enriched["category_repair_reason"], "startup_founder_not_energy")
+        self.assertNotIn("ESS", enriched["next_watch"])
+        self.assertNotIn("그리드", enriched["next_watch"])
+        self.assertIn("창업자 실행 리스크", enriched["next_watch"])
 
     def test_enrich_generated_briefing_dedupes_common_filler_across_items(self) -> None:
         prompt_input = {

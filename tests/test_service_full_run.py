@@ -3721,7 +3721,7 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
             "top_5_news": {"items": []},
             "title": "글로벌 브리핑",
         }
-        mock_post_render_qa.return_value = BriefingContentQualityResult(
+        qa_result = BriefingContentQualityResult(
             ok=False,
             issues=[
                 BriefingContentIssue(
@@ -3730,6 +3730,25 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
             ],
             warnings=[],
         )
+        qa_result.diagnostics = {
+            "final_visible_email_text_checked": True,
+            "checked_surface": "email_visible_text",
+            "issue_codes": ["global_repeated_common_filler"],
+            "repeated_phrases": [
+                {
+                    "issue_code": "global_repeated_common_filler",
+                    "repeated_phrase": "공개된 요약 범위 안에서만 정리했습니다",
+                    "count": 2,
+                    "section": "top5",
+                }
+            ],
+            "affected_sections": ["top5"],
+            "sanitizer_applied": True,
+            "sanitizer_removed_count": 1,
+            "sanitizer_rewritten_count": 1,
+            "affected_item_ids": ["n2"],
+        }
+        mock_post_render_qa.return_value = qa_result
         mock_send = MagicMock(return_value=True)
 
         payload = run_keysuri_service_full_run(
@@ -3743,16 +3762,25 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         called_html = mock_post_render_qa.call_args.args[0]
         self.assertIn("<!DOCTYPE html>", called_html)
         self.assertIn("글로벌 테크 TOP 5", called_html)
+        self.assertIn("briefing_items", mock_post_render_qa.call_args.kwargs)
 
         self.assertFalse(payload.get("ok"))
         self.assertEqual(payload.get("error"), KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED)
         self.assertIn("global_repeated_common_filler", payload.get("issue_codes") or [])
+        diag = payload.get("post_render_qa_diagnostics") or {}
+        self.assertTrue(diag.get("final_visible_email_text_checked"))
+        self.assertEqual(diag.get("checked_surface"), "email_visible_text")
+        self.assertEqual(diag.get("affected_item_ids"), ["n2"])
         self.assertFalse(payload.get("email_sent"))
         mock_send.assert_not_called()
         saved_meta = mock_save.call_args.args[0]
         self.assertEqual(saved_meta.get("validation_result"), "block")
         self.assertFalse(saved_meta.get("email_sent"))
         self.assertFalse(saved_meta.get("smtp_attempted"))
+        saved_diag = saved_meta.get("post_render_qa_diagnostics") or {}
+        self.assertTrue(saved_diag.get("final_visible_email_text_checked"))
+        self.assertEqual(saved_diag.get("checked_surface"), "email_visible_text")
+        self.assertEqual(saved_diag.get("affected_sections"), ["top5"])
 
     def test_final_gmail_html_with_repeated_filler_blocks_smtp(self) -> None:
         """Two TOP5 items sharing the exact common filler sentence in the FINAL
@@ -4323,7 +4351,9 @@ class KeysuriGlobalOwnerReviewEmailDesignRestorationTests(unittest.TestCase):
             with self.subTest(rendered="preview", forbidden=forbidden):
                 self.assertNotIn(forbidden, preview_html.lower())
         for rendered in (email_html, preview_html):
-            self.assertIn("주인님께 먼저 확인하실 만한 신호로 판단되었습니다", rendered)
+            self.assertIn("먼저 확인 대상으로 골랐습니다", rendered)
+            self.assertIn("판단 기준과 맞닿아 있어", rendered)
+            self.assertNotIn("주인님께 먼저 확인하실 만한 신호로 판단되었습니다", rendered)
 
     def test_korea_renderer_available_but_not_sent_by_global_service_full_run(self) -> None:
         from keysuri_contract_preview_renderer import render_keysuri_contract_preview_html

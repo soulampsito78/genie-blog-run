@@ -4,7 +4,7 @@ from __future__ import annotations
 import html as html_module
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 # Error code for the real owner-review send path (keysuri_service_full_run.py) to
 # use when validate_global_post_render_visible_quality blocks SMTP dispatch.
@@ -170,6 +170,133 @@ GLOBAL_POST_RENDER_TYPO_ARTIFACT_MARKERS: Tuple[str, ...] = (
 )
 
 GLOBAL_COMMON_FILLER_REPEAT_THRESHOLD = 2
+
+# Enricher/normalizer padding sentences observed repeating 3-5× in the
+# 2026-07-10 production Gmail owner-review (run 20260710_061038). These are
+# injected per-item by keysuri_briefing_content_enricher padding, so the QA
+# list above (model-output fillers) never caught them. ≥2 occurrences in the
+# FINAL email visible text is a hard block — matched via
+# _normalize_visible_for_phrase_match so tag/nbsp/middle-dot-spacing/period
+# variations cannot dodge the count.
+GLOBAL_EXACT_REPEATED_FILLER_PHRASES: Tuple[str, ...] = (
+    "공개된 요약 범위 안에서만 정리했습니다",
+    "단기 과장과 구조 변화는 구분해 보시면 됩니다",
+    "확인 포인트는 API 공개 일정·엔터프라이즈 도입·가격 조건입니다",
+    "AI·소프트웨어·플랫폼 후속 일정과 공식 발표만 확인하면 됩니다",
+    "API·파트너·제품 로드맵에 단기 비용·배포 제약이 생기는지 보면 됩니다",
+)
+
+# Selection-reason template tail (keysuri_visible_text fallback). The category
+# in front varies per item, so we count the invariant tail: ≥3 repeats means
+# TOP items share one templated selection reason instead of item-specific ones.
+GLOBAL_SELECTION_REASON_TEMPLATE_TAIL = "주인님께 먼저 확인하실 만한 신호로 판단되었습니다"
+GLOBAL_SELECTION_REASON_TEMPLATE_THRESHOLD = 3
+
+# Dangling Korean connectives — a visible line ending on one of these without
+# sentence-final punctuation reads as a truncated/damaged paragraph.
+GLOBAL_DANGLING_CONNECTIVE_ENDINGS: Tuple[str, ...] = (
+    "통해", "따라", "중심으로", "관련", "계속", "넘어", "위해", "대한", "되는", "하는",
+)
+
+# Startup/founder/investor article markers vs energy-only next_watch markers —
+# used for the category/next_watch consistency gate (TOP4 2026-07-10 regression:
+# a TechCrunch Startups founder-advice article classified as
+# battery_ev_energy_grid with 전력/ESS/그리드 checkpoints).
+GLOBAL_STARTUP_FOUNDER_MARKERS: Tuple[str, ...] = (
+    "startup", "startups", "founder", "founders", "investor", "funding",
+    "venture", " vc ", "mistakes", "스타트업", "창업자", "창업", "투자자", "벤처",
+)
+GLOBAL_ENERGY_NEXT_WATCH_MARKERS: Tuple[str, ...] = (
+    "전력", "ess", "그리드", "배터리", "ev ", "충전",
+)
+
+
+def _normalize_visible_for_phrase_match(text: str) -> str:
+    """Whitespace/nbsp/middle-dot-spacing insensitive form for phrase counting."""
+    out = str(text or "")
+    out = re.sub(r"\s+", " ", out)
+    out = re.sub(r"\s*·\s*", "·", out)
+    return out
+
+
+def count_normalized_phrase(text: str, phrase: str) -> int:
+    """Occurrences of ``phrase`` in ``text`` ignoring tag/nbsp/spacing/period noise."""
+    haystack = _normalize_visible_for_phrase_match(text)
+    needle = _normalize_visible_for_phrase_match(phrase).rstrip(".")
+    if not needle:
+        return 0
+    return haystack.count(needle)
+
+
+def _visible_email_text_lines(html: str) -> List[str]:
+    """Visible text of a rendered email, one entry per block-level line."""
+    text = re.sub(r"(?i)<(?:br|/p|/td|/li|/h[1-6]|/tr|/div)[^>]*>", "\n", str(html or ""))
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html_module.unescape(text)
+    lines: List[str] = []
+    for raw_line in text.split("\n"):
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+_URL_RE = re.compile(r"https?://\S+")
+# Two-plus literal dots or the ellipsis character mid-text (URLs stripped first).
+_VISIBLE_ELLIPSIS_RE = re.compile(r"…|\.{2,}")
+# Same short Korean token repeated 3+ times consecutively ("관찰 관찰 관찰").
+_LABEL_ACCUMULATION_RE = re.compile(r"(?<![가-힣])([가-힣]{2,6})(?:\s+\1){2,}(?![가-힣])")
+
+
+def _find_truncated_visible_lines(html: str) -> List[str]:
+    """Lines showing literal ellipsis or a dangling-connective ending."""
+    bad: List[str] = []
+    for line in _visible_email_text_lines(html):
+        without_urls = _URL_RE.sub("", line)
+        if _VISIBLE_ELLIPSIS_RE.search(without_urls):
+            bad.append(line[:120])
+            continue
+        if len(line) > 8 and not line.endswith((".", "!", "?", "다", "요", ")", "”", '"')):
+            last_word = line.rstrip(":;,·— ").split(" ")[-1] if line.split() else ""
+            if last_word in GLOBAL_DANGLING_CONNECTIVE_ENDINGS:
+                bad.append(line[:120])
+                continue
+            if len(line) > 30 and last_word.endswith(
+                ("이", "가", "은", "는", "을", "를", "와", "과", "로", "에", "에서")
+            ):
+                bad.append(line[:120])
+    return bad
+
+
+def _global_category_next_watch_mismatches(
+    briefing_items: Optional[Sequence[Mapping[str, Any]]],
+) -> List[Dict[str, str]]:
+    """Startup/founder articles carrying an energy category or energy-only
+    next_watch — structured check on the enriched TOP5 items."""
+    mismatches: List[Dict[str, str]] = []
+    for item in briefing_items or []:
+        if not isinstance(item, Mapping):
+            continue
+        blob = " ".join(
+            str(item.get(key) or "")
+            for key in ("korean_title", "headline", "summary", "what_happened", "source_name")
+        ).lower()
+        if not any(marker in blob for marker in GLOBAL_STARTUP_FOUNDER_MARKERS):
+            continue
+        category = str(item.get("primary_category") or item.get("category") or "").lower()
+        next_watch = str(item.get("next_watch") or "").lower()
+        category_label = str(item.get("category_label_ko") or "")
+        energy_category = "battery_ev_energy_grid" in category or "배터리" in category_label
+        energy_watch = any(marker in next_watch for marker in GLOBAL_ENERGY_NEXT_WATCH_MARKERS)
+        if energy_category or energy_watch:
+            mismatches.append(
+                {
+                    "item_id": str(item.get("news_id") or item.get("rank") or ""),
+                    "category": category or category_label,
+                    "next_watch": next_watch[:120],
+                }
+            )
+    return mismatches
 
 SPONSORED_FRAMING_MARKERS: Tuple[str, ...] = (
     "스폰서",
@@ -1590,6 +1717,7 @@ def validate_global_post_render_visible_quality(
     html: str,
     *,
     sanitizer_diagnostics: Optional[Dict[str, Any]] = None,
+    briefing_items: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> BriefingContentQualityResult:
     """Public, self-contained entry point for the real owner-review send path.
 
@@ -1616,8 +1744,8 @@ def validate_global_post_render_visible_quality(
     plain = _plain_text(html)
     issues: List[BriefingContentIssue] = []
     repeated_diag: List[Dict[str, Any]] = []
-    for filler in GLOBAL_COMMON_FILLER_SENTENCES:
-        hits = plain.count(filler)
+    for filler in tuple(GLOBAL_COMMON_FILLER_SENTENCES) + GLOBAL_EXACT_REPEATED_FILLER_PHRASES:
+        hits = count_normalized_phrase(plain, filler)
         if hits >= GLOBAL_COMMON_FILLER_REPEAT_THRESHOLD:
             issues.append(
                 BriefingContentIssue(
@@ -1631,10 +1759,71 @@ def validate_global_post_render_visible_quality(
                 {
                     "issue_code": "global_repeated_common_filler",
                     "phrase": filler[:120],
+                    "repeated_phrase": filler[:120],
+                    "normalized_phrase": _normalize_visible_for_phrase_match(filler)[:120],
                     "repeated_count": hits,
+                    "count": hits,
                     "section": "top5",
                 }
             )
+
+    template_hits = count_normalized_phrase(plain, GLOBAL_SELECTION_REASON_TEMPLATE_TAIL)
+    if template_hits >= GLOBAL_SELECTION_REASON_TEMPLATE_THRESHOLD:
+        issues.append(
+            BriefingContentIssue(
+                "global_repeated_selection_reason_template",
+                f"Selection-reason template repeated {template_hits} times — TOP items "
+                "must carry item-specific selection reasons",
+                section="top5",
+                excerpt=GLOBAL_SELECTION_REASON_TEMPLATE_TAIL[:100],
+            )
+        )
+        repeated_diag.append(
+            {
+                "issue_code": "global_repeated_selection_reason_template",
+                "phrase": GLOBAL_SELECTION_REASON_TEMPLATE_TAIL[:120],
+                "repeated_phrase": GLOBAL_SELECTION_REASON_TEMPLATE_TAIL[:120],
+                "normalized_phrase": GLOBAL_SELECTION_REASON_TEMPLATE_TAIL[:120],
+                "repeated_count": template_hits,
+                "count": template_hits,
+                "section": "top5",
+            }
+        )
+
+    accumulation = _LABEL_ACCUMULATION_RE.search(_normalize_visible_for_phrase_match(plain))
+    if accumulation:
+        issues.append(
+            BriefingContentIssue(
+                "global_visible_label_accumulation",
+                f"Same visible label repeated consecutively: {accumulation.group(0)[:60]!r} — "
+                "distribution areas must render unique labels with counts",
+                section="signal_summary",
+                excerpt=accumulation.group(0)[:100],
+            )
+        )
+
+    truncated_lines = _find_truncated_visible_lines(html)
+    for line in truncated_lines[:5]:
+        issues.append(
+            BriefingContentIssue(
+                "global_visible_text_truncated_deep_dive",
+                f"Visible line shows literal ellipsis or dangling connective: {line!r}",
+                section="visible_body",
+                excerpt=line[:100],
+            )
+        )
+
+    category_mismatches = _global_category_next_watch_mismatches(briefing_items)
+    for mismatch in category_mismatches:
+        issues.append(
+            BriefingContentIssue(
+                "global_category_next_watch_mismatch",
+                "Startup/founder article classified or checkpointed as energy/EV/battery: "
+                f"category={mismatch['category']!r} next_watch={mismatch['next_watch']!r}",
+                section="top5",
+                excerpt=str(mismatch)[:100],
+            )
+        )
     for marker in GLOBAL_SIGNAL_DISTRIBUTION_BROKEN_MARKERS:
         if marker in plain:
             issues.append(
@@ -1668,12 +1857,17 @@ def validate_global_post_render_visible_quality(
     result = BriefingContentQualityResult(ok=len(issues) == 0, issues=issues, warnings=[])
     san = sanitizer_diagnostics if isinstance(sanitizer_diagnostics, dict) else {}
     result.diagnostics = {
+        "final_visible_email_text_checked": True,
+        "checked_surface": "email_visible_text",
         "issue_codes": [i.code for i in issues],
         "repeated_phrases": repeated_diag,
+        "affected_sections": sorted({i.section for i in issues if i.section}),
+        "affected_item_ids": list(san.get("affected_item_ids") or []),
+        "truncated_visible_lines": truncated_lines[:5],
+        "category_next_watch_mismatches": category_mismatches,
         "sanitizer_applied": bool(san.get("sanitizer_applied")),
         "sanitizer_removed_count": int(san.get("sanitizer_removed_count") or 0),
         "sanitizer_rewritten_count": int(san.get("sanitizer_rewritten_count") or 0),
-        "affected_item_ids": list(san.get("affected_item_ids") or []),
         "sanitizer_repeated_phrases": list(san.get("repeated_phrases") or []),
     }
     return result
