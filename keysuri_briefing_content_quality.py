@@ -1729,8 +1729,13 @@ _KOREA_WEAK_STARTUP_SUPPORT_TITLE_RE = re.compile(
 )
 
 _KOREA_WEAK_STARTUP_OVERPROMOTE_RE = re.compile(
-    r"(?:사업\s*신호|핵심\s*신호|핵심\s*사업|성장\s*동력|"
-    r"국내\s*테크\s*시장의\s*중심|유망\s*기술|협력\s*기회를\s*모색)"
+    r"(?:활용\s*후보|좋은\s*기회|사업\s*신호|핵심\s*신호|강한\s*신호|"
+    r"핵심\s*사업|성장\s*동력|국내\s*테크\s*시장의\s*중심|"
+    r"유망\s*기술|협력\s*기회|실질적인\s*사업\s*기회|투자\s*심리\s*자극)"
+)
+
+_KOREA_AWKWARD_MEMO_RE = re.compile(
+    r"(?:주시하여\s*선례|선례\s*여부|선례를\s*주시|확인하여\s*선례)"
 )
 
 _KOREA_HOLD_FIELD_MARKER = "아직 단정하지 말 것"
@@ -1930,9 +1935,24 @@ def validate_korea_post_render_visible_quality(html: str) -> BriefingContentQual
         end = synthesis_start if synthesis_start > top5_start else len(plain)
         cards_region = plain[top5_start:end]
     if cards_region and _KOREA_WEAK_STARTUP_SUPPORT_TITLE_RE.search(cards_region):
-        # Look for overpromotion near the weak-support card text.
+        # Rank position: titles numbered 1–3 with weak-startup markers.
+        for rank_m in re.finditer(
+            r"(?:^|\n)\s*([1-3])\.\s*([^\n]{0,120})",
+            cards_region,
+        ):
+            title_line = rank_m.group(2)
+            if _KOREA_WEAK_STARTUP_SUPPORT_TITLE_RE.search(title_line):
+                issues.append(
+                    BriefingContentIssue(
+                        "korea_tech_scope_weak_startup_support_overpromoted",
+                        f"Weak regional startup-support item placed in TOP{rank_m.group(1)}",
+                        section="top5",
+                        excerpt=title_line[:80],
+                    )
+                )
+                break
         for card_m in _KOREA_WEAK_STARTUP_SUPPORT_TITLE_RE.finditer(cards_region):
-            window = cards_region[max(0, card_m.start() - 80) : card_m.end() + 500]
+            window = cards_region[max(0, card_m.start() - 80) : card_m.end() + 700]
             if _KOREA_WEAK_STARTUP_OVERPROMOTE_RE.search(window):
                 issues.append(
                     BriefingContentIssue(
@@ -1943,6 +1963,16 @@ def validate_korea_post_render_visible_quality(html: str) -> BriefingContentQual
                     )
                 )
                 break
+
+    for m in _KOREA_AWKWARD_MEMO_RE.finditer(plain):
+        issues.append(
+            BriefingContentIssue(
+                "korea_visible_text_awkward_memo_phrase",
+                f"Awkward memo phrase leaked into customer prose: {m.group(0)!r}",
+                section="visible_body",
+                excerpt=m.group(0),
+            )
+        )
 
     for excerpt in _korea_hold_duplicate_judgment_excerpts(plain):
         issues.append(

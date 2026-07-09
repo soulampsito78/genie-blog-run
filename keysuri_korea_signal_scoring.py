@@ -1430,18 +1430,24 @@ def select_korea_top5(
         decisions.append(f"selected:{reason}:{item.primary_category}:{item.title[:50]}")
         return True
 
+    def _is_weak_startup(item: ScoredKoreaSignal) -> bool:
+        return is_weak_startup_support_signal(f"{item.title} {item.summary}")
+
     industrial_qual = [
         s
         for s in ranked
         if s.is_industrial_category
         and _is_qualifying_candidate(s)
         and s.korea_tech_scope_status == "strong_tech"
+        and not _is_weak_startup(s)
     ]
     # Prefer strong tech for TOP1; never open with finance/local/global-leak leftovers.
     strong_qual = [
         s
         for s in ranked
-        if _is_qualifying_candidate(s) and s.korea_tech_scope_status == "strong_tech"
+        if _is_qualifying_candidate(s)
+        and s.korea_tech_scope_status == "strong_tech"
+        and not _is_weak_startup(s)
     ]
     if industrial_qual:
         _try_add(industrial_qual[0], "mandatory_industrial_slot")
@@ -1450,18 +1456,28 @@ def select_korea_top5(
     else:
         decisions.append(f"top1_blocked:{KOREA_TECH_SCOPE_WEAK_TOP1}")
 
+    # Policy/capital slot must never promote weak regional startup contests into TOP1–TOP3.
     policy_qual = [
         s
         for s in ranked
         if s.is_policy_or_capital_category
         and _is_qualifying_candidate(s)
         and s.korea_tech_scope_status in ("strong_tech", "weak_tech")
+        and not _is_weak_startup(s)
     ]
     if policy_qual:
         for cand in policy_qual:
             if _key(cand) not in selected_keys:
                 _try_add(cand, "mandatory_policy_capital_slot")
                 break
+
+    non_weak_qual_count = sum(
+        1
+        for s in ranked
+        if _is_qualifying_candidate(s)
+        and s.korea_tech_scope_status in ("strong_tech", "weak_tech")
+        and not _is_weak_startup(s)
+    )
 
     for item in ranked:
         if len(selected) >= max_items:
@@ -1477,24 +1493,22 @@ def select_korea_top5(
             item.reason_not_selected = KOREA_TECH_SCOPE_WEAK_TOP1
             decisions.append(f"skipped_weak_without_top1:{item.title[:50]}")
             continue
-        # Weak regional startup-support contests must not occupy TOP1–TOP3.
-        # Prefer later slots (4–5) when stronger candidates still remain.
-        if (
-            is_weak_startup_support_signal(item.title + " " + item.summary)
-            and len(selected) < 3
-            and any(
-                _is_qualifying_candidate(s)
-                and _key(s) not in selected_keys
-                and not is_weak_startup_support_signal(s.title + " " + s.summary)
-                and s.korea_tech_scope_status in ("strong_tech", "weak_tech")
-                for s in ranked
-            )
-        ):
-            decisions.append(f"deferred_weak_startup_support:{item.title[:50]}")
-            continue
+        if _is_weak_startup(item):
+            # Hard cap: never occupy ranks 1–3.
+            if len(selected) < 3:
+                decisions.append(f"blocked_weak_startup_top3:{item.title[:50]}")
+                continue
+            # Prefer exclude when enough non-weak candidates exist to fill TOP5.
+            if non_weak_qual_count >= max_items:
+                item.reason_not_selected = "weak_startup_support_excluded"
+                decisions.append(f"excluded_weak_startup_support:{item.title[:50]}")
+                continue
+            # Only ranks 4–5 when the pool is thin.
+            if len(selected) >= max_items:
+                continue
         _try_add(item, "score_rank")
 
-    # Second pass: fill remaining slots, allowing deferred weak startup support.
+    # Second pass: fill remaining slots with deferred weak startup support at ranks 4–5 only.
     for item in ranked:
         if len(selected) >= max_items:
             break
@@ -1504,6 +1518,11 @@ def select_korea_top5(
             continue
         if not selected and item.korea_tech_scope_status != "strong_tech":
             continue
+        if _is_weak_startup(item):
+            if len(selected) < 3:
+                continue
+            if non_weak_qual_count >= max_items:
+                continue
         _try_add(item, "score_rank_fill")
 
     if not diversity_limited:
@@ -1516,6 +1535,8 @@ def select_korea_top5(
                     continue
                 if not _is_qualifying_candidate(item):
                     continue
+                if _is_weak_startup(item) and len(selected) < 3:
+                    continue
                 ai_items = [s for s in selected if s.is_ai_category]
                 if ai_items and non_ai_selected < 2:
                     weakest_ai = min(ai_items, key=lambda s: s.scores.base_score)
@@ -1525,6 +1546,22 @@ def select_korea_top5(
                         decisions.append(f"swapped_out_ai_for_diversity:{weakest_ai.title[:50]}")
                 _try_add(item, "diversity_non_ai_quota")
                 non_ai_selected = sum(1 for s in selected if not s.is_ai_category)
+
+    # Final safety: any weak startup that slipped into ranks 1–3 is moved to the tail
+    # (or dropped when enough non-weak items remain).
+    weak_in_top3 = [s for s in selected[:3] if _is_weak_startup(s)]
+    if weak_in_top3:
+        kept = [s for s in selected if not _is_weak_startup(s)]
+        weak_tail = [s for s in selected if _is_weak_startup(s)]
+        if len(kept) >= max_items:
+            for w in weak_tail:
+                w.reason_not_selected = "weak_startup_support_excluded"
+                decisions.append(f"reordered_out_weak_startup_support:{w.title[:50]}")
+            selected = kept[:max_items]
+        else:
+            selected = (kept + weak_tail)[:max_items]
+            decisions.append("reordered_weak_startup_support_to_tail")
+        selected_keys = {_key(s) for s in selected}
 
     dist: Dict[str, int] = {}
     src_dist: Dict[str, int] = {}

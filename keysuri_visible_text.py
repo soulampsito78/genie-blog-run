@@ -747,6 +747,17 @@ def polish_korea_checkpoint_text(text: Any) -> str:
     out = _normalize_sentence_ws(normalize_visible_text(text, style="inline"))
     if not out:
         return ""
+    awkward = (
+        ("주시하여 선례 여부", "후속 발표 여부"),
+        ("주시하여 선례", "후속 발표 여부"),
+        ("선례를 주시", "후속 발표를 확인"),
+        ("선례 여부", "후속 발표 여부"),
+        ("확인하여 선례", "실제 선정 사례"),
+        ("주시하여", "이어서 보면"),
+    )
+    for src, dst in awkward:
+        if src in out:
+            out = out.replace(src, dst)
     if "투자 및 사업 전략" in out:
         return _collapse_korea_checkpoint_duplicates(out)
     for old, new in _KOREA_CHECKPOINT_STRATEGY_REPLACEMENTS:

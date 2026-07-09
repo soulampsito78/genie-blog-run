@@ -977,8 +977,8 @@ class KoreaPostRenderVisibleQualityTests(unittest.TestCase):
         html = (
             "<h2>국내 테크 TOP 5</h2>"
             "<h3>3. B-스타트업 챌린지, 5개 팀에 3억 원 지분투자 및 참가기업 모집</h3>"
-            "<p>키수리 판단 사업 신호 지역 기반 스타트업 생태계 활성화와 "
-            "유망 기술 및 사업 모델을 가진 스타트업과의 협력 기회를 모색할 수 있습니다.</p>"
+            "<p>키수리 판단 활용 후보 지역 기반 스타트업 생태계 활성화와 "
+            "좋은 기회이며 유망 기술 및 사업 모델을 가진 스타트업과의 협력 기회를 모색할 수 있습니다.</p>"
             "<h2>키수리의 시장 판단</h2>"
         )
         result = validate_korea_post_render_visible_quality(html)
@@ -988,20 +988,51 @@ class KoreaPostRenderVisibleQualityTests(unittest.TestCase):
             {i.code for i in result.issues},
         )
 
+    def test_weak_startup_top3_rank_blocks(self) -> None:
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        html = (
+            "<h2>국내 테크 TOP 5</h2>\n"
+            "1. AI 지식재산권 정책\n"
+            "2. 네이버 D2SF 투자\n"
+            "3. B-스타트업 챌린지 참가기업 모집\n"
+            "<h2>키수리의 시장 판단</h2>"
+        )
+        result = validate_korea_post_render_visible_quality(html)
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "korea_tech_scope_weak_startup_support_overpromoted",
+            {i.code for i in result.issues},
+        )
+
+    def test_awkward_memo_phrase_blocks(self) -> None:
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        for text in (
+            "주요 기업들의 AI 지식재산권 분쟁 사례와 대응 전략을 주시하여 선례 여부",
+            "후속 사례를 주시하여 선례",
+        ):
+            with self.subTest(text=text):
+                result = validate_korea_post_render_visible_quality(f"<li>{text}</li>")
+                self.assertFalse(result.ok)
+                self.assertIn(
+                    "korea_visible_text_awkward_memo_phrase",
+                    {i.code for i in result.issues},
+                )
+
     def test_weak_startup_support_observation_tone_passes(self) -> None:
         from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
 
         html = (
-            "<h2>국내 테크 TOP 5</h2>"
-            "<h3>5. B-스타트업 챌린지, 5개 팀에 3억 원 지분투자 및 참가기업 모집</h3>"
+            "<h2>국내 테크 TOP 5</h2>\n"
+            "5. B-스타트업 챌린지, 5개 팀에 3억 원 지분투자 및 참가기업 모집\n"
             "<p>키수리 판단 관찰 기술 분야가 특정되지 않은 지역 스타트업 지원사업이므로, "
-            "직접 수혜보다는 모집 요건과 선정 분야만 확인하면 됩니다.</p>"
+            "참고 신호로만 두는 편이 안전합니다.</p>"
             "<h2>키수리의 시장 판단</h2>"
         )
         result = validate_korea_post_render_visible_quality(html)
         codes = {i.code for i in result.issues}
         self.assertNotIn("korea_tech_scope_weak_startup_support_overpromoted", codes)
-
     def test_normal_observation_yeobu_and_imperative_pass_hamnida_gate(self) -> None:
         from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
 

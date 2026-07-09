@@ -611,20 +611,35 @@ _KOREA_INLINE_SLASH_TO_PROSE: Dict[str, str] = {
 
 _WEAK_STARTUP_OVERPROMOTE_MARKERS: Tuple[str, ...] = (
     "사업 신호",
+    "활용 후보",
+    "좋은 기회",
     "핵심 신호",
+    "강한 신호",
     "핵심 사업",
     "성장 동력",
     "국내 테크 시장의 중심",
     "유망 기술",
     "협력 기회를 모색",
+    "실질적인 사업 기회",
+    "투자 심리 자극",
 )
 
 _WEAK_STARTUP_OBSERVATION_JUDGMENT = (
     "기술 분야가 특정되지 않은 지역 스타트업 지원사업이므로, "
-    "직접 수혜보다는 모집 요건과 선정 분야만 확인하면 됩니다."
+    "참고 신호로만 두는 편이 안전합니다."
 )
 _WEAK_STARTUP_OBSERVATION_WATCH = (
-    "후속 투자 일정과 지원사업 공지만 확인하면 됩니다."
+    "직접 수혜보다 참가 자격, 선정 분야, 실제 투자 집행 여부가 다음 확인 지점입니다."
+)
+
+# Awkward memo fragments that must never reach customer follow/checkpoint text.
+_KOREA_AWKWARD_MEMO_REPLACEMENTS: Tuple[Tuple[str, str], ...] = (
+    ("주시하여 선례 여부", "후속 발표 여부"),
+    ("주시하여 선례", "후속 발표 여부"),
+    ("선례를 주시", "후속 발표를 확인"),
+    ("선례 여부", "후속 발표 여부"),
+    ("확인하여 선례", "실제 선정 사례"),
+    ("주시하여", "이어서 보면"),
 )
 
 # Imperative / homework closings → observational secretary tone.
@@ -771,19 +786,41 @@ def soften_weak_startup_support_prose(text: str, *, force: bool = False) -> str:
     if not force and not is_weak_startup_support_item(out):
         return out
     replacements = (
+        ("활용 후보", "참고 신호"),
+        ("좋은 기회", "참고할 지원사업 일정"),
         ("사업 신호", "참고 신호"),
+        ("강한 신호", "참고 신호"),
         ("핵심 신호", "참고 신호"),
         ("핵심 사업 신호", "참고 신호"),
+        ("실질적인 사업 기회", "모집 요건 확인 포인트"),
+        ("투자 심리 자극", "지원사업 일정 확인"),
         ("국내 경제 성장 동력 확보에 중요합니다", "모집 요건과 선정 분야만 확인하면 됩니다"),
         ("성장 동력 확보에 중요", "모집 요건과 선정 분야 확인이 우선"),
+        ("성장에 실질적인 동력이 될 수 있어", "모집 요건 확인이 우선이므로"),
+        ("중요한 기회가 됩니다", "모집 요건과 선정 분야만 확인하면 됩니다"),
         (
             "유망 기술 및 사업 모델을 가진 스타트업과의 협력 기회를 모색할 수 있습니다",
             "AI·딥테크 기업이 실제 선정되는지 확인되기 전까지는 참고 신호로 보는 편이 안전합니다",
         ),
         ("협력 기회를 모색할 수 있습니다", "모집 요건과 선정 분야만 확인하면 됩니다"),
         ("긍정적인 신호입니다", "지원사업 일정 확인용 참고 신호입니다"),
+        ("좋은 기회이나", "참고할 지원사업이나"),
+        (
+            "적극적으로 참여하여 투자 유치 기회를 확보해야 합니다",
+            "참가 자격과 선정 분야만 확인하면 됩니다",
+        ),
     )
     for src, dst in replacements:
+        if src in out:
+            out = out.replace(src, dst)
+    return out
+
+
+def _scrub_awkward_korea_memo_phrases(text: str) -> str:
+    out = _text(text)
+    if not out:
+        return ""
+    for src, dst in _KOREA_AWKWARD_MEMO_REPLACEMENTS:
         if src in out:
             out = out.replace(src, dst)
     return out
@@ -805,31 +842,47 @@ def polish_weak_startup_support_item_fields(item: Mapping[str, Any]) -> Dict[str
             "selection_reason",
             "keysuri_judgment_text",
             "keysuri_judgment",
+            "keysuri_judgment_label",
+            "judgment_label",
         )
     )
     if not is_weak_startup_support_item(blob):
         return dict(item)
     out = dict(item)
-    label, explanation = _item_judgment(item)
-    if label in _OPPORTUNITY_LABELS or not label:
-        out["keysuri_judgment_label"] = "관찰"
-    if explanation:
-        out["keysuri_judgment_text"] = soften_weak_startup_support_prose(
-            explanation, force=True
+    # Always force observational label — never 활용 후보 / 사업 신호 / 기회.
+    out["keysuri_judgment_label"] = "관찰"
+    nested = out.get("keysuri_judgment")
+    if isinstance(nested, dict):
+        nested = dict(nested)
+        nested["label"] = "관찰"
+        explanation = _text(nested.get("explanation") or nested.get("text"))
+        nested["explanation"] = soften_weak_startup_support_prose(
+            explanation or _WEAK_STARTUP_OBSERVATION_JUDGMENT,
+            force=True,
         )
-    else:
-        out["keysuri_judgment_text"] = _WEAK_STARTUP_OBSERVATION_JUDGMENT
-    for key in ("why_it_matters", "owner_angle", "selection_reason", "what_happened", "why_now"):
+        nested["text"] = nested["explanation"]
+        out["keysuri_judgment"] = nested
+    _label, explanation = _item_judgment(item)
+    out["keysuri_judgment_text"] = soften_weak_startup_support_prose(
+        explanation or _WEAK_STARTUP_OBSERVATION_JUDGMENT,
+        force=True,
+    )
+    for key in (
+        "why_it_matters",
+        "owner_angle",
+        "selection_reason",
+        "what_happened",
+        "why_now",
+        "market_impact",
+    ):
         if _text(out.get(key)):
             out[key] = soften_weak_startup_support_prose(_text(out.get(key)), force=True)
     watch = _text(out.get("next_watch") or out.get("next_check_point"))
-    if watch:
-        out["next_watch"] = (
-            soften_weak_startup_support_prose(watch, force=True)
-            or _WEAK_STARTUP_OBSERVATION_WATCH
-        )
-    else:
-        out["next_watch"] = _WEAK_STARTUP_OBSERVATION_WATCH
+    out["next_watch"] = _scrub_awkward_korea_memo_phrases(
+        soften_weak_startup_support_prose(watch, force=True)
+        if watch
+        else _WEAK_STARTUP_OBSERVATION_WATCH
+    ) or _WEAK_STARTUP_OBSERVATION_WATCH
     return out
 
 
@@ -851,6 +904,7 @@ def sanitize_korea_customer_prose(text: str) -> str:
     out = _apply_inline_slash_prose(out)
     out = re.sub(r"·+", "·", out)
     out = soften_weak_startup_support_prose(out)
+    out = _scrub_awkward_korea_memo_phrases(out)
     out = _soften_korea_imperative_prose(out)
     return re.sub(r"\s+", " ", out).strip()
 

@@ -799,6 +799,12 @@ class KoreaTechScopeGateTests(unittest.TestCase):
                 summary="네이버가 국내 기업 AI·클라우드 SaaS 도입 계약을 확대.",
                 category="korea_platform_cloud_saas",
             ),
+            _item(
+                "robot-1",
+                "두산로보틱스 스마트팩토리 협동로봇 자동화 수주",
+                summary="국내 스마트팩토리 로봇 자동화 공장 수주·입찰 일정.",
+                category="korea_robotics_manufacturing",
+            ),
         ]
         result = score_korea_signal_candidates(items)
         top3_titles = [s.title for s in result.selected_top5[:3]]
@@ -807,12 +813,45 @@ class KoreaTechScopeGateTests(unittest.TestCase):
             all("챌린지" not in t and "참가기업" not in t for t in top3_titles),
             top3_titles,
         )
-        # May still appear in TOP4–TOP5 as observation, but never as strong_tech.
-        for s in result.selected_top5:
+        # Enough non-weak candidates → prefer exclude from TOP5 entirely.
+        self.assertTrue(
+            all("챌린지" not in s.title for s in result.selected_top5),
+            [s.title for s in result.selected_top5],
+        )
+
+    def test_weak_startup_support_only_ranks_4_or_5_when_pool_thin(self) -> None:
+        items = [
+            _item(
+                "challenge",
+                "B-스타트업 챌린지, 5개 팀에 3억 원 지분투자 및 참가기업 모집",
+                summary="부산시·BNK부산은행 공동 주최 창업 경진대회 참가기업 모집.",
+                category="korea_startup_investment",
+            ),
+            _item(
+                "semi-1",
+                "삼성전자 HBM 파운드리 장비 수주와 국내 증설",
+                summary="삼성전자 SK하이닉스 HBM DRAM 패키징 장비 수주 국내 공급망.",
+                category="korea_semiconductor",
+            ),
+            _item(
+                "npu-1",
+                "모빌린트, 2세대 NPU 레귤러스 연말 대량 양산 목표",
+                summary="국내 AI 반도체 NPU 양산, 피지컬 AI 인프라 국산화.",
+                category="korea_semiconductor",
+            ),
+            _item(
+                "policy-1",
+                "과기정통부 국내 AI 규제·조달 정책 발표",
+                summary="정부가 국내 AI 정책과 공공 조달 입찰 일정을 발표.",
+                category="korea_policy_regulation",
+            ),
+        ]
+        result = score_korea_signal_candidates(items)
+        for idx, s in enumerate(result.selected_top5, start=1):
             if "챌린지" in s.title:
+                self.assertGreaterEqual(idx, 4, f"rank={idx} title={s.title}")
                 self.assertEqual(s.korea_tech_scope_status, "weak_tech")
                 self.assertIn("weak_startup_support", s.selection_reason_tags)
-
 
 if __name__ == "__main__":
     unittest.main()

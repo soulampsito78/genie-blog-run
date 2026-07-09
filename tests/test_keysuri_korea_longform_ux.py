@@ -824,6 +824,7 @@ class KeysuriKoreaMarketContractHardeningTests(unittest.TestCase):
         from keysuri_korea_longform_ux import (
             is_weak_startup_support_item,
             polish_weak_startup_support_item_fields,
+            sanitize_korea_customer_prose,
             soften_weak_startup_support_prose,
         )
 
@@ -831,24 +832,39 @@ class KeysuriKoreaMarketContractHardeningTests(unittest.TestCase):
         self.assertTrue(is_weak_startup_support_item(title))
         over = (
             "지역 기반 스타트업 생태계 활성화와 투자 기회 발굴에 긍정적인 신호입니다. "
-            "유망 기술 및 사업 모델을 가진 스타트업과의 협력 기회를 모색할 수 있습니다."
+            "유망 기술 및 사업 모델을 가진 스타트업과의 협력 기회를 모색할 수 있습니다. "
+            "초기 스타트업에게는 좋은 기회이나 신중한 접근이 필요합니다."
         )
-        soft = soften_weak_startup_support_prose(title + " " + over)
-        self.assertNotIn("협력 기회를 모색할 수 있습니다", soft)
-        self.assertTrue(
-            "참고 신호" in soft or "모집 요건" in soft or "선정 분야" in soft,
-            soft,
-        )
+        soft = soften_weak_startup_support_prose(title + " " + over, force=True)
+        for forbidden in (
+            "활용 후보",
+            "좋은 기회",
+            "사업 신호",
+            "핵심 신호",
+            "협력 기회를 모색",
+        ):
+            self.assertNotIn(forbidden, soft)
         polished = polish_weak_startup_support_item_fields(
             {
                 "korean_title": title,
-                "keysuri_judgment_label": "사업 신호",
+                "keysuri_judgment_label": "활용 후보",
                 "keysuri_judgment_text": over,
             }
         )
         self.assertEqual(polished["keysuri_judgment_label"], "관찰")
-        self.assertNotIn("사업 신호", polished.get("keysuri_judgment_text") or "")
+        blob = " ".join(
+            str(polished.get(k) or "")
+            for k in ("keysuri_judgment_label", "keysuri_judgment_text", "next_watch")
+        )
+        for forbidden in ("활용 후보", "좋은 기회", "사업 신호", "핵심 신호"):
+            self.assertNotIn(forbidden, blob)
 
+        awkward = sanitize_korea_customer_prose(
+            "주요 기업들의 AI 지식재산권 분쟁 사례와 대응 전략을 주시하여 선례 여부"
+        )
+        self.assertNotIn("주시하여 선례", awkward)
+        self.assertNotIn("선례 여부", awkward)
+        self.assertIn("후속 발표 여부", awkward)
     def test_theme_phrase_avoids_deeptech_bleed_for_generic_startup(self) -> None:
         from keysuri_korea_longform_ux import _theme_phrase
 
