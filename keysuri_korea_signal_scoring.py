@@ -92,10 +92,69 @@ CATEGORY_KEYWORD_GROUPS: Dict[str, Tuple[str, ...]] = {
         "출시", "단말", "스마트폰", "모빌리티", "요금제", "통신사", "ott", "디바이스",
     ),
     "global_to_korea_translation": (
-        "한국 적용", "국내 파급", "국내 영향", "수혜", "한국 기업", "korea", "korean",
-        "국내", "젠슨 황", "nvidia", "openai",
+        "한국 적용", "국내 파급", "국내 영향", "국내 도입", "국내 출시", "국내 계약",
+        "수혜", "한국 기업", "korea", "korean", "국내",
     ),
 }
+
+# --- Korea Tech scope hard-reject gate (selection-time, not prose cleanup) ---
+KOREA_TECH_SCOPE_GLOBAL_LEAK = "korea_tech_scope_global_leak"
+KOREA_TECH_SCOPE_NON_TECH_LOCAL_ECONOMY = "korea_tech_scope_non_tech_local_economy"
+KOREA_TECH_SCOPE_FINANCE_ONLY = "korea_tech_scope_finance_only"
+KOREA_TECH_SCOPE_WEAK_TOP1 = "korea_tech_scope_weak_top1"
+
+_GLOBAL_VENDOR_MARKERS: Tuple[str, ...] = (
+    "openai", "오픈ai", "오픈에이아이", "anthropic", "클로드",
+    "google", "구글", "gemini", "microsoft", "마이크로소프트",
+    "nvidia", "엔비디아", "meta", "메타", "xai", "그록",
+    "gpt-5", "gpt-4", "gpt ", "frontier ai", "프론티어 ai",
+    "미 정부", "미국 정부", "white house", "eu ai act",
+)
+
+_KOREA_DIRECT_LINK_MARKERS: Tuple[str, ...] = (
+    "한국 기업", "국내 기업", "국내 도입", "국내 출시", "국내 서비스",
+    "국내 계약", "국내 협력", "한국 정부", "국내 정책", "국내 규제",
+    "국내 투자", "국내 조달", "공공 도입", "국내 공급망", "한국 시장",
+    "삼성", "sk하이닉스", "sk hynix", "네이버", "카카오", "현대", "lg",
+    "과기정통부", "산업부", "국내", "korea", "korean",
+)
+
+_LOCAL_ECONOMY_MARKERS: Tuple[str, ...] = (
+    "카지노", "폐광지", "강원랜드", "관광", "지역경제", "소상공인", "자영업",
+    "출입 규제", "출입객",
+)
+
+_LOCAL_ECONOMY_TECH_EXCEPTION: Tuple[str, ...] = (
+    "디지털 전환", "ai", "인공지능", "플랫폼", "보안", "데이터", "핀테크",
+    "시스템 도입", "스마트", "클라우드",
+)
+
+_FINANCE_ONLY_MARKERS: Tuple[str, ...] = (
+    "etf", "레버리지", "인버스", "국회 청원", "수급 쏠림", "수급",
+    "개인 투자자", "포트폴리오", "금융상품", "단일종목", "상한가", "하한가",
+    "주가", "장중", "코스피", "코스닥 급",
+)
+
+_FINANCE_TECH_EXCEPTION: Tuple[str, ...] = (
+    "핀테크", "증권 시스템", "거래 플랫폼", "ai 투자", "데이터 인프라",
+    "트레이싱", "로보어드바이저", "알고리즘 매매 시스템",
+)
+
+_STRONG_TECH_MARKERS: Tuple[str, ...] = (
+    "반도체", "hbm", "dram", "파운드리", "웨이퍼", "패키징", "소부장",
+    "ai", "인공지능", "llm", "에이전트", "로봇", "스마트팩토리", "자동화",
+    "배터리", "2차전지", "클라우드", "saas", "데이터센터", "보안",
+    "플랫폼", "스타트업", "상장", "수주", "설비투자", "증설", "휴머노이드",
+)
+
+_SEMICONDUCTOR_ENTITY_ONLY: Tuple[str, ...] = (
+    "삼성전자", "sk하이닉스", "sk hynix", "samsung",
+)
+
+_SEMICONDUCTOR_REAL_SIGNAL: Tuple[str, ...] = (
+    "hbm", "dram", "nand", "파운드리", "웨이퍼", "패키징", "장비", "소재",
+    "메모리", "증설", "fab", "수주", "공급망", "capex", "공정", "반도체", "소부장",
+)
 
 _TIER_SOURCE_SCORE: Dict[str, int] = {
     "T0_OFFICIAL_PRIMARY": 10,
@@ -337,6 +396,8 @@ class ScoredKoreaSignal:
     same_entity_not_same_story: bool = False
     matched_global_story_key: Optional[str] = None
     matched_global_title: Optional[str] = None
+    korea_tech_scope_status: str = "unknown"
+    tech_relevance_score: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -377,6 +438,8 @@ class ScoredKoreaSignal:
             "hard_reject_reason": self.hard_reject_reason,
             "duplicate_group": self.duplicate_group,
             "penalty_notes": list(self.penalty_notes),
+            "korea_tech_scope_status": self.korea_tech_scope_status,
+            "tech_relevance_score": self.tech_relevance_score,
             "reason_not_selected": self.reason_not_selected,
             "feed_id": self.feed_id,
             "story_cluster_key": self.story_cluster_key,
@@ -472,6 +535,18 @@ def _text_blob(item: dict) -> str:
         str(item.get("source_name") or ""),
         str(item.get("publisher") or ""),
         str(item.get("feed_name") or ""),
+    ]
+    return " ".join(p for p in parts if p).strip()
+
+
+def _scope_text_blob(item: dict) -> str:
+    """Title/summary only — never source_name (e.g. 'Korea Test Press' false positives)."""
+    parts = [
+        str(item.get("title") or ""),
+        str(item.get("headline") or ""),
+        str(item.get("statement") or ""),
+        str(item.get("summary") or ""),
+        str(item.get("snippet") or ""),
     ]
     return " ".join(p for p in parts if p).strip()
 
@@ -658,17 +733,118 @@ def _source_key(item: ScoredKoreaSignal) -> str:
     return _host(item.url) or item.source_name or item.source_id
 
 
+def _has_any(text: str, markers: Sequence[str]) -> bool:
+    lower = text.lower()
+    return any(m.lower() in lower for m in markers)
+
+
+def has_korea_direct_link(text: str) -> bool:
+    """True when the article explicitly ties to Korea enterprise/policy/market."""
+    return _has_any(text, _KOREA_DIRECT_LINK_MARKERS)
+
+
+def is_global_vendor_core_without_korea(text: str) -> bool:
+    """Global frontier-AI / US-gov story with no Korea application bridge."""
+    if not _has_any(text, _GLOBAL_VENDOR_MARKERS):
+        return False
+    return not has_korea_direct_link(text)
+
+
+def is_non_tech_local_economy(text: str) -> bool:
+    """Casino / tourism / regional-economy stories without digital-tech core."""
+    if not _has_any(text, _LOCAL_ECONOMY_MARKERS):
+        return False
+    return not _has_any(text, _LOCAL_ECONOMY_TECH_EXCEPTION)
+
+
+def is_finance_only_signal(text: str) -> bool:
+    """ETF / leverage / petition / flow stories without fintech or real tech core.
+
+    Mentions of Samsung/SK Hynix alone do not convert a finance-product story
+    into a semiconductor signal.
+    """
+    if not _has_any(text, _FINANCE_ONLY_MARKERS):
+        return False
+    if _has_any(text, _FINANCE_TECH_EXCEPTION):
+        return False
+    # Pure financial-product framing always wins over entity name-drops.
+    pure_finance_core = _has_any(
+        text,
+        ("etf", "레버리지", "인버스", "국회 청원", "금융상품", "단일종목", "수급 쏠림"),
+    )
+    if pure_finance_core and not _has_any(text, _FINANCE_TECH_EXCEPTION):
+        return True
+    # Real semiconductor product/supply-chain signal can coexist with market talk.
+    if _has_any(text, _SEMICONDUCTOR_REAL_SIGNAL):
+        return False
+    return True
+
+
+def is_strong_korea_tech_signal(text: str) -> bool:
+    """TOP1-eligible: clear domestic tech product/policy/investment signal."""
+    if is_finance_only_signal(text) or is_non_tech_local_economy(text):
+        return False
+    if is_global_vendor_core_without_korea(text):
+        return False
+    return _has_any(text, _STRONG_TECH_MARKERS) and (
+        has_korea_direct_link(text) or _has_any(text, _SEMICONDUCTOR_REAL_SIGNAL)
+    )
+
+
+def evaluate_korea_tech_scope(text: str) -> Tuple[Optional[str], str]:
+    """Return (hard_reject_reason, korea_tech_scope_status).
+
+    Status values: strong_tech | weak_tech | global_leak | local_economy |
+    finance_only | unknown.
+    """
+    blob = str(text or "")
+    if is_non_tech_local_economy(blob):
+        return KOREA_TECH_SCOPE_NON_TECH_LOCAL_ECONOMY, "local_economy"
+    if is_finance_only_signal(blob):
+        return KOREA_TECH_SCOPE_FINANCE_ONLY, "finance_only"
+    if is_global_vendor_core_without_korea(blob):
+        return KOREA_TECH_SCOPE_GLOBAL_LEAK, "global_leak"
+    if is_strong_korea_tech_signal(blob):
+        return None, "strong_tech"
+    if _has_any(blob, _STRONG_TECH_MARKERS) or has_korea_direct_link(blob):
+        return None, "weak_tech"
+    return None, "unknown"
+
+
 def classify_korea_tech_category(
     text: str,
     *,
     feed_default: str = "",
 ) -> Tuple[str, List[str], float, str]:
     lower = text.lower()
+    # Prevent category bleed: finance-only / local-economy must not inherit
+    # semiconductor or policy-infra labels from incidental entity mentions.
+    if is_finance_only_signal(text):
+        return (
+            "korea_policy_regulation",
+            [],
+            0.4,
+            "scope:finance_only_not_semiconductor",
+        )
+    if is_non_tech_local_economy(text):
+        return (
+            "korea_policy_regulation",
+            [],
+            0.35,
+            "scope:local_economy_not_tech_infra",
+        )
+
     hits: List[Tuple[str, int]] = []
     for cat, keywords in CATEGORY_KEYWORD_GROUPS.items():
         count = sum(1 for kw in keywords if kw in lower)
         if count:
             hits.append((cat, count))
+    # Downgrade semiconductor when only chaebol names appear without real chip signal.
+    if not _has_any(text, _SEMICONDUCTOR_REAL_SIGNAL):
+        hits = [(cat, n) for cat, n in hits if cat != "korea_semiconductor"]
+    # Global vendor names alone must not force global_to_korea_translation.
+    if is_global_vendor_core_without_korea(text):
+        hits = [(cat, n) for cat, n in hits if cat != "global_to_korea_translation"]
     hits.sort(key=lambda pair: (-pair[1], pair[0]))
     if not hits:
         default = (feed_default or "").strip()
@@ -802,6 +978,8 @@ def _pr_hype_penalty(text: str, *, is_official: bool) -> Tuple[int, List[str], b
 
 
 def _is_stock_only(text: str) -> bool:
+    if is_finance_only_signal(text):
+        return True
     lower = text.lower()
     has_stock = any(m in lower for m in _STOCK_ONLY_MARKERS)
     has_tech = any(
@@ -812,10 +990,33 @@ def _is_stock_only(text: str) -> bool:
 
 
 def _is_overseas_without_korea(text: str) -> bool:
+    if is_global_vendor_core_without_korea(text):
+        return True
     lower = text.lower()
     has_overseas = any(m in lower for m in _OVERSEAS_NO_KOREA_MARKERS)
     has_korea = any(k in lower for k in _DOMESTIC_ENTITY_KEYWORDS) or "국내" in lower
     return has_overseas and not has_korea
+
+
+def _tech_relevance_score(scope_status: str, text: str) -> int:
+    if scope_status == "strong_tech":
+        return 90
+    if scope_status == "weak_tech":
+        return 55
+    if scope_status in ("finance_only", "local_economy", "global_leak"):
+        return 5
+    if _has_any(text, _STRONG_TECH_MARKERS):
+        return 40
+    return 20
+
+
+def _safe_next_day_impact_line(category: str, *, scope_status: str) -> str:
+    """Avoid semiconductor/policy-infra templates on finance/local-economy bleed."""
+    if scope_status == "finance_only":
+        return "내일 관련 투자·공급망·정책 확인 우선순위가 올라갑니다."
+    if scope_status == "local_economy":
+        return "내일 관련 투자·공급망·정책 확인 우선순위가 올라갑니다."
+    return _next_day_impact_line(category)
 
 
 def _classify_total(total: int, *, hard_reject: bool) -> Classification:
@@ -864,49 +1065,67 @@ def score_korea_tech_item(item: dict) -> ScoredKoreaSignal:
     feed_id = str(item.get("feed_id") or "").strip()
 
     text = _text_blob(item)
+    scope_text = _scope_text_blob(item)
+    scope_reject, scope_status = evaluate_korea_tech_scope(scope_text)
     primary, secondary, category_confidence, reason_for_category = classify_korea_tech_category(
-        text, feed_default=feed_default
+        scope_text, feed_default=feed_default
     )
-    is_ai = primary == AI_PRIMARY_CATEGORY
-    is_industrial = primary in INDUSTRIAL_CATEGORIES
-    is_policy_capital = primary in POLICY_CAPITAL_CATEGORIES
+    # Finance/local-economy must never keep industrial flags that drive TOP1 slots.
+    if scope_status in ("finance_only", "local_economy", "global_leak"):
+        is_ai = False
+        is_industrial = False
+        is_policy_capital = False
+    else:
+        is_ai = primary == AI_PRIMARY_CATEGORY
+        is_industrial = primary in INDUSTRIAL_CATEGORIES
+        is_policy_capital = primary in POLICY_CAPITAL_CATEGORIES
 
     penalty_notes: List[str] = []
     tags: List[str] = []
     hard_reject_reason: Optional[str] = None
+    tech_relevance = _tech_relevance_score(scope_status, text)
 
     if not url.startswith("http"):
         hard_reject_reason = "no_source_url"
     elif not published_at:
         hard_reject_reason = "no_date"
-    elif _is_stock_only(text):
+    elif scope_reject:
+        hard_reject_reason = scope_reject
+    elif _is_stock_only(scope_text):
         hard_reject_reason = "stock_only_no_tech_signal"
-    elif any(m in text for m in _ENTERTAINMENT_MARKERS):
+    elif any(m in scope_text for m in _ENTERTAINMENT_MARKERS):
         hard_reject_reason = "entertainment_not_tech"
-    elif _is_overseas_without_korea(text) and primary != "global_to_korea_translation":
+    elif _is_overseas_without_korea(scope_text) and primary != "global_to_korea_translation":
         hard_reject_reason = "overseas_no_korea_application"
 
     reliability, is_official = _score_source_reliability(url, source_tier)
     pr_pen, pr_notes, pr_warning, press_release_only = _pr_hype_penalty(text, is_official=is_official)
     penalty_notes.extend(pr_notes)
-    domestic_boost, boost_tags = _domestic_relevance_boost(text, primary)
+    domestic_boost, boost_tags = _domestic_relevance_boost(scope_text, primary)
     tags.extend(boost_tags)
+    tags.append(f"korea_tech_scope:{scope_status}")
 
     scores = KoreaScoreBreakdown()
     scores.freshness_score = _score_freshness(published_at)
     scores.source_reliability_score = reliability
-    scores.domestic_structure_impact_score = _score_domestic_structure(text)
-    scores.owner_actionability_score = _score_owner_actionability(text, primary)
-    scores.business_risk_opportunity_score = _score_business_risk_opportunity(text)
-    scores.domestic_repetition_score = _score_domestic_repetition(text)
-    scores.next_step_clarity_score = _score_next_step_clarity(text, press_release_only=press_release_only)
+    scores.domestic_structure_impact_score = _score_domestic_structure(scope_text)
+    scores.owner_actionability_score = _score_owner_actionability(scope_text, primary)
+    scores.business_risk_opportunity_score = _score_business_risk_opportunity(scope_text)
+    scores.domestic_repetition_score = _score_domestic_repetition(scope_text)
+    scores.next_step_clarity_score = _score_next_step_clarity(scope_text, press_release_only=press_release_only)
     scores.domestic_relevance_boost = domestic_boost
     scores.pr_hype_penalty = pr_pen
     scores.global_duplicate_penalty = 0
 
-    if scores.owner_actionability_score < 6 and scores.business_risk_opportunity_score < 4:
-        if not hard_reject_reason:
-            hard_reject_reason = "low_domestic_actionability"
+    # Scope hard-rejects take priority. Strong tech signals must not be dropped
+    # solely for thin actionability keyword coverage.
+    if (
+        not hard_reject_reason
+        and scope_status != "strong_tech"
+        and scores.owner_actionability_score < 6
+        and scores.business_risk_opportunity_score < 4
+    ):
+        hard_reject_reason = "low_domestic_actionability"
 
     if hard_reject_reason:
         classification: Classification = "hard_reject"
@@ -938,7 +1157,7 @@ def score_korea_tech_item(item: dict) -> ScoredKoreaSignal:
         classification=classification,
         reason_for_selection=reason,
         owner_action_line=_owner_action_line(primary),
-        next_day_impact_line=_next_day_impact_line(primary),
+        next_day_impact_line=_safe_next_day_impact_line(primary, scope_status=scope_status),
         is_ai_category=is_ai,
         is_industrial_category=is_industrial,
         is_policy_or_capital_category=is_policy_capital,
@@ -949,6 +1168,8 @@ def score_korea_tech_item(item: dict) -> ScoredKoreaSignal:
         hard_reject_reason=hard_reject_reason,
         penalty_notes=penalty_notes,
         feed_id=feed_id,
+        korea_tech_scope_status=scope_status,
+        tech_relevance_score=tech_relevance,
     )
 
 
@@ -1115,13 +1336,31 @@ def select_korea_top5(
         return True
 
     industrial_qual = [
-        s for s in ranked if s.is_industrial_category and _is_qualifying_candidate(s)
+        s
+        for s in ranked
+        if s.is_industrial_category
+        and _is_qualifying_candidate(s)
+        and s.korea_tech_scope_status == "strong_tech"
+    ]
+    # Prefer strong tech for TOP1; never open with finance/local/global-leak leftovers.
+    strong_qual = [
+        s
+        for s in ranked
+        if _is_qualifying_candidate(s) and s.korea_tech_scope_status == "strong_tech"
     ]
     if industrial_qual:
         _try_add(industrial_qual[0], "mandatory_industrial_slot")
+    elif strong_qual:
+        _try_add(strong_qual[0], "strong_tech_top1_slot")
+    else:
+        decisions.append(f"top1_blocked:{KOREA_TECH_SCOPE_WEAK_TOP1}")
 
     policy_qual = [
-        s for s in ranked if s.is_policy_or_capital_category and _is_qualifying_candidate(s)
+        s
+        for s in ranked
+        if s.is_policy_or_capital_category
+        and _is_qualifying_candidate(s)
+        and s.korea_tech_scope_status in ("strong_tech", "weak_tech")
     ]
     if policy_qual:
         for cand in policy_qual:
@@ -1133,6 +1372,15 @@ def select_korea_top5(
         if len(selected) >= max_items:
             break
         if _key(item) in selected_keys:
+            continue
+        if item.korea_tech_scope_status not in ("strong_tech", "weak_tech"):
+            item.reason_not_selected = item.hard_reject_reason or "korea_tech_scope_rejected"
+            continue
+        # Do not backfill TOP5 with weak-only items when strong pool is empty
+        # and we still have no TOP1 — leave fewer items rather than force-fill.
+        if not selected and item.korea_tech_scope_status != "strong_tech":
+            item.reason_not_selected = KOREA_TECH_SCOPE_WEAK_TOP1
+            decisions.append(f"skipped_weak_without_top1:{item.title[:50]}")
             continue
         _try_add(item, "score_rank")
 
@@ -1341,6 +1589,9 @@ _KOREA_SCOPE_REJECT_REASONS = frozenset(
         "overseas_no_korea_application",
         "entertainment_not_tech",
         "stock_only_no_tech_signal",
+        KOREA_TECH_SCOPE_GLOBAL_LEAK,
+        KOREA_TECH_SCOPE_NON_TECH_LOCAL_ECONOMY,
+        KOREA_TECH_SCOPE_FINANCE_ONLY,
     }
 )
 _KOREA_RELEVANCE_REJECT_REASONS = frozenset({"low_domestic_actionability"})
@@ -1374,6 +1625,9 @@ def _apply_scored_signal_to_claim(claim: dict, scored: "ScoredKoreaSignal") -> N
     claim["korea_angle_satisfied"] = scored.korea_angle_satisfied
     claim["duplicate_resolution"] = scored.duplicate_resolution
     claim["same_entity_not_same_story"] = scored.same_entity_not_same_story
+    claim["korea_tech_scope_status"] = scored.korea_tech_scope_status
+    claim["tech_relevance_score"] = scored.tech_relevance_score
+    claim["hard_reject_reason"] = scored.hard_reject_reason
     if scored.matched_global_title:
         claim["matched_global_title"] = scored.matched_global_title
     if scored.penalty_notes:

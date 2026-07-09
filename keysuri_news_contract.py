@@ -684,32 +684,41 @@ def validate_news_scope_matches_program(
 
 
 def is_korea_tech_irrelevant_headline(headline: str, summary: str = "") -> bool:
-    """Filter out non-tech foreign news (accidents, crimes, disasters)."""
-    text = f"{headline} {summary}".lower()
-    
-    # 1. Tech/Industry anchors: If it has these, it is a valid tech/industry news
+    """Filter out non-tech / out-of-scope headlines for Korea Tech TOP5.
+
+    Selection-time scope rejects (global leak, casino/local economy, finance-only)
+    are authoritative. Accident/crime heuristics remain as a secondary filter.
+    """
+    from keysuri_korea_signal_scoring import evaluate_korea_tech_scope
+
+    text = f"{headline} {summary}"
+    scope_reject, _status = evaluate_korea_tech_scope(text)
+    if scope_reject:
+        return True
+
+    lower = text.lower()
+
+    # Tech/Industry anchors: If it has these, it is a valid tech/industry news
     tech_anchors = [
-        "ai", "반도체", "소부장", "데이터센터", "보안", "클라우드", 
+        "ai", "반도체", "소부장", "데이터센터", "보안", "클라우드",
         "전력", "에너지", "투자", "규제", "기업", "산업", "스타트업",
         "플랫폼", "saas", "자율주행", "로봇", "스마트팩토리", "배터리",
         "빅테크", "apple", "google", "microsoft", "amazon", "meta", "nvidia",
-        "애플", "구글", "마이크로소프트", "아마존", "메타", "엔비디아", "삼성", "sk", "현대", "lg"
+        "애플", "구글", "마이크로소프트", "아마존", "메타", "엔비디아", "삼성", "sk", "현대", "lg",
     ]
-    if any(anchor in text for anchor in tech_anchors):
+    if any(anchor in lower for anchor in tech_anchors):
         return False
-        
-    # 2. General/Foreign Accident patterns (No tech anchor + accident/crime keywords)
+
+    # General/Foreign Accident patterns (No tech anchor + accident/crime keywords)
     accident_keywords = [
         "사망", "사고", "부상", "살인", "폭행", "경찰", "소방", "체포",
         "재난", "지진", "홍수", "화재", "사상자", "승려", "트럭", "추돌",
-        "태국", "중국", "일본", "미국", "유럽", "소년", "소녀", "남성", "여성"
+        "태국", "중국", "일본", "미국", "유럽", "소년", "소녀", "남성", "여성",
     ]
-    
-    # If it contains clear accident keywords without any tech anchors, reject
-    accident_matches = sum(1 for kw in accident_keywords if kw in text)
+    accident_matches = sum(1 for kw in accident_keywords if kw in lower)
     if accident_matches >= 2:
         return True
-        
+
     return False
 
 

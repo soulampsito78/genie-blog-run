@@ -14,6 +14,7 @@ from keysuri_korea_signal_scoring import (
     build_korea_selection_debug_report,
     build_story_cluster_key,
     classify_korea_tech_category,
+    evaluate_korea_tech_scope,
     load_global_selection_report,
     normalize_story_text,
     score_korea_signal_candidates,
@@ -307,7 +308,10 @@ class KeysuriKoreaSignalScoringTests(unittest.TestCase):
                 summary="국내 반도체 HBM 투자 수주 일정.",
             )
         )
-        self.assertEqual(stock.hard_reject_reason, "stock_only_no_tech_signal")
+        self.assertIn(
+            stock.hard_reject_reason,
+            {"stock_only_no_tech_signal", "korea_tech_scope_finance_only"},
+        )
         self.assertGreater(tech.scores.base_score, stock.scores.base_score)
 
     def test_debug_report_shape(self) -> None:
@@ -575,6 +579,169 @@ class KeysuriKoreaDuplicateGuardTests(unittest.TestCase):
     def test_load_global_selection_report_invalid_path(self) -> None:
         with self.assertRaises(FileNotFoundError):
             load_global_selection_report("/tmp/does-not-exist-global-report.json")
+
+
+class KoreaTechScopeGateTests(unittest.TestCase):
+    def test_openai_us_gov_without_korea_link_is_rejected(self) -> None:
+        item = _item(
+            "g-openai",
+            "오픈AI, 미 정부 검증 거친 GPT-5.6 공개 출시하며 프론티어 AI 접근 통제 본격화",
+            summary="OpenAI가 미국 정부 검증을 거친 GPT 모델을 공개했다. frontier AI 접근 통제.",
+            category="global_to_korea_translation",
+        )
+        scored = score_korea_tech_item(item)
+        self.assertEqual(scored.hard_reject_reason, "korea_tech_scope_global_leak")
+        self.assertEqual(scored.classification, "hard_reject")
+        self.assertEqual(scored.korea_tech_scope_status, "global_leak")
+
+    def test_openai_with_korea_enterprise_adoption_is_allowed(self) -> None:
+        item = _item(
+            "g-openai-kr",
+            "오픈AI, 국내 기업 AI 도입 계약으로 한국 시장 서비스 출시",
+            summary="OpenAI가 한국 기업과 국내 도입 계약을 맺고 국내 서비스를 출시한다.",
+            category="korea_ai_enterprise",
+        )
+        scored = score_korea_tech_item(item)
+        self.assertIsNone(scored.hard_reject_reason)
+        self.assertNotEqual(scored.classification, "hard_reject")
+        self.assertIn(scored.korea_tech_scope_status, ("strong_tech", "weak_tech"))
+
+    def test_casino_local_economy_is_rejected(self) -> None:
+        item = _item(
+            "casino-1",
+            "강원도의원, 카지노 출입 규제 강화에 폐광지 생존 위협 우려 표명",
+            summary="카지노 출입객 규제 강화가 폐광지 지역경제와 자영업에 타격을 줄 수 있다고 우려했다.",
+            category="korea_policy_regulation",
+        )
+        scored = score_korea_tech_item(item)
+        self.assertEqual(scored.hard_reject_reason, "korea_tech_scope_non_tech_local_economy")
+        self.assertEqual(scored.korea_tech_scope_status, "local_economy")
+
+    def test_leverage_etf_petition_is_finance_only_rejected(self) -> None:
+        item = _item(
+            "fin-1",
+            "단일종목 레버리지 상품 논란, 국회 청원으로 제도 보완 압박 커져",
+            summary=(
+                "삼성전자와 SK하이닉스 등 특정 대형주를 기초자산으로 한 단일종목 레버리지 ETF "
+                "수급 쏠림과 개인 투자자 포트폴리오 논란이 국회 청원으로 이어졌다."
+            ),
+            category="korea_semiconductor",
+        )
+        scored = score_korea_tech_item(item)
+        self.assertEqual(scored.hard_reject_reason, "korea_tech_scope_finance_only")
+        self.assertEqual(scored.korea_tech_scope_status, "finance_only")
+        self.assertFalse(scored.is_industrial_category)
+
+    def test_samsung_name_alone_does_not_make_finance_story_semiconductor(self) -> None:
+        primary, _, _, reason = classify_korea_tech_category(
+            "삼성전자 SK하이닉스 단일종목 레버리지 ETF 수급 쏠림 국회 청원 금융상품"
+        )
+        self.assertNotEqual(primary, "korea_semiconductor")
+        self.assertIn("finance_only", reason)
+
+    def test_finance_only_does_not_get_hbm_foundry_impact_line(self) -> None:
+        item = _item(
+            "fin-2",
+            "단일종목 레버리지 상품 논란, 국회 청원으로 제도 보완 압박 커져",
+            summary="레버리지 ETF 수급 쏠림과 개인 투자자 금융상품 논란.",
+        )
+        scored = score_korea_tech_item(item)
+        self.assertNotIn("HBM", scored.next_day_impact_line)
+        self.assertNotIn("파운드리", scored.next_day_impact_line)
+
+    def test_local_economy_does_not_get_tech_infra_theme(self) -> None:
+        item = _item(
+            "casino-2",
+            "카지노 출입 규제와 폐광지 지역경제 타격 우려",
+            summary="관광·자영업·소상공인 피해 우려.",
+        )
+        scored = score_korea_tech_item(item)
+        self.assertEqual(scored.korea_tech_scope_status, "local_economy")
+        self.assertFalse(scored.is_industrial_category)
+        self.assertNotIn("반도체", scored.next_day_impact_line)
+
+    def test_top1_requires_strong_tech_relevance(self) -> None:
+        weak = _item(
+            "weak-1",
+            "국내 대기업 조직개편 소식",
+            summary="대기업 그룹 조직개편 관련 일반 소식.",
+            category="korea_big_company_strategy",
+        )
+        strong = _item(
+            "strong-1",
+            "랩씨드, 데이터 통합 AI 트레이싱 솔루션으로 코스닥 상장 추진",
+            summary="국내 기업 AI 도입 솔루션 기업 랩씨드가 코스닥 상장 절차에 돌입했다.",
+            category="korea_ai_enterprise",
+        )
+        result = score_korea_signal_candidates([weak, strong])
+        self.assertTrue(result.selected_top5)
+        self.assertEqual(result.selected_top5[0].source_id, "strong-1")
+        self.assertEqual(result.selected_top5[0].korea_tech_scope_status, "strong_tech")
+
+    def test_does_not_backfill_with_casino_or_finance_only(self) -> None:
+        items = [
+            _item(
+                "casino-x",
+                "카지노 출입 규제 강화에 폐광지 지역경제 우려",
+                summary="관광 자영업 소상공인 타격.",
+            ),
+            _item(
+                "fin-x",
+                "단일종목 레버리지 ETF 수급 쏠림 국회 청원",
+                summary="금융상품 개인 투자자 포트폴리오 논란.",
+            ),
+            _item(
+                "openai-x",
+                "OpenAI GPT frontier AI 미 정부 검증 공개",
+                summary="미국 정부 검증 GPT 공개. 한국 연결 없음.",
+            ),
+        ]
+        result = score_korea_signal_candidates(items)
+        self.assertEqual(result.selected_top5, [])
+        reasons = {s.hard_reject_reason for s in result.all_candidates}
+        self.assertIn("korea_tech_scope_non_tech_local_economy", reasons)
+        self.assertIn("korea_tech_scope_finance_only", reasons)
+        self.assertIn("korea_tech_scope_global_leak", reasons)
+
+    def test_normal_domestic_tech_candidates_still_qualify(self) -> None:
+        items = [
+            _item(
+                "labseed",
+                "랩씨드, 데이터 통합 및 AI 트레이싱 솔루션으로 코스닥 상장 추진",
+                summary="국내 기업 AI 도입 솔루션 기업이 코스닥 상장 절차에 돌입.",
+                category="korea_ai_enterprise",
+            ),
+            _item(
+                "hyundai-robot",
+                "현대차그룹 휴머노이드 로봇 공장 자동화 투자",
+                summary="현대차그룹이 국내 로봇·스마트팩토리 설비투자와 수주를 확대.",
+                category="korea_robotics_manufacturing",
+            ),
+            _item(
+                "semi-1",
+                "삼성전자 HBM 파운드리 장비 수주와 국내 증설",
+                summary="삼성전자 SK하이닉스 HBM DRAM 패키징 장비 수주 국내 공급망.",
+                category="korea_semiconductor",
+            ),
+            _item(
+                "naver-1",
+                "네이버, 국내 클라우드·AI 플랫폼 기업 고객 도입 확대",
+                summary="네이버가 국내 기업 AI·클라우드 SaaS 도입 계약을 확대.",
+                category="korea_platform_cloud_saas",
+            ),
+            _item(
+                "policy-ai",
+                "과기정통부 국내 AI 규제·조달 정책 발표",
+                summary="정부가 국내 AI 정책과 공공 조달 입찰 일정을 발표.",
+                category="korea_policy_regulation",
+            ),
+        ]
+        result = score_korea_signal_candidates(items)
+        selected_ids = {s.source_id for s in result.selected_top5}
+        self.assertIn("labseed", selected_ids)
+        self.assertIn("semi-1", selected_ids)
+        self.assertTrue(all(s.korea_tech_scope_status in ("strong_tech", "weak_tech") for s in result.selected_top5))
+        self.assertEqual(result.selected_top5[0].korea_tech_scope_status, "strong_tech")
 
 
 if __name__ == "__main__":

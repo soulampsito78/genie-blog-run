@@ -242,6 +242,26 @@ KOREA_STOCK_DIGEST_MARKERS: Tuple[str, ...] = (
     "장중",
 )
 
+KOREA_SCOPE_LEAK_CASINO_MARKERS: Tuple[str, ...] = (
+    "카지노",
+    "폐광지",
+    "강원랜드",
+)
+
+KOREA_SCOPE_LEAK_GLOBAL_MARKERS: Tuple[str, ...] = (
+    "OpenAI",
+    "오픈AI",
+    "GPT-5",
+    "프론티어 AI",
+    "미 정부",
+)
+
+KOREA_SCOPE_LEAK_FINANCE_MARKERS: Tuple[str, ...] = (
+    "단일종목 레버리지",
+    "국회 청원",
+    "수급 쏠림",
+)
+
 KOREA_GLOBAL_LAYER_LABEL_LEAKS: Tuple[str, ...] = (
     "워크플로·락인",
     "물리·인프라 병목",
@@ -1828,6 +1848,39 @@ def validate_korea_post_render_visible_quality(html: str) -> BriefingContentQual
                 f"Internal slash taxonomy leaked into customer prose: {m.group(0)!r}",
                 section="visible_body",
                 excerpt=m.group(0),
+            )
+        )
+
+    # Safety-net QA if selection gate missed an out-of-scope story.
+    if any(m in plain for m in KOREA_SCOPE_LEAK_CASINO_MARKERS) and not any(
+        t in plain.lower() for t in ("ai", "인공지능", "플랫폼", "보안", "데이터", "핀테크")
+    ):
+        issues.append(
+            BriefingContentIssue(
+                "korea_tech_scope_non_tech_local_economy",
+                "Korea Tech briefing contains non-tech local-economy (casino/tourism) copy",
+                section="top5",
+                excerpt="카지노/폐광지",
+            )
+        )
+    if any(m in plain for m in KOREA_SCOPE_LEAK_GLOBAL_MARKERS) and not any(
+        t in plain for t in ("국내", "한국 기업", "한국 정부", "국내 도입", "국내 출시", "국내 계약")
+    ):
+        issues.append(
+            BriefingContentIssue(
+                "korea_tech_scope_global_leak",
+                "Korea Tech briefing contains Global-only frontier AI copy without Korea link",
+                section="top5",
+                excerpt="OpenAI/GPT",
+            )
+        )
+    if any(m in plain for m in KOREA_SCOPE_LEAK_FINANCE_MARKERS) and "HBM·파운드리" in plain:
+        issues.append(
+            BriefingContentIssue(
+                "korea_tech_category_bleed",
+                "Finance-only story incorrectly attached semiconductor HBM/foundry template",
+                section="top5",
+                excerpt="HBM·파운드리",
             )
         )
 

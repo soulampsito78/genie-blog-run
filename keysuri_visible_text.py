@@ -498,10 +498,17 @@ def sanitize_visible_impact_line(
     *,
     label: str = "내일 영향",
     category: str = "",
+    scope_status: str = "",
 ) -> str:
+    status = str(scope_status or "").strip()
+    # Category bleed guard: finance/local-economy must not inherit HBM/foundry copy.
+    if status in ("finance_only", "local_economy", "global_leak"):
+        return "내일 관련 투자·공급망·정책 확인 우선순위가 올라갑니다."
     out = _strip_impact_label_prefix(normalize_visible_text(text, style="inline"), label=label)
     if not out:
         cat = str(category or "").strip()
+        if cat == "korea_semiconductor" and status and status != "strong_tech":
+            return "내일 관련 투자·공급망·정책 확인 우선순위가 올라갑니다."
         if cat in _KOREA_IMPACT_BY_CATEGORY:
             return _KOREA_IMPACT_BY_CATEGORY[cat]
         return ""
@@ -511,6 +518,13 @@ def sanitize_visible_impact_line(
         cat_label = match.group("cat").strip()
         for key, replacement in _KOREA_IMPACT_BY_CATEGORY.items():
             if cat_label == _KOREA_CATEGORY_KO.get(key, "") or key == category:
+                if key == "korea_semiconductor" and status in (
+                    "finance_only",
+                    "local_economy",
+                    "weak_tech",
+                    "unknown",
+                ):
+                    return "내일 관련 투자·공급망·정책 확인 우선순위가 올라갑니다."
                 return replacement
         if "글로벌→한국" in cat_label or "번역" in cat_label:
             return _KOREA_IMPACT_BY_CATEGORY["global_to_korea_translation"]
@@ -518,6 +532,10 @@ def sanitize_visible_impact_line(
             return _KOREA_IMPACT_BY_CATEGORY["korea_startup_investment"]
         return "내일 관련 투자·공급망·정책 확인 우선순위가 올라갑니다."
     out = re.sub(r"신호\s+신호", "신호", out)
+    if ("HBM" in out or "파운드리" in out) and (
+        str(category or "") != "korea_semiconductor" or status == "finance_only"
+    ):
+        return "내일 관련 투자·공급망·정책 확인 우선순위가 올라갑니다."
     return dedupe_sentences_in_paragraph(out)
 
 
