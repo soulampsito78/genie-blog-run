@@ -31,6 +31,13 @@ IDENTITY_SUBTITLE = "프라이빗 테크 비서"
 PROGRAM_GLOBAL = "keysuri_global_tech"
 PROGRAM_KOREA = "keysuri_korea_tech"
 KEYSURI_DEEP_DIVE_KEY_IMPL_REPAIR_CODE = "keysuri_deep_dive_key_implications_repaired"
+KEYSURI_CLOSING_MESSAGE_REPAIR_CODE = "keysuri_closing_message_repaired"
+
+# Parse-time fallback when Gemini omits closing_sources.closing_message.
+# Keep in sync with keysuri_contract_preview_renderer.SAFE_CLOSING_MESSAGE.
+SAFE_CLOSING_MESSAGE = (
+    "주인님, 오늘 신호는 여기까지 정리해 두었습니다. 출처는 아래에 그대로 남깁니다."
+)
 
 # Kee-Suri Korea Tech market-signal-briefing lenses. Every TOP5 item should bridge
 # to at least 3 of these so the briefing reads as a Korea-market judgment briefing,
@@ -528,6 +535,121 @@ def _repair_top_level_scope_heading_for_parse(
     return out, diagnostics
 
 
+def _closing_message_presence(value: Any) -> str:
+    """Compact presence label for diagnostics — never the full message text."""
+    if value is None:
+        return "missing"
+    if isinstance(value, str):
+        return "present" if value.strip() else "empty"
+    return "empty"
+
+
+def _repair_closing_message_for_parse(
+    obj: Dict[str, Any],
+    program_id: str,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Fill missing/blank closing_sources.closing_message from display or SAFE fallback.
+
+    Only grafts when closing_sources is a dict with a non-empty source_list and the
+    closing_message field is missing/blank. Does not invent closing_sources or
+    source_list. Non-empty closing_message values are left untouched.
+    """
+    pid = (program_id or "").strip()
+    diagnostics: Dict[str, Any] = {
+        "closing_message_repair_attempted": False,
+        "closing_message_repair_applied": False,
+        "closing_message_actual_before": None,
+        "closing_message_actual_after": None,
+        "repair_applied": False,
+        "repaired_fields": [],
+    }
+    if not isinstance(obj, dict):
+        return obj, diagnostics
+    if pid not in KEYSURI_PROGRAM_IDS:
+        return obj, diagnostics
+
+    closing = obj.get("closing_sources")
+    if not isinstance(closing, dict):
+        return obj, diagnostics
+
+    source_list = closing.get("source_list")
+    if not isinstance(source_list, list) or not source_list:
+        return obj, diagnostics
+
+    raw_message = closing.get("closing_message") if "closing_message" in closing else None
+    if "closing_message" not in closing:
+        before_label = "missing"
+    else:
+        before_label = _closing_message_presence(raw_message)
+    diagnostics["closing_message_repair_attempted"] = True
+    diagnostics["closing_message_actual_before"] = before_label
+
+    if before_label == "present":
+        diagnostics["closing_message_actual_after"] = "present"
+        return obj, diagnostics
+
+    display = obj.get("briefing_display")
+    display_message = ""
+    if isinstance(display, dict):
+        display_message = str(display.get("closing_message") or "").strip()
+    fallback = display_message or SAFE_CLOSING_MESSAGE
+
+    out = copy.deepcopy(obj)
+    out_closing = dict(out.get("closing_sources") or {})
+    out_closing["closing_message"] = fallback
+    out["closing_sources"] = out_closing
+
+    diagnostics["closing_message_repair_applied"] = True
+    diagnostics["repair_applied"] = True
+    diagnostics["repaired_fields"] = ["closing_sources.closing_message"]
+    diagnostics["closing_message_actual_after"] = _closing_message_presence(fallback)
+    diagnostics["internal_issue_codes"] = [KEYSURI_CLOSING_MESSAGE_REPAIR_CODE]
+    return out, diagnostics
+
+
+def _merge_parse_repair_diagnostics(
+    *diags: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Merge repair diagnostics without dropping earlier repaired_fields/codes."""
+    merged: Dict[str, Any] = {}
+    repaired_fields: List[str] = []
+    codes: List[str] = []
+    repair_applied = False
+    for diag in diags:
+        if not isinstance(diag, dict):
+            continue
+        for key, value in diag.items():
+            if key == "repaired_fields":
+                repaired_fields.extend(str(f) for f in (value or []) if f)
+            elif key == "internal_issue_codes":
+                codes.extend(str(c) for c in (value or []) if c)
+            elif key == "repair_applied":
+                repair_applied = repair_applied or bool(value)
+            else:
+                merged[key] = value
+    if repaired_fields:
+        seen: Set[str] = set()
+        unique: List[str] = []
+        for field in repaired_fields:
+            if field in seen:
+                continue
+            seen.add(field)
+            unique.append(field)
+        merged["repaired_fields"] = unique
+        repair_applied = True
+    merged["repair_applied"] = repair_applied
+    if codes:
+        seen_codes: Set[str] = set()
+        unique_codes: List[str] = []
+        for code in codes:
+            if code in seen_codes:
+                continue
+            seen_codes.add(code)
+            unique_codes.append(code)
+        merged["internal_issue_codes"] = unique_codes
+    return merged
+
+
 def _repair_parsed_candidate_for_parse(
     obj: Dict[str, Any],
     prompt_input: dict,
@@ -536,15 +658,10 @@ def _repair_parsed_candidate_for_parse(
     repaired, deep_diag = _repair_deep_dive_key_implications_for_parse(obj, prompt_input)
     repaired, lens_diag = _repair_korea_market_lens_for_parse(repaired, program_id)
     repaired, scope_diag = _repair_top_level_scope_heading_for_parse(repaired, program_id)
-    diagnostics = dict(deep_diag)
-    diagnostics.update(lens_diag)
-    diagnostics.update(scope_diag)
-    merged_codes: List[str] = []
-    for diag in (deep_diag, lens_diag, scope_diag):
-        merged_codes.extend(list(diag.get("internal_issue_codes") or []))
-    if merged_codes:
-        diagnostics["internal_issue_codes"] = merged_codes
-    return repaired, diagnostics
+    repaired, closing_diag = _repair_closing_message_for_parse(repaired, program_id)
+    return repaired, _merge_parse_repair_diagnostics(
+        deep_diag, lens_diag, scope_diag, closing_diag
+    )
 
 
 def _enrich_top5_with_selection_metadata(prompt_input: dict) -> dict:

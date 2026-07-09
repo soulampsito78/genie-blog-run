@@ -11,7 +11,10 @@ import json
 import unittest
 
 from keysuri_generation_prompt import (
+    KEYSURI_CLOSING_MESSAGE_REPAIR_CODE,
     KEYSURI_DEEP_DIVE_KEY_IMPL_REPAIR_CODE,
+    SAFE_CLOSING_MESSAGE,
+    _repair_closing_message_for_parse,
     extract_json_candidates_from_model_text,
     extract_json_object_from_model_text,
     parse_keysuri_generated_response,
@@ -573,6 +576,119 @@ class UnrecoverableParseDiagnosticsTests(unittest.TestCase):
         self.assertEqual(result["issues"], [])
         self.assertNotIn("parse_recovery_strategy", result["parse_meta"])
         self.assertNotIn("schema_error_summary", result["parse_meta"])
+
+    def test_empty_closing_message_repaired_to_safe_fallback(self) -> None:
+        payload = _valid_korea_payload()
+        payload["closing_sources"]["closing_message"] = ""
+        pi = _korea_prompt_input(payload)
+        result = parse_keysuri_generated_response(
+            json.dumps(payload, ensure_ascii=False), "keysuri_korea_tech", pi
+        )
+        self.assertEqual(result["parse_status"], "parsed_valid", result.get("issues"))
+        closing = result["generated_briefing"]["closing_sources"]
+        self.assertEqual(closing["closing_message"], SAFE_CLOSING_MESSAGE)
+        meta = result["parse_meta"]
+        self.assertTrue(meta.get("repair_applied"))
+        self.assertIn("closing_sources.closing_message", meta.get("repaired_fields") or [])
+        self.assertEqual(meta.get("closing_message_actual_before"), "empty")
+        self.assertEqual(meta.get("closing_message_actual_after"), "present")
+        self.assertIn(KEYSURI_CLOSING_MESSAGE_REPAIR_CODE, meta.get("internal_issue_codes") or [])
+
+    def test_whitespace_closing_message_repaired(self) -> None:
+        payload = _valid_korea_payload()
+        payload["closing_sources"]["closing_message"] = "   \n\t  "
+        pi = _korea_prompt_input(payload)
+        result = parse_keysuri_generated_response(
+            json.dumps(payload, ensure_ascii=False), "keysuri_korea_tech", pi
+        )
+        self.assertEqual(result["parse_status"], "parsed_valid", result.get("issues"))
+        self.assertEqual(
+            result["generated_briefing"]["closing_sources"]["closing_message"],
+            SAFE_CLOSING_MESSAGE,
+        )
+
+    def test_briefing_display_closing_message_preferred_over_safe(self) -> None:
+        payload = _valid_korea_payload()
+        payload["closing_sources"]["closing_message"] = ""
+        payload["briefing_display"] = {
+            "closing_message": "주인님, 디스플레이 마무리를 우선 사용합니다.",
+        }
+        pi = _korea_prompt_input(payload)
+        result = parse_keysuri_generated_response(
+            json.dumps(payload, ensure_ascii=False), "keysuri_korea_tech", pi
+        )
+        self.assertEqual(result["parse_status"], "parsed_valid", result.get("issues"))
+        self.assertEqual(
+            result["generated_briefing"]["closing_sources"]["closing_message"],
+            "주인님, 디스플레이 마무리를 우선 사용합니다.",
+        )
+        self.assertNotEqual(
+            result["generated_briefing"]["closing_sources"]["closing_message"],
+            SAFE_CLOSING_MESSAGE,
+        )
+
+    def test_empty_source_list_still_blocks_even_if_closing_message_filled(self) -> None:
+        payload = _valid_korea_payload()
+        payload["closing_sources"]["closing_message"] = ""
+        payload["closing_sources"]["source_list"] = []
+        pi = _korea_prompt_input(payload)
+        result = parse_keysuri_generated_response(
+            json.dumps(payload, ensure_ascii=False), "keysuri_korea_tech", pi
+        )
+        self.assertEqual(result["parse_status"], "parsed_invalid")
+        codes = [i.get("code") for i in result["issues"]]
+        self.assertIn("closing_source_list_empty", codes)
+        # Empty source_list must not trigger closing_message invent/repair.
+        self.assertNotIn(
+            "closing_sources.closing_message",
+            result["parse_meta"].get("repaired_fields") or [],
+        )
+        self.assertEqual(payload["closing_sources"]["closing_message"], "")
+
+    def test_non_empty_closing_message_not_overwritten(self) -> None:
+        payload = _valid_korea_payload()
+        original = "주인님, 기존 마무리는 그대로 둡니다."
+        payload["closing_sources"]["closing_message"] = original
+        payload["briefing_display"] = {"closing_message": "이 값은 덮어쓰면 안 됩니다."}
+        pi = _korea_prompt_input(payload)
+        result = parse_keysuri_generated_response(
+            json.dumps(payload, ensure_ascii=False), "keysuri_korea_tech", pi
+        )
+        self.assertEqual(result["parse_status"], "parsed_valid", result.get("issues"))
+        self.assertEqual(
+            result["generated_briefing"]["closing_sources"]["closing_message"],
+            original,
+        )
+        self.assertNotIn(
+            "closing_sources.closing_message",
+            result["parse_meta"].get("repaired_fields") or [],
+        )
+
+    def test_unknown_program_id_does_not_repair_closing_message(self) -> None:
+        payload = _valid_korea_payload()
+        payload["program_id"] = "unknown_program"
+        payload["closing_sources"]["closing_message"] = ""
+        repaired, diag = _repair_closing_message_for_parse(payload, "unknown_program")
+        self.assertEqual(repaired["closing_sources"]["closing_message"], "")
+        self.assertFalse(diag.get("closing_message_repair_applied"))
+        self.assertFalse(diag.get("repair_applied"))
+        self.assertEqual(diag.get("repaired_fields") or [], [])
+
+    def test_missing_closing_message_key_repaired_with_diagnostics(self) -> None:
+        payload = _valid_korea_payload()
+        del payload["closing_sources"]["closing_message"]
+        pi = _korea_prompt_input(payload)
+        result = parse_keysuri_generated_response(
+            json.dumps(payload, ensure_ascii=False), "keysuri_korea_tech", pi
+        )
+        self.assertEqual(result["parse_status"], "parsed_valid", result.get("issues"))
+        self.assertEqual(
+            result["generated_briefing"]["closing_sources"]["closing_message"],
+            SAFE_CLOSING_MESSAGE,
+        )
+        meta = result["parse_meta"]
+        self.assertEqual(meta.get("closing_message_actual_before"), "missing")
+        self.assertIn("closing_sources.closing_message", meta.get("repaired_fields") or [])
 
 
 if __name__ == "__main__":
