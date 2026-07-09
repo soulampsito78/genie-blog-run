@@ -194,6 +194,28 @@ def _render_reissue_dry_run_field(mode: str) -> str:
     )
 
 
+def _format_cost_usd(value: Any) -> str:
+    if value is None or value == "":
+        return "—"
+    try:
+        return f"{float(value):.6f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _format_image_cost_display(components: Dict[str, Any], cost: Dict[str, Any]) -> str:
+    image_cost = components.get("image_cost_usd")
+    if image_cost is not None:
+        return _format_cost_usd(image_cost)
+    model_pricing = cost.get("model_pricing") if isinstance(cost.get("model_pricing"), dict) else {}
+    status = str(model_pricing.get("image_pricing_status") or "")
+    usage = cost.get("usage") if isinstance(cost.get("usage"), dict) else {}
+    generated = usage.get("generated_image_count") or 0
+    if status == "unsupported_or_unconfigured" or generated:
+        return "unconfigured / not calculated"
+    return "—"
+
+
 def _render_cost_estimate_section(meta: Dict[str, Any]) -> str:
     cost = meta.get("cost_estimate")
     if not isinstance(cost, dict):
@@ -203,29 +225,43 @@ def _render_cost_estimate_section(meta: Dict[str, Any]) -> str:
     model = cost.get("model")
     text_model = model.get("text_model") if isinstance(model, dict) else model
     image_model = model.get("image_model") if isinstance(model, dict) else ""
-    rows = {
-        "status": cost.get("cost_estimate_status"),
-        "pricing_source": cost.get("pricing_source"),
-        "price_env_configured": cost.get("price_env_configured"),
-        "text_model": text_model,
-        "image_model": image_model,
-        "prompt_token_count": usage.get("prompt_token_count"),
-        "candidates_token_count": usage.get("candidates_token_count"),
-        "thoughts_token_count": usage.get("thoughts_token_count"),
-        "generated_image_count": usage.get("generated_image_count"),
-        "text_input_cost_usd": components.get("text_input_cost_usd"),
-        "text_output_cost_usd": components.get("text_output_cost_usd"),
-        "text_thoughts_cost_usd": components.get("text_thoughts_cost_usd"),
-        "image_cost_usd": components.get("image_cost_usd"),
-        "total_cost_usd": cost.get("total_cost_usd"),
-        "total_cost_krw": cost.get("total_cost_krw"),
-        "missing_price_env": "|".join(str(v) for v in cost.get("missing_price_env") or [])
+    text_total = components.get("text_total_cost_usd")
+    if text_total is None:
+        known_text = [
+            components.get("text_input_cost_usd"),
+            components.get("text_output_cost_usd"),
+            components.get("text_thoughts_cost_usd"),
+        ]
+        priced = [c for c in known_text if c is not None]
+        text_total = sum(priced) if priced else None
+    missing = (
+        "|".join(str(v) for v in cost.get("missing_price_env") or [])
         if isinstance(cost.get("missing_price_env"), list)
-        else cost.get("missing_price_env"),
-        "cost_record_path": meta.get("cost_record_path"),
-        "cost_ledger_path": meta.get("cost_ledger_path"),
-    }
-    row_html = "".join(f"<dt>{_esc(k)}</dt><dd>{_esc(v)}</dd>" for k, v in rows.items())
+        else cost.get("missing_price_env")
+    )
+    rows = [
+        ("Cost estimate status", cost.get("cost_estimate_status")),
+        ("Pricing source", cost.get("pricing_source")),
+        ("Price env configured", cost.get("price_env_configured")),
+        ("Text model", text_model),
+        ("Image model", image_model),
+        ("Prompt token count", usage.get("prompt_token_count")),
+        ("Candidates token count", usage.get("candidates_token_count")),
+        ("Thoughts token count", usage.get("thoughts_token_count")),
+        ("Generated image count", usage.get("generated_image_count")),
+        ("Text input cost USD", _format_cost_usd(components.get("text_input_cost_usd"))),
+        ("Text output cost USD", _format_cost_usd(components.get("text_output_cost_usd"))),
+        ("Text thoughts cost USD", _format_cost_usd(components.get("text_thoughts_cost_usd"))),
+        ("Text total cost USD", _format_cost_usd(text_total)),
+        ("Image cost", _format_image_cost_display(components, cost)),
+        ("Total known cost USD", _format_cost_usd(cost.get("total_cost_usd"))),
+        ("Total cost KRW (optional)", _format_cost_usd(cost.get("total_cost_krw"))),
+        ("Missing price env", missing or "—"),
+        ("Pricing note", cost.get("pricing_note")),
+        ("Cost record path", meta.get("cost_record_path")),
+        ("Cost ledger path", meta.get("cost_ledger_path")),
+    ]
+    row_html = "".join(f"<dt>{_esc(k)}</dt><dd>{_esc(v)}</dd>" for k, v in rows)
     month = month_from_run_meta(meta)
     return (
         '<div class="card">'

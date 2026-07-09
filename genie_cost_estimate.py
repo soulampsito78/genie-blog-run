@@ -263,10 +263,16 @@ def estimate_genie_generation_cost(
             else (0.0 if image_price is not None else None)
         )
 
-        cost_components = [text_input_cost, text_output_cost, text_thoughts_cost, image_cost]
+        text_cost_components = [text_input_cost, text_output_cost, text_thoughts_cost]
+        known_text_components = [c for c in text_cost_components if c is not None]
+        text_total_cost_usd = sum(known_text_components) if known_text_components else None
+
+        cost_components = [*text_cost_components, image_cost]
         known_components = [c for c in cost_components if c is not None]
+        # USD-first: sum every priced component even when KRW/image prices are absent.
         total_cost_usd = sum(known_components) if known_components else None
 
+        # Optional FX only — never required for USD status or totals.
         total_cost_krw = (
             total_cost_usd * krw_per_usd
             if total_cost_usd is not None and krw_per_usd is not None
@@ -279,12 +285,18 @@ def estimate_genie_generation_cost(
                 image_pricing_status = "configured"
             else:
                 image_pricing_status = "unsupported_or_unconfigured"
-                pricing_note += (
-                    "; Image model pricing is not configured as per-image; "
-                    "image cost not calculated."
-                )
         elif image_model and image_price is None and _image_requires_model_specific_price(image_model_key):
             image_pricing_status = "unsupported_or_unconfigured"
+
+        text_priced = text_total_cost_usd is not None
+        image_unconfigured = bool(image_generated_count) and image_cost is None
+        if text_priced and image_unconfigured:
+            pricing_note += "; text cost calculated; image cost not configured"
+        elif image_unconfigured:
+            pricing_note += (
+                "; Image model pricing is not configured as per-image; "
+                "image cost not calculated."
+            )
 
         env_prices_set = [p for p in (input_price, output_price, thoughts_price, image_price) if p is not None]
         if not env_prices_set:
@@ -294,6 +306,7 @@ def estimate_genie_generation_cost(
         else:
             pricing_source = "env"
 
+        # KRW is optional display FX and must not appear in missing_price_env.
         missing_price_env = []
         if _needs_price(prompt_tokens) and input_price is None and input_envs:
             missing_price_env.append(input_envs[0])
@@ -303,8 +316,6 @@ def estimate_genie_generation_cost(
             missing_price_env.append(thoughts_envs[0])
         if image_generated_count and image_price is None and image_envs:
             missing_price_env.append(image_envs[0])
-        if total_cost_usd is not None and krw_per_usd is None:
-            missing_price_env.append(ENV_KRW_PER_USD)
         missing_price_env = list(dict.fromkeys(missing_price_env))
 
         usage_present = _has_usage(
@@ -314,7 +325,7 @@ def estimate_genie_generation_cost(
             total_tokens,
             image_generated_count,
         )
-        price_env_configured = bool(env_prices_set or krw_per_usd is not None)
+        price_env_configured = bool(env_prices_set)
         if not usage_present:
             cost_estimate_status = "unavailable"
         elif not known_components:
@@ -322,7 +333,6 @@ def estimate_genie_generation_cost(
         elif (
             not missing_price_env
             and total_cost_usd is not None
-            and total_cost_krw is not None
             and (not image_generated_count or image_cost is not None)
         ):
             cost_estimate_status = "estimated"
@@ -373,6 +383,7 @@ def estimate_genie_generation_cost(
                 "text_input_cost_usd": text_input_cost,
                 "text_output_cost_usd": text_output_cost,
                 "text_thoughts_cost_usd": text_thoughts_cost,
+                "text_total_cost_usd": text_total_cost_usd,
                 "image_cost_usd": image_cost,
                 "infra_cost_usd": None,
             },

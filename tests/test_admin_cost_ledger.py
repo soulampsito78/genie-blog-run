@@ -48,6 +48,7 @@ def _cost_meta() -> dict:
                 "text_input_cost_usd": 0.0003,
                 "text_output_cost_usd": 0.005,
                 "text_thoughts_cost_usd": 0.0075,
+                "text_total_cost_usd": 0.0128,
                 "image_cost_usd": None,
             },
             "total_cost_usd": 0.0128,
@@ -57,7 +58,6 @@ def _cost_meta() -> dict:
             "price_env_configured": True,
             "missing_price_env": [
                 "GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE",
-                "GENIE_COST_KRW_PER_USD",
             ],
         },
     }
@@ -82,8 +82,10 @@ class CostRecordSchemaTests(unittest.TestCase):
         row = cost_record_to_csv_row(record)
         self.assertEqual(
             row["missing_price_env"],
-            "GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE|GENIE_COST_KRW_PER_USD",
+            "GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE",
         )
+        self.assertEqual(row["text_total_cost_usd"], "0.0128")
+        self.assertEqual(row["total_cost_usd"], "0.0128")
 
     def test_null_costs_are_empty_in_csv_row(self) -> None:
         record = build_cost_record(_cost_meta())

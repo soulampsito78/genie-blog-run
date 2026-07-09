@@ -53,6 +53,7 @@ COST_LEDGER_COLUMNS = (
     "text_input_cost_usd",
     "text_output_cost_usd",
     "text_thoughts_cost_usd",
+    "text_total_cost_usd",
     "image_cost_usd",
     "total_cost_usd",
     "total_cost_krw",
@@ -155,6 +156,15 @@ def build_cost_record(meta: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
     components = (
         cost_estimate.get("components") if isinstance(cost_estimate.get("components"), Mapping) else {}
     )
+    text_total = components.get("text_total_cost_usd")
+    if text_total is None:
+        known_text = [
+            components.get("text_input_cost_usd"),
+            components.get("text_output_cost_usd"),
+            components.get("text_thoughts_cost_usd"),
+        ]
+        priced = [c for c in known_text if c is not None]
+        text_total = sum(priced) if priced else None
     created_at = str(meta.get("created_at_kst") or meta.get("created_at") or "").strip() or now_kst_iso()
     return {
         "created_at_kst": created_at,
@@ -176,6 +186,7 @@ def build_cost_record(meta: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
         "text_input_cost_usd": components.get("text_input_cost_usd"),
         "text_output_cost_usd": components.get("text_output_cost_usd"),
         "text_thoughts_cost_usd": components.get("text_thoughts_cost_usd"),
+        "text_total_cost_usd": text_total,
         "image_cost_usd": components.get("image_cost_usd"),
         "total_cost_usd": cost_estimate.get("total_cost_usd"),
         "total_cost_krw": cost_estimate.get("total_cost_krw"),

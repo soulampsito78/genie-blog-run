@@ -59,8 +59,10 @@ class CostEstimateBasicTests(unittest.TestCase):
         self.assertAlmostEqual(result["components"]["text_output_cost_usd"], 1.25)
         self.assertAlmostEqual(result["total_cost_usd"], 1.55)
         self.assertEqual(result["pricing_source"], "env")
-        self.assertEqual(result["cost_estimate_status"], "partial")
+        self.assertEqual(result["cost_estimate_status"], "estimated")
         self.assertIsNone(result["total_cost_krw"])
+        self.assertNotIn("GENIE_COST_KRW_PER_USD", result.get("missing_price_env") or [])
+        self.assertAlmostEqual(result["components"]["text_total_cost_usd"], 1.55)
 
     def test_no_usage_metadata_returns_shape_without_crashing(self) -> None:
         with _clear_pricing_env():

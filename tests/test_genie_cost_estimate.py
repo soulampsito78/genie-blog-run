@@ -225,7 +225,8 @@ class CostEstimateStatusTests(unittest.TestCase):
             result = estimate_genie_generation_cost(None, service_family="today_genie")
         self.assertEqual(result["cost_estimate_status"], "unavailable")
 
-    def test_text_price_without_krw_is_partial(self) -> None:
+    def test_text_price_without_krw_is_estimated_usd(self) -> None:
+        """KRW FX is optional — full text USD prices alone yield estimated status."""
         with _clear_all_pricing_env(), mock.patch.dict(
             os.environ,
             {
@@ -239,8 +240,44 @@ class CostEstimateStatusTests(unittest.TestCase):
                 service_family="today_genie",
                 text_model="gemini-2.5-flash",
             )
+        self.assertEqual(result["cost_estimate_status"], "estimated")
+        self.assertAlmostEqual(result["total_cost_usd"], 2.80)
+        self.assertIsNone(result["total_cost_krw"])
+        self.assertNotIn("GENIE_COST_KRW_PER_USD", result["missing_price_env"])
+        self.assertAlmostEqual(result["components"]["text_total_cost_usd"], 2.80)
+
+    def test_text_prices_without_image_env_are_partial_usd(self) -> None:
+        with _clear_all_pricing_env(), mock.patch.dict(
+            os.environ,
+            {
+                "GENIE_COST_GEMINI_2_5_FLASH_INPUT_USD_PER_1M_TOKENS": "0.30",
+                "GENIE_COST_GEMINI_2_5_FLASH_OUTPUT_USD_PER_1M_TOKENS": "2.50",
+                "GENIE_COST_GEMINI_2_5_FLASH_THOUGHTS_USD_PER_1M_TOKENS": "2.50",
+            },
+            clear=False,
+        ):
+            result = estimate_genie_generation_cost(
+                {
+                    "prompt_token_count": 12_404,
+                    "candidates_token_count": 5_651,
+                    "thoughts_token_count": 3_924,
+                },
+                service_family="keysuri",
+                text_model="gemini-2.5-flash",
+                image_model="gemini-2.5-flash-image",
+                image_generated_count=2,
+            )
         self.assertEqual(result["cost_estimate_status"], "partial")
-        self.assertIn("GENIE_COST_KRW_PER_USD", result["missing_price_env"])
+        self.assertIsNotNone(result["total_cost_usd"])
+        self.assertIsNotNone(result["components"]["text_total_cost_usd"])
+        self.assertIsNone(result["components"]["image_cost_usd"])
+        self.assertIsNone(result["total_cost_krw"])
+        self.assertEqual(
+            result["missing_price_env"],
+            ["GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE"],
+        )
+        self.assertIn("text cost calculated; image cost not configured", result["pricing_note"])
+        self.assertNotIn("GENIE_COST_KRW_PER_USD", result["missing_price_env"])
 
     def test_text_image_and_krw_prices_are_estimated(self) -> None:
         with _clear_all_pricing_env(), mock.patch.dict(

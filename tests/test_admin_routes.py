@@ -138,13 +138,15 @@ class AdminRoutesTests(unittest.TestCase):
                     "components": {
                         "text_input_cost_usd": 0.0003,
                         "text_output_cost_usd": 0.005,
+                        "text_total_cost_usd": 0.0053,
                     },
                     "total_cost_usd": 0.0053,
                     "total_cost_krw": None,
                     "cost_estimate_status": "partial",
                     "pricing_source": "env",
                     "price_env_configured": True,
-                    "missing_price_env": ["GENIE_COST_KRW_PER_USD"],
+                    "missing_price_env": ["GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE"],
+                    "pricing_note": "estimate only; text cost calculated; image cost not configured",
                 },
             }
         )
@@ -158,7 +160,70 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertEqual(csv_resp.status_code, 200)
         self.assertIn("text/csv", csv_resp.headers.get("content-type", ""))
         self.assertIn(run_id, csv_resp.text)
-        self.assertIn("GENIE_COST_KRW_PER_USD", csv_resp.text)
+        self.assertIn("0.0053", csv_resp.text)
+        target_rows = [
+            line for line in csv_resp.text.splitlines() if run_id in line and "0.0053" in line
+        ]
+        self.assertTrue(target_rows)
+        self.assertIn("GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE", target_rows[-1])
+        self.assertNotIn("GENIE_COST_KRW_PER_USD", target_rows[-1])
+
+    def test_run_detail_cost_estimate_shows_usd_partial_labels(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        run_id = "20260709_183100_keysuri_korea_tech_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": run_id,
+                "mode": "keysuri_korea_tech",
+                "created_at": "2026-07-09T18:31:00+09:00",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "customer_delivery_status": "not_sent",
+                "cost_estimate": {
+                    "estimate_only": True,
+                    "service_family": "keysuri",
+                    "program_id": "keysuri_korea_tech",
+                    "run_id": run_id,
+                    "model": {
+                        "text_model": "gemini-2.5-flash",
+                        "image_model": "gemini-2.5-flash-image",
+                    },
+                    "usage": {
+                        "prompt_token_count": 12404,
+                        "candidates_token_count": 5651,
+                        "thoughts_token_count": 3924,
+                        "generated_image_count": 2,
+                    },
+                    "components": {
+                        "text_input_cost_usd": 0.003721,
+                        "text_output_cost_usd": 0.014128,
+                        "text_thoughts_cost_usd": 0.009810,
+                        "text_total_cost_usd": 0.027659,
+                        "image_cost_usd": None,
+                    },
+                    "model_pricing": {
+                        "image_pricing_status": "unsupported_or_unconfigured",
+                    },
+                    "total_cost_usd": 0.027659,
+                    "total_cost_krw": None,
+                    "cost_estimate_status": "partial",
+                    "pricing_source": "env",
+                    "price_env_configured": True,
+                    "missing_price_env": ["GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE"],
+                    "pricing_note": "estimate only; text cost calculated; image cost not configured",
+                },
+            }
+        )
+        resp = self.client.get(f"/admin/runs/{run_id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Cost Estimate", resp.text)
+        self.assertIn("Text input cost USD", resp.text)
+        self.assertIn("Text total cost USD", resp.text)
+        self.assertIn("Total known cost USD", resp.text)
+        self.assertIn("unconfigured / not calculated", resp.text)
+        self.assertIn("partial", resp.text)
+        self.assertIn("0.027659", resp.text)
 
     def test_run_detail_shows_beta_recipients_nav_link(self) -> None:
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
