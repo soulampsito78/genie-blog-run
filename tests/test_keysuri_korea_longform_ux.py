@@ -667,6 +667,51 @@ class KeysuriKoreaMarketContractHardeningTests(unittest.TestCase):
                 self.assertNotIn("공공·국내", text)
                 self.assertNotIn(" / ", text)
 
+    def test_sanitize_korea_customer_prose_strips_slash_and_softens_imperatives(self) -> None:
+        from keysuri_korea_longform_ux import (
+            finalize_korea_visible_field,
+            sanitize_korea_customer_prose,
+        )
+
+        cases = (
+            (
+                "국내 AI / 기업 AI 도입 관점에서 오늘 한국에서 의미 있는 신호로 선정했습니다.",
+                "기업 AI 도입",
+            ),
+            (
+                "내일 국내 로보틱스 / 스마트팩토리 관련 파트너·고객·입찰·정책 일정을 점검하세요.",
+                "로봇 자동화",
+            ),
+            (
+                "관련 SaaS 시장의 성장과 경쟁 구도를 주시하십시오.",
+                "이어서 보면 됩니다",
+            ),
+            (
+                "내일 먼저 볼 것: 현대차그룹의 로봇 관련 투자 및 협력사 발표 일정을 확인해야 합니다",
+                "다음 확인 지점입니다",
+            ),
+        )
+        for raw, expected_fragment in cases:
+            with self.subTest(raw=raw):
+                out = sanitize_korea_customer_prose(raw)
+                self.assertNotIn(" / ", out)
+                self.assertNotIn("점검하세요", out)
+                self.assertNotIn("확인해야 합니다", out)
+                self.assertNotIn("주시하십시오", out)
+                self.assertIn(expected_fragment, out)
+                finalized = finalize_korea_visible_field(raw)
+                self.assertNotIn(" / ", finalized)
+                self.assertNotIn("점검하세요", finalized)
+
+    def test_theme_phrase_avoids_deeptech_bleed_for_generic_startup(self) -> None:
+        from keysuri_korea_longform_ux import _theme_phrase
+
+        items = [{"korean_title": "부산시 주최 B-스타트업 챌린지, 5개 팀에 3억 원 지분투자 지원"}]
+        theme = _theme_phrase(items)
+        self.assertNotIn("원자력", theme)
+        self.assertNotIn("딥테크", theme)
+        self.assertIn("투자", theme)
+
     def test_follow_blocks_never_contain_double_ending(self) -> None:
         from keysuri_korea_longform_ux import build_korea_follow_hold_blocks
 

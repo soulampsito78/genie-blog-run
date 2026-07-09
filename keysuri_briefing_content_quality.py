@@ -1673,6 +1673,13 @@ _KOREA_HAMNIDA_YEOBU_RE = re.compile(
     r"해야\s*합니다|필요합니다|중요합니다|합니다)\s+여부"
 )
 
+# Slash taxonomy labels leaking into customer prose (not URL schemes).
+_KOREA_SLASH_TAXONOMY_RE = re.compile(
+    r"(?:국내\s+)?(?:AI|반도체|로보틱스|배터리|플랫폼|정책|스타트업|소비자\s*테크)"
+    r"\s*/\s*"
+    r"(?:기업\s*AI\s*도입|장비|소재|스마트팩토리|EV|에너지|클라우드|SaaS|규제|공공|투자|M&A|디바이스|모빌리티)"
+)
+
 _KOREA_HOLD_FIELD_MARKER = "아직 단정하지 말 것"
 _KOREA_JUDGMENT_MARKER = "키수리 판단"
 _KOREA_HOLD_DUP_MIN_CHARS = 25
@@ -1807,6 +1814,18 @@ def validate_korea_post_render_visible_quality(html: str) -> BriefingContentQual
             BriefingContentIssue(
                 "korea_visible_text_hamnida_yeobu_artifact",
                 f"Declarative ending glued to '여부' (prose glue): {m.group(0)!r}",
+                section="visible_body",
+                excerpt=m.group(0),
+            )
+        )
+
+    # Strip URLs before slash-taxonomy scan so https:// never false-positives.
+    plain_no_urls = re.sub(r"https?://\S+", " ", plain)
+    for m in _KOREA_SLASH_TAXONOMY_RE.finditer(plain_no_urls):
+        issues.append(
+            BriefingContentIssue(
+                "korea_visible_text_slash_taxonomy_artifact",
+                f"Internal slash taxonomy leaked into customer prose: {m.group(0)!r}",
                 section="visible_body",
                 excerpt=m.group(0),
             )

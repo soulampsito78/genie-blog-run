@@ -902,6 +902,34 @@ class KoreaPostRenderVisibleQualityTests(unittest.TestCase):
                     {i.code for i in result.issues},
                 )
 
+    def test_slash_taxonomy_in_customer_prose_blocks(self) -> None:
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        for text in (
+            "선정 이유 국내 AI / 기업 AI 도입 관점에서 오늘 한국에서 의미 있는 신호로 선정했습니다.",
+            "내일 국내 로보틱스 / 스마트팩토리 관련 파트너·고객·입찰 움직임만 좁혀 보면 됩니다.",
+            "국내 스타트업 / 투자 / M&A 관점에서 오늘 한국에서 의미 있는 신호입니다.",
+        ):
+            with self.subTest(text=text):
+                result = validate_korea_post_render_visible_quality(f"<p>{text}</p>")
+                self.assertFalse(result.ok)
+                self.assertIn(
+                    "korea_visible_text_slash_taxonomy_artifact",
+                    {i.code for i in result.issues},
+                )
+
+    def test_url_slash_does_not_trigger_taxonomy_gate(self) -> None:
+        from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
+
+        html = (
+            "<p>출처 로봇신문 · "
+            '<a href="https://www.irobotnews.com/news/articleView.html?idxno=47337">'
+            "https://www.irobotnews.com/news/articleView.html?idxno=47337</a></p>"
+        )
+        result = validate_korea_post_render_visible_quality(html)
+        codes = {i.code for i in result.issues}
+        self.assertNotIn("korea_visible_text_slash_taxonomy_artifact", codes)
+
     def test_normal_observation_yeobu_and_imperative_pass_hamnida_gate(self) -> None:
         from keysuri_briefing_content_quality import validate_korea_post_render_visible_quality
 

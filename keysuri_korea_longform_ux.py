@@ -267,7 +267,7 @@ def _first_sentences(text: str, count: int) -> str:
 
 
 def clamp_action_line(text: str, *, max_chars: int = KOREA_MEMO_ACTION_MAX_CHARS) -> str:
-    out = remove_truncated_headline_fragments(_text(text))
+    out = sanitize_korea_customer_prose(remove_truncated_headline_fragments(_text(text)))
     if not out:
         return ""
     if len(out) <= max_chars:
@@ -416,7 +416,8 @@ def repair_incomplete_korean_visible_text(text: str, *, fallback: str = "") -> s
 
 def finalize_korea_visible_field(text: str, *, fallback: str = "") -> str:
     clamped = clamp_korea_visible_field_at_sentence(text)
-    return repair_incomplete_korean_visible_text(clamped, fallback=fallback)
+    repaired = repair_incomplete_korean_visible_text(clamped, fallback=fallback)
+    return sanitize_korea_customer_prose(repaired)
 
 
 def _short_title(title: str, *, max_len: int = 42) -> str:
@@ -475,8 +476,10 @@ def _theme_phrase(items: Sequence[Mapping[str, Any]]) -> str:
         return "AI 반도체·GPU 이슈"
     if any(k in blob for k in ("HBM", "반도체", "삼성", "SK하이닉스")):
         return "반도체 산업 이슈"
-    if any(k in blob for k in ("스타트업", "투자", "아토믹")):
+    if any(k in blob for k in ("딥테크", "원자력")):
         return "국내 투자·딥테크 이슈"
+    if any(k in blob for k in ("스타트업", "투자", "아토믹", "IPO", "상장")):
+        return "국내 투자 이슈"
     return "국내 테크 핵심 이슈"
 
 
@@ -554,32 +557,159 @@ _GLOBAL_BRIDGE_MARKERS: tuple[str, ...] = (
     "국내 산업",
 )
 _KOREA_INDUSTRY_LABELS: Dict[str, str] = {
-    "korea_ai_enterprise": "국내 AI·기업 도입",
-    "korea_semiconductor": "국내 반도체·장비·소재",
-    "korea_robotics_manufacturing": "국내 로보틱스·스마트팩토리",
-    "korea_battery_energy": "국내 배터리·에너지",
-    "korea_platform_cloud_saas": "국내 플랫폼·클라우드",
-    "korea_policy_regulation": "국내 정책·규제",
-    "korea_startup_investment": "국내 스타트업·투자",
-    "korea_big_company_strategy": "국내 대기업 테크 전략",
-    "korea_consumer_mobility": "국내 소비자 테크·모빌리티",
+    "korea_ai_enterprise": "기업 AI 도입",
+    "korea_semiconductor": "반도체·장비·소재",
+    "korea_robotics_manufacturing": "로봇 자동화",
+    "korea_battery_energy": "배터리·에너지",
+    "korea_platform_cloud_saas": "플랫폼·클라우드",
+    "korea_policy_regulation": "정책·공공 인프라",
+    "korea_startup_investment": "스타트업 투자",
+    "korea_big_company_strategy": "대기업 기술 전략",
+    "korea_consumer_mobility": "소비자 테크·모빌리티",
     "global_to_korea_translation": "글로벌→한국 번역 신호",
 }
 
-# Slash taxonomy display labels (scoring/enricher) → prose-friendly longform labels.
-# Longform output only — does not change scoring or enricher structures.
+# Slash taxonomy display labels (scoring/enricher) → customer-facing prose labels.
+# Longform/card output only — does not change scoring or enricher structures.
 _KOREA_SLASH_LABEL_TO_PROSE: Dict[str, str] = {
-    "국내 AI / 기업 AI 도입": "국내 AI·기업 도입",
-    "국내 반도체 / 장비 / 소재": "국내 반도체·장비·소재",
-    "국내 로보틱스 / 스마트팩토리": "국내 로보틱스·스마트팩토리",
-    "국내 배터리 / EV / 에너지": "국내 배터리·에너지",
-    "국내 플랫폼 / 클라우드 / SaaS": "국내 플랫폼·클라우드",
-    "국내 정책 / 규제 / 공공": "국내 정책·규제",
-    "국내 스타트업 / 투자 / M&A": "국내 스타트업·투자",
-    "국내 대기업 테크 전략": "국내 대기업 테크 전략",
-    "국내 소비자 테크 / 디바이스 / 모빌리티": "국내 소비자 테크·모빌리티",
+    "국내 AI / 기업 AI 도입": "기업 AI 도입",
+    "국내 반도체 / 장비 / 소재": "반도체·장비·소재",
+    "국내 로보틱스 / 스마트팩토리": "로봇 자동화",
+    "국내 배터리 / EV / 에너지": "배터리·에너지",
+    "국내 플랫폼 / 클라우드 / SaaS": "플랫폼·클라우드",
+    "국내 정책 / 규제 / 공공": "정책·공공 인프라",
+    "국내 스타트업 / 투자 / M&A": "스타트업 투자",
+    "국내 대기업 테크 전략": "대기업 기술 전략",
+    "국내 소비자 테크 / 디바이스 / 모빌리티": "소비자 테크·모빌리티",
     "글로벌→한국 번역 신호": "글로벌→한국 번역 신호",
+    # Already-prose / partial forms that still leak into card copy.
+    "국내 AI·기업 도입": "기업 AI 도입",
+    "국내 반도체·장비·소재": "반도체·장비·소재",
+    "국내 로보틱스·스마트팩토리": "로봇 자동화",
+    "국내 정책·규제": "정책·공공 인프라",
+    "국내 스타트업·투자": "스타트업 투자",
+    "국내 플랫폼·클라우드": "플랫폼·클라우드",
+    "국내 배터리·에너지": "배터리·에너지",
+    "국내 소비자 테크·모빌리티": "소비자 테크·모빌리티",
 }
+
+# Imperative / homework closings → observational secretary tone.
+_KOREA_IMPERATIVE_SOFTEN_RES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"내일\s+(?P<sub>.+?)\s*관련\s*파트너·고객·입찰·정책\s*일정을\s*점검하세요[.!]?"
+        ),
+        r"내일은 \g<sub> 관련 파트너·고객·입찰 움직임만 좁혀 보면 됩니다.",
+    ),
+    (
+        re.compile(r"(?P<sub>.+?)을\s*확인해야\s*합니다[.!]?$"),
+        r"\g<sub>이 다음 확인 지점입니다.",
+    ),
+    (
+        re.compile(r"(?P<sub>.+?)를\s*확인해야\s*합니다[.!]?$"),
+        r"\g<sub>가 다음 확인 지점입니다.",
+    ),
+    (
+        re.compile(r"(?P<sub>.+?)을\s*주시(?:해야\s*합니다|하십시오)[.!]?$"),
+        r"\g<sub>만 이어서 보면 됩니다.",
+    ),
+    (
+        re.compile(r"(?P<sub>.+?)를\s*주시(?:해야\s*합니다|하십시오)[.!]?$"),
+        r"\g<sub>만 이어서 보면 됩니다.",
+    ),
+    (
+        re.compile(r"(?P<sub>.+?)을\s*검토해야\s*합니다[.!]?$"),
+        r"\g<sub>을 함께 보면 됩니다.",
+    ),
+    (
+        re.compile(r"(?P<sub>.+?)를\s*검토해야\s*합니다[.!]?$"),
+        r"\g<sub>를 함께 보면 됩니다.",
+    ),
+    (
+        re.compile(r"(?P<sub>.+?)을\s*점검하세요[.!]?$"),
+        r"\g<sub>만 좁혀 보면 됩니다.",
+    ),
+    (
+        re.compile(r"(?P<sub>.+?)를\s*점검하세요[.!]?$"),
+        r"\g<sub>만 좁혀 보면 됩니다.",
+    ),
+    (
+        re.compile(r"(?P<sub>.+?)을\s*확인하세요[.!]?$"),
+        r"\g<sub>이 다음 확인 지점입니다.",
+    ),
+    (
+        re.compile(r"(?P<sub>.+?)를\s*확인하세요[.!]?$"),
+        r"\g<sub>가 다음 확인 지점입니다.",
+    ),
+    (
+        re.compile(r"(?P<sub>.+?)을\s*관찰해야\s*합니다[.!]?$"),
+        r"\g<sub>만 이어서 보면 됩니다.",
+    ),
+    (
+        re.compile(r"(?P<sub>.+?)를\s*관찰해야\s*합니다[.!]?$"),
+        r"\g<sub>만 이어서 보면 됩니다.",
+    ),
+    (
+        re.compile(r"(?P<sub>.+?)을\s*가늠해야\s*합니다[.!]?$"),
+        r"\g<sub>가 다음 확인 지점입니다.",
+    ),
+    (
+        re.compile(r"(?P<sub>.+?)를\s*가늠해야\s*합니다[.!]?$"),
+        r"\g<sub>가 다음 확인 지점입니다.",
+    ),
+)
+
+
+def _sanitize_korea_customer_label(value: str) -> str:
+    """Map internal slash taxonomy labels to short customer-facing Korean."""
+    raw = _text(value)
+    if not raw:
+        return ""
+    if raw in _KOREA_SLASH_LABEL_TO_PROSE:
+        return _KOREA_SLASH_LABEL_TO_PROSE[raw]
+    if raw in _KOREA_INDUSTRY_LABELS:
+        return _KOREA_INDUSTRY_LABELS[raw]
+    if " / " in raw:
+        return raw.replace(" / ", "·")
+    return raw
+
+
+def _soften_korea_imperative_prose(text: str) -> str:
+    """Rewrite homework-style closings into observational secretary tone."""
+    out = _text(text)
+    if not out:
+        return ""
+    parts = re.split(r"(?<=[.!?])\s+", out)
+    softened: List[str] = []
+    for part in parts:
+        piece = part
+        for pattern, repl in _KOREA_IMPERATIVE_SOFTEN_RES:
+            updated = pattern.sub(repl, piece)
+            if updated != piece:
+                piece = updated
+                break
+        softened.append(piece)
+    return " ".join(p for p in softened if p)
+
+
+def sanitize_korea_customer_prose(text: str) -> str:
+    """Customer-facing Korea prose: no slash taxonomy, fewer imperative closings.
+
+    Replaces known slash taxonomy labels and residual " / " separators in prose.
+    Does not rewrite URL schemes (https://) — only the spaced taxonomy form.
+    """
+    out = _text(text)
+    if not out:
+        return ""
+    for src, dst in sorted(
+        _KOREA_SLASH_LABEL_TO_PROSE.items(), key=lambda kv: len(kv[0]), reverse=True
+    ):
+        if src in out:
+            out = out.replace(src, dst)
+    out = out.replace(" / ", "·")
+    out = re.sub(r"·+", "·", out)
+    out = _soften_korea_imperative_prose(out)
+    return re.sub(r"\s+", " ", out).strip()
 
 
 def _korea_top_axis(items: Sequence[Mapping[str, Any]]) -> str:
@@ -597,11 +727,7 @@ def _korea_top_axis(items: Sequence[Mapping[str, Any]]) -> str:
 
 
 def _korea_industry_label(value: str) -> str:
-    """Map category slug or slash taxonomy display label to prose-friendly Korean.
-
-    Scoring/enricher may store slash labels like "국내 정책 / 규제 / 공공".
-    Longform customer copy must never expose those slash strings.
-    """
+    """Map category slug or slash taxonomy display label to customer prose."""
     raw = _text(value)
     if not raw:
         return ""
@@ -611,10 +737,7 @@ def _korea_industry_label(value: str) -> str:
         return _KOREA_SLASH_LABEL_TO_PROSE[raw]
     if "_" in raw:
         return ""
-    # Last-resort sanitize: collapse " / " taxonomy separators without inventing meaning.
-    if " / " in raw:
-        return raw.replace(" / ", "·")
-    return raw
+    return _sanitize_korea_customer_label(raw)
 
 
 def _join_korea_industry_phrase(industries: Sequence[str], *, sep: str = "·") -> str:
@@ -1054,6 +1177,7 @@ def build_korea_tomorrow_checkpoint_parts(item: Mapping[str, Any]) -> tuple[str,
     if not confirm:
         title = _short_title(_text(item.get("korean_title") or item.get("headline"))) or "핵심 신호"
         confirm = f"{title} 후속 발표·일정"
+    confirm = sanitize_korea_customer_prose(confirm)
 
     # The hold field names what is NOT yet confirmed (숫자/일정/계약/실행) —
     # never a verbatim reuse of the card's "키수리 판단" explanation (that

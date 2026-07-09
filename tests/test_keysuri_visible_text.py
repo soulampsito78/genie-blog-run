@@ -136,6 +136,15 @@ class KeysuriVisibleTextTests(unittest.TestCase):
         self.assertNotIn("신호 신호", out)
         self.assertIn("글로벌 발표", out)
 
+    def test_startup_impact_fallback_has_no_nuclear_bleed(self) -> None:
+        out = sanitize_visible_impact_line(
+            "스타트업 / 투자 신호가 의사결정·미팅 우선순위에 반영될 수 있습니다.",
+            category="korea_startup_investment",
+        )
+        self.assertNotIn("원자력", out)
+        self.assertNotIn("딥테크", out)
+        self.assertTrue(out)
+
     def test_strip_watch_arrow_prefixes(self) -> None:
         raw = "→ → 삼성 일정; → 엔비디아 후속"
         out = strip_watch_arrow_prefixes(raw)

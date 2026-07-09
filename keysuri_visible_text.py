@@ -302,7 +302,7 @@ _KOREA_IMPACT_BY_CATEGORY: Dict[str, str] = {
         "글로벌 발표가 국내 AI 기업의 투자·GPU 확보 논의로 이어질 수 있습니다."
     ),
     "korea_startup_investment": (
-        "원자력·딥테크 투자 검토와 지원사업 확인 우선순위가 올라갑니다."
+        "후속 투자 일정과 지원사업 공지 확인 우선순위가 올라갑니다."
     ),
     "korea_policy_regulation": (
         "정책·조달 일정과 내일 관련 사업 검토 우선순위가 올라갑니다."
