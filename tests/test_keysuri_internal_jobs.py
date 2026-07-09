@@ -487,7 +487,7 @@ class KeysuriInternalJobsRegressionTests(unittest.TestCase):
                     resp = client.post("/", json={"type": "tomorrow_genie"})
         self.assertEqual(resp.status_code, 500)
         build_prompt.assert_called_once()
-        call_gemini.assert_called_once_with("prompt", "tomorrow_genie")
+        call_gemini.assert_called_once_with("prompt", "tomorrow_genie", usage_sink={})
 
     def test_process_approval_timeouts_retired_policy_unchanged(self) -> None:
         os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"

@@ -44,6 +44,8 @@ from validators import (
     validate_tomorrow_genie,
 )
 from weather_image_context import build_image_weather_context_for_today
+from keysuri_gemini_client import extract_gemini_usage_metadata
+from genie_cost_estimate import estimate_genie_generation_cost
 
 # Vertex AI SDK
 # 설치 필요:
@@ -713,7 +715,12 @@ def call_gemini(
     mode: str,
     *,
     max_output_tokens: int | None = None,
+    usage_sink: dict | None = None,
 ) -> str:
+    """usage_sink (optional): populated in place with the model name and
+    best-effort token usage for cost-estimate logging (see
+    genie_cost_estimate.py). Never raises — a usage_sink populate failure
+    must not affect text generation."""
     try:
         init_vertex()
         model = get_model()
@@ -746,6 +753,13 @@ def call_gemini(
         )
         raise
 
+    if usage_sink is not None:
+        try:
+            usage_sink["model"] = VERTEX_MODEL
+            usage_sink.update(extract_gemini_usage_metadata(response))
+        except Exception:
+            pass
+
     text = getattr(response, "text", None)
     if not text:
         logger.error(
@@ -766,19 +780,51 @@ def call_gemini(
 call_gemini_text = call_gemini
 
 
+def _sum_usage_sinks(*sinks: dict) -> Dict[str, Any]:
+    """Best-effort accumulation of per-call usage_sink dicts across a
+    multi-call pipeline. Never raises — missing/partial counts just sum as 0."""
+    try:
+        combined: Dict[str, Any] = {}
+        model_name = None
+        for sink in sinks:
+            if not isinstance(sink, dict):
+                continue
+            model_name = sink.get("model") or model_name
+            for field in (
+                "prompt_token_count",
+                "candidates_token_count",
+                "thoughts_token_count",
+                "total_token_count",
+            ):
+                value = sink.get(field)
+                if value is None:
+                    continue
+                combined[field] = (combined.get(field) or 0) + value
+        if model_name:
+            combined["model"] = model_name
+        return combined
+    except Exception:
+        return {}
+
+
 def run_today_genie_text_pipeline(
     runtime_input: Dict[str, Any],
-) -> tuple[Dict[str, Any], str, Dict[str, float]]:
+) -> tuple[Dict[str, Any], str, Dict[str, float], Dict[str, Any]]:
     """
     Two-phase today_genie text: (1) structured TOP3 slots, (2) main briefing JSON.
     Final key_watchpoints are always assembled in code: **exactly three** items,
     news-anchored where headlines exist, otherwise feed-anchored (overnight/macro/risk)
     market-watch slots — never absence filler.
+
+    Returns (data, raw_main, prof, usage) — usage is the accumulated best-effort
+    token usage across both phases (see _sum_usage_sinks), for cost-estimate
+    logging only; never affects generation itself.
     """
     prof: Dict[str, float] = {}
     ext_prompt = build_top3_extraction_prompt(runtime_input)
+    ext_usage: Dict[str, Any] = {}
     t0 = time.perf_counter()
-    raw_ext = call_gemini(ext_prompt, "today_genie", max_output_tokens=4096)
+    raw_ext = call_gemini(ext_prompt, "today_genie", max_output_tokens=4096, usage_sink=ext_usage)
     prof["top3_extract_inference_sec"] = round(time.perf_counter() - t0, 4)
     try:
         ext_data = parse_model_json(raw_ext, "today_genie")
@@ -787,6 +833,7 @@ def run_today_genie_text_pipeline(
             ext_prompt + today_genie_top3_extract_recovery_suffix(),
             "today_genie",
             max_output_tokens=4096,
+            usage_sink=ext_usage,
         )
         ext_data = parse_model_json(raw_ext, "today_genie")
     slots = normalize_top3_slots_payload(ext_data)
@@ -795,8 +842,9 @@ def run_today_genie_text_pipeline(
         runtime_input,
         today_genie_main_briefing=True,
     )
+    main_usage: Dict[str, Any] = {}
     t1 = time.perf_counter()
-    raw_main = call_gemini(main_prompt, "today_genie")
+    raw_main = call_gemini(main_prompt, "today_genie", usage_sink=main_usage)
     prof["main_brief_inference_sec"] = round(time.perf_counter() - t1, 4)
     try:
         data = parse_model_json(raw_main, "today_genie")
@@ -806,13 +854,14 @@ def run_today_genie_text_pipeline(
             raw_main = call_gemini(
                 main_prompt + today_genie_json_recovery_suffix(),
                 "today_genie",
+                usage_sink=main_usage,
             )
             data = parse_model_json(raw_main, "today_genie")
         else:
             raise
     data["key_watchpoints"] = assemble_key_watchpoints_from_slots(slots, runtime_input)
     apply_briefing_repetition_guard(data)
-    return data, raw_main, prof
+    return data, raw_main, prof, _sum_usage_sinks(ext_usage, main_usage)
 
 
 def response_issues(issues: List[Any]) -> List[Dict[str, Any]]:
@@ -1362,17 +1411,20 @@ def generate(job: JobRequest) -> Dict[str, Any]:
         runtime_input = apply_today_genie_sent_news_dedup(runtime_input)
 
     if mode == "today_genie":
-        data, raw_text, _layer_prof = run_today_genie_text_pipeline(runtime_input)
+        data, raw_text, _layer_prof, gemini_usage = run_today_genie_text_pipeline(runtime_input)
         logger.info("today_genie_two_phase_timings_sec=%s", _layer_prof)
     else:
         prompt = build_full_prompt(mode, runtime_input)
-        raw_text = call_gemini(prompt, mode)
+        gemini_usage = {}
+        raw_text = call_gemini(prompt, mode, usage_sink=gemini_usage)
         try:
             data = parse_model_json(raw_text, mode)
         except HTTPException as e:
             det = e.detail if isinstance(e.detail, dict) else {}
             if det.get("reason") == "json_parse_error":
-                raw_text = call_gemini(prompt + today_genie_json_recovery_suffix(), mode)
+                raw_text = call_gemini(
+                    prompt + today_genie_json_recovery_suffix(), mode, usage_sink=gemini_usage
+                )
                 data = parse_model_json(raw_text, mode)
             else:
                 raise
@@ -1443,6 +1495,21 @@ def generate(job: JobRequest) -> Dict[str, Any]:
         issues=validation.issues,
         content_quality_warnings=list(validation.content_quality_warnings),
     )
+
+    # Best-effort cost estimate — never affects validation_result/HTTP status;
+    # see genie_cost_estimate.py for the estimate-only pricing model. Image
+    # generation for today_genie happens in a later service_full_run step
+    # (see today_genie_service_full_run.py), so generated_image_count is 0 here.
+    try:
+        cost_estimate = estimate_genie_generation_cost(
+            gemini_usage,
+            service_family="today_genie" if mode == "today_genie" else "tomorrow_genie",
+            text_model=gemini_usage.get("model") or VERTEX_MODEL,
+            mode=mode,
+        )
+    except Exception:
+        cost_estimate = None
+
     return {
         "status": "ok",
         "type": mode,
@@ -1454,6 +1521,7 @@ def generate(job: JobRequest) -> Dict[str, Any]:
         "content_quality_warnings": list(validation.content_quality_warnings),
         "runtime_validation_check": runtime_check,
         "runtime_input": runtime_input,
+        "cost_estimate": cost_estimate,
         "data": {
             **data,
             "rendered_channels": rendered,

@@ -17,6 +17,7 @@ from service_full_run_contract import (
     build_service_artifact_fields,
 )
 from service_image_api import invoke_vertex_image_generation
+from genie_cost_estimate import estimate_genie_generation_cost
 
 logger = logging.getLogger(__name__)
 
@@ -409,6 +410,38 @@ def run_today_genie_service_full_run(
         if not getattr(image_bundle, "watermark_applied", False):
             meta["issue_codes"] = list(meta.get("issue_codes") or []) + [WATERMARK_ISSUE_CODE]
     meta["artifact_status"] = "emailed" if email_sent else "stored"
+
+    # Best-effort cost estimate — text usage came from the /generate response
+    # (main.py); fold in the image count generated in THIS step. Never affects
+    # ok/validation_result/email_sent even if this fails.
+    try:
+        text_cost_estimate = payload.get("cost_estimate") if isinstance(payload.get("cost_estimate"), dict) else {}
+        generated_image_count = int(image_bundle.top.ok) + int(image_bundle.bottom.ok)
+        cost_estimate = estimate_genie_generation_cost(
+            text_cost_estimate.get("usage"),
+            service_family="today_genie",
+            text_model=(text_cost_estimate.get("model") or {}).get("text_model")
+            if isinstance(text_cost_estimate.get("model"), dict)
+            else None,
+            mode="today_genie",
+            run_id=run_id,
+            image_generated_count=generated_image_count,
+        )
+    except Exception:
+        cost_estimate = None
+    if cost_estimate is not None:
+        meta["cost_estimate"] = cost_estimate
+        try:
+            logger.info(
+                "today_genie_cost_estimate run_id=%s usage=%s total_cost_usd=%s pricing_source=%s",
+                run_id,
+                cost_estimate.get("usage"),
+                cost_estimate.get("total_cost_usd"),
+                cost_estimate.get("pricing_source"),
+            )
+        except Exception:
+            pass
+
     save_run_artifact(meta, email_html=email_html)
 
     ok = image_bundle.ok and (not send_owner_email or email_sent)
@@ -422,6 +455,7 @@ def run_today_genie_service_full_run(
         "workflow_status": workflow_status,
         "called_gemini": True,
         "called_image_api": image_bundle.called_image_api,
+        "cost_estimate": cost_estimate,
         "image_generation_status": meta.get("image_generation_status"),
         "image_source": meta.get("image_source"),
         "generated_image_path": meta.get("generated_image_path"),

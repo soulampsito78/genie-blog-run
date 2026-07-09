@@ -3007,6 +3007,135 @@ class TodayGenieServiceFullRunTests(unittest.TestCase):
         self.assertFalse(payload.get("ok"))
         self.assertFalse(payload.get("email_sent"))
 
+    @patch("today_genie_service_full_run.save_run_artifact")
+    @patch("today_genie_service_full_run.run_genie_job")
+    def test_cost_estimate_folds_in_image_count_and_reaches_payload_and_meta(
+        self,
+        mock_job: MagicMock,
+        mock_save: MagicMock,
+    ) -> None:
+        """Text-side cost_estimate from the /generate response (main.py) must
+        survive into the service_full_run payload/meta with the image count
+        generated in this step folded in — never affecting ok/email_sent."""
+        text_cost_estimate = {
+            "estimate_only": True,
+            "service_family": "today_genie",
+            "model": {"text_model": "gemini-2.5-flash", "image_model": None},
+            "usage": {
+                "prompt_token_count": 4000,
+                "candidates_token_count": 900,
+                "thoughts_token_count": 0,
+                "total_token_count": 4900,
+                "generated_image_count": 0,
+            },
+            "unit_prices": {},
+            "components": {},
+            "total_cost_usd": None,
+            "total_cost_krw": None,
+            "pricing_source": "unknown",
+            "pricing_note": "estimate only",
+        }
+        result = _pass_today_orchestration_result()
+        result.response_data = {
+            "validation_result": "pass",
+            "workflow_status": "validated",
+            "runtime_input": _RUNTIME_INPUT,
+            "data": _MINIMAL_TODAY_DATA,
+            "cost_estimate": text_cost_estimate,
+        }
+        mock_job.return_value = result
+        with patch(
+            "today_genie_service_full_run.generate_today_genie_service_images"
+        ) as mock_images:
+            mock_images.return_value = type(
+                "B",
+                (),
+                {
+                    "ok": True,
+                    "called_image_api": True,
+                    "top": ServiceImageOutcome(
+                        called_image_api=True,
+                        image_generation_status="generated",
+                        image_source=IMAGE_SOURCE_GENERATED,
+                        generated_image_path="output/images/t.jpg",
+                    ),
+                    "bottom": ServiceImageOutcome(
+                        called_image_api=True,
+                        image_generation_status="generated",
+                        image_source=IMAGE_SOURCE_GENERATED,
+                        generated_image_path="output/images/b.jpg",
+                    ),
+                    "primary_generated_image_path": "output/images/t.jpg",
+                },
+            )()
+            with patch("today_genie_service_full_run._inline_parts_from_bundle") as mock_inline:
+                repo = Path(__file__).resolve().parents[1]
+                top = repo / "output" / "images" / "t.jpg"
+                bot = repo / "output" / "images" / "b.jpg"
+                top.parent.mkdir(parents=True, exist_ok=True)
+                top.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+                bot.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+                mock_inline.return_value = [(str(top), "cid.top", "t.jpg"), (str(bot), "cid.bot", "b.jpg")]
+                payload = run_today_genie_service_full_run(send_fn=MagicMock(return_value=True))
+
+        self.assertTrue(payload.get("ok"))
+        cost_estimate = payload.get("cost_estimate")
+        self.assertIsNotNone(cost_estimate)
+        self.assertEqual(cost_estimate.get("service_family"), "today_genie")
+        self.assertEqual(cost_estimate["usage"]["prompt_token_count"], 4000)
+        self.assertEqual(cost_estimate["usage"]["generated_image_count"], 2)
+
+        saved_meta = mock_save.call_args.args[0]
+        self.assertEqual(saved_meta.get("cost_estimate"), cost_estimate)
+
+    @patch("today_genie_service_full_run.save_run_artifact")
+    @patch("today_genie_service_full_run.run_genie_job")
+    def test_missing_usage_in_generate_response_does_not_break_run(
+        self,
+        mock_job: MagicMock,
+        mock_save: MagicMock,
+    ) -> None:
+        """No cost_estimate/usage in the /generate response (e.g. older cached
+        response shape) must not break the service_full_run — cost_estimate
+        just falls back to unknown/partial, generation still succeeds."""
+        result = _pass_today_orchestration_result()
+        mock_job.return_value = result
+        with patch("today_genie_service_full_run.generate_today_genie_service_images") as mock_images:
+            mock_images.return_value = type(
+                "B",
+                (),
+                {
+                    "ok": True,
+                    "called_image_api": True,
+                    "top": ServiceImageOutcome(
+                        called_image_api=True,
+                        image_generation_status="generated",
+                        image_source=IMAGE_SOURCE_GENERATED,
+                        generated_image_path="output/images/t.jpg",
+                    ),
+                    "bottom": ServiceImageOutcome(
+                        called_image_api=True,
+                        image_generation_status="generated",
+                        image_source=IMAGE_SOURCE_GENERATED,
+                        generated_image_path="output/images/b.jpg",
+                    ),
+                    "primary_generated_image_path": "output/images/t.jpg",
+                },
+            )()
+            with patch("today_genie_service_full_run._inline_parts_from_bundle") as mock_inline:
+                repo = Path(__file__).resolve().parents[1]
+                top = repo / "output" / "images" / "t.jpg"
+                bot = repo / "output" / "images" / "b.jpg"
+                top.parent.mkdir(parents=True, exist_ok=True)
+                top.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+                bot.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+                mock_inline.return_value = [(str(top), "cid.top", "t.jpg"), (str(bot), "cid.bot", "b.jpg")]
+                payload = run_today_genie_service_full_run(send_fn=MagicMock(return_value=True))
+        self.assertTrue(payload.get("ok"))
+        cost_estimate = payload.get("cost_estimate")
+        self.assertIsNotNone(cost_estimate)
+        self.assertEqual(cost_estimate.get("usage", {}).get("generated_image_count"), 2)
+
 
 class KeysuriServiceFullRunTests(unittest.TestCase):
     def test_smoke_contract_preview_job_not_service_full_run(self) -> None:
