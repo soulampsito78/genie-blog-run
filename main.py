@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import hashlib
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -100,8 +101,45 @@ TODAY_GENIE_CORE_DATE_FEEDS = (
     "korea_japan_indices",
     "macro_indicators",
 )
+TODAY_GENIE_RUNTIME_FEEDS = (
+    "overnight_us_market",
+    "korea_japan_indices",
+    "macro_indicators",
+    "top_market_news",
+    "risk_factors",
+)
 TODAY_GENIE_MAX_FEED_STALE_DAYS = 7
 TODAY_GENIE_LIVE_REFRESH_TIMEOUT_SEC = 6
+TODAY_GENIE_FEED_CACHE_SCHEMA_VERSION = "today_genie_feed_cache_v1"
+TODAY_GENIE_FEED_DIAGNOSTIC_KEYS = (
+    "today_genie_feed_source",
+    "today_genie_feed_refresh_attempted",
+    "today_genie_feed_refresh_status",
+    "today_genie_feed_fallback_used",
+    "today_genie_feed_fallback_reason",
+    "today_genie_feed_staleness",
+    "today_genie_live_feed_staleness",
+    "today_genie_stale_feeds",
+    "today_genie_feed_refresh_started_at",
+    "today_genie_feed_refresh_finished_at",
+    "today_genie_feed_refresh_elapsed_ms",
+    "today_genie_feed_refresh_source_results",
+    "today_genie_feed_partial_success",
+    "today_genie_feed_live_success_count",
+    "today_genie_feed_cache_fallback_count",
+    "today_genie_feed_env_fallback_count",
+    "today_genie_feed_unavailable_count",
+    "today_required_feed_contract_passed",
+    "today_required_feed_contract_missing",
+    "today_required_feed_contract_stale",
+    "today_genie_feed_gate_reason",
+    "scheduler_delivery_success",
+    "scheduler_delivery_http_status",
+    "pipeline_success",
+    "owner_review_created",
+    "retry_recommended",
+    "manual_action_required",
+)
 
 
 class JobRequest(BaseModel):
@@ -244,10 +282,482 @@ def _today_live_feed_refresh_timeout_sec() -> int:
         return TODAY_GENIE_LIVE_REFRESH_TIMEOUT_SEC
 
 
-def _probe_today_genie_live_feeds(target_date: str, timeout_sec: int) -> Dict[str, Any]:
-    from ops.probe_today_genie_feeds import probe_all_feeds
+def _today_utc_now_iso() -> str:
+    return datetime.now(ZoneInfo("UTC")).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
-    return probe_all_feeds(target_date, timeout_sec=timeout_sec)
+
+def _today_feed_payload_hash(payload: Any) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _today_feed_cache_object_key(source_id: str) -> str:
+    safe_source = re.sub(r"[^a-z0-9_-]+", "_", str(source_id or "").strip().lower())
+    if not safe_source:
+        safe_source = "unknown"
+    try:
+        from admin_store import admin_artifact_gcs_prefix
+
+        prefix = admin_artifact_gcs_prefix().strip("/")
+    except Exception:
+        prefix = "admin_runs"
+    return f"{prefix}/runtime_feed_cache/today_genie/{safe_source}/latest.json"
+
+
+def _read_today_genie_feed_cache(source_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        from admin_store import admin_artifact_bucket_name, _gcs_download_text
+
+        if not admin_artifact_bucket_name():
+            return None
+        raw = _gcs_download_text(_today_feed_cache_object_key(source_id))
+    except Exception as exc:  # noqa: BLE001 - cache is a best-effort fallback.
+        logger.warning(
+            "today_genie feed cache read failed source_id=%s error_type=%s",
+            source_id,
+            type(exc).__name__,
+        )
+        return None
+    if raw is None:
+        return None
+    try:
+        record = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    payload = record.get("payload")
+    checksum = str(record.get("payload_sha256") or "").strip()
+    if checksum and checksum != _today_feed_payload_hash(payload):
+        logger.warning("today_genie feed cache checksum mismatch source_id=%s", source_id)
+        return None
+    return record
+
+
+def _write_today_genie_feed_cache(
+    source_id: str,
+    payload: Any,
+    target_date: str,
+    *,
+    provenance: str,
+) -> str:
+    try:
+        from admin_store import admin_artifact_bucket_name, _gcs_upload_text
+
+        if not admin_artifact_bucket_name():
+            return "skipped_no_gcs_backend"
+        fetched_at = _today_utc_now_iso()
+        record = {
+            "schema_version": TODAY_GENIE_FEED_CACHE_SCHEMA_VERSION,
+            "source_id": source_id,
+            "target_date": target_date,
+            "as_of": _today_feed_source_as_of(source_id, payload) or target_date,
+            "fetched_at": fetched_at,
+            "provenance": provenance,
+            "payload": payload,
+            "payload_sha256": _today_feed_payload_hash(payload),
+        }
+        _gcs_upload_text(
+            _today_feed_cache_object_key(source_id),
+            json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True),
+            content_type="application/json",
+        )
+        return "written"
+    except Exception as exc:  # noqa: BLE001 - cache write must never fail the run.
+        logger.warning(
+            "today_genie feed cache write failed source_id=%s error_type=%s",
+            source_id,
+            type(exc).__name__,
+        )
+        return f"failed:{type(exc).__name__}"
+
+
+def _today_feed_nonempty(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, dict):
+        return len(value) > 0
+    if isinstance(value, list):
+        return len(value) > 0
+    return True
+
+
+def _today_feed_source_as_of(source_id: str, payload: Any) -> Optional[str]:
+    if source_id in TODAY_GENIE_CORE_DATE_FEEDS and isinstance(payload, dict):
+        raw = payload.get("as_of")
+        parsed = _parse_feed_date(raw)
+        return parsed.isoformat() if parsed else (str(raw).strip() or None)
+    if source_id == "top_market_news" and isinstance(payload, list):
+        dates = [
+            parsed
+            for item in payload
+            if isinstance(item, dict)
+            for parsed in [_parse_feed_date(item.get("date"))]
+            if parsed is not None
+        ]
+        if dates:
+            return max(dates).isoformat()
+    return None
+
+
+def _today_feed_payload_freshness(
+    source_id: str,
+    payload: Any,
+    target_date: str,
+) -> Dict[str, Any]:
+    if not _today_feed_nonempty(payload):
+        return {
+            "fresh": False,
+            "stale": True,
+            "as_of": "",
+            "age_days": None,
+            "reason": "missing_or_empty",
+        }
+    if source_id == "risk_factors":
+        return {
+            "fresh": True,
+            "stale": False,
+            "as_of": "",
+            "age_days": None,
+            "reason": "",
+        }
+    as_of_raw = _today_feed_source_as_of(source_id, payload)
+    as_of = _parse_feed_date(as_of_raw)
+    target = _parse_feed_date(target_date)
+    age_days: Optional[int] = None
+    stale = False
+    reason = ""
+    if target is None:
+        stale = True
+        reason = "invalid_target_date"
+    elif as_of is None:
+        stale = True
+        reason = "missing_or_invalid_as_of"
+    else:
+        age_days = (target - as_of).days
+        if age_days > TODAY_GENIE_MAX_FEED_STALE_DAYS:
+            stale = True
+            reason = "as_of_older_than_7_days"
+    return {
+        "fresh": not stale,
+        "stale": stale,
+        "as_of": str(as_of_raw or ""),
+        "age_days": age_days,
+        "reason": reason,
+    }
+
+
+def _today_required_feed_contract(feeds: Dict[str, Any], target_date: str) -> Dict[str, Any]:
+    missing: List[str] = []
+    stale: List[str] = []
+    freshness: Dict[str, Any] = {}
+    for source_id in TODAY_GENIE_RUNTIME_FEEDS:
+        info = _today_feed_payload_freshness(source_id, feeds.get(source_id), target_date)
+        freshness[source_id] = info
+        if info.get("reason") == "missing_or_empty":
+            missing.append(source_id)
+        elif info.get("stale"):
+            stale.append(source_id)
+    return {
+        "passed": not missing and not stale,
+        "missing": missing,
+        "stale": stale,
+        "freshness": freshness,
+    }
+
+
+def _today_is_timeout_error(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, TimeoutError):
+        return True
+    return "timed out" in str(exc).lower() or "timeout" in str(type(exc).__name__).lower()
+
+
+def _today_probe_one_live_source(
+    source_id: str,
+    call: Any,
+    *,
+    timeout_sec: Optional[int] = None,
+) -> tuple[Optional[Any], Dict[str, Any]]:
+    started = time.perf_counter()
+    retry_count = 0
+    last_exc: Optional[BaseException] = None
+    for attempt in range(2):
+        try:
+            payload = call()
+            return payload, {
+                "source_id": source_id,
+                "status": "success",
+                "live_status": "success",
+                "attempt_count": retry_count + 1,
+                "retry_count": retry_count,
+                "timeout_seconds": timeout_sec,
+                "connect_timeout_seconds": timeout_sec,
+                "read_timeout_seconds": timeout_sec,
+                "elapsed_ms": int((time.perf_counter() - started) * 1000),
+            }
+        except Exception as exc:  # noqa: BLE001 - source-level isolation is intentional.
+            last_exc = exc
+            if attempt == 0 and _today_is_timeout_error(exc):
+                retry_count = 1
+                continue
+            break
+    return None, {
+        "source_id": source_id,
+        "status": "timeout" if _today_is_timeout_error(last_exc) else "error",
+        "live_status": "failed",
+        "attempt_count": retry_count + 1,
+        "retry_count": retry_count,
+        "timeout_seconds": timeout_sec,
+        "connect_timeout_seconds": timeout_sec,
+        "read_timeout_seconds": timeout_sec,
+        "elapsed_ms": int((time.perf_counter() - started) * 1000),
+        "error_type": type(last_exc).__name__ if last_exc else "UnknownError",
+        "error": str(last_exc)[:300] if last_exc else "",
+        "error_message_safe": str(last_exc)[:300] if last_exc else "",
+        "timeout_type": "read_or_total_timeout" if _today_is_timeout_error(last_exc) else None,
+        "timeout": _today_is_timeout_error(last_exc) if last_exc else False,
+    }
+
+
+def _probe_today_genie_live_feeds(target_date: str, timeout_sec: int) -> Dict[str, Any]:
+    from ops.probe_today_genie_feeds import (
+        build_macro_indicators,
+        build_risk_factors,
+        probe_korea_japan_indices,
+        probe_overnight_us_market,
+        probe_top_market_news,
+    )
+
+    feeds: Dict[str, Any] = {}
+    source_results: List[Dict[str, Any]] = []
+    source_calls = (
+        (
+            "overnight_us_market",
+            lambda: probe_overnight_us_market(target_date, timeout_sec=timeout_sec),
+        ),
+        (
+            "korea_japan_indices",
+            lambda: probe_korea_japan_indices(target_date, timeout_sec=timeout_sec),
+        ),
+        (
+            "top_market_news",
+            lambda: probe_top_market_news(target_date, timeout_sec=timeout_sec),
+        ),
+    )
+    for source_id, call in source_calls:
+        payload, result = _today_probe_one_live_source(source_id, call, timeout_sec=timeout_sec)
+        source_results.append(result)
+        if payload is not None:
+            feeds[source_id] = payload
+
+    if "overnight_us_market" in feeds and "korea_japan_indices" in feeds:
+        payload, result = _today_probe_one_live_source(
+            "macro_indicators",
+            lambda: build_macro_indicators(
+                feeds["overnight_us_market"],
+                feeds["korea_japan_indices"],
+                target_date,
+            ),
+            timeout_sec=0,
+        )
+        source_results.append(result)
+        if payload is not None:
+            feeds["macro_indicators"] = payload
+    else:
+        source_results.append(
+            {
+                "source_id": "macro_indicators",
+                "status": "skipped_missing_dependency",
+                "live_status": "skipped_missing_dependency",
+                "attempt_count": 0,
+                "retry_count": 0,
+                "elapsed_ms": 0,
+            }
+        )
+
+    if "top_market_news" in feeds and "macro_indicators" in feeds:
+        payload, result = _today_probe_one_live_source(
+            "risk_factors",
+            lambda: build_risk_factors(feeds["top_market_news"], feeds["macro_indicators"]),
+            timeout_sec=0,
+        )
+        source_results.append(result)
+        if payload is not None:
+            feeds["risk_factors"] = payload
+    else:
+        source_results.append(
+            {
+                "source_id": "risk_factors",
+                "status": "skipped_missing_dependency",
+                "live_status": "skipped_missing_dependency",
+                "attempt_count": 0,
+                "retry_count": 0,
+                "elapsed_ms": 0,
+            }
+        )
+
+    feeds["today_genie_live_source_results"] = source_results
+    return feeds
+
+
+def _today_live_result_map(refreshed: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    for item in refreshed.get("today_genie_live_source_results") or []:
+        if isinstance(item, dict) and item.get("source_id"):
+            out[str(item["source_id"])] = dict(item)
+    return out
+
+
+def _today_select_feed_source(
+    source_id: str,
+    *,
+    live_feeds: Dict[str, Any],
+    env_feeds: Dict[str, Any],
+    target_date: str,
+    live_results: Dict[str, Dict[str, Any]],
+) -> tuple[Any, Dict[str, Any]]:
+    result = {
+        "source_id": source_id,
+        "live_status": live_results.get(source_id, {}).get("live_status", "not_attempted"),
+        "attempt_count": live_results.get(source_id, {}).get("attempt_count", 0),
+        "retry_count": live_results.get(source_id, {}).get("retry_count", 0),
+        "timeout_seconds": live_results.get(source_id, {}).get("timeout_seconds"),
+        "connect_timeout_seconds": live_results.get(source_id, {}).get("connect_timeout_seconds"),
+        "read_timeout_seconds": live_results.get(source_id, {}).get("read_timeout_seconds"),
+        "elapsed_ms": live_results.get(source_id, {}).get("elapsed_ms"),
+        "timeout_type": live_results.get(source_id, {}).get("timeout_type"),
+        "error_type": live_results.get(source_id, {}).get("error_type"),
+        "error_message_safe": live_results.get(source_id, {}).get("error_message_safe"),
+        "selected_source": None,
+        "selected_provenance": None,
+        "cache_key": _today_feed_cache_object_key(source_id),
+        "status": "unresolved",
+    }
+    live_payload = live_feeds.get(source_id)
+    if source_id in live_feeds:
+        live_freshness = _today_feed_payload_freshness(source_id, live_payload, target_date)
+        result["live_freshness"] = live_freshness
+        if live_freshness.get("fresh"):
+            result["selected_source"] = "live"
+            result["selected_provenance"] = "live"
+            result["status"] = "selected"
+            result["cache_write_status"] = _write_today_genie_feed_cache(
+                source_id,
+                live_payload,
+                target_date,
+                provenance="live_refresh",
+            )
+            return live_payload, result
+
+    cache_record = _read_today_genie_feed_cache(source_id)
+    if cache_record:
+        cache_payload = cache_record.get("payload")
+        cache_freshness = _today_feed_payload_freshness(source_id, cache_payload, target_date)
+        result["cache_status"] = "hit"
+        result["cache_freshness"] = cache_freshness
+        result["cache_fetched_at"] = cache_record.get("fetched_at")
+        if cache_freshness.get("fresh"):
+            result["selected_source"] = "cache"
+            result["selected_provenance"] = "cache"
+            result["status"] = "selected"
+            return cache_payload, result
+    else:
+        result["cache_status"] = "miss_or_unconfigured"
+
+    env_payload = env_feeds.get(source_id)
+    env_freshness = _today_feed_payload_freshness(source_id, env_payload, target_date)
+    result["env_freshness"] = env_freshness
+    if env_freshness.get("fresh"):
+        result["selected_source"] = "env"
+        result["selected_provenance"] = "env"
+        result["status"] = "selected"
+        return env_payload, result
+    if _today_feed_nonempty(env_payload):
+        result["selected_source"] = "env_stale"
+        result["selected_provenance"] = "env"
+        result["status"] = "stale_unresolved"
+        return env_payload, result
+    result["selected_source"] = "missing"
+    result["selected_provenance"] = "unavailable"
+    result["status"] = "missing"
+    return env_payload, result
+
+
+def _today_try_derive_macro_from_selected(
+    selected: Dict[str, Any],
+    target_date: str,
+) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    overnight_info = _today_feed_payload_freshness(
+        "overnight_us_market",
+        selected.get("overnight_us_market"),
+        target_date,
+    )
+    asia_info = _today_feed_payload_freshness(
+        "korea_japan_indices",
+        selected.get("korea_japan_indices"),
+        target_date,
+    )
+    if not overnight_info.get("fresh") or not asia_info.get("fresh"):
+        return None, None
+    try:
+        from ops.probe_today_genie_feeds import build_macro_indicators
+
+        payload = build_macro_indicators(
+            selected["overnight_us_market"],
+            selected["korea_japan_indices"],
+            target_date,
+        )
+    except Exception as exc:  # noqa: BLE001 - derived fallback is best effort.
+        return None, {
+            "source_id": "macro_indicators",
+            "derived_status": "failed",
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:300],
+        }
+    freshness = _today_feed_payload_freshness("macro_indicators", payload, target_date)
+    if not freshness.get("fresh"):
+        return None, {
+            "source_id": "macro_indicators",
+            "derived_status": "stale_or_invalid",
+            "derived_freshness": freshness,
+        }
+    return payload, {
+        "source_id": "macro_indicators",
+        "derived_status": "success",
+        "derived_freshness": freshness,
+    }
+
+
+def _today_try_derive_risks_from_selected(
+    selected: Dict[str, Any],
+) -> tuple[Optional[List[Dict[str, Any]]], Optional[Dict[str, Any]]]:
+    if not _today_feed_nonempty(selected.get("top_market_news")) or not _today_feed_nonempty(
+        selected.get("macro_indicators")
+    ):
+        return None, None
+    try:
+        from ops.probe_today_genie_feeds import build_risk_factors
+
+        payload = build_risk_factors(selected["top_market_news"], selected["macro_indicators"])
+    except Exception as exc:  # noqa: BLE001 - derived fallback is best effort.
+        return None, {
+            "source_id": "risk_factors",
+            "derived_status": "failed",
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:300],
+        }
+    if not _today_feed_nonempty(payload):
+        return None, {
+            "source_id": "risk_factors",
+            "derived_status": "missing_or_empty",
+        }
+    return payload, {
+        "source_id": "risk_factors",
+        "derived_status": "success",
+    }
 
 
 def _refresh_today_genie_feeds_if_needed(
@@ -256,10 +766,11 @@ def _refresh_today_genie_feeds_if_needed(
     *,
     controlled_active: bool,
 ) -> Dict[str, Any]:
-    """Refresh stale Today_Geenee feeds once; retain stale fallback with explicit metadata."""
+    """Refresh stale Today_Geenee feeds once with source-level durable fallback."""
     current = dict(feeds)
     staleness = _today_feed_staleness(current, target_date)
     stale_feeds = [name for name, info in staleness.items() if info.get("stale")]
+    contract = _today_required_feed_contract(current, target_date)
     meta: Dict[str, Any] = {
         "today_genie_feed_source": "env",
         "today_genie_feed_refresh_attempted": False,
@@ -268,8 +779,29 @@ def _refresh_today_genie_feeds_if_needed(
         "today_genie_feed_fallback_reason": None,
         "today_genie_feed_staleness": staleness,
         "today_genie_stale_feeds": stale_feeds,
+        "today_genie_feed_refresh_started_at": None,
+        "today_genie_feed_refresh_finished_at": None,
+        "today_genie_feed_refresh_elapsed_ms": None,
+        "today_genie_feed_refresh_source_results": [],
+        "today_genie_feed_partial_success": False,
+        "today_genie_feed_live_success_count": 0,
+        "today_genie_feed_cache_fallback_count": 0,
+        "today_genie_feed_env_fallback_count": 0,
+        "today_genie_feed_unavailable_count": 0,
+        "today_required_feed_contract_passed": bool(contract["passed"]),
+        "today_required_feed_contract_missing": list(contract["missing"]),
+        "today_required_feed_contract_stale": list(contract["stale"]),
+        "today_genie_feed_gate_reason": None
+        if contract["passed"]
+        else "required_feed_contract_failed",
+        "scheduler_delivery_success": True,
+        "scheduler_delivery_http_status": 200,
+        "pipeline_success": None,
+        "owner_review_created": None,
+        "retry_recommended": False,
+        "manual_action_required": not bool(contract["passed"]),
     }
-    if not stale_feeds:
+    if not stale_feeds and contract["passed"]:
         current.update(meta)
         return current
 
@@ -279,6 +811,7 @@ def _refresh_today_genie_feeds_if_needed(
                 "today_genie_feed_refresh_status": "controlled_test_refresh_disabled",
                 "today_genie_feed_fallback_used": True,
                 "today_genie_feed_fallback_reason": "controlled_test_refresh_disabled",
+                "manual_action_required": not bool(contract["passed"]),
             }
         )
         current.update(meta)
@@ -290,6 +823,7 @@ def _refresh_today_genie_feeds_if_needed(
                 "today_genie_feed_refresh_status": "live_refresh_disabled",
                 "today_genie_feed_fallback_used": True,
                 "today_genie_feed_fallback_reason": "live_refresh_disabled",
+                "manual_action_required": not bool(contract["passed"]),
             }
         )
         current.update(meta)
@@ -297,6 +831,10 @@ def _refresh_today_genie_feeds_if_needed(
 
     timeout_sec = _today_live_feed_refresh_timeout_sec()
     meta["today_genie_feed_refresh_attempted"] = True
+    meta["today_genie_feed_refresh_started_at"] = _today_utc_now_iso()
+    refresh_start = time.perf_counter()
+    refreshed: Dict[str, Any] = {}
+    global_refresh_error = ""
     try:
         refreshed = _probe_today_genie_live_feeds(target_date, timeout_sec)
     except Exception as exc:  # noqa: BLE001 - explicit fallback metadata is the contract.
@@ -304,46 +842,175 @@ def _refresh_today_genie_feeds_if_needed(
             "today_genie feed live refresh failed; using fallback env feeds: %s",
             exc,
         )
-        meta.update(
-            {
-                "today_genie_feed_refresh_status": "live_refresh_failed_fallback",
-                "today_genie_feed_fallback_used": True,
-                "today_genie_feed_fallback_reason": f"{type(exc).__name__}: {exc}",
-            }
-        )
-        current.update(meta)
-        return current
+        global_refresh_error = f"{type(exc).__name__}: {exc}"
 
-    refreshed_staleness = _today_feed_staleness(refreshed, target_date)
-    refreshed_stale = [
-        name for name, info in refreshed_staleness.items() if info.get("stale")
+    live_results = _today_live_result_map(refreshed)
+    selected: Dict[str, Any] = {
+        "feed_json_decode_failed_envs": list(current.get("feed_json_decode_failed_envs") or [])
+    }
+    source_results: List[Dict[str, Any]] = []
+
+    for source_id in ("overnight_us_market", "korea_japan_indices", "top_market_news"):
+        payload, result = _today_select_feed_source(
+            source_id,
+            live_feeds=refreshed,
+            env_feeds=current,
+            target_date=target_date,
+            live_results=live_results,
+        )
+        selected[source_id] = payload
+        source_results.append(result)
+
+    macro_payload, macro_result = _today_select_feed_source(
+        "macro_indicators",
+        live_feeds=refreshed,
+        env_feeds={},
+        target_date=target_date,
+        live_results=live_results,
+    )
+    if not _today_feed_payload_freshness("macro_indicators", macro_payload, target_date).get("fresh"):
+        derived_macro, derived_result = _today_try_derive_macro_from_selected(selected, target_date)
+        if derived_result:
+            source_results.append(derived_result)
+        if derived_macro is not None:
+            macro_payload = derived_macro
+            macro_result.update(
+                {
+                    "selected_source": "derived_from_selected_sources",
+                    "selected_provenance": "derived_from_selected_sources",
+                    "status": "selected",
+                    "derived_status": "success",
+                }
+            )
+    if not _today_feed_payload_freshness("macro_indicators", macro_payload, target_date).get("fresh"):
+        macro_payload, macro_result = _today_select_feed_source(
+            "macro_indicators",
+            live_feeds={},
+            env_feeds=current,
+            target_date=target_date,
+            live_results=live_results,
+        )
+    selected["macro_indicators"] = macro_payload
+    source_results.append(macro_result)
+
+    risk_payload, risk_result = _today_select_feed_source(
+        "risk_factors",
+        live_feeds=refreshed,
+        env_feeds={},
+        target_date=target_date,
+        live_results=live_results,
+    )
+    if not _today_feed_payload_freshness("risk_factors", risk_payload, target_date).get("fresh"):
+        derived_risks, derived_result = _today_try_derive_risks_from_selected(selected)
+        if derived_result:
+            source_results.append(derived_result)
+        if derived_risks is not None:
+            risk_payload = derived_risks
+            risk_result.update(
+                {
+                    "selected_source": "derived_from_selected_sources",
+                    "selected_provenance": "derived_from_selected_sources",
+                    "status": "selected",
+                    "derived_status": "success",
+                }
+            )
+    if not _today_feed_payload_freshness("risk_factors", risk_payload, target_date).get("fresh"):
+        risk_payload, risk_result = _today_select_feed_source(
+            "risk_factors",
+            live_feeds={},
+            env_feeds=current,
+            target_date=target_date,
+            live_results=live_results,
+        )
+    selected["risk_factors"] = risk_payload
+    source_results.append(risk_result)
+
+    final_staleness = _today_feed_staleness(selected, target_date)
+    final_stale = [name for name, info in final_staleness.items() if info.get("stale")]
+    final_contract = _today_required_feed_contract(selected, target_date)
+    selected_sources = [
+        str(item.get("selected_source") or "")
+        for item in source_results
+        if item.get("source_id") in TODAY_GENIE_RUNTIME_FEEDS
     ]
-    if refreshed_stale:
-        meta.update(
-            {
-                "today_genie_feed_refresh_status": "live_refresh_returned_stale_fallback",
-                "today_genie_feed_fallback_used": True,
-                "today_genie_feed_fallback_reason": "live_refresh_returned_stale_feeds",
-                "today_genie_live_feed_staleness": refreshed_staleness,
-            }
-        )
-        current.update(meta)
-        return current
+    live_success_count = selected_sources.count("live") + selected_sources.count(
+        "derived_from_selected_sources"
+    )
+    cache_fallback_count = selected_sources.count("cache")
+    env_fallback_count = selected_sources.count("env") + selected_sources.count("env_stale")
+    unavailable_count = selected_sources.count("missing")
+    live_staleness = _today_feed_staleness(refreshed, target_date) if refreshed else {}
 
-    refreshed = dict(refreshed)
-    refreshed.update(
+    if final_contract["passed"]:
+        status = "live_refresh_applied" if cache_fallback_count == 0 and env_fallback_count == 0 else "live_refresh_partial_fallback_applied"
+        source = (
+            "live_refresh"
+            if cache_fallback_count == 0 and env_fallback_count == 0
+            else "mixed_live_cache_env"
+        )
+        fallback_reason = (
+            None
+            if status == "live_refresh_applied"
+            else "source_level_fresh_fallback_used"
+        )
+    elif global_refresh_error:
+        status = "live_refresh_failed_fallback"
+        source = "env" if env_fallback_count else "unavailable"
+        fallback_reason = global_refresh_error
+    elif any(name in refreshed for name in TODAY_GENIE_CORE_DATE_FEEDS) and any(
+        info.get("stale") for info in live_staleness.values()
+    ):
+        status = "live_refresh_returned_stale_fallback"
+        source = "env" if env_fallback_count else "unavailable"
+        fallback_reason = "live_refresh_returned_stale_feeds"
+    else:
+        status = "live_refresh_incomplete_blocked"
+        source = "mixed_live_cache_env" if live_success_count or cache_fallback_count else "env"
+        fallback_reason = "fresh_required_feed_contract_not_satisfied"
+
+    meta.update(
         {
-            "feed_json_decode_failed_envs": [],
-            "today_genie_feed_source": "live_refresh",
-            "today_genie_feed_refresh_attempted": True,
-            "today_genie_feed_refresh_status": "live_refresh_applied",
-            "today_genie_feed_fallback_used": False,
-            "today_genie_feed_fallback_reason": None,
-            "today_genie_feed_staleness": refreshed_staleness,
-            "today_genie_stale_feeds": [],
+            "today_genie_feed_source": source,
+            "today_genie_feed_refresh_status": status,
+            "today_genie_feed_fallback_used": status != "live_refresh_applied",
+            "today_genie_feed_fallback_reason": fallback_reason,
+            "today_genie_feed_staleness": final_staleness,
+            "today_genie_live_feed_staleness": live_staleness,
+            "today_genie_stale_feeds": final_stale,
+            "today_genie_feed_refresh_finished_at": _today_utc_now_iso(),
+            "today_genie_feed_refresh_elapsed_ms": int(
+                (time.perf_counter() - refresh_start) * 1000
+            ),
+            "today_genie_feed_refresh_source_results": source_results,
+            "today_genie_feed_partial_success": bool(
+                live_success_count and (cache_fallback_count or env_fallback_count or unavailable_count)
+            ),
+            "today_genie_feed_live_success_count": live_success_count,
+            "today_genie_feed_cache_fallback_count": cache_fallback_count,
+            "today_genie_feed_env_fallback_count": env_fallback_count,
+            "today_genie_feed_unavailable_count": unavailable_count,
+            "today_required_feed_contract_passed": bool(final_contract["passed"]),
+            "today_required_feed_contract_missing": list(final_contract["missing"]),
+            "today_required_feed_contract_stale": list(final_contract["stale"]),
+            "today_genie_feed_gate_reason": None
+            if final_contract["passed"]
+            else "required_feed_contract_failed",
+            "pipeline_success": None,
+            "owner_review_created": None,
+            "retry_recommended": False,
+            "manual_action_required": not bool(final_contract["passed"]),
         }
     )
-    return refreshed
+    selected.update(meta)
+    if not final_contract["passed"]:
+        logger.warning(
+            "today_genie feed refresh did not satisfy required contract status=%s stale=%s missing=%s source_results=%s",
+            status,
+            final_contract["stale"],
+            final_contract["missing"],
+            source_results,
+        )
+    return selected
 
 
 def fetch_seoul_weather_forecast(forecast_date: str) -> Dict[str, Any]:
@@ -499,15 +1166,6 @@ def build_runtime_input(mode: str, controlled_test_target_date: Optional[str] = 
         korea_japan_indices = feeds["korea_japan_indices"]
         decode_failed_envs = list(feeds.get("feed_json_decode_failed_envs") or [])
 
-        def _feed_nonempty(val: Any) -> bool:
-            if val is None:
-                return False
-            if isinstance(val, dict):
-                return len(val) > 0
-            if isinstance(val, list):
-                return len(val) > 0
-            return True
-
         feed_pairs = [
             ("overnight_us_market", overnight_us_market),
             ("macro_indicators", macro_indicators),
@@ -515,7 +1173,7 @@ def build_runtime_input(mode: str, controlled_test_target_date: Optional[str] = 
             ("risk_factors", risk_factors),
             ("korea_japan_indices", korea_japan_indices),
         ]
-        missing_feeds = [name for name, v in feed_pairs if not _feed_nonempty(v)]
+        missing_feeds = [name for name, v in feed_pairs if not _today_feed_nonempty(v)]
         if not missing_feeds:
             input_feed_status = "full"
         elif len(missing_feeds) == len(feed_pairs):
@@ -526,6 +1184,8 @@ def build_runtime_input(mode: str, controlled_test_target_date: Optional[str] = 
         if decode_failed_envs:
             today_genie_feed_gate = "block"
         elif input_feed_status == "none":
+            today_genie_feed_gate = "block"
+        elif feeds.get("today_required_feed_contract_passed") is False:
             today_genie_feed_gate = "block"
         else:
             today_genie_feed_gate = "ok"
@@ -567,6 +1227,49 @@ def build_runtime_input(mode: str, controlled_test_target_date: Optional[str] = 
                 "today_genie_live_feed_staleness"
             ),
             "today_genie_stale_feeds": list(feeds.get("today_genie_stale_feeds") or []),
+            "today_genie_feed_refresh_started_at": feeds.get(
+                "today_genie_feed_refresh_started_at"
+            ),
+            "today_genie_feed_refresh_finished_at": feeds.get(
+                "today_genie_feed_refresh_finished_at"
+            ),
+            "today_genie_feed_refresh_elapsed_ms": feeds.get(
+                "today_genie_feed_refresh_elapsed_ms"
+            ),
+            "today_genie_feed_refresh_source_results": list(
+                feeds.get("today_genie_feed_refresh_source_results") or []
+            ),
+            "today_genie_feed_partial_success": bool(
+                feeds.get("today_genie_feed_partial_success")
+            ),
+            "today_genie_feed_live_success_count": int(
+                feeds.get("today_genie_feed_live_success_count") or 0
+            ),
+            "today_genie_feed_cache_fallback_count": int(
+                feeds.get("today_genie_feed_cache_fallback_count") or 0
+            ),
+            "today_genie_feed_env_fallback_count": int(
+                feeds.get("today_genie_feed_env_fallback_count") or 0
+            ),
+            "today_genie_feed_unavailable_count": int(
+                feeds.get("today_genie_feed_unavailable_count") or 0
+            ),
+            "today_required_feed_contract_passed": bool(
+                feeds.get("today_required_feed_contract_passed")
+            ),
+            "today_required_feed_contract_missing": list(
+                feeds.get("today_required_feed_contract_missing") or []
+            ),
+            "today_required_feed_contract_stale": list(
+                feeds.get("today_required_feed_contract_stale") or []
+            ),
+            "today_genie_feed_gate_reason": feeds.get("today_genie_feed_gate_reason"),
+            "scheduler_delivery_success": bool(feeds.get("scheduler_delivery_success", True)),
+            "scheduler_delivery_http_status": feeds.get("scheduler_delivery_http_status"),
+            "pipeline_success": feeds.get("pipeline_success"),
+            "owner_review_created": feeds.get("owner_review_created"),
+            "retry_recommended": bool(feeds.get("retry_recommended")),
+            "manual_action_required": bool(feeds.get("manual_action_required")),
             "controlled_test_mode": controlled_active,
         }
 
@@ -896,18 +1599,15 @@ def _runtime_validation_check_payload(
         "issue_details": issue_details,
         "content_quality_warnings": list(content_quality_warnings),
     }
-    for key in (
-        "today_genie_feed_source",
-        "today_genie_feed_refresh_attempted",
-        "today_genie_feed_refresh_status",
-        "today_genie_feed_fallback_used",
-        "today_genie_feed_fallback_reason",
-        "today_genie_feed_staleness",
-        "today_genie_live_feed_staleness",
-        "today_genie_stale_feeds",
-    ):
+    for key in TODAY_GENIE_FEED_DIAGNOSTIC_KEYS:
         if key in runtime_input:
             payload[key] = runtime_input.get(key)
+    if payload.get("pipeline_success") is None:
+        payload["pipeline_success"] = validation_result == "pass"
+    if payload.get("owner_review_created") is None:
+        payload["owner_review_created"] = validation_result == "pass"
+    if validation_result == "block":
+        payload["manual_action_required"] = True
     return payload
 
 
@@ -1379,17 +2079,14 @@ def generate(job: JobRequest) -> Dict[str, Any]:
                 }
             ],
             "content_quality_warnings": [],
+            "scheduler_delivery_success": True,
+            "scheduler_delivery_http_status": 200,
+            "pipeline_success": False,
+            "owner_review_created": False,
+            "retry_recommended": False,
+            "manual_action_required": True,
         }
-        for key in (
-            "today_genie_feed_source",
-            "today_genie_feed_refresh_attempted",
-            "today_genie_feed_refresh_status",
-            "today_genie_feed_fallback_used",
-            "today_genie_feed_fallback_reason",
-            "today_genie_feed_staleness",
-            "today_genie_live_feed_staleness",
-            "today_genie_stale_feeds",
-        ):
+        for key in TODAY_GENIE_FEED_DIAGNOSTIC_KEYS:
             if key in runtime_input:
                 feed_runtime_check[key] = runtime_input.get(key)
         detail = {
