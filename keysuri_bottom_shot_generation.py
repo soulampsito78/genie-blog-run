@@ -43,6 +43,7 @@ def _direct_vertex_multi_ref_generate(
     model_name: str,
     project_id: str,
     location: str,
+    telemetry: Optional[Dict[str, Any]] = None,
 ) -> Path:
     """Call Vertex with slot 0 anchor, slot 1 identity reference, then prompt."""
     if not project_id:
@@ -65,18 +66,19 @@ def _direct_vertex_multi_ref_generate(
         generation_config=GenerationConfig(response_modalities=["IMAGE"]),
     )
 
-    raw: Optional[bytes] = None
+    images: list[bytes] = []
     for candidate in getattr(response, "candidates", None) or []:
         content = getattr(candidate, "content", None)
         for part in getattr(content, "parts", None) or []:
             inline = getattr(part, "inline_data", None)
             if inline and getattr(inline, "data", None):
-                raw = inline.data
-                break
-        if raw:
-            break
-    if not raw:
+                images.append(inline.data)
+    if telemetry is not None:
+        telemetry["response_image_output_count"] = len(images)
+        telemetry["discarded_image_output_count"] = max(0, len(images) - 1)
+    if not images:
         raise RuntimeError("No image bytes in Korea Bottom v6 model response")
+    raw = images[0]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with PILImage.open(BytesIO(raw)) as image:
@@ -130,6 +132,20 @@ def generate_keysuri_korea_bottom_v6(
         "secondary_reference_role": ASSET01_ROLE,
         "secondary_reference_slot": 1,
         "bottom_shot_model": model,
+        "bottom_shot_model_normalized": model.lower(),
+        "bottom_shot_image_api_provider": "google_cloud_vertex_ai",
+        "bottom_shot_image_pricing_mode": "standard_paygo",
+        "bottom_shot_image_request_count": 0,
+        "bottom_shot_successful_output_count": 0,
+        "bottom_shot_failed_request_count": 0,
+        "bottom_shot_retry_count": 0,
+        "bottom_shot_discarded_output_count": 0,
+        "bottom_shot_locally_derived_asset_count": 0,
+        "bottom_shot_cache_reuse_count": 0,
+        "bottom_shot_static_fallback_count": 0,
+        "bottom_shot_image_output_tokens": None,
+        "bottom_shot_image_evidence_confidence": None,
+        "bottom_shot_image_evidence_source": None,
         "bottom_shot_prompt_contract_version": "v6",
     }
 
@@ -191,10 +207,11 @@ def generate_keysuri_korea_bottom_v6(
         )
         full_prompt = f"{built['prompt_text']}\n\nNEGATIVE:\n{built['negative_prompt']}"
         generator = generate_fn or _direct_vertex_multi_ref_generate
+        uses_default_generator = generate_fn is None
+        telemetry: Dict[str, Any] = {}
         raw_path = Path(output_path)
         metadata["bottom_shot_image_api_called"] = True
-        generated = Path(
-            generator(
+        generator_kwargs = dict(
                 prompt=full_prompt,
                 output_path=raw_path,
                 primary_reference_path=primary,
@@ -203,7 +220,9 @@ def generate_keysuri_korea_bottom_v6(
                 project_id=project,
                 location=loc,
             )
-        )
+        if uses_default_generator:
+            generator_kwargs["telemetry"] = telemetry
+        generated = Path(generator(**generator_kwargs))
         if not generated.is_file():
             raise RuntimeError(f"Bottom generator did not write output: {generated}")
 
@@ -223,8 +242,22 @@ def generate_keysuri_korea_bottom_v6(
                 "bottom_shot_generated": True,
                 "bottom_shot_generation_status": "generated",
                 "bottom_shot_watermark_status": "applied" if apply_watermark else "not_applied",
+                "bottom_shot_image_request_count": 1,
+                "bottom_shot_successful_output_count": int(
+                    telemetry.get("response_image_output_count") or 1
+                ),
+                "bottom_shot_discarded_output_count": int(
+                    telemetry.get("discarded_image_output_count") or 0
+                ),
+                "bottom_shot_locally_derived_asset_count": 1 if apply_watermark else 0,
+                "bottom_shot_image_evidence_confidence": "high",
+                "bottom_shot_image_evidence_source": "runtime_vertex_response_image_parts",
             }
         )
+        if model.lower() == "gemini-2.5-flash-image":
+            metadata["bottom_shot_image_output_tokens"] = (
+                metadata["bottom_shot_successful_output_count"] * 1290
+            )
         return BottomShotGenerationResult(
             ok=True,
             image_path=final_path,
@@ -233,6 +266,11 @@ def generate_keysuri_korea_bottom_v6(
         )
     except Exception as exc:  # noqa: BLE001
         metadata["bottom_shot_generation_status"] = "failed"
+        if metadata.get("bottom_shot_image_api_called"):
+            metadata["bottom_shot_image_request_count"] = 1
+            metadata["bottom_shot_failed_request_count"] = 1
+            metadata["bottom_shot_image_evidence_confidence"] = "high"
+            metadata["bottom_shot_image_evidence_source"] = "runtime_vertex_request_failure"
         return BottomShotGenerationResult(
             ok=False,
             metadata=metadata,

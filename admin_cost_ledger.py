@@ -50,11 +50,34 @@ COST_LEDGER_COLUMNS = (
     "thoughts_token_count",
     "total_token_count",
     "generated_image_count",
+    "generated_image_count_semantics",
+    "image_api_provider",
+    "image_model_raw",
+    "image_model_normalized",
+    "image_pricing_mode",
+    "image_request_count",
+    "image_successful_output_count",
+    "image_failed_request_count",
+    "image_retry_count",
+    "image_discarded_output_count",
+    "image_locally_derived_asset_count",
+    "image_cache_reuse_count",
+    "image_static_fallback_count",
+    "image_output_tokens",
     "text_input_cost_usd",
     "text_output_cost_usd",
     "text_thoughts_cost_usd",
     "text_total_cost_usd",
     "image_cost_usd",
+    "image_list_price_cost_usd",
+    "image_billed_cost_usd",
+    "billing_reconciliation_status",
+    "image_cost_estimate_status",
+    "image_unit_price_usd",
+    "image_pricing_source",
+    "image_pricing_checked_at",
+    "image_evidence_confidence",
+    "image_evidence_source",
     "total_cost_usd",
     "total_cost_krw",
     "cost_estimate_status",
@@ -142,6 +165,8 @@ def _model_text(cost_estimate: Mapping[str, Any], key: str) -> Optional[str]:
         return str(model.get(key) or "").strip() or None
     if key == "text_model":
         return str(model or "").strip() or None
+    if key == "image_model":
+        return str(cost_estimate.get("image_model") or "").strip() or None
     return None
 
 
@@ -155,6 +180,21 @@ def build_cost_record(meta: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
     usage = cost_estimate.get("usage") if isinstance(cost_estimate.get("usage"), Mapping) else {}
     components = (
         cost_estimate.get("components") if isinstance(cost_estimate.get("components"), Mapping) else {}
+    )
+    image_usage = (
+        cost_estimate.get("image_usage")
+        if isinstance(cost_estimate.get("image_usage"), Mapping)
+        else {}
+    )
+    model_pricing = (
+        cost_estimate.get("model_pricing")
+        if isinstance(cost_estimate.get("model_pricing"), Mapping)
+        else {}
+    )
+    unit_prices = (
+        cost_estimate.get("unit_prices")
+        if isinstance(cost_estimate.get("unit_prices"), Mapping)
+        else {}
     )
     text_total = components.get("text_total_cost_usd")
     if text_total is None:
@@ -183,11 +223,38 @@ def build_cost_record(meta: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
         "thoughts_token_count": usage.get("thoughts_token_count"),
         "total_token_count": usage.get("total_token_count"),
         "generated_image_count": usage.get("generated_image_count"),
+        "generated_image_count_semantics": image_usage.get("generated_image_count_semantics"),
+        "image_api_provider": image_usage.get("image_api_provider") or model_pricing.get("image_provider"),
+        "image_model_raw": image_usage.get("image_model_raw") or _model_text(cost_estimate, "image_model"),
+        "image_model_normalized": image_usage.get("image_model_normalized") or _model_text(cost_estimate, "image_model"),
+        "image_pricing_mode": image_usage.get("image_pricing_mode") or model_pricing.get("image_pricing_mode"),
+        "image_request_count": image_usage.get("image_request_count"),
+        "image_successful_output_count": image_usage.get("image_successful_output_count"),
+        "image_failed_request_count": image_usage.get("image_failed_request_count"),
+        "image_retry_count": image_usage.get("image_retry_count"),
+        "image_discarded_output_count": image_usage.get("image_discarded_output_count"),
+        "image_locally_derived_asset_count": image_usage.get("image_locally_derived_asset_count"),
+        "image_cache_reuse_count": image_usage.get("image_cache_reuse_count"),
+        "image_static_fallback_count": image_usage.get("image_static_fallback_count"),
+        "image_output_tokens": image_usage.get("image_output_tokens"),
         "text_input_cost_usd": components.get("text_input_cost_usd"),
         "text_output_cost_usd": components.get("text_output_cost_usd"),
         "text_thoughts_cost_usd": components.get("text_thoughts_cost_usd"),
         "text_total_cost_usd": text_total,
         "image_cost_usd": components.get("image_cost_usd"),
+        "image_list_price_cost_usd": components.get("image_list_price_cost_usd", components.get("image_cost_usd")),
+        "image_billed_cost_usd": components.get("image_billed_cost_usd"),
+        "billing_reconciliation_status": cost_estimate.get("billing_reconciliation_status"),
+        "image_cost_estimate_status": model_pricing.get("image_pricing_status"),
+        "image_unit_price_usd": unit_prices.get("image_output_usd_per_1m_tokens")
+        if model_pricing.get("image_pricing_mode") == "output_image_tokens"
+        else unit_prices.get("image_usd_per_image"),
+        "image_pricing_source": model_pricing.get("image_pricing_source"),
+        "image_pricing_checked_at": model_pricing.get("image_pricing_checked_at"),
+        "image_evidence_confidence": cost_estimate.get("image_evidence_confidence")
+        or image_usage.get("image_evidence_confidence"),
+        "image_evidence_source": cost_estimate.get("image_evidence_source")
+        or image_usage.get("image_evidence_source"),
         "total_cost_usd": cost_estimate.get("total_cost_usd"),
         "total_cost_krw": cost_estimate.get("total_cost_krw"),
         "cost_estimate_status": cost_estimate.get("cost_estimate_status"),

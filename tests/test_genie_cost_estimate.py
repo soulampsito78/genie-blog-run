@@ -6,8 +6,10 @@ import unittest
 from unittest import mock
 
 from genie_cost_estimate import (
+    calculate_image_list_price,
     estimate_genie_generation_cost,
     normalize_model_env_key,
+    standard_image_pricing_for_model,
     standard_text_pricing_for_model,
 )
 
@@ -25,6 +27,7 @@ def _clear_all_pricing_env():
             "GENIE_COST_GEMINI_2_5_FLASH_OUTPUT_USD_PER_1M_TOKENS": "",
             "GENIE_COST_GEMINI_2_5_FLASH_THOUGHTS_USD_PER_1M_TOKENS": "",
             "GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE": "",
+            "GENIE_COST_GEMINI_2_5_FLASH_IMAGE_OUTPUT_IMAGE_USD_PER_1M_TOKENS": "",
             "GENIE_COST_GEMINI_3_FLASH_PREVIEW_INPUT_USD_PER_1M_TOKENS": "",
             "GENIE_COST_GEMINI_3_FLASH_PREVIEW_OUTPUT_USD_PER_1M_TOKENS": "",
             "GENIE_COST_GEMINI_3_FLASH_PREVIEW_THOUGHTS_USD_PER_1M_TOKENS": "",
@@ -222,10 +225,10 @@ class ImageCostTests(unittest.TestCase):
         )
         self.assertIn("image cost not calculated", result["pricing_note"])
 
-    def test_gemini_flash_image_uses_model_specific_per_image_env_only(self) -> None:
+    def test_gemini_flash_image_uses_output_image_token_env(self) -> None:
         with _clear_all_pricing_env(), mock.patch.dict(
             os.environ,
-            {"GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE": "0.04"},
+            {"GENIE_COST_GEMINI_2_5_FLASH_IMAGE_OUTPUT_IMAGE_USD_PER_1M_TOKENS": "30.00"},
             clear=False,
         ):
             result = estimate_genie_generation_cost(
@@ -234,9 +237,173 @@ class ImageCostTests(unittest.TestCase):
                 image_model="gemini-2.5-flash-image",
                 image_generated_count=2,
             )
-        self.assertAlmostEqual(result["components"]["image_cost_usd"], 0.08)
-        self.assertEqual(result["unit_prices"]["image_price_env"], "GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE")
-        self.assertEqual(result["model_pricing"]["image_pricing_status"], "configured")
+        self.assertAlmostEqual(result["components"]["image_cost_usd"], 0.0774)
+        self.assertEqual(result["image_usage"]["image_output_tokens"], 2580)
+        self.assertEqual(
+            result["unit_prices"]["image_price_env"],
+            "GENIE_COST_GEMINI_2_5_FLASH_IMAGE_OUTPUT_IMAGE_USD_PER_1M_TOKENS",
+        )
+        self.assertEqual(
+            result["model_pricing"]["image_pricing_status"],
+            "priced_from_output_image_tokens",
+        )
+
+    def test_official_flash_image_contract_and_unit_modes(self) -> None:
+        contract = standard_image_pricing_for_model("gemini-2.5-flash-image")
+        assert contract is not None
+        self.assertEqual(contract["output_tokens_per_image"], 1290)
+        self.assertEqual(contract["output_image_usd_per_1m_tokens"], 30.0)
+        self.assertAlmostEqual(
+            calculate_image_list_price(
+                pricing_mode="output_image_tokens",
+                successful_output_count=1,
+                output_image_tokens=1290,
+                usd_per_1m_output_image_tokens=30.0,
+            ),
+            0.0387,
+        )
+        self.assertAlmostEqual(
+            calculate_image_list_price(
+                pricing_mode="per_image",
+                successful_output_count=2,
+                usd_per_image=0.04,
+            ),
+            0.08,
+        )
+
+    def test_failed_request_without_output_keeps_image_cost_unknown(self) -> None:
+        with _clear_all_pricing_env(), mock.patch.dict(
+            os.environ,
+            {"GENIE_COST_GEMINI_2_5_FLASH_IMAGE_OUTPUT_IMAGE_USD_PER_1M_TOKENS": "30"},
+            clear=False,
+        ):
+            result = estimate_genie_generation_cost(
+                {},
+                service_family="today_genie",
+                image_model="gemini-2.5-flash-image",
+                image_usage={
+                    "image_request_count": 1,
+                    "image_successful_output_count": 0,
+                    "image_failed_request_count": 1,
+                },
+            )
+        self.assertIsNone(result["components"]["image_cost_usd"])
+        self.assertEqual(
+            result["model_pricing"]["image_pricing_status"],
+            "failed_request_billing_unknown",
+        )
+
+    def test_local_static_and_cache_assets_do_not_increase_cost(self) -> None:
+        with _clear_all_pricing_env(), mock.patch.dict(
+            os.environ,
+            {"GENIE_COST_GEMINI_2_5_FLASH_IMAGE_OUTPUT_IMAGE_USD_PER_1M_TOKENS": "30"},
+            clear=False,
+        ):
+            result = estimate_genie_generation_cost(
+                {},
+                service_family="keysuri",
+                image_model="gemini-2.5-flash-image",
+                image_usage={
+                    "image_request_count": 0,
+                    "image_successful_output_count": 0,
+                    "image_locally_derived_asset_count": 2,
+                    "image_cache_reuse_count": 1,
+                    "image_static_fallback_count": 1,
+                },
+            )
+        self.assertEqual(result["components"]["image_cost_usd"], 0.0)
+        self.assertEqual(result["usage"]["generated_image_count"], 0)
+        self.assertEqual(
+            result["model_pricing"]["image_pricing_status"],
+            "known_zero_paid_outputs",
+        )
+
+    def test_discarded_successful_output_is_still_priced(self) -> None:
+        with _clear_all_pricing_env(), mock.patch.dict(
+            os.environ,
+            {"GENIE_COST_GEMINI_2_5_FLASH_IMAGE_OUTPUT_IMAGE_USD_PER_1M_TOKENS": "30"},
+            clear=False,
+        ):
+            result = estimate_genie_generation_cost(
+                {},
+                service_family="today_genie",
+                image_model="gemini-2.5-flash-image",
+                image_usage={
+                    "image_request_count": 1,
+                    "image_successful_output_count": 2,
+                    "image_discarded_output_count": 1,
+                    "image_output_tokens": 2580,
+                },
+            )
+        self.assertAlmostEqual(result["components"]["image_cost_usd"], 0.0774)
+
+    def test_retry_metrics_price_only_successful_outputs(self) -> None:
+        with _clear_all_pricing_env(), mock.patch.dict(
+            os.environ,
+            {"GENIE_COST_GEMINI_2_5_FLASH_IMAGE_OUTPUT_IMAGE_USD_PER_1M_TOKENS": "30"},
+            clear=False,
+        ):
+            result = estimate_genie_generation_cost(
+                {},
+                service_family="today_genie",
+                image_model="gemini-2.5-flash-image",
+                image_usage={
+                    "image_request_count": 2,
+                    "image_successful_output_count": 1,
+                    "image_failed_request_count": 1,
+                    "image_retry_count": 1,
+                    "image_output_tokens": 1290,
+                },
+            )
+        self.assertAlmostEqual(result["components"]["image_cost_usd"], 0.0387)
+        self.assertEqual(result["image_usage"]["image_retry_count"], 1)
+
+    def test_unknown_image_model_leaves_image_and_total_blank(self) -> None:
+        with _clear_all_pricing_env(), mock.patch.dict(
+            os.environ,
+            {
+                "GENIE_COST_GEMINI_2_5_FLASH_INPUT_USD_PER_1M_TOKENS": "0.30",
+                "GENIE_COST_GEMINI_2_5_FLASH_OUTPUT_USD_PER_1M_TOKENS": "2.50",
+            },
+            clear=False,
+        ):
+            result = estimate_genie_generation_cost(
+                {"prompt_token_count": 1000},
+                service_family="today_genie",
+                text_model="gemini-2.5-flash",
+                image_model="unknown-image-model",
+                image_usage={"image_request_count": 1, "image_successful_output_count": 1},
+            )
+        self.assertIsNone(result["components"]["image_cost_usd"])
+        self.assertIsNone(result["total_cost_usd"])
+        self.assertIn("GENIE_COST_UNKNOWN_IMAGE_MODEL_USD_PER_IMAGE", result["missing_price_env"])
+
+    def test_explicit_zero_and_unknown_image_usage_are_distinct(self) -> None:
+        prices = {
+            "GENIE_COST_GEMINI_2_5_FLASH_INPUT_USD_PER_1M_TOKENS": "0.30",
+            "GENIE_COST_GEMINI_2_5_FLASH_OUTPUT_USD_PER_1M_TOKENS": "2.50",
+            "GENIE_COST_GEMINI_2_5_FLASH_IMAGE_OUTPUT_IMAGE_USD_PER_1M_TOKENS": "30",
+        }
+        with _clear_all_pricing_env(), mock.patch.dict(os.environ, prices, clear=False):
+            known_zero = estimate_genie_generation_cost(
+                {"prompt_token_count": 1000},
+                service_family="today_genie",
+                text_model="gemini-2.5-flash",
+                image_model="gemini-2.5-flash-image",
+                image_usage={"image_request_count": 0, "image_successful_output_count": 0},
+            )
+            unknown = estimate_genie_generation_cost(
+                {"prompt_token_count": 1000},
+                service_family="today_genie",
+                text_model="gemini-2.5-flash",
+                image_model="gemini-2.5-flash-image",
+            )
+        self.assertEqual(known_zero["components"]["image_cost_usd"], 0.0)
+        self.assertIsNotNone(known_zero["total_cost_usd"])
+        self.assertEqual(known_zero["cost_estimate_status"], "fully_priced_ai_model_cost")
+        self.assertIsNone(unknown["components"]["image_cost_usd"])
+        self.assertIsNone(unknown["total_cost_usd"])
+        self.assertEqual(unknown["cost_estimate_status"], "partial_text_only")
 
 
 class CostEstimateStatusTests(unittest.TestCase):
@@ -313,7 +480,7 @@ class CostEstimateStatusTests(unittest.TestCase):
         self.assertIsNone(result["total_cost_krw"])
         self.assertEqual(
             result["missing_price_env"],
-            ["GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE"],
+            ["GENIE_COST_GEMINI_2_5_FLASH_IMAGE_OUTPUT_IMAGE_USD_PER_1M_TOKENS"],
         )
         self.assertIn("text cost calculated; image cost not configured", result["pricing_note"])
         self.assertNotIn("GENIE_COST_KRW_PER_USD", result["missing_price_env"])
@@ -354,7 +521,7 @@ class CostEstimateStatusTests(unittest.TestCase):
             {
                 "GENIE_COST_GEMINI_2_5_FLASH_INPUT_USD_PER_1M_TOKENS": "0.30",
                 "GENIE_COST_GEMINI_2_5_FLASH_OUTPUT_USD_PER_1M_TOKENS": "2.50",
-                "GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE": "0.04",
+                "GENIE_COST_GEMINI_2_5_FLASH_IMAGE_OUTPUT_IMAGE_USD_PER_1M_TOKENS": "30.00",
                 "GENIE_COST_KRW_PER_USD": "1400",
             },
             clear=False,
@@ -366,9 +533,9 @@ class CostEstimateStatusTests(unittest.TestCase):
                 image_model="gemini-2.5-flash-image",
                 image_generated_count=1,
             )
-        self.assertEqual(result["cost_estimate_status"], "estimated")
-        self.assertAlmostEqual(result["total_cost_usd"], 2.84)
-        self.assertAlmostEqual(result["total_cost_krw"], 3976.0)
+        self.assertEqual(result["cost_estimate_status"], "fully_priced_ai_model_cost")
+        self.assertAlmostEqual(result["total_cost_usd"], 2.8387)
+        self.assertAlmostEqual(result["total_cost_krw"], 3974.18)
 
 
 class NeverRaisesTests(unittest.TestCase):

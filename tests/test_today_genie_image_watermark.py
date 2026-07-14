@@ -86,6 +86,8 @@ class TodayGenieImageWatermarkTests(unittest.TestCase):
             # Footer makes each raster non-uniform (dark strip + text drawn).
             self.assertFalse(_is_uniform(Path(bundle.top.generated_image_path)))
             self.assertFalse(_is_uniform(Path(bundle.bottom.generated_image_path)))
+            self.assertEqual(bundle.top.image_locally_derived_asset_count, 1)
+            self.assertEqual(bundle.bottom.image_locally_derived_asset_count, 1)
 
     def test_footer_applied_after_bottom_reference_use(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

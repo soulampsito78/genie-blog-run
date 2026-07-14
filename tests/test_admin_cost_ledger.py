@@ -44,6 +44,22 @@ def _cost_meta() -> dict:
                 "total_token_count": 6000,
                 "generated_image_count": 1,
             },
+            "image_usage": {
+                "generated_image_count_semantics": "paid_successful_api_outputs",
+                "image_api_provider": "google_cloud_vertex_ai",
+                "image_model_raw": "gemini-2.5-flash-image",
+                "image_model_normalized": "gemini-2.5-flash-image",
+                "image_pricing_mode": "standard_paygo",
+                "image_request_count": 1,
+                "image_successful_output_count": 1,
+                "image_failed_request_count": 0,
+                "image_retry_count": 0,
+                "image_discarded_output_count": 0,
+                "image_locally_derived_asset_count": 1,
+                "image_cache_reuse_count": 0,
+                "image_static_fallback_count": 0,
+                "image_output_tokens": 1290,
+            },
             "components": {
                 "text_input_cost_usd": 0.0003,
                 "text_output_cost_usd": 0.005,
@@ -74,6 +90,9 @@ class CostRecordSchemaTests(unittest.TestCase):
         self.assertEqual(record["image_model"], "gemini-2.5-flash-image")
         self.assertEqual(record["prompt_token_count"], 1000)
         self.assertEqual(record["generated_image_count"], 1)
+        self.assertEqual(record["image_successful_output_count"], 1)
+        self.assertEqual(record["image_output_tokens"], 1290)
+        self.assertEqual(record["generated_image_count_semantics"], "paid_successful_api_outputs")
         self.assertEqual(record["cost_estimate_status"], "partial")
 
     def test_missing_price_env_is_csv_safe_pipe_joined(self) -> None:

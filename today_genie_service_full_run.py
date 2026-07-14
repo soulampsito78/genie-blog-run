@@ -86,6 +86,11 @@ def apply_today_genie_footer_to_bundle(
     bundle.watermark_paths = applied
     bundle.watermark_applied = bool(applied) and not errors
     bundle.watermark_error = "; ".join(errors) if errors else None
+    applied_set = set(applied)
+    for outcome in (bundle.top, bundle.bottom):
+        outcome.image_locally_derived_asset_count = (
+            1 if str(outcome.generated_image_path or "") in applied_set else 0
+        )
 
 
 def today_genie_watermark_meta(bundle: TodayGenieServiceImageBundle) -> Dict[str, Any]:
@@ -417,7 +422,35 @@ def run_today_genie_service_full_run(
     # ok/validation_result/email_sent even if this fails.
     try:
         text_cost_estimate = payload.get("cost_estimate") if isinstance(payload.get("cost_estimate"), dict) else {}
-        generated_image_count = int(image_bundle.top.ok) + int(image_bundle.bottom.ok)
+        image_usage = {
+            key: sum(int(outcome.cost_usage().get(key) or 0) for outcome in (image_bundle.top, image_bundle.bottom))
+            for key in (
+                "image_request_count",
+                "image_successful_output_count",
+                "image_failed_request_count",
+                "image_retry_count",
+                "image_discarded_output_count",
+                "image_locally_derived_asset_count",
+                "image_cache_reuse_count",
+                "image_static_fallback_count",
+                "image_output_tokens",
+            )
+        }
+        image_usage.update(
+            {
+                "image_api_provider": image_bundle.top.image_api_provider,
+                "image_model_raw": image_bundle.top.image_model_raw,
+                "image_model_normalized": image_bundle.top.image_model_normalized,
+                "image_pricing_mode": image_bundle.top.image_pricing_mode,
+                "generated_image_count_semantics": "paid_successful_api_outputs",
+                "image_evidence_confidence": image_bundle.top.cost_usage().get(
+                    "image_evidence_confidence"
+                ),
+                "image_evidence_source": image_bundle.top.cost_usage().get(
+                    "image_evidence_source"
+                ),
+            }
+        )
         cost_estimate = estimate_genie_generation_cost(
             text_cost_estimate.get("usage"),
             service_family="today_genie",
@@ -427,7 +460,7 @@ def run_today_genie_service_full_run(
             image_model=DEFAULT_VERTEX_IMAGE_MODEL,
             mode="today_genie",
             run_id=run_id,
-            image_generated_count=generated_image_count,
+            image_usage=image_usage,
         )
     except Exception:
         cost_estimate = None

@@ -1,0 +1,49 @@
+{
+  "schema_version": "genie-image-cost-evidence/v1",
+  "month": "2026-07",
+  "checked_at_kst": "2026-07-14T17:53:44+09:00",
+  "billing_reconciliation_status": "billing_export_unavailable",
+  "pricing_contract": {
+    "provider": "google_cloud_vertex_ai",
+    "model": "gemini-2.5-flash-image",
+    "pricing_tier": "standard_paygo",
+    "pricing_mode": "output_image_tokens",
+    "output_tokens_per_image": 1290,
+    "output_image_usd_per_1m_tokens": 30.0,
+    "pricing_url": "https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing",
+    "model_url": "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/2-5-flash-image"
+  },
+  "evidence_policy": {
+    "auto_backfill_confidence": "high",
+    "paid_count_semantics": "successful_api_image_outputs",
+    "required_evidence": [
+      "exact_cloud_run_revision_and_commit",
+      "revision_model_default_and_no_override",
+      "run_artifact_api_success_and_generated_source",
+      "durable_nonempty_gcs_output_object",
+      "one_request_one_output_no_retry_code_contract"
+    ],
+    "never_count": [
+      "local_watermark_crop_resize",
+      "static_reference",
+      "cache_reuse",
+      "fallback",
+      "failed_no_output"
+    ]
+  },
+  "runs": [
+    {"run_id":"20260709_153921_keysuri_korea_tech_013f5d7f","program_id":"keysuri_korea_tech","revision":"genie-blog-run-00243-pvn","commit_sha":"8879d27260d1062c885c904e4e5b0dbba3df39e7","confidence":"high","image_request_count":2,"successful_output_count":2,"failed_request_count":0,"retry_count":0,"discarded_output_count":0,"locally_derived_asset_count":2,"cache_reuse_count":0,"static_fallback_count":0,"objects":["admin_runs/20260709_153921_keysuri_korea_tech_013f5d7f.images/korea_top.jpg","admin_runs/20260709_153921_keysuri_korea_tech_013f5d7f.images/korea_bottom.jpg"]},
+    {"run_id":"20260709_161644_keysuri_korea_tech_27f9fcc2","program_id":"keysuri_korea_tech","revision":"genie-blog-run-00245-pfr","commit_sha":"c6af822837a20d51cce34f36c384a5e70020f80d","confidence":"high","image_request_count":2,"successful_output_count":2,"failed_request_count":0,"retry_count":0,"discarded_output_count":0,"locally_derived_asset_count":2,"cache_reuse_count":0,"static_fallback_count":0,"objects":["admin_runs/20260709_161644_keysuri_korea_tech_27f9fcc2.images/korea_top.jpg","admin_runs/20260709_161644_keysuri_korea_tech_27f9fcc2.images/korea_bottom.jpg"]},
+    {"run_id":"20260709_164122_keysuri_korea_tech_9489ecd2","program_id":"keysuri_korea_tech","revision":"genie-blog-run-00246-rwj","commit_sha":"0fe359fc6e652caa87093b685bfe069478d37b10","confidence":"high","image_request_count":2,"successful_output_count":2,"failed_request_count":0,"retry_count":0,"discarded_output_count":0,"locally_derived_asset_count":2,"cache_reuse_count":0,"static_fallback_count":0,"objects":["admin_runs/20260709_164122_keysuri_korea_tech_9489ecd2.images/korea_top.jpg","admin_runs/20260709_164122_keysuri_korea_tech_9489ecd2.images/korea_bottom.jpg"]},
+    {"run_id":"20260709_170456_keysuri_korea_tech_2f92b6dd","program_id":"keysuri_korea_tech","revision":"genie-blog-run-00247-pfs","commit_sha":"3e1151af0a84347791fc3dad3da9224514c85532","confidence":"high","image_request_count":2,"successful_output_count":2,"failed_request_count":0,"retry_count":0,"discarded_output_count":0,"locally_derived_asset_count":2,"cache_reuse_count":0,"static_fallback_count":0,"objects":["admin_runs/20260709_170456_keysuri_korea_tech_2f92b6dd.images/korea_top.jpg","admin_runs/20260709_170456_keysuri_korea_tech_2f92b6dd.images/korea_bottom.jpg"]},
+    {"run_id":"20260709_171936_keysuri_korea_tech_6076e8ce","program_id":"keysuri_korea_tech","revision":"genie-blog-run-00248-2dl","commit_sha":"289445b053f7bd05bdcb7a946b4cb1fb16188dc0","confidence":"high","image_request_count":2,"successful_output_count":2,"failed_request_count":0,"retry_count":0,"discarded_output_count":0,"locally_derived_asset_count":2,"cache_reuse_count":0,"static_fallback_count":0,"objects":["admin_runs/20260709_171936_keysuri_korea_tech_6076e8ce.images/korea_top.jpg","admin_runs/20260709_171936_keysuri_korea_tech_6076e8ce.images/korea_bottom.jpg"]},
+    {"run_id":"20260709_174224_keysuri_korea_tech_45c00558","program_id":"keysuri_korea_tech","revision":"genie-blog-run-00249-jhp","commit_sha":"dc2603c7c3097fc45323c40ef1b3ea51440051ac","confidence":"high","image_request_count":2,"successful_output_count":2,"failed_request_count":0,"retry_count":0,"discarded_output_count":0,"locally_derived_asset_count":2,"cache_reuse_count":0,"static_fallback_count":0,"objects":["admin_runs/20260709_174224_keysuri_korea_tech_45c00558.images/korea_top.jpg","admin_runs/20260709_174224_keysuri_korea_tech_45c00558.images/korea_bottom.jpg"]},
+    {"run_id":"20260709_183002_keysuri_korea_tech_d5585282","program_id":"keysuri_korea_tech","revision":"genie-blog-run-00251-wwp","commit_sha":"a1d02f1ea6879868dbad95e4d4f639d43c347c4b","confidence":"high","image_request_count":2,"successful_output_count":2,"failed_request_count":0,"retry_count":0,"discarded_output_count":0,"locally_derived_asset_count":2,"cache_reuse_count":0,"static_fallback_count":0,"objects":["admin_runs/20260709_183002_keysuri_korea_tech_d5585282.images/korea_top.jpg","admin_runs/20260709_183002_keysuri_korea_tech_d5585282.images/korea_bottom.jpg"]},
+    {"run_id":"20260710_061038_keysuri_global_tech_9465962b","program_id":"keysuri_global_tech","revision":"genie-blog-run-00251-wwp","commit_sha":"a1d02f1ea6879868dbad95e4d4f639d43c347c4b","confidence":"high","image_request_count":1,"successful_output_count":1,"failed_request_count":0,"retry_count":0,"discarded_output_count":0,"locally_derived_asset_count":1,"cache_reuse_count":0,"static_fallback_count":0,"objects":["admin_runs/20260710_061038_keysuri_global_tech_9465962b.images/global_top.jpg"]},
+    {"run_id":"20260710_123001_keysuri_global_tech_7f125342","program_id":"keysuri_global_tech","revision":"genie-blog-run-00252-lp7","commit_sha":"c2b732c5bd521b81f6b7b7959f4e22564fcc3f37","confidence":"high","image_request_count":1,"successful_output_count":1,"failed_request_count":0,"retry_count":0,"discarded_output_count":0,"locally_derived_asset_count":1,"cache_reuse_count":0,"static_fallback_count":0,"objects":["admin_runs/20260710_123001_keysuri_global_tech_7f125342.images/global_top.jpg"]},
+    {"run_id":"20260710_183002_keysuri_korea_tech_46a2ee62","program_id":"keysuri_korea_tech","revision":"genie-blog-run-00252-lp7","commit_sha":"c2b732c5bd521b81f6b7b7959f4e22564fcc3f37","confidence":"high","image_request_count":2,"successful_output_count":2,"failed_request_count":0,"retry_count":0,"discarded_output_count":0,"locally_derived_asset_count":2,"cache_reuse_count":0,"static_fallback_count":0,"objects":["admin_runs/20260710_183002_keysuri_korea_tech_46a2ee62.images/korea_top.jpg","admin_runs/20260710_183002_keysuri_korea_tech_46a2ee62.images/korea_bottom.jpg"]},
+    {"run_id":"20260713_123001_keysuri_global_tech_812ab472","program_id":"keysuri_global_tech","revision":"genie-blog-run-00252-lp7","commit_sha":"c2b732c5bd521b81f6b7b7959f4e22564fcc3f37","confidence":"high","image_request_count":1,"successful_output_count":1,"failed_request_count":0,"retry_count":0,"discarded_output_count":0,"locally_derived_asset_count":1,"cache_reuse_count":0,"static_fallback_count":0,"objects":["admin_runs/20260713_123001_keysuri_global_tech_812ab472.images/global_top.jpg"]},
+    {"run_id":"20260713_183002_keysuri_korea_tech_2d66da04","program_id":"keysuri_korea_tech","revision":"genie-blog-run-00252-lp7","commit_sha":"c2b732c5bd521b81f6b7b7959f4e22564fcc3f37","confidence":"high","image_request_count":2,"successful_output_count":2,"failed_request_count":0,"retry_count":0,"discarded_output_count":0,"locally_derived_asset_count":2,"cache_reuse_count":0,"static_fallback_count":0,"objects":["admin_runs/20260713_183002_keysuri_korea_tech_2d66da04.images/korea_top.jpg","admin_runs/20260713_183002_keysuri_korea_tech_2d66da04.images/korea_bottom.jpg"]},
+    {"run_id":"20260714_123001_keysuri_global_tech_ede1add2","program_id":"keysuri_global_tech","revision":"genie-blog-run-00253-kxl","commit_sha":"807a6952202e8d64e0fc97886525bf825c549932","confidence":"high","image_request_count":1,"successful_output_count":1,"failed_request_count":0,"retry_count":0,"discarded_output_count":0,"locally_derived_asset_count":1,"cache_reuse_count":0,"static_fallback_count":0,"objects":["admin_runs/20260714_123001_keysuri_global_tech_ede1add2.images/global_top.jpg"]}
+  ]
+}

@@ -714,6 +714,7 @@ def resolve_korea_bottom_email_image_path(
     """Generate Korea Bottom v6 first and use fixed 105936 only as fallback."""
     variation_enabled = korea_bottom_variation_enabled()
     generation_error = ""
+    generation_meta: Dict[str, Any] = {}
     anchor_path, anchor_issues = resolve_korea_bottom_email_asset_path(run_id)
     if variation_enabled and anchor_path is not None:
         seed = int(hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:8], 16)
@@ -737,6 +738,7 @@ def resolve_korea_bottom_email_image_path(
             watermark_fn=watermark_fn,
             generate_fn=generate_fn,
         )
+        generation_meta = dict(generated.metadata)
         if generated.ok and generated.image_path is not None:
             metadata = dict(generated.metadata)
             metadata.update(
@@ -759,6 +761,7 @@ def resolve_korea_bottom_email_image_path(
 
     path, issues = anchor_path, anchor_issues
     metadata = {
+        **generation_meta,
         "bottom_shot_variation_enabled": variation_enabled,
         "bottom_shot_reference_direction": KEYSURI_KOREA_BOTTOM_REFERENCE_DIRECTION,
         "bottom_shot_asset_id": KEYSURI_KOREA_BOTTOM_ASSET_ID,
@@ -775,6 +778,7 @@ def resolve_korea_bottom_email_image_path(
         "secondary_reference_asset_id": "Asset01",
         "secondary_reference_role": "secondary_same_person_continuity_reference",
         "secondary_reference_slot": 1,
+        "bottom_shot_static_fallback_count": 1 if path is not None else 0,
     }
     if path is not None:
         metadata["bottom_shot_image_path"] = _repo_rel(path)
@@ -2735,6 +2739,7 @@ def run_keysuri_image_only_reissue(
     gen_image_abs = _watermarked_top_shot_path(gen_image_raw_abs)
     watermarked_generated_image_path = _repo_rel(gen_image_abs)
     image_outcome.generated_image_path = watermarked_generated_image_path
+    image_outcome.image_locally_derived_asset_count = 1
 
     # Persist the freshly generated Global top image to GCS so a later body_only
     # reissue can restore it cross-instance (Korea persists via its own helper).
@@ -4307,6 +4312,24 @@ def run_keysuri_service_full_run(
 
     # Best-effort cost estimate — never affects validation_result/HTTP status;
     # see keysuri_cost_estimate.py for the estimate-only pricing model.
+    image_usage = image_outcome.cost_usage()
+    if pid == PROGRAM_KOREA:
+        bottom_metric_map = {
+            "image_request_count": "bottom_shot_image_request_count",
+            "image_successful_output_count": "bottom_shot_successful_output_count",
+            "image_failed_request_count": "bottom_shot_failed_request_count",
+            "image_retry_count": "bottom_shot_retry_count",
+            "image_discarded_output_count": "bottom_shot_discarded_output_count",
+            "image_locally_derived_asset_count": "bottom_shot_locally_derived_asset_count",
+            "image_cache_reuse_count": "bottom_shot_cache_reuse_count",
+            "image_static_fallback_count": "bottom_shot_static_fallback_count",
+            "image_output_tokens": "bottom_shot_image_output_tokens",
+        }
+        for target, source in bottom_metric_map.items():
+            image_usage[target] = int(image_usage.get(target) or 0) + int(
+                bottom_image_meta.get(source) or 0
+            )
+    meta.update(image_usage)
     try:
         cost_estimate = estimate_keysuri_gemini_cost(
             gemini_usage_sink,
@@ -4314,7 +4337,7 @@ def run_keysuri_service_full_run(
             image_model=DEFAULT_VERTEX_IMAGE_MODEL,
             program_id=pid,
             run_id=run_id,
-            image_generated_count=1 if image_outcome.called_image_api else 0,
+            image_usage=image_usage,
         )
     except Exception:
         cost_estimate = None

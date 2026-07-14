@@ -61,6 +61,11 @@ class KeysuriBottomShotGenerationTests(unittest.TestCase):
             self.assertTrue(result.metadata["bottom_shot_anti_copy_instruction_applied"])
             self.assertIn("Selected wardrobe:", result.metadata["bottom_shot_prompt_preview"])
             self.assertIn("wardrobe", result.metadata["bottom_shot_prompt_metadata"])
+            self.assertEqual(result.metadata["bottom_shot_image_request_count"], 1)
+            self.assertEqual(result.metadata["bottom_shot_successful_output_count"], 1)
+            self.assertEqual(result.metadata["bottom_shot_failed_request_count"], 0)
+            self.assertEqual(result.metadata["bottom_shot_locally_derived_asset_count"], 1)
+            self.assertEqual(result.metadata["bottom_shot_image_output_tokens"], 1290)
 
     def test_generation_error_returns_failed_result_without_api_retry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -83,6 +88,9 @@ class KeysuriBottomShotGenerationTests(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertEqual(result.error_code, "bottom_v6_generation_failed")
             self.assertEqual(result.metadata["bottom_shot_generation_status"], "failed")
+            self.assertEqual(result.metadata["bottom_shot_image_request_count"], 1)
+            self.assertEqual(result.metadata["bottom_shot_successful_output_count"], 0)
+            self.assertEqual(result.metadata["bottom_shot_failed_request_count"], 1)
             self.assertEqual(generate.call_count, 1)
 
 

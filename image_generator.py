@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from PIL import Image as PILImage
 import vertexai
 from vertexai.generative_models import GenerationConfig, GenerativeModel, Image, Part
 
 
-def _extract_first_image_bytes(response: object) -> bytes:
+def _extract_image_bytes(response: object) -> list[bytes]:
+    images: list[bytes] = []
     candidates = getattr(response, "candidates", None) or []
     for cand in candidates:
         content = getattr(cand, "content", None)
@@ -22,7 +23,14 @@ def _extract_first_image_bytes(response: object) -> bytes:
                 continue
             data = getattr(inline, "data", None)
             if data:
-                return data
+                images.append(data)
+    return images
+
+
+def _extract_first_image_bytes(response: object) -> bytes:
+    images = _extract_image_bytes(response)
+    if images:
+        return images[0]
     raise RuntimeError("No image bytes in model response.")
 
 
@@ -34,6 +42,7 @@ def generate_image_file(
     reference_image_path: Optional[Path] = None,
     project_id: Optional[str] = None,
     location: str = "global",
+    telemetry: Optional[Dict[str, Any]] = None,
 ) -> Path:
     """
     Generate an image with a Gemini image model and write as JPEG.
@@ -57,10 +66,15 @@ def generate_image_file(
             response_modalities=["IMAGE"],
         ),
     )
-    raw = _extract_first_image_bytes(response)
+    images = _extract_image_bytes(response)
+    if telemetry is not None:
+        telemetry["response_image_output_count"] = len(images)
+        telemetry["discarded_image_output_count"] = max(0, len(images) - 1)
+    if not images:
+        raise RuntimeError("No image bytes in model response.")
+    raw = images[0]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with PILImage.open(BytesIO(raw)) as im:
         im.convert("RGB").save(output_path, format="JPEG", quality=92, optimize=True)
     return output_path
-

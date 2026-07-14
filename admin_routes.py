@@ -214,7 +214,11 @@ def _format_image_cost_display(components: Dict[str, Any], cost: Dict[str, Any])
     usage = cost.get("usage") if isinstance(cost.get("usage"), dict) else {}
     generated = usage.get("generated_image_count") or 0
     if status == "unsupported_or_unconfigured" or generated:
-        return "unconfigured / not calculated"
+        return "unknown / not calculated"
+    if status == "failed_request_billing_unknown":
+        return "unknown (failed request billing unavailable)"
+    if status == "known_zero_paid_outputs":
+        return _format_cost_usd(0)
     return "—"
 
 
@@ -250,13 +254,13 @@ def _render_cost_estimate_section(meta: Dict[str, Any]) -> str:
         ("Prompt token count", usage.get("prompt_token_count")),
         ("Candidates token count", usage.get("candidates_token_count")),
         ("Thoughts token count", usage.get("thoughts_token_count")),
-        ("Generated image count", usage.get("generated_image_count")),
+        ("Paid successful image outputs", usage.get("generated_image_count")),
         ("Text input cost USD", _format_cost_usd(components.get("text_input_cost_usd"))),
         ("Text response cost USD", _format_cost_usd(components.get("text_output_cost_usd"))),
         ("Text reasoning cost USD", _format_cost_usd(components.get("text_thoughts_cost_usd"))),
         ("Text total cost USD", _format_cost_usd(text_total)),
-        ("Image cost", _format_image_cost_display(components, cost)),
-        ("Total production cost USD", _format_cost_usd(cost.get("total_cost_usd"))),
+        ("Image model list-price cost", _format_image_cost_display(components, cost)),
+        ("Total AI model production cost USD", _format_cost_usd(cost.get("total_cost_usd"))),
         ("Total cost KRW (optional)", _format_cost_usd(cost.get("total_cost_krw"))),
         ("Missing price env", missing or "—"),
         ("Pricing note", cost.get("pricing_note")),
@@ -267,7 +271,7 @@ def _render_cost_estimate_section(meta: Dict[str, Any]) -> str:
     month = month_from_run_meta(meta)
     return (
         '<div class="card">'
-        "<h2>Cost Estimate</h2>"
+        "<h2>AI 모델 생산 원가</h2>"
         f'<dl class="meta">{row_html}</dl>'
         f'<p><a href="/admin/costs/ledger.csv?month={_esc(month)}">월별 CSV ledger 다운로드</a></p>'
         "</div>"
@@ -812,7 +816,7 @@ def admin_costs(request: Request):
             f"<td>{_esc(_format_cost_usd(record.get('text_output_cost_usd')))}</td>"
             f"<td>{_esc(_format_cost_usd(record.get('text_thoughts_cost_usd')))}</td>"
             f"<td>{_esc(_format_cost_usd(record.get('text_total_cost_usd')))}</td>"
-            f"<td>{_esc(_format_cost_usd(record.get('image_cost_usd')))}</td>"
+            f"<td>{_esc(_format_cost_usd(record.get('image_cost_usd')) if record.get('image_cost_usd') not in (None, '') else 'unknown')}</td>"
             f"<td>{_esc(_format_cost_usd(record.get('total_cost_usd')))}</td>"
             f"<td>{_esc(record.get('cost_estimate_status'))}</td>"
             f"<td>{_esc(record.get('missing_price_env') or '—')}</td>"
@@ -835,17 +839,27 @@ def admin_costs(request: Request):
     for record in records:
         status = str(record.get("cost_estimate_status") or "unknown")
         status_counts[status] = status_counts.get(status, 0) + 1
-    fully_priced = sum(status_counts.get(s, 0) for s in ("estimated", "fully_priced"))
+    fully_priced = sum(
+        status_counts.get(s, 0)
+        for s in ("estimated", "fully_priced", "fully_priced_ai_model_cost")
+    )
     partially_priced = sum(status_counts.get(s, 0) for s in ("partial", "partial_text_only"))
     unknown_models = sum(
         standard_text_pricing_for_model(record.get("text_model")) is None for record in records
     )
+    known_image_cost_runs = sum(
+        str(record.get("image_cost_usd") or "").strip() != "" for record in records
+    )
+    unknown_image_cost_runs = len(records) - known_image_cost_runs
     summary = (
         '<div class="card"><h2>월 합계</h2><dl class="meta">'
         f"<dt>Text subtotal USD</dt><dd>{_esc(_format_cost_usd(_known_sum('text_total_cost_usd')))}</dd>"
         f"<dt>Known image subtotal USD</dt><dd>{_esc(_format_cost_usd(_known_sum('image_cost_usd')))}</dd>"
+        f"<dt>Complete AI model total USD</dt><dd>{_esc(_format_cost_usd(_known_sum('total_cost_usd')))}</dd>"
         f"<dt>Fully priced runs</dt><dd>{fully_priced}</dd>"
         f"<dt>Partially priced runs</dt><dd>{partially_priced}</dd>"
+        f"<dt>Known image-cost runs (zero included)</dt><dd>{known_image_cost_runs}</dd>"
+        f"<dt>Unknown image-cost runs</dt><dd>{unknown_image_cost_runs}</dd>"
         f"<dt>Usage-only runs</dt><dd>{status_counts.get('usage_only', 0)}</dd>"
         f"<dt>Unknown model runs</dt><dd>{unknown_models}</dd>"
         "</dl></div>"
@@ -854,7 +868,7 @@ def admin_costs(request: Request):
         "<table><thead><tr>"
         "<th>run_id</th><th>created_at_kst</th><th>text model</th>"
         "<th>Text input cost</th><th>Text response cost</th><th>Text reasoning cost</th>"
-        "<th>Text total cost</th><th>Image cost</th><th>Total production cost</th>"
+        "<th>Text total cost</th><th>Image model cost</th><th>Total AI model production cost</th>"
         "<th>Estimate status</th><th>Missing pricing component</th>"
         "</tr></thead><tbody>"
         + ("".join(rows) if rows else "<tr><td colspan=\"11\">저장된 cost ledger 행이 없습니다.</td></tr>")
@@ -862,7 +876,7 @@ def admin_costs(request: Request):
     )
     inner = f"""
 <div class="page-head">
-<h1>비용 ledger</h1>
+<h1>AI 모델 생산 원가 ledger</h1>
 <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
 <a href="/admin/runs" class="btn" style="background:#475569;">← 실행 목록</a>
 <a href="/admin/costs/ledger.csv?month={_esc(month)}" class="btn" style="background:#0f172a;">현재 월 CSV 다운로드</a>

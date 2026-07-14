@@ -18,6 +18,11 @@ GOOGLE_CLOUD_VERTEX_PRICING_URL = (
     "https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing"
 )
 GOOGLE_CLOUD_VERTEX_PRICING_CHECKED_AT = "2026-07-14T17:06:57+09:00"
+GOOGLE_CLOUD_VERTEX_IMAGE_PRICING_CHECKED_AT = "2026-07-14T17:53:44+09:00"
+GEMINI_2_5_FLASH_IMAGE_OUTPUT_TOKENS_PER_IMAGE = 1290
+ENV_GEMINI_2_5_FLASH_IMAGE_OUTPUT_USD_PER_1M = (
+    "GENIE_COST_GEMINI_2_5_FLASH_IMAGE_OUTPUT_IMAGE_USD_PER_1M_TOKENS"
+)
 
 # Official Google Cloud Vertex AI Standard text prices, checked at the time
 # above. Response and reasoning tokens share one canonical output rate.
@@ -40,6 +45,20 @@ GOOGLE_CLOUD_VERTEX_STANDARD_TEXT_PRICING: Dict[str, Dict[str, Any]] = {
         "input_usd_per_1m_tokens": 0.50,
         "output_and_reasoning_usd_per_1m_tokens": 3.00,
     },
+}
+
+GOOGLE_CLOUD_VERTEX_STANDARD_IMAGE_PRICING: Dict[str, Dict[str, Any]] = {
+    "gemini-2.5-flash-image": {
+        "provider": "google_cloud_vertex_ai",
+        "pricing_tier": "standard_paygo",
+        "pricing_mode": "output_image_tokens",
+        "pricing_url": GOOGLE_CLOUD_VERTEX_PRICING_URL,
+        "pricing_checked_at": GOOGLE_CLOUD_VERTEX_IMAGE_PRICING_CHECKED_AT,
+        "model": "gemini-2.5-flash-image",
+        "output_image_usd_per_1m_tokens": 30.0,
+        "output_tokens_per_image": GEMINI_2_5_FLASH_IMAGE_OUTPUT_TOKENS_PER_IMAGE,
+        "price_env": ENV_GEMINI_2_5_FLASH_IMAGE_OUTPUT_USD_PER_1M,
+    }
 }
 
 # Common env vars — checked first for every service_family.
@@ -99,6 +118,36 @@ def standard_text_pricing_for_model(model: Optional[str]) -> Optional[Dict[str, 
     canonical = canonical_model_id(model)
     pricing = GOOGLE_CLOUD_VERTEX_STANDARD_TEXT_PRICING.get(canonical or "")
     return dict(pricing) if pricing else None
+
+
+def standard_image_pricing_for_model(model: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Return a copy of the verified Vertex Standard image pricing contract."""
+    canonical = canonical_model_id(model)
+    pricing = GOOGLE_CLOUD_VERTEX_STANDARD_IMAGE_PRICING.get(canonical or "")
+    return dict(pricing) if pricing else None
+
+
+def calculate_image_list_price(
+    *,
+    pricing_mode: str,
+    successful_output_count: int,
+    output_image_tokens: Optional[int] = None,
+    usd_per_1m_output_image_tokens: Optional[float] = None,
+    usd_per_image: Optional[float] = None,
+) -> Optional[float]:
+    """Calculate image list price using an explicit unit contract."""
+    count = max(0, int(successful_output_count or 0))
+    if pricing_mode == "output_image_tokens":
+        if output_image_tokens is None or usd_per_1m_output_image_tokens is None:
+            return None
+        return (max(0, int(output_image_tokens)) / 1_000_000.0) * float(
+            usd_per_1m_output_image_tokens
+        )
+    if pricing_mode == "per_image":
+        if usd_per_image is None:
+            return None
+        return count * float(usd_per_image)
+    return None
 
 
 def normalize_model_env_key(model: Optional[str]) -> Optional[str]:
@@ -273,6 +322,7 @@ def estimate_genie_generation_cost(
     mode: Optional[str] = None,
     run_id: Optional[str] = None,
     image_generated_count: int = 0,
+    image_usage: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a best-effort cost_estimate dict. Never raises.
 
@@ -291,6 +341,22 @@ def estimate_genie_generation_cost(
 
         text_model_key = normalize_model_env_key(text_model)
         image_model_key = normalize_model_env_key(image_model)
+        explicit_image_usage = isinstance(image_usage, Mapping)
+        image_usage_data = dict(image_usage or {})
+        successful_output_count = int(
+            image_usage_data.get("image_successful_output_count", image_generated_count) or 0
+        )
+        image_usage_data.setdefault("image_successful_output_count", successful_output_count)
+        image_usage_data.setdefault("image_request_count", successful_output_count)
+        image_usage_data.setdefault("image_failed_request_count", 0)
+        image_usage_data.setdefault("image_retry_count", 0)
+        image_usage_data.setdefault("image_discarded_output_count", 0)
+        image_usage_data.setdefault("image_locally_derived_asset_count", 0)
+        image_usage_data.setdefault("image_cache_reuse_count", 0)
+        image_usage_data.setdefault("image_static_fallback_count", 0)
+        image_usage_data.setdefault(
+            "generated_image_count_semantics", "paid_successful_api_outputs"
+        )
 
         input_envs = _text_price_env_chain(
             "input", text_model_key=text_model_key, service_family=service_family
@@ -298,8 +364,13 @@ def estimate_genie_generation_cost(
         output_envs = _text_price_env_chain(
             "output", text_model_key=text_model_key, service_family=service_family
         )
-        image_envs = _image_price_env_chain(
-            image_model_key=image_model_key, service_family=service_family
+        image_contract = standard_image_pricing_for_model(image_model)
+        image_envs = (
+            (str(image_contract["price_env"]),)
+            if image_contract
+            else _image_price_env_chain(
+                image_model_key=image_model_key, service_family=service_family
+            )
         )
 
         input_price, input_price_env = _read_price_from_envs(input_envs)
@@ -322,11 +393,40 @@ def estimate_genie_generation_cost(
         text_input_cost = _safe_token_cost(prompt_tokens, input_price)
         text_output_cost = _safe_token_cost(candidates_tokens, output_price)
         text_thoughts_cost = _safe_token_cost(thoughts_tokens, output_price)
-        image_cost = (
-            image_generated_count * image_price
-            if image_generated_count and image_price is not None
-            else (0.0 if image_price is not None else None)
+        image_output_tokens = image_usage_data.get("image_output_tokens")
+        image_pricing_mode = "per_image"
+        if image_contract:
+            image_pricing_mode = str(image_contract["pricing_mode"])
+            if successful_output_count and image_output_tokens is None:
+                image_output_tokens = (
+                    successful_output_count * int(image_contract["output_tokens_per_image"])
+                )
+                image_usage_data["image_output_tokens"] = image_output_tokens
+            image_cost = calculate_image_list_price(
+                pricing_mode=image_pricing_mode,
+                successful_output_count=successful_output_count,
+                output_image_tokens=image_output_tokens,
+                usd_per_1m_output_image_tokens=image_price,
+            )
+        else:
+            image_cost = calculate_image_list_price(
+                pricing_mode=image_pricing_mode,
+                successful_output_count=successful_output_count,
+                usd_per_image=image_price,
+            )
+        failed_request_count = int(image_usage_data.get("image_failed_request_count") or 0)
+        image_state_unknown = bool(
+            image_model and not explicit_image_usage and successful_output_count == 0
         )
+        if successful_output_count == 0:
+            if explicit_image_usage and failed_request_count:
+                # The response produced no paid-success output, but request-level
+                # billed usage is unavailable without Billing export.
+                image_cost = None
+            elif explicit_image_usage:
+                image_cost = 0.0
+            else:
+                image_cost = None
 
         text_cost_components = [text_input_cost, text_output_cost, text_thoughts_cost]
         known_text_components = [c for c in text_cost_components if c is not None]
@@ -334,7 +434,9 @@ def estimate_genie_generation_cost(
 
         cost_components = [*text_cost_components, image_cost]
         known_components = [c for c in cost_components if c is not None]
-        image_unconfigured = bool(image_generated_count) and image_cost is None
+        image_unconfigured = bool(
+            successful_output_count or failed_request_count or image_state_unknown
+        ) and image_cost is None
         # Do not present a text-only subtotal as a complete production total.
         total_cost_usd = (
             None if image_unconfigured else (sum(known_components) if known_components else None)
@@ -348,11 +450,17 @@ def estimate_genie_generation_cost(
         )
 
         image_pricing_status = "not_applicable"
-        if image_generated_count:
+        if successful_output_count:
             if image_price is not None:
-                image_pricing_status = "configured"
+                image_pricing_status = "priced_from_output_image_tokens"
             else:
                 image_pricing_status = "unsupported_or_unconfigured"
+        elif failed_request_count:
+            image_pricing_status = "failed_request_billing_unknown"
+        elif explicit_image_usage:
+            image_pricing_status = "known_zero_paid_outputs"
+        elif image_state_unknown:
+            image_pricing_status = "unknown_image_usage"
         elif image_model and image_price is None and _image_requires_model_specific_price(image_model_key):
             image_pricing_status = "unsupported_or_unconfigured"
 
@@ -361,7 +469,7 @@ def estimate_genie_generation_cost(
             pricing_note += "; text cost calculated; image cost not configured"
         elif image_unconfigured:
             pricing_note += (
-                "; Image model pricing is not configured as per-image; "
+                "; Image model pricing is unsupported or not configured for its verified unit; "
                 "image cost not calculated."
             )
 
@@ -381,7 +489,7 @@ def estimate_genie_generation_cost(
             _needs_price(candidates_tokens) or _needs_price(thoughts_tokens)
         ) and output_price is None and output_envs:
             missing_price_env.append(output_envs[0])
-        if image_generated_count and image_price is None:
+        if successful_output_count and image_price is None:
             if not image_model_key:
                 missing_price_env.append("unknown_image_pricing")
             elif image_envs:
@@ -393,7 +501,7 @@ def estimate_genie_generation_cost(
             candidates_tokens,
             thoughts_tokens,
             total_tokens,
-            image_generated_count,
+            successful_output_count,
         )
         price_env_configured = bool(env_prices_set)
         if not usage_present:
@@ -405,9 +513,13 @@ def estimate_genie_generation_cost(
         elif (
             not missing_price_env
             and total_cost_usd is not None
-            and (not image_generated_count or image_cost is not None)
+            and (not successful_output_count or image_cost is not None)
         ):
-            cost_estimate_status = "estimated"
+            cost_estimate_status = (
+                "fully_priced_ai_model_cost"
+                if explicit_image_usage or successful_output_count
+                else "estimated"
+            )
         else:
             cost_estimate_status = "partial"
 
@@ -437,6 +549,13 @@ def estimate_genie_generation_cost(
                 "model": standard_contract.get("model") if standard_contract else canonical_model_id(text_model),
                 "input_usd_per_1m_tokens": standard_contract.get("input_usd_per_1m_tokens") if standard_contract else None,
                 "output_and_reasoning_usd_per_1m_tokens": standard_contract.get("output_and_reasoning_usd_per_1m_tokens") if standard_contract else None,
+                "image_provider": image_contract.get("provider") if image_contract else image_usage_data.get("image_api_provider"),
+                "image_pricing_tier": image_contract.get("pricing_tier") if image_contract else image_usage_data.get("image_pricing_mode"),
+                "image_pricing_mode": image_pricing_mode,
+                "image_pricing_url": image_contract.get("pricing_url") if image_contract else None,
+                "image_pricing_checked_at": image_contract.get("pricing_checked_at") if image_contract else None,
+                "image_output_tokens_per_image": image_contract.get("output_tokens_per_image") if image_contract else None,
+                "image_output_usd_per_1m_tokens": image_contract.get("output_image_usd_per_1m_tokens") if image_contract else None,
             },
             "missing_price_env": missing_price_env,
             "usage": {
@@ -444,13 +563,15 @@ def estimate_genie_generation_cost(
                 "candidates_token_count": candidates_tokens,
                 "thoughts_token_count": thoughts_tokens,
                 "total_token_count": total_tokens,
-                "generated_image_count": image_generated_count,
+                "generated_image_count": successful_output_count,
             },
+            "image_usage": image_usage_data,
             "unit_prices": {
                 "input_usd_per_1m_tokens": input_price,
                 "output_usd_per_1m_tokens": output_price,
                 "thoughts_usd_per_1m_tokens": output_price,
-                "image_usd_per_image": image_price,
+                "image_usd_per_image": None if image_contract else image_price,
+                "image_output_usd_per_1m_tokens": image_price if image_contract else None,
                 "krw_per_usd": krw_per_usd,
                 "input_price_env": input_price_env,
                 "output_price_env": output_price_env,
@@ -465,8 +586,11 @@ def estimate_genie_generation_cost(
                 "text_thoughts_cost_usd": text_thoughts_cost,
                 "text_total_cost_usd": text_total_cost_usd,
                 "image_cost_usd": image_cost,
+                "image_list_price_cost_usd": image_cost,
+                "image_billed_cost_usd": None,
                 "infra_cost_usd": None,
             },
+            "billing_reconciliation_status": "billing_export_unavailable",
             "total_cost_usd": total_cost_usd,
             "total_cost_krw": total_cost_krw,
             "pricing_source": pricing_source,

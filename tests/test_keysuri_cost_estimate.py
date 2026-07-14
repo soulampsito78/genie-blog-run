@@ -27,6 +27,7 @@ def _clear_pricing_env():
             "GENIE_COST_GEMINI_3_FLASH_PREVIEW_INPUT_USD_PER_1M_TOKENS": "",
             "GENIE_COST_GEMINI_3_FLASH_PREVIEW_OUTPUT_USD_PER_1M_TOKENS": "",
             "GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE": "",
+            "GENIE_COST_GEMINI_2_5_FLASH_IMAGE_OUTPUT_IMAGE_USD_PER_1M_TOKENS": "",
         },
         clear=False,
     )
@@ -213,10 +214,10 @@ class CostEstimateImageTests(unittest.TestCase):
             "unsupported_or_unconfigured",
         )
 
-    def test_gemini_flash_image_uses_explicit_model_specific_image_price(self) -> None:
+    def test_gemini_flash_image_uses_explicit_output_token_price(self) -> None:
         with _clear_pricing_env(), mock.patch.dict(
             os.environ,
-            {"GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE": "0.04"},
+            {"GENIE_COST_GEMINI_2_5_FLASH_IMAGE_OUTPUT_IMAGE_USD_PER_1M_TOKENS": "30"},
             clear=False,
         ):
             result = estimate_keysuri_gemini_cost(
@@ -225,14 +226,25 @@ class CostEstimateImageTests(unittest.TestCase):
                 image_model="gemini-2.5-flash-image",
                 image_generated_count=1,
             )
-        self.assertAlmostEqual(result["components"]["image_cost_usd"], 0.04)
-        self.assertEqual(result["model_pricing"]["image_pricing_status"], "configured")
+        self.assertAlmostEqual(result["components"]["image_cost_usd"], 0.0387)
+        self.assertEqual(
+            result["model_pricing"]["image_pricing_status"],
+            "priced_from_output_image_tokens",
+        )
 
     def test_zero_images_with_image_price_set_costs_zero_not_none(self) -> None:
         with _clear_pricing_env(), mock.patch.dict(
             os.environ, {"KEYSURI_COST_IMAGE_USD_PER_IMAGE": "0.02"}, clear=False
         ):
-            result = estimate_keysuri_gemini_cost({}, model="m", image_generated_count=0)
+            result = estimate_keysuri_gemini_cost(
+                {},
+                model="m",
+                image_usage={
+                    "image_request_count": 0,
+                    "image_successful_output_count": 0,
+                    "image_failed_request_count": 0,
+                },
+            )
         self.assertEqual(result["components"]["image_cost_usd"], 0.0)
 
 

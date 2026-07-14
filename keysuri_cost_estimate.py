@@ -37,6 +37,7 @@ def estimate_keysuri_gemini_cost(
     program_id: Optional[str] = None,
     run_id: Optional[str] = None,
     image_generated_count: int = 0,
+    image_usage: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a best-effort cost_estimate dict. Never raises.
 
@@ -54,6 +55,7 @@ def estimate_keysuri_gemini_cost(
             program_id=program_id,
             run_id=run_id,
             image_generated_count=image_generated_count,
+            image_usage=image_usage,
         )
         common_usage = common.get("usage") if isinstance(common.get("usage"), dict) else {}
         return {
@@ -64,7 +66,10 @@ def estimate_keysuri_gemini_cost(
                 "candidates_token_count": common_usage.get("candidates_token_count"),
                 "thoughts_token_count": common_usage.get("thoughts_token_count"),
                 "total_token_count": common_usage.get("total_token_count"),
+                "generated_image_count": common_usage.get("generated_image_count"),
             },
+            "image_model": image_model,
+            "image_usage": dict(common.get("image_usage") or {}),
         }
     except Exception as exc:  # pragma: no cover - defensive, cost estimate is best-effort
         return {

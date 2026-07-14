@@ -160,7 +160,7 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("Text response cost", page.text)
         self.assertIn("Text reasoning cost", page.text)
         self.assertIn("Text total cost", page.text)
-        self.assertIn("Total production cost", page.text)
+        self.assertIn("Total AI model production cost", page.text)
         self.assertIn("Text subtotal USD", page.text)
         csv_resp = self.client.get("/admin/costs/ledger.csv?month=2026-07")
         self.assertEqual(csv_resp.status_code, 200)
@@ -185,6 +185,23 @@ class AdminRoutesTests(unittest.TestCase):
             page = self.client.get("/admin/costs?month=2026-07")
         self.assertEqual(page.status_code, 200)
         self.assertIn("Text subtotal USD</dt><dd>0.324294", page.text)
+
+    def test_admin_costs_distinguishes_zero_from_unknown_and_counts_statuses(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        ledger = (
+            "run_id,created_at_kst,text_model,text_total_cost_usd,image_cost_usd,total_cost_usd,cost_estimate_status\n"
+            "run-zero,2026-07-01T00:00:00+09:00,gemini-2.5-flash,0.01,0,0.01,fully_priced_ai_model_cost\n"
+            "run-unknown,2026-07-02T00:00:00+09:00,gemini-2.5-flash,0.02,,,partial_text_only\n"
+        )
+        with patch("admin_routes.load_cost_ledger_csv", return_value=ledger):
+            page = self.client.get("/admin/costs?month=2026-07")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Known image-cost runs (zero included)</dt><dd>1", page.text)
+        self.assertIn("Unknown image-cost runs</dt><dd>1", page.text)
+        self.assertIn("Fully priced runs</dt><dd>1", page.text)
+        self.assertIn("Partially priced runs</dt><dd>1", page.text)
+        self.assertIn("Known image subtotal USD</dt><dd>0.000000", page.text)
+        self.assertIn("Complete AI model total USD</dt><dd>0.010000", page.text)
 
     def test_run_detail_cost_estimate_shows_usd_partial_labels(self) -> None:
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
@@ -235,13 +252,13 @@ class AdminRoutesTests(unittest.TestCase):
         )
         resp = self.client.get(f"/admin/runs/{run_id}")
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("Cost Estimate", resp.text)
+        self.assertIn("AI 모델 생산 원가", resp.text)
         self.assertIn("Text input cost USD", resp.text)
         self.assertIn("Text response cost USD", resp.text)
         self.assertIn("Text reasoning cost USD", resp.text)
         self.assertIn("Text total cost USD", resp.text)
-        self.assertIn("Total production cost USD", resp.text)
-        self.assertIn("unconfigured / not calculated", resp.text)
+        self.assertIn("Total AI model production cost USD", resp.text)
+        self.assertIn("unknown / not calculated", resp.text)
         self.assertIn("partial_text_only", resp.text)
         self.assertIn("0.027659", resp.text)
 

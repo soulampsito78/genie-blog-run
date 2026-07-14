@@ -78,10 +78,54 @@ class ServiceImageOutcome:
     generated_image_path: Optional[str] = None
     error_code: Optional[str] = None
     error_message: Optional[str] = None
+    image_api_provider: str = "google_cloud_vertex_ai"
+    image_model_raw: Optional[str] = None
+    image_model_normalized: Optional[str] = None
+    image_pricing_mode: str = "standard_paygo"
+    image_request_count: int = 0
+    image_successful_output_count: int = 0
+    image_failed_request_count: int = 0
+    image_retry_count: int = 0
+    image_discarded_output_count: int = 0
+    image_locally_derived_asset_count: int = 0
+    image_cache_reuse_count: int = 0
+    image_static_fallback_count: int = 0
+    image_output_tokens: Optional[int] = None
+    image_evidence_confidence: Optional[str] = None
+    image_evidence_source: Optional[str] = None
 
     @property
     def ok(self) -> bool:
         return service_image_passes(self)
+
+    def cost_usage(self) -> Dict[str, Any]:
+        successful = self.image_successful_output_count
+        requests = self.image_request_count
+        # Compatibility for injected/older outcome producers that already
+        # satisfy the explicit API-success contract but predate counters.
+        if self.ok and successful == 0 and requests == 0:
+            successful = 1
+            requests = 1
+        return {
+            "image_api_provider": self.image_api_provider,
+            "image_model_raw": self.image_model_raw,
+            "image_model_normalized": self.image_model_normalized,
+            "image_pricing_mode": self.image_pricing_mode,
+            "image_request_count": requests,
+            "image_successful_output_count": successful,
+            "image_failed_request_count": self.image_failed_request_count,
+            "image_retry_count": self.image_retry_count,
+            "image_discarded_output_count": self.image_discarded_output_count,
+            "image_locally_derived_asset_count": self.image_locally_derived_asset_count,
+            "image_cache_reuse_count": self.image_cache_reuse_count,
+            "image_static_fallback_count": self.image_static_fallback_count,
+            "image_output_tokens": self.image_output_tokens,
+            "image_evidence_confidence": self.image_evidence_confidence
+            or ("medium" if self.ok else None),
+            "image_evidence_source": self.image_evidence_source
+            or ("service_image_success_contract" if self.ok else None),
+            "generated_image_count_semantics": "paid_successful_api_outputs",
+        }
 
 
 @dataclass
@@ -188,6 +232,56 @@ def build_service_artifact_fields(
         "response_status": response_status,
         "workflow_status": workflow_status,
     }
+    outcomes = []
+    if image_bundle is not None:
+        outcomes = [image_bundle.top, image_bundle.bottom]
+    elif image_outcome is not None:
+        outcomes = [image_outcome]
+    if outcomes:
+        outcome_usage = [item.cost_usage() for item in outcomes]
+        meta.update(
+            {
+                "image_api_provider": next(
+                    (item.image_api_provider for item in outcomes if item.image_api_provider), None
+                ),
+                "image_model_raw": next(
+                    (item.image_model_raw for item in outcomes if item.image_model_raw), None
+                ),
+                "image_model_normalized": next(
+                    (item.image_model_normalized for item in outcomes if item.image_model_normalized), None
+                ),
+                "image_pricing_mode": next(
+                    (item.image_pricing_mode for item in outcomes if item.image_pricing_mode), None
+                ),
+                "image_request_count": sum(item["image_request_count"] for item in outcome_usage),
+                "image_successful_output_count": sum(
+                    item["image_successful_output_count"] for item in outcome_usage
+                ),
+                "image_failed_request_count": sum(item.image_failed_request_count for item in outcomes),
+                "image_retry_count": sum(item.image_retry_count for item in outcomes),
+                "image_discarded_output_count": sum(
+                    item.image_discarded_output_count for item in outcomes
+                ),
+                "image_locally_derived_asset_count": sum(
+                    item.image_locally_derived_asset_count for item in outcomes
+                ),
+                "image_cache_reuse_count": sum(item.image_cache_reuse_count for item in outcomes),
+                "image_static_fallback_count": sum(
+                    item.image_static_fallback_count for item in outcomes
+                ),
+                "image_output_tokens": sum(item.image_output_tokens or 0 for item in outcomes)
+                or None,
+                "generated_image_count_semantics": "paid_successful_api_outputs",
+                "image_evidence_confidence": next(
+                    (item.image_evidence_confidence for item in outcomes if item.image_evidence_confidence),
+                    None,
+                ),
+                "image_evidence_source": next(
+                    (item.image_evidence_source for item in outcomes if item.image_evidence_source),
+                    None,
+                ),
+            }
+        )
     if error_code:
         meta["error_code"] = error_code
     if owner_review_url:

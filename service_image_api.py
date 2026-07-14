@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 from service_full_run_contract import (
     ERROR_IMAGE_GENERATION_FAILED,
@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_VERTEX_IMAGE_MODEL = os.getenv("VERTEX_IMAGE_MODEL", "gemini-2.5-flash-image")
 DEFAULT_VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "global")
+GEMINI_2_5_FLASH_IMAGE_OUTPUT_TOKENS = 1290
 
 
 def _repo_rel(path: Path) -> str:
@@ -51,6 +52,7 @@ def invoke_vertex_image_generation(
         )
 
     fn = generate_fn
+    uses_default_generator = fn is None
     if fn is None:
         try:
             from image_generator import generate_image_file as fn  # noqa: PLC0415
@@ -82,7 +84,8 @@ def invoke_vertex_image_generation(
     ref = Path(reference_image_path) if reference_image_path else None
 
     try:
-        fn(
+        telemetry: Dict[str, Any] = {}
+        kwargs = dict(
             prompt=prompt_text,
             output_path=out,
             model_name=model,
@@ -90,13 +93,32 @@ def invoke_vertex_image_generation(
             project_id=project,
             location=loc,
         )
+        if uses_default_generator:
+            kwargs["telemetry"] = telemetry
+        fn(**kwargs)
         if not out.is_file():
             raise RuntimeError(f"image file not written: {out}")
+        output_count = int(telemetry.get("response_image_output_count") or 1)
+        normalized_model = model.lower()
         return ServiceImageOutcome(
             called_image_api=True,
             image_generation_status=IMAGE_GEN_GENERATED,
             image_source=IMAGE_SOURCE_GENERATED,
             generated_image_path=_repo_rel(out),
+            image_model_raw=model,
+            image_model_normalized=normalized_model,
+            image_request_count=1,
+            image_successful_output_count=output_count,
+            image_discarded_output_count=int(
+                telemetry.get("discarded_image_output_count") or max(0, output_count - 1)
+            ),
+            image_output_tokens=(
+                output_count * GEMINI_2_5_FLASH_IMAGE_OUTPUT_TOKENS
+                if normalized_model == "gemini-2.5-flash-image"
+                else None
+            ),
+            image_evidence_confidence="high",
+            image_evidence_source="runtime_vertex_response_image_parts",
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("invoke_vertex_image_generation failed: %s", exc)
@@ -106,4 +128,11 @@ def invoke_vertex_image_generation(
             image_source="",
             error_code=ERROR_IMAGE_GENERATION_FAILED,
             error_message=f"{type(exc).__name__}: {exc}",
+            image_model_raw=model,
+            image_model_normalized=model.lower(),
+            image_request_count=1,
+            image_successful_output_count=0,
+            image_failed_request_count=1,
+            image_evidence_confidence="high",
+            image_evidence_source="runtime_vertex_request_failure",
         )
