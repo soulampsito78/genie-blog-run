@@ -74,8 +74,8 @@ class CostEstimateBasicTests(unittest.TestCase):
 
     def test_model_specific_prices_allow_global_and_korea_to_differ(self) -> None:
         env = {
-            "GENIE_COST_GEMINI_3_FLASH_PREVIEW_INPUT_USD_PER_1M_TOKENS": "0.90",
-            "GENIE_COST_GEMINI_3_FLASH_PREVIEW_OUTPUT_USD_PER_1M_TOKENS": "5.40",
+            "GENIE_COST_GEMINI_3_FLASH_PREVIEW_INPUT_USD_PER_1M_TOKENS": "0.50",
+            "GENIE_COST_GEMINI_3_FLASH_PREVIEW_OUTPUT_USD_PER_1M_TOKENS": "3.00",
             "GENIE_COST_GEMINI_2_5_FLASH_INPUT_USD_PER_1M_TOKENS": "0.30",
             "GENIE_COST_GEMINI_2_5_FLASH_OUTPUT_USD_PER_1M_TOKENS": "2.50",
         }
@@ -90,14 +90,14 @@ class CostEstimateBasicTests(unittest.TestCase):
                 model="gemini-2.5-flash",
                 program_id="keysuri_korea_tech",
             )
-        self.assertAlmostEqual(global_result["total_cost_usd"], 6.30)
+        self.assertAlmostEqual(global_result["total_cost_usd"], 3.50)
         self.assertAlmostEqual(korea_result["total_cost_usd"], 2.80)
         self.assertEqual(global_result["model_pricing"]["text_model_key"], "GEMINI_3_FLASH_PREVIEW")
         self.assertEqual(korea_result["model_pricing"]["text_model_key"], "GEMINI_2_5_FLASH")
 
 
 class CostEstimateThoughtsTests(unittest.TestCase):
-    def test_thoughts_tokens_use_dedicated_price_when_set(self) -> None:
+    def test_thoughts_tokens_ignore_dedicated_price_and_use_output(self) -> None:
         with _clear_pricing_env(), mock.patch.dict(
             os.environ,
             {
@@ -110,10 +110,10 @@ class CostEstimateThoughtsTests(unittest.TestCase):
                 {"thoughts_token_count": 1_000_000, "candidates_token_count": 100_000},
                 model="gemini-3-flash-preview",
             )
-        self.assertAlmostEqual(result["components"]["text_thoughts_cost_usd"], 5.00)
-        self.assertNotIn("not set", result["pricing_note"])
+        self.assertAlmostEqual(result["components"]["text_thoughts_cost_usd"], 2.50)
+        self.assertIn("deprecated KEYSURI_COST_THOUGHTS_USD_PER_1M_TOKENS is ignored", result["pricing_note"])
 
-    def test_thoughts_tokens_fall_back_to_output_price_and_note_it(self) -> None:
+    def test_thoughts_tokens_use_output_price_without_separate_env(self) -> None:
         with _clear_pricing_env(), mock.patch.dict(
             os.environ, {"KEYSURI_COST_OUTPUT_USD_PER_1M_TOKENS": "2.50"}, clear=False
         ):
@@ -122,8 +122,13 @@ class CostEstimateThoughtsTests(unittest.TestCase):
                 model="gemini-3-flash-preview",
             )
         self.assertAlmostEqual(result["components"]["text_thoughts_cost_usd"], 2.50)
-        self.assertIn("fallback", result["pricing_note"])
-        self.assertIsNone(result["unit_prices"]["thoughts_usd_per_1m_tokens"])
+        self.assertIn("response and reasoning", result["pricing_note"])
+        self.assertAlmostEqual(result["unit_prices"]["thoughts_usd_per_1m_tokens"], 2.50)
+        self.assertEqual(
+            result["unit_prices"]["thoughts_price_env"],
+            "KEYSURI_COST_OUTPUT_USD_PER_1M_TOKENS",
+        )
+        self.assertNotIn("THOUGHTS", "|".join(result["missing_price_env"]))
 
     def test_no_thoughts_tokens_and_no_price_leaves_component_none(self) -> None:
         with _clear_pricing_env():

@@ -14,9 +14,39 @@ import os
 import re
 from typing import Any, Dict, Mapping, Optional, Sequence
 
+GOOGLE_CLOUD_VERTEX_PRICING_URL = (
+    "https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing"
+)
+GOOGLE_CLOUD_VERTEX_PRICING_CHECKED_AT = "2026-07-14T17:06:57+09:00"
+
+# Official Google Cloud Vertex AI Standard text prices, checked at the time
+# above. Response and reasoning tokens share one canonical output rate.
+GOOGLE_CLOUD_VERTEX_STANDARD_TEXT_PRICING: Dict[str, Dict[str, Any]] = {
+    "gemini-2.5-flash": {
+        "provider": "google_cloud_vertex_ai",
+        "pricing_tier": "standard",
+        "pricing_url": GOOGLE_CLOUD_VERTEX_PRICING_URL,
+        "pricing_checked_at": GOOGLE_CLOUD_VERTEX_PRICING_CHECKED_AT,
+        "model": "gemini-2.5-flash",
+        "input_usd_per_1m_tokens": 0.30,
+        "output_and_reasoning_usd_per_1m_tokens": 2.50,
+    },
+    "gemini-3-flash-preview": {
+        "provider": "google_cloud_vertex_ai",
+        "pricing_tier": "standard",
+        "pricing_url": GOOGLE_CLOUD_VERTEX_PRICING_URL,
+        "pricing_checked_at": GOOGLE_CLOUD_VERTEX_PRICING_CHECKED_AT,
+        "model": "gemini-3-flash-preview",
+        "input_usd_per_1m_tokens": 0.50,
+        "output_and_reasoning_usd_per_1m_tokens": 3.00,
+    },
+}
+
 # Common env vars — checked first for every service_family.
 ENV_INPUT_USD_PER_1M = "GENIE_COST_INPUT_USD_PER_1M_TOKENS"
 ENV_OUTPUT_USD_PER_1M = "GENIE_COST_OUTPUT_USD_PER_1M_TOKENS"
+# Deprecated compatibility name. It is intentionally never used as a pricing
+# rate: Google Cloud Standard prices response and reasoning at one output rate.
 ENV_THOUGHTS_USD_PER_1M = "GENIE_COST_THOUGHTS_USD_PER_1M_TOKENS"
 ENV_IMAGE_USD_PER_IMAGE = "GENIE_COST_IMAGE_USD_PER_IMAGE"
 ENV_KRW_PER_USD = "GENIE_COST_KRW_PER_USD"
@@ -32,7 +62,6 @@ _LEGACY_KEYSURI_ENV_KRW_PER_USD = "KEYSURI_COST_KRW_PER_USD"
 _PRICE_ENV_FALLBACK_CHAINS: Dict[str, Sequence[str]] = {
     "input": (ENV_INPUT_USD_PER_1M, _LEGACY_KEYSURI_ENV_INPUT_USD_PER_1M),
     "output": (ENV_OUTPUT_USD_PER_1M, _LEGACY_KEYSURI_ENV_OUTPUT_USD_PER_1M),
-    "thoughts": (ENV_THOUGHTS_USD_PER_1M, _LEGACY_KEYSURI_ENV_THOUGHTS_USD_PER_1M),
     "image": (ENV_IMAGE_USD_PER_IMAGE, _LEGACY_KEYSURI_ENV_IMAGE_USD_PER_IMAGE),
     "krw_per_usd": (ENV_KRW_PER_USD, _LEGACY_KEYSURI_ENV_KRW_PER_USD),
 }
@@ -40,10 +69,36 @@ _PRICE_ENV_FALLBACK_CHAINS: Dict[str, Sequence[str]] = {
 _PRICE_KIND_SUFFIXES = {
     "input": "INPUT_USD_PER_1M_TOKENS",
     "output": "OUTPUT_USD_PER_1M_TOKENS",
-    "thoughts": "THOUGHTS_USD_PER_1M_TOKENS",
     "image": "IMAGE_USD_PER_IMAGE",
     "krw_per_usd": "KRW_PER_USD",
 }
+
+_DEPRECATED_THOUGHTS_ENV_NAMES = (
+    ENV_THOUGHTS_USD_PER_1M,
+    _LEGACY_KEYSURI_ENV_THOUGHTS_USD_PER_1M,
+)
+
+
+def canonical_model_id(model: Optional[str]) -> Optional[str]:
+    """Return the model id from a short or fully-qualified Vertex resource."""
+    if not model:
+        return None
+    value = str(model).strip().rstrip("/")
+    if not value:
+        return None
+    match = re.search(r"(?:^|/)publishers/google/models/([^/]+)$", value, re.IGNORECASE)
+    if match:
+        value = match.group(1)
+    elif "/models/" in value.lower():
+        value = re.split(r"/models/", value, maxsplit=1, flags=re.IGNORECASE)[-1]
+    return value.strip().lower() or None
+
+
+def standard_text_pricing_for_model(model: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Return a copy of the verified Vertex Standard pricing contract."""
+    canonical = canonical_model_id(model)
+    pricing = GOOGLE_CLOUD_VERTEX_STANDARD_TEXT_PRICING.get(canonical or "")
+    return dict(pricing) if pricing else None
 
 
 def normalize_model_env_key(model: Optional[str]) -> Optional[str]:
@@ -54,10 +109,24 @@ def normalize_model_env_key(model: Optional[str]) -> Optional[str]:
     - gemini-3-flash-preview -> GEMINI_3_FLASH_PREVIEW
     - gemini-2.5-flash-image -> GEMINI_2_5_FLASH_IMAGE
     """
-    if not model:
+    canonical = canonical_model_id(model)
+    if not canonical:
         return None
-    normalized = re.sub(r"[^A-Za-z0-9]+", "_", str(model).strip()).strip("_").upper()
+    normalized = re.sub(r"[^A-Za-z0-9]+", "_", canonical).strip("_").upper()
     return normalized or None
+
+
+def _configured_deprecated_thoughts_env() -> Optional[str]:
+    candidates = list(_DEPRECATED_THOUGHTS_ENV_NAMES)
+    candidates.extend(
+        name
+        for name in sorted(os.environ)
+        if name.endswith("_THOUGHTS_USD_PER_1M_TOKENS") and name not in candidates
+    )
+    for env_name in candidates:
+        if os.getenv(env_name, "").strip():
+            return env_name
+    return None
 
 
 def _read_float_env(name: str) -> Optional[float]:
@@ -229,34 +298,30 @@ def estimate_genie_generation_cost(
         output_envs = _text_price_env_chain(
             "output", text_model_key=text_model_key, service_family=service_family
         )
-        thoughts_envs = _text_price_env_chain(
-            "thoughts", text_model_key=text_model_key, service_family=service_family
-        )
         image_envs = _image_price_env_chain(
             image_model_key=image_model_key, service_family=service_family
         )
 
         input_price, input_price_env = _read_price_from_envs(input_envs)
         output_price, output_price_env = _read_price_from_envs(output_envs)
-        thoughts_price, thoughts_price_env = _read_price_from_envs(thoughts_envs)
         image_price, image_price_env = _read_price_from_envs(image_envs)
         krw_per_usd, krw_per_usd_env = _read_price_from_envs(_PRICE_ENV_FALLBACK_CHAINS["krw_per_usd"])
+        deprecated_thoughts_env = _configured_deprecated_thoughts_env()
+        standard_contract = standard_text_pricing_for_model(text_model)
 
         pricing_note = (
             "estimate only; actual billing may differ. Cloud Run/GCS/SMTP/blog "
-            "posting infra costs may be separate."
+            "posting infra costs may be separate; response and reasoning tokens "
+            "use the selected output-token rate"
         )
-        thoughts_price_used = thoughts_price
-        if thoughts_tokens and thoughts_price is None and output_price is not None:
-            thoughts_price_used = output_price
+        if deprecated_thoughts_env:
             pricing_note += (
-                "; thoughts token unit price not set, thoughts tokens billed at "
-                "the selected output-token rate as fallback"
+                f"; deprecated {deprecated_thoughts_env} is ignored"
             )
 
         text_input_cost = _safe_token_cost(prompt_tokens, input_price)
         text_output_cost = _safe_token_cost(candidates_tokens, output_price)
-        text_thoughts_cost = _safe_token_cost(thoughts_tokens, thoughts_price_used)
+        text_thoughts_cost = _safe_token_cost(thoughts_tokens, output_price)
         image_cost = (
             image_generated_count * image_price
             if image_generated_count and image_price is not None
@@ -269,8 +334,11 @@ def estimate_genie_generation_cost(
 
         cost_components = [*text_cost_components, image_cost]
         known_components = [c for c in cost_components if c is not None]
-        # USD-first: sum every priced component even when KRW/image prices are absent.
-        total_cost_usd = sum(known_components) if known_components else None
+        image_unconfigured = bool(image_generated_count) and image_cost is None
+        # Do not present a text-only subtotal as a complete production total.
+        total_cost_usd = (
+            None if image_unconfigured else (sum(known_components) if known_components else None)
+        )
 
         # Optional FX only — never required for USD status or totals.
         total_cost_krw = (
@@ -289,7 +357,6 @@ def estimate_genie_generation_cost(
             image_pricing_status = "unsupported_or_unconfigured"
 
         text_priced = text_total_cost_usd is not None
-        image_unconfigured = bool(image_generated_count) and image_cost is None
         if text_priced and image_unconfigured:
             pricing_note += "; text cost calculated; image cost not configured"
         elif image_unconfigured:
@@ -298,7 +365,7 @@ def estimate_genie_generation_cost(
                 "image cost not calculated."
             )
 
-        env_prices_set = [p for p in (input_price, output_price, thoughts_price, image_price) if p is not None]
+        env_prices_set = [p for p in (input_price, output_price, image_price) if p is not None]
         if not env_prices_set:
             pricing_source = "unknown"
         elif None in (input_price, output_price):
@@ -310,12 +377,15 @@ def estimate_genie_generation_cost(
         missing_price_env = []
         if _needs_price(prompt_tokens) and input_price is None and input_envs:
             missing_price_env.append(input_envs[0])
-        if _needs_price(candidates_tokens) and output_price is None and output_envs:
+        if (
+            _needs_price(candidates_tokens) or _needs_price(thoughts_tokens)
+        ) and output_price is None and output_envs:
             missing_price_env.append(output_envs[0])
-        if _needs_price(thoughts_tokens) and thoughts_price_used is None and thoughts_envs:
-            missing_price_env.append(thoughts_envs[0])
-        if image_generated_count and image_price is None and image_envs:
-            missing_price_env.append(image_envs[0])
+        if image_generated_count and image_price is None:
+            if not image_model_key:
+                missing_price_env.append("unknown_image_pricing")
+            elif image_envs:
+                missing_price_env.append(image_envs[0])
         missing_price_env = list(dict.fromkeys(missing_price_env))
 
         usage_present = _has_usage(
@@ -330,6 +400,8 @@ def estimate_genie_generation_cost(
             cost_estimate_status = "unavailable"
         elif not known_components:
             cost_estimate_status = "usage_only"
+        elif text_priced and image_unconfigured:
+            cost_estimate_status = "partial_text_only"
         elif (
             not missing_price_env
             and total_cost_usd is not None
@@ -358,6 +430,13 @@ def estimate_genie_generation_cost(
                 "text_pricing_source": _pricing_source_from_env(input_price_env or output_price_env),
                 "image_pricing_source": _pricing_source_from_env(image_price_env),
                 "image_pricing_status": image_pricing_status,
+                "provider": standard_contract.get("provider") if standard_contract else None,
+                "pricing_tier": standard_contract.get("pricing_tier") if standard_contract else None,
+                "pricing_url": standard_contract.get("pricing_url") if standard_contract else None,
+                "pricing_checked_at": standard_contract.get("pricing_checked_at") if standard_contract else None,
+                "model": standard_contract.get("model") if standard_contract else canonical_model_id(text_model),
+                "input_usd_per_1m_tokens": standard_contract.get("input_usd_per_1m_tokens") if standard_contract else None,
+                "output_and_reasoning_usd_per_1m_tokens": standard_contract.get("output_and_reasoning_usd_per_1m_tokens") if standard_contract else None,
             },
             "missing_price_env": missing_price_env,
             "usage": {
@@ -370,12 +449,13 @@ def estimate_genie_generation_cost(
             "unit_prices": {
                 "input_usd_per_1m_tokens": input_price,
                 "output_usd_per_1m_tokens": output_price,
-                "thoughts_usd_per_1m_tokens": thoughts_price,
+                "thoughts_usd_per_1m_tokens": output_price,
                 "image_usd_per_image": image_price,
                 "krw_per_usd": krw_per_usd,
                 "input_price_env": input_price_env,
                 "output_price_env": output_price_env,
-                "thoughts_price_env": thoughts_price_env,
+                "thoughts_price_env": output_price_env,
+                "deprecated_thoughts_price_env_ignored": deprecated_thoughts_env,
                 "image_price_env": image_price_env,
                 "krw_per_usd_env": krw_per_usd_env,
             },

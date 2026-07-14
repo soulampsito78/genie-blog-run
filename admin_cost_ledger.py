@@ -226,11 +226,16 @@ def _render_ledger_csv(rows: List[Mapping[str, Any]]) -> str:
     return out.getvalue()
 
 
-def _parse_ledger_csv(raw: str) -> List[Dict[str, str]]:
+def parse_cost_ledger_csv(raw: str) -> List[Dict[str, str]]:
     if not str(raw or "").strip():
         return []
     reader = csv.DictReader(io.StringIO(raw))
     return [dict(row) for row in reader]
+
+
+# Private compatibility alias for callers/tests written before the parser was
+# exposed for the admin monthly-cost view.
+_parse_ledger_csv = parse_cost_ledger_csv
 
 
 def _write_cost_record(record: Mapping[str, Any], month: str) -> str:
@@ -328,4 +333,3 @@ def list_cost_records(limit: int = 50) -> List[Dict[str, Any]]:
         if isinstance(data, dict):
             records.append(data)
     return records
-

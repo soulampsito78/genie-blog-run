@@ -43,10 +43,11 @@ from admin_store import (
 from admin_cost_ledger import (
     COST_LEDGER_COLUMNS,
     cost_ledger_display_path,
-    list_cost_records,
     load_cost_ledger_csv,
+    parse_cost_ledger_csv,
     month_from_run_meta,
 )
+from genie_cost_estimate import standard_text_pricing_for_model
 from keysuri_service_full_run import (
     run_keysuri_image_only_reissue,
     run_keysuri_text_and_image_reissue,
@@ -250,11 +251,11 @@ def _render_cost_estimate_section(meta: Dict[str, Any]) -> str:
         ("Thoughts token count", usage.get("thoughts_token_count")),
         ("Generated image count", usage.get("generated_image_count")),
         ("Text input cost USD", _format_cost_usd(components.get("text_input_cost_usd"))),
-        ("Text output cost USD", _format_cost_usd(components.get("text_output_cost_usd"))),
-        ("Text thoughts cost USD", _format_cost_usd(components.get("text_thoughts_cost_usd"))),
+        ("Text response cost USD", _format_cost_usd(components.get("text_output_cost_usd"))),
+        ("Text reasoning cost USD", _format_cost_usd(components.get("text_thoughts_cost_usd"))),
         ("Text total cost USD", _format_cost_usd(text_total)),
         ("Image cost", _format_image_cost_display(components, cost)),
-        ("Total known cost USD", _format_cost_usd(cost.get("total_cost_usd"))),
+        ("Total production cost USD", _format_cost_usd(cost.get("total_cost_usd"))),
         ("Total cost KRW (optional)", _format_cost_usd(cost.get("total_cost_krw"))),
         ("Missing price env", missing or "—"),
         ("Pricing note", cost.get("pricing_note")),
@@ -795,32 +796,69 @@ def admin_costs(request: Request):
     need = _require_login(request)
     if need is not None:
         return need
-    records = list_cost_records(limit=100)
+    requested_month = str(request.query_params.get("month") or "")
+    month = requested_month if re.match(r"^[0-9]{4}-[0-9]{2}$", requested_month) else now_kst_iso()[:7]
+    records = parse_cost_ledger_csv(load_cost_ledger_csv(month) or "")
     rows = []
-    for record in records:
+    for record in reversed(records[-100:]):
         rid = _esc(record.get("run_id"))
-        month = month_from_run_meta(record)
         rows.append(
             "<tr>"
             f"<td><a href=\"/admin/runs/{rid}\">{rid}</a></td>"
             f"<td>{_esc(record.get('created_at_kst'))}</td>"
-            f"<td>{_esc(record.get('service_family'))}</td>"
-            f"<td>{_esc(record.get('program_id'))}</td>"
+            f"<td>{_esc(record.get('text_model'))}</td>"
+            f"<td>{_esc(_format_cost_usd(record.get('text_input_cost_usd')))}</td>"
+            f"<td>{_esc(_format_cost_usd(record.get('text_output_cost_usd')))}</td>"
+            f"<td>{_esc(_format_cost_usd(record.get('text_thoughts_cost_usd')))}</td>"
+            f"<td>{_esc(_format_cost_usd(record.get('text_total_cost_usd')))}</td>"
+            f"<td>{_esc(_format_cost_usd(record.get('image_cost_usd')))}</td>"
+            f"<td>{_esc(_format_cost_usd(record.get('total_cost_usd')))}</td>"
             f"<td>{_esc(record.get('cost_estimate_status'))}</td>"
-            f"<td>{_esc(record.get('total_cost_usd'))}</td>"
-            f"<td>{_esc(record.get('total_cost_krw'))}</td>"
-            f"<td><a href=\"/admin/costs/ledger.csv?month={_esc(month)}\">CSV</a></td>"
+            f"<td>{_esc(record.get('missing_price_env') or '—')}</td>"
             "</tr>"
         )
+
+    def _known_sum(column: str) -> float:
+        total = 0.0
+        for record in records:
+            raw = str(record.get(column) or "").strip()
+            if not raw:
+                continue
+            try:
+                total += float(raw)
+            except (TypeError, ValueError):
+                continue
+        return total
+
+    status_counts: Dict[str, int] = {}
+    for record in records:
+        status = str(record.get("cost_estimate_status") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+    fully_priced = sum(status_counts.get(s, 0) for s in ("estimated", "fully_priced"))
+    partially_priced = sum(status_counts.get(s, 0) for s in ("partial", "partial_text_only"))
+    unknown_models = sum(
+        standard_text_pricing_for_model(record.get("text_model")) is None for record in records
+    )
+    summary = (
+        '<div class="card"><h2>월 합계</h2><dl class="meta">'
+        f"<dt>Text subtotal USD</dt><dd>{_esc(_format_cost_usd(_known_sum('text_total_cost_usd')))}</dd>"
+        f"<dt>Known image subtotal USD</dt><dd>{_esc(_format_cost_usd(_known_sum('image_cost_usd')))}</dd>"
+        f"<dt>Fully priced runs</dt><dd>{fully_priced}</dd>"
+        f"<dt>Partially priced runs</dt><dd>{partially_priced}</dd>"
+        f"<dt>Usage-only runs</dt><dd>{status_counts.get('usage_only', 0)}</dd>"
+        f"<dt>Unknown model runs</dt><dd>{unknown_models}</dd>"
+        "</dl></div>"
+    )
     table = (
         "<table><thead><tr>"
-        "<th>run_id</th><th>created_at_kst</th><th>service</th><th>program</th>"
-        "<th>cost_status</th><th>USD</th><th>KRW</th><th>ledger</th>"
+        "<th>run_id</th><th>created_at_kst</th><th>text model</th>"
+        "<th>Text input cost</th><th>Text response cost</th><th>Text reasoning cost</th>"
+        "<th>Text total cost</th><th>Image cost</th><th>Total production cost</th>"
+        "<th>Estimate status</th><th>Missing pricing component</th>"
         "</tr></thead><tbody>"
-        + ("".join(rows) if rows else "<tr><td colspan=\"8\">저장된 cost record가 없습니다.</td></tr>")
+        + ("".join(rows) if rows else "<tr><td colspan=\"11\">저장된 cost ledger 행이 없습니다.</td></tr>")
         + "</tbody></table>"
     )
-    month = month_from_run_meta(records[0]) if records else now_kst_iso()[:7]
     inner = f"""
 <div class="page-head">
 <h1>비용 ledger</h1>
@@ -830,6 +868,7 @@ def admin_costs(request: Request):
 </div>
 </div>
 <p class="break-long">월별 CSV 경로: <code>{_esc(cost_ledger_display_path(month))}</code></p>
+{summary}
 <div class="card"><div class="table-wrap">{table}</div></div>
 """
     return HTMLResponse(_layout("Cost Ledger", inner))

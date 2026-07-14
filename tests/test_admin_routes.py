@@ -156,6 +156,12 @@ class AdminRoutesTests(unittest.TestCase):
         page = self.client.get("/admin/costs")
         self.assertEqual(page.status_code, 200)
         self.assertIn(run_id, page.text)
+        self.assertIn("Text input cost", page.text)
+        self.assertIn("Text response cost", page.text)
+        self.assertIn("Text reasoning cost", page.text)
+        self.assertIn("Text total cost", page.text)
+        self.assertIn("Total production cost", page.text)
+        self.assertIn("Text subtotal USD", page.text)
         csv_resp = self.client.get("/admin/costs/ledger.csv?month=2026-07")
         self.assertEqual(csv_resp.status_code, 200)
         self.assertIn("text/csv", csv_resp.headers.get("content-type", ""))
@@ -207,7 +213,7 @@ class AdminRoutesTests(unittest.TestCase):
                     },
                     "total_cost_usd": 0.027659,
                     "total_cost_krw": None,
-                    "cost_estimate_status": "partial",
+                    "cost_estimate_status": "partial_text_only",
                     "pricing_source": "env",
                     "price_env_configured": True,
                     "missing_price_env": ["GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE"],
@@ -219,10 +225,12 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("Cost Estimate", resp.text)
         self.assertIn("Text input cost USD", resp.text)
+        self.assertIn("Text response cost USD", resp.text)
+        self.assertIn("Text reasoning cost USD", resp.text)
         self.assertIn("Text total cost USD", resp.text)
-        self.assertIn("Total known cost USD", resp.text)
+        self.assertIn("Total production cost USD", resp.text)
         self.assertIn("unconfigured / not calculated", resp.text)
-        self.assertIn("partial", resp.text)
+        self.assertIn("partial_text_only", resp.text)
         self.assertIn("0.027659", resp.text)
 
     def test_run_detail_shows_beta_recipients_nav_link(self) -> None:

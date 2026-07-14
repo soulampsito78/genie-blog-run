@@ -5,7 +5,11 @@ import os
 import unittest
 from unittest import mock
 
-from genie_cost_estimate import estimate_genie_generation_cost, normalize_model_env_key
+from genie_cost_estimate import (
+    estimate_genie_generation_cost,
+    normalize_model_env_key,
+    standard_text_pricing_for_model,
+)
 
 
 def _clear_all_pricing_env():
@@ -85,6 +89,16 @@ class EnvPriorityTests(unittest.TestCase):
             normalize_model_env_key("gemini-2.5-flash-image"),
             "GEMINI_2_5_FLASH_IMAGE",
         )
+        self.assertEqual(
+            normalize_model_env_key("publishers/google/models/gemini-3-flash-preview"),
+            "GEMINI_3_FLASH_PREVIEW",
+        )
+        self.assertEqual(
+            normalize_model_env_key(
+                "projects/p/locations/global/publishers/google/models/gemini-3-flash-preview"
+            ),
+            "GEMINI_3_FLASH_PREVIEW",
+        )
 
     def test_model_specific_price_takes_priority_over_common_env(self) -> None:
         with _clear_all_pricing_env(), mock.patch.dict(
@@ -106,8 +120,8 @@ class EnvPriorityTests(unittest.TestCase):
 
     def test_gemini_3_preview_and_gemini_25_flash_can_use_different_prices(self) -> None:
         env = {
-            "GENIE_COST_GEMINI_3_FLASH_PREVIEW_INPUT_USD_PER_1M_TOKENS": "0.90",
-            "GENIE_COST_GEMINI_3_FLASH_PREVIEW_OUTPUT_USD_PER_1M_TOKENS": "5.40",
+            "GENIE_COST_GEMINI_3_FLASH_PREVIEW_INPUT_USD_PER_1M_TOKENS": "0.50",
+            "GENIE_COST_GEMINI_3_FLASH_PREVIEW_OUTPUT_USD_PER_1M_TOKENS": "3.00",
             "GENIE_COST_GEMINI_2_5_FLASH_INPUT_USD_PER_1M_TOKENS": "0.30",
             "GENIE_COST_GEMINI_2_5_FLASH_OUTPUT_USD_PER_1M_TOKENS": "2.50",
         }
@@ -122,8 +136,24 @@ class EnvPriorityTests(unittest.TestCase):
                 service_family="keysuri",
                 text_model="gemini-2.5-flash",
             )
-        self.assertAlmostEqual(global_result["total_cost_usd"], 6.30)
+        self.assertAlmostEqual(global_result["total_cost_usd"], 3.50)
         self.assertAlmostEqual(korea_result["total_cost_usd"], 2.80)
+        self.assertEqual(global_result["model_pricing"]["provider"], "google_cloud_vertex_ai")
+        self.assertEqual(global_result["model_pricing"]["pricing_tier"], "standard")
+        self.assertEqual(global_result["model_pricing"]["input_usd_per_1m_tokens"], 0.50)
+        self.assertEqual(
+            global_result["model_pricing"]["output_and_reasoning_usd_per_1m_tokens"],
+            3.00,
+        )
+
+    def test_verified_standard_contracts(self) -> None:
+        flash25 = standard_text_pricing_for_model("gemini-2.5-flash")
+        flash3 = standard_text_pricing_for_model("gemini-3-flash-preview")
+        assert flash25 is not None and flash3 is not None
+        self.assertEqual(flash25["input_usd_per_1m_tokens"], 0.30)
+        self.assertEqual(flash25["output_and_reasoning_usd_per_1m_tokens"], 2.50)
+        self.assertEqual(flash3["input_usd_per_1m_tokens"], 0.50)
+        self.assertEqual(flash3["output_and_reasoning_usd_per_1m_tokens"], 3.00)
 
     def test_genie_cost_env_takes_priority_over_legacy_keysuri_env(self) -> None:
         with _clear_all_pricing_env(), mock.patch.dict(
@@ -252,7 +282,7 @@ class CostEstimateStatusTests(unittest.TestCase):
             {
                 "GENIE_COST_GEMINI_2_5_FLASH_INPUT_USD_PER_1M_TOKENS": "0.30",
                 "GENIE_COST_GEMINI_2_5_FLASH_OUTPUT_USD_PER_1M_TOKENS": "2.50",
-                "GENIE_COST_GEMINI_2_5_FLASH_THOUGHTS_USD_PER_1M_TOKENS": "2.50",
+                "GENIE_COST_GEMINI_2_5_FLASH_THOUGHTS_USD_PER_1M_TOKENS": "99.00",
             },
             clear=False,
         ):
@@ -267,9 +297,18 @@ class CostEstimateStatusTests(unittest.TestCase):
                 image_model="gemini-2.5-flash-image",
                 image_generated_count=2,
             )
-        self.assertEqual(result["cost_estimate_status"], "partial")
-        self.assertIsNotNone(result["total_cost_usd"])
+        self.assertEqual(result["cost_estimate_status"], "partial_text_only")
+        self.assertIsNone(result["total_cost_usd"])
         self.assertIsNotNone(result["components"]["text_total_cost_usd"])
+        self.assertAlmostEqual(result["components"]["text_thoughts_cost_usd"], 0.00981)
+        self.assertEqual(
+            result["unit_prices"]["thoughts_price_env"],
+            "GENIE_COST_GEMINI_2_5_FLASH_OUTPUT_USD_PER_1M_TOKENS",
+        )
+        self.assertEqual(
+            result["unit_prices"]["deprecated_thoughts_price_env_ignored"],
+            "GENIE_COST_GEMINI_2_5_FLASH_THOUGHTS_USD_PER_1M_TOKENS",
+        )
         self.assertIsNone(result["components"]["image_cost_usd"])
         self.assertIsNone(result["total_cost_krw"])
         self.assertEqual(
@@ -278,6 +317,36 @@ class CostEstimateStatusTests(unittest.TestCase):
         )
         self.assertIn("text cost calculated; image cost not configured", result["pricing_note"])
         self.assertNotIn("GENIE_COST_KRW_PER_USD", result["missing_price_env"])
+        self.assertNotIn("THOUGHTS", "|".join(result["missing_price_env"]))
+
+    def test_reasoning_tokens_require_output_price_not_thoughts_price(self) -> None:
+        with _clear_all_pricing_env(), mock.patch.dict(
+            os.environ,
+            {
+                "GENIE_COST_GEMINI_2_5_FLASH_INPUT_USD_PER_1M_TOKENS": "0.30",
+                "GENIE_COST_GEMINI_2_5_FLASH_THOUGHTS_USD_PER_1M_TOKENS": "99.00",
+            },
+            clear=False,
+        ):
+            result = estimate_genie_generation_cost(
+                {
+                    "prompt_token_count": 1_000,
+                    "candidates_token_count": 0,
+                    "thoughts_token_count": 2_000,
+                },
+                service_family="keysuri",
+                text_model="gemini-2.5-flash",
+            )
+        self.assertIsNone(result["components"]["text_thoughts_cost_usd"])
+        self.assertIn(
+            "GENIE_COST_GEMINI_2_5_FLASH_OUTPUT_USD_PER_1M_TOKENS",
+            result["missing_price_env"],
+        )
+        self.assertNotIn("THOUGHTS", "|".join(result["missing_price_env"]))
+        self.assertEqual(
+            result["unit_prices"]["deprecated_thoughts_price_env_ignored"],
+            "GENIE_COST_GEMINI_2_5_FLASH_THOUGHTS_USD_PER_1M_TOKENS",
+        )
 
     def test_text_image_and_krw_prices_are_estimated(self) -> None:
         with _clear_all_pricing_env(), mock.patch.dict(
