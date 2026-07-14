@@ -7,6 +7,7 @@ import logging
 import os
 import hashlib
 import re
+import time
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -3699,6 +3700,8 @@ def run_keysuri_service_full_run(
             "trigger_source": trigger_source,
         }
 
+    request_start = now_kst_iso()
+    request_started_perf = time.perf_counter()
     run_id = generate_run_id(pid)
     runner = smoke_runner or run_keysuri_live_source_smoke
     gemini_usage_sink: Dict[str, Any] = {}
@@ -4342,6 +4345,16 @@ def run_keysuri_service_full_run(
     except Exception:
         cost_estimate = None
     if cost_estimate is not None:
+        meta["request_start"] = request_start
+        meta["request_end"] = now_kst_iso()
+        meta["request_latency_ms"] = int((time.perf_counter() - request_started_perf) * 1000)
+        meta["configured_vcpu"] = 1
+        meta["configured_memory_gib"] = 0.5
+        meta["billing_mode"] = "request_based"
+        meta["min_instances"] = 0
+        meta["max_instances"] = 20
+        meta["concurrency"] = 80
+        meta["request_count"] = 1
         meta["cost_estimate"] = cost_estimate
         meta.update(save_cost_record_best_effort(meta))
 

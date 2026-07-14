@@ -167,6 +167,9 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("text/csv", csv_resp.headers.get("content-type", ""))
         self.assertIn(run_id, csv_resp.text)
         self.assertIn("0.0053", csv_resp.text)
+        self.assertIn("billing_data_status", csv_resp.text.splitlines()[0])
+        self.assertIn("run_direct_infra_list_estimate_usd", csv_resp.text.splitlines()[0])
+        self.assertIn("billing_export_pending", csv_resp.text)
         target_rows = [
             line for line in csv_resp.text.splitlines() if run_id in line and "0.0053" in line
         ]

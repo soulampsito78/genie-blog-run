@@ -46,9 +46,12 @@ from admin_cost_ledger import (
     cost_ledger_display_path,
     load_cost_ledger_csv,
     parse_cost_ledger_csv,
+    render_cost_ledger_csv,
     month_from_run_meta,
 )
 from genie_cost_estimate import standard_text_pricing_for_model
+from genie_billing_export import load_billing_summary
+from genie_cost_allocation import allocation_metrics, modeled_service_cost
 from keysuri_service_full_run import (
     run_keysuri_image_only_reissue,
     run_keysuri_text_and_image_reissue,
@@ -804,6 +807,8 @@ def admin_costs(request: Request):
     requested_month = str(request.query_params.get("month") or "")
     month = requested_month if re.match(r"^[0-9]{4}-[0-9]{2}$", requested_month) else now_kst_iso()[:7]
     records = parse_cost_ledger_csv(load_cost_ledger_csv(month) or "")
+    billing = load_billing_summary(month)
+    allocation = allocation_metrics(billing.get("shared_platform_net"), records)
     rows = []
     for record in reversed(records[-100:]):
         rid = _esc(record.get("run_id"))
@@ -864,6 +869,47 @@ def admin_costs(request: Request):
         f"<dt>Unknown model runs</dt><dd>{unknown_models}</dd>"
         "</dl></div>"
     )
+    ai_list_total = _known_sum("total_cost_usd")
+    modeled = modeled_service_cost(
+        ai_list_total,
+        billing.get("non_ai_infra_net"),
+        billing.get("external_cost_confirmed", "0"),
+    )
+
+    def _billing_value(key: str) -> str:
+        value = billing.get(key)
+        return "—" if value in (None, "") else str(value)
+
+    unknown_items = billing.get("unknown_service_skus")
+    unknown_count = len(unknown_items) if isinstance(unknown_items, list) else 0
+    billing_summary = (
+        '<div class="card"><h2>GCP 실제 청구·관리회계</h2>'
+        '<p>Billing Export의 gross, signed credits, net을 표시합니다. Vertex AI billed net은 기존 AI list 원가와 비교만 하며 합산하지 않습니다.</p>'
+        '<dl class="meta">'
+        f"<dt>Billing data status</dt><dd>{_esc(_billing_value('billing_data_status'))}</dd>"
+        f"<dt>Last usage time</dt><dd>{_esc(_billing_value('billing_export_last_usage_time'))}</dd>"
+        f"<dt>Last load time</dt><dd>{_esc(_billing_value('billing_export_last_load_time'))}</dd>"
+        f"<dt>Billing currency</dt><dd>{_esc(_billing_value('billing_currency'))}</dd>"
+        f"<dt>GCP gross</dt><dd>{_esc(_billing_value('gcp_gross_cost'))}</dd>"
+        f"<dt>Signed credits</dt><dd>{_esc(_billing_value('gcp_credits'))}</dd>"
+        f"<dt>GCP net</dt><dd>{_esc(_billing_value('gcp_net_cost'))}</dd>"
+        f"<dt>Billing cost USD</dt><dd>{_esc(_billing_value('billing_cost_usd'))}</dd>"
+        f"<dt>Billing cost KRW</dt><dd>{_esc(_billing_value('billing_cost_krw'))}</dd>"
+        f"<dt>Vertex AI billed net</dt><dd>{_esc(_billing_value('vertex_ai_billed_net'))}</dd>"
+        f"<dt>Non-AI infra net</dt><dd>{_esc(_billing_value('non_ai_infra_net'))}</dd>"
+        f"<dt>Run compute net</dt><dd>{_esc(_billing_value('run_compute_net'))}</dd>"
+        f"<dt>Run storage net</dt><dd>{_esc(_billing_value('run_storage_net'))}</dd>"
+        f"<dt>Shared platform net</dt><dd>{_esc(_billing_value('shared_platform_net'))}</dd>"
+        f"<dt>Other/unclassified net</dt><dd>{_esc(_billing_value('other_unclassified_net'))}</dd>"
+        f"<dt>Unknown service/SKU count</dt><dd>{unknown_count}</dd>"
+        f"<dt>Operational runs</dt><dd>{allocation['operational_run_count']}</dd>"
+        f"<dt>Shared overhead / operational run</dt><dd>{_esc(allocation.get('shared_overhead_per_operational_run') or '—')}</dd>"
+        f"<dt>Delivered runs</dt><dd>{allocation['delivered_run_count']}</dd>"
+        f"<dt>Shared burden / delivered run</dt><dd>{_esc(allocation.get('shared_overhead_burden_per_delivered_run') or '—')}</dd>"
+        f"<dt>Modeled service cost USD</dt><dd>{_esc(str(modeled) if modeled is not None else '—')}</dd>"
+        f"<dt>Reconciliation status</dt><dd>{_esc(_billing_value('billing_reconciliation_status'))}</dd>"
+        "</dl></div>"
+    )
     table = (
         "<table><thead><tr>"
         "<th>run_id</th><th>created_at_kst</th><th>text model</th>"
@@ -884,6 +930,7 @@ def admin_costs(request: Request):
 </div>
 <p class="break-long">월별 CSV 경로: <code>{_esc(cost_ledger_display_path(month))}</code></p>
 {summary}
+{billing_summary}
 <div class="card"><div class="table-wrap">{table}</div></div>
 """
     return HTMLResponse(_layout("Cost Ledger", inner))
@@ -899,6 +946,26 @@ def admin_cost_ledger_csv(request: Request, month: str = "") -> Response:
     if content is None:
         header = ",".join(COST_LEDGER_COLUMNS) + "\n"
         content = header
+    else:
+        billing = load_billing_summary(selected_month)
+        monthly_fields = {
+            key: billing.get(key)
+            for key in (
+                "billing_data_status", "billing_export_last_usage_time",
+                "billing_export_last_load_time", "billing_data_freshness",
+                "gcp_gross_cost", "gcp_credits", "gcp_net_cost",
+                "vertex_ai_billed_gross", "vertex_ai_billed_net",
+                "non_ai_infra_gross", "non_ai_infra_net", "run_compute_net",
+                "run_storage_net", "shared_platform_net", "other_unclassified_net",
+                "billing_currency", "billing_cost_usd", "billing_cost_krw",
+                "currency_conversion_source",
+            )
+        }
+        monthly_fields["monthly_billing_reconciliation_status"] = billing.get(
+            "billing_reconciliation_status"
+        )
+        rows = parse_cost_ledger_csv(content)
+        content = render_cost_ledger_csv([{**row, **monthly_fields} for row in rows])
     return Response(
         content=content,
         media_type="text/csv; charset=utf-8",

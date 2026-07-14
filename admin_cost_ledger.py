@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 from zoneinfo import ZoneInfo
 
+from genie_infra_cost_estimate import estimate_run_direct_infra
+
 from admin_store import (
     admin_artifact_bucket_name,
     admin_artifact_gcs_prefix,
@@ -84,6 +86,58 @@ COST_LEDGER_COLUMNS = (
     "pricing_source",
     "price_env_configured",
     "missing_price_env",
+    "cloud_run_revision",
+    "request_start",
+    "request_end",
+    "request_latency_ms",
+    "configured_vcpu",
+    "configured_memory_gib",
+    "billing_mode",
+    "min_instances",
+    "max_instances",
+    "concurrency",
+    "request_count",
+    "cloud_run_list_estimate_usd",
+    "artifact_object_count",
+    "artifact_total_bytes",
+    "class_a_operation_count",
+    "class_b_operation_count",
+    "artifact_retention_hours",
+    "gcs_list_estimate_usd",
+    "run_log_bytes_estimate",
+    "logging_list_estimate_usd",
+    "response_bytes",
+    "artifact_egress_bytes",
+    "network_list_estimate_usd",
+    "run_direct_infra_list_estimate_usd",
+    "run_direct_infra_estimate_status",
+    "infra_pricing_source",
+    "infra_pricing_checked_at",
+    "ai_model_direct_cost_usd",
+    "allocated_shared_overhead_usd",
+    "run_modeled_cogs_usd",
+    "cogs_allocation_policy",
+    "cogs_confidence",
+    "billing_data_status",
+    "billing_export_last_usage_time",
+    "billing_export_last_load_time",
+    "billing_data_freshness",
+    "gcp_gross_cost",
+    "gcp_credits",
+    "gcp_net_cost",
+    "vertex_ai_billed_gross",
+    "vertex_ai_billed_net",
+    "non_ai_infra_gross",
+    "non_ai_infra_net",
+    "run_compute_net",
+    "run_storage_net",
+    "shared_platform_net",
+    "other_unclassified_net",
+    "billing_currency",
+    "billing_cost_usd",
+    "billing_cost_krw",
+    "currency_conversion_source",
+    "monthly_billing_reconciliation_status",
     "revision",
     "commit_sha",
     "owner_review_url",
@@ -206,7 +260,8 @@ def build_cost_record(meta: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
         priced = [c for c in known_text if c is not None]
         text_total = sum(priced) if priced else None
     created_at = str(meta.get("created_at_kst") or meta.get("created_at") or "").strip() or now_kst_iso()
-    return {
+    infra_estimate = estimate_run_direct_infra(meta)
+    record = {
         "created_at_kst": created_at,
         "run_id": run_id,
         "service_family": cost_estimate.get("service_family") or meta.get("service_family"),
@@ -269,6 +324,15 @@ def build_cost_record(meta: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
         "owner_review_url": meta.get("owner_review_url") or meta.get("admin_review_url"),
         "artifact_url": meta.get("artifact_url") or _artifact_display_path(run_id),
     }
+    record.update(infra_estimate)
+    record["ai_model_direct_cost_usd"] = cost_estimate.get("total_cost_usd")
+    record["allocated_shared_overhead_usd"] = meta.get("allocated_shared_overhead_usd")
+    record["run_modeled_cogs_usd"] = meta.get("run_modeled_cogs_usd")
+    record["cogs_allocation_policy"] = meta.get("cogs_allocation_policy")
+    record["cogs_confidence"] = meta.get("cogs_confidence") or (
+        "partial" if infra_estimate.get("run_direct_infra_estimate_status") != "complete_list_estimate" else "modeled"
+    )
+    return record
 
 
 def cost_record_to_csv_row(record: Mapping[str, Any]) -> Dict[str, str]:
@@ -291,6 +355,11 @@ def _render_ledger_csv(rows: List[Mapping[str, Any]]) -> str:
     for row in rows:
         writer.writerow(cost_record_to_csv_row(row))
     return out.getvalue()
+
+
+def render_cost_ledger_csv(rows: List[Mapping[str, Any]]) -> str:
+    """Render the current public CSV schema, adding blanks for new columns."""
+    return _render_ledger_csv(rows)
 
 
 def parse_cost_ledger_csv(raw: str) -> List[Dict[str, str]]:

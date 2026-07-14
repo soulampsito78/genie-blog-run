@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from admin_store import artifact_email_path, artifact_json_path, generate_run_id, save_run_artifact
+from admin_store import artifact_email_path, artifact_json_path, generate_run_id, now_kst_iso, save_run_artifact
 from admin_urls import build_owner_review_admin_url
 from orchestrator import OrchestrationResult, run_genie_job
 from renderers import today_genie_email_inline_cid_pair
@@ -236,6 +237,8 @@ def run_today_genie_service_full_run(
             "trigger_source": trigger_source,
         }
 
+    request_start = now_kst_iso()
+    request_started_perf = time.perf_counter()
     result = run_genie_job("today_genie")
     payload = result.response_data if isinstance(result.response_data, dict) else {}
     validation_result = str(payload.get("validation_result") or "")
@@ -465,6 +468,16 @@ def run_today_genie_service_full_run(
     except Exception:
         cost_estimate = None
     if cost_estimate is not None:
+        meta["request_start"] = request_start
+        meta["request_end"] = now_kst_iso()
+        meta["request_latency_ms"] = int((time.perf_counter() - request_started_perf) * 1000)
+        meta["configured_vcpu"] = 1
+        meta["configured_memory_gib"] = 0.5
+        meta["billing_mode"] = "request_based"
+        meta["min_instances"] = 0
+        meta["max_instances"] = 20
+        meta["concurrency"] = 80
+        meta["request_count"] = 1
         meta["cost_estimate"] = cost_estimate
         meta.update(save_cost_record_best_effort(meta))
         try:

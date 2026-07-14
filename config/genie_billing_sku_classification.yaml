@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "mapping_policy": "Exact service ID, exact service description, or exact SKU ID only. Unknowns remain visible.",
+  "AI_DIRECT_RECONCILIATION": {
+    "service_ids": [],
+    "service_descriptions": ["Vertex AI"],
+    "sku_ids": []
+  },
+  "RUN_COMPUTE": {
+    "service_ids": [],
+    "service_descriptions": [],
+    "sku_ids": []
+  },
+  "RUN_STORAGE": {
+    "service_ids": [],
+    "service_descriptions": [],
+    "sku_ids": []
+  },
+  "SHARED_PLATFORM": {
+    "service_ids": [],
+    "service_descriptions": [
+      "Artifact Registry", "BigQuery", "Cloud Build", "Cloud Logging",
+      "Cloud Monitoring", "Cloud Scheduler", "Secret Manager"
+    ],
+    "sku_ids": []
+  },
+  "OTHER_UNCLASSIFIED": {
+    "service_ids": [],
+    "service_descriptions": [],
+    "sku_ids": []
+  }
+}
