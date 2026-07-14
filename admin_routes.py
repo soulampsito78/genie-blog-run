@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import time
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -199,8 +200,8 @@ def _format_cost_usd(value: Any) -> str:
     if value is None or value == "":
         return "—"
     try:
-        return f"{float(value):.6f}"
-    except (TypeError, ValueError):
+        return f"{Decimal(str(value)):.6f}"
+    except (InvalidOperation, TypeError, ValueError):
         return str(value)
 
 
@@ -818,15 +819,15 @@ def admin_costs(request: Request):
             "</tr>"
         )
 
-    def _known_sum(column: str) -> float:
-        total = 0.0
+    def _known_sum(column: str) -> Decimal:
+        total = Decimal("0")
         for record in records:
             raw = str(record.get(column) or "").strip()
             if not raw:
                 continue
             try:
-                total += float(raw)
-            except (TypeError, ValueError):
+                total += Decimal(raw)
+            except (InvalidOperation, TypeError, ValueError):
                 continue
         return total
 

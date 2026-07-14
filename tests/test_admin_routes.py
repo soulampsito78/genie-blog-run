@@ -174,6 +174,18 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("GENIE_COST_GEMINI_2_5_FLASH_IMAGE_USD_PER_IMAGE", target_rows[-1])
         self.assertNotIn("GENIE_COST_KRW_PER_USD", target_rows[-1])
 
+    def test_admin_costs_monthly_total_uses_decimal_rounding(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        ledger = (
+            "run_id,created_at_kst,text_model,text_total_cost_usd,cost_estimate_status\n"
+            "run-1,2026-07-01T00:00:00+09:00,gemini-2.5-flash,0.255861,partial_text_only\n"
+            "run-2,2026-07-02T00:00:00+09:00,gemini-3-flash-preview,0.0684325,partial_text_only\n"
+        )
+        with patch("admin_routes.load_cost_ledger_csv", return_value=ledger):
+            page = self.client.get("/admin/costs?month=2026-07")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Text subtotal USD</dt><dd>0.324294", page.text)
+
     def test_run_detail_cost_estimate_shows_usd_partial_labels(self) -> None:
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
         run_id = "20260709_183100_keysuri_korea_tech_aabbccdd"
