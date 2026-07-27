@@ -100,6 +100,24 @@ from service_image_api import invoke_vertex_image_generation
 
 logger = logging.getLogger(__name__)
 
+_GENERATION_RECOVERY_DIAGNOSTIC_KEYS = (
+    "generation_attempt_count",
+    "generation_recovery_attempted",
+    "generation_recovery_family",
+    "generation_recovery_result",
+    "initial_generation_issue_codes",
+    "recovery_generation_issue_codes",
+    "initial_input_tokens",
+    "initial_output_tokens",
+    "recovery_input_tokens",
+    "recovery_output_tokens",
+    "total_input_tokens",
+    "total_output_tokens",
+    "reconciled_top5",
+    "replaced_source_ids",
+    "replacement_source_ids",
+)
+
 _REPO = Path(__file__).resolve().parent
 _KEYSURI_PROGRAMS = frozenset({PROGRAM_GLOBAL, PROGRAM_KOREA})
 
@@ -3759,6 +3777,7 @@ def run_keysuri_service_full_run(
                     "retry_result",
                     "compact_prompt_used",
                     "issue_codes",
+                    *_GENERATION_RECOVERY_DIAGNOSTIC_KEYS,
                 )
                 if k in generation_diagnostics
             }
@@ -3776,7 +3795,7 @@ def run_keysuri_service_full_run(
                 smoke_internal_codes,
             )
         save_run_artifact(meta, email_html="")
-        return {
+        failure_payload = {
             "ok": False,
             "run_id": run_id,
             "program_id": pid,
@@ -3784,10 +3803,15 @@ def run_keysuri_service_full_run(
             "validation_result": validation_result,
             "called_gemini": bool(smoke.called_gemini),
             "called_image_api": False,
+            "smtp_attempted": False,
             "email_sent": False,
             "error": meta.get("error_code"),
             "issue_codes": issue_codes,
         }
+        for key in _GENERATION_RECOVERY_DIAGNOSTIC_KEYS:
+            if key in meta:
+                failure_payload[key] = copy.deepcopy(meta[key])
+        return failure_payload
 
     top_image_headline = _safe_keysuri_top_headline(smoke, pid)
     top_image_variation_fields = _keysuri_top_image_variation_fields(
@@ -4264,6 +4288,16 @@ def run_keysuri_service_full_run(
     parse_meta = getattr(smoke, "parse_meta", None)
     if isinstance(parse_meta, dict) and parse_meta:
         meta["parse_meta"] = copy.deepcopy(parse_meta)
+    generation_diagnostics = getattr(smoke, "generation_diagnostics", None)
+    if isinstance(generation_diagnostics, dict):
+        safe_recovery_diagnostics = {
+            key: copy.deepcopy(generation_diagnostics[key])
+            for key in _GENERATION_RECOVERY_DIAGNOSTIC_KEYS
+            if key in generation_diagnostics
+        }
+        if safe_recovery_diagnostics:
+            meta["generation_diagnostics"] = safe_recovery_diagnostics
+            meta.update(safe_recovery_diagnostics)
     meta.update(visible_text_quality_fields)
     meta["owner_email_subject"] = subject
     _log_owner_email_delivery_event(program_id=pid, run_id=run_id, fields=owner_email_fields)
@@ -4361,7 +4395,7 @@ def run_keysuri_service_full_run(
     save_run_artifact(meta, email_html=email_html)
 
     ok = image_outcome.ok and (not send_owner_email or email_sent)
-    return {
+    success_payload = {
         "ok": ok,
         "run_id": run_id,
         "program_id": pid,
@@ -4390,3 +4424,7 @@ def run_keysuri_service_full_run(
         "cost_record_saved": meta.get("cost_record_saved"),
         "cost_ledger_saved": meta.get("cost_ledger_saved"),
     }
+    for key in _GENERATION_RECOVERY_DIAGNOSTIC_KEYS:
+        if key in meta:
+            success_payload[key] = copy.deepcopy(meta[key])
+    return success_payload

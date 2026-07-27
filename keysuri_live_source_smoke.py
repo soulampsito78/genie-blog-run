@@ -1,8 +1,10 @@
 """Kee-Suri live public RSS source-pack smoke (minimal — not production automation)."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import logging
 import re
 import subprocess
 import sys
@@ -11,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, MutableMapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Literal, Mapping, MutableMapping, Optional, Sequence, Tuple
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
@@ -56,11 +58,23 @@ from keysuri_korea_signal_scoring import (
     write_korea_top5_selection_report,
 )
 from keysuri_prompt_input import build_keysuri_prompt_input
+from keysuri_news_contract import (
+    _claim_is_qualified,
+    _claim_to_news_item,
+    validate_top_5_news_block,
+)
 from keysuri_renderer import render_keysuri_owner_review_html
+from sent_news_dedup_gate import (
+    canonicalize_url,
+    recent_log_duplicate_reason,
+    select_with_diversity_caps,
+)
+from sent_news_log_store import recent_sent_news_log
 
 PROGRAM_GLOBAL = "keysuri_global_tech"
 PROGRAM_KOREA = "keysuri_korea_tech"
 SUPPORTED_PROGRAMS = (PROGRAM_GLOBAL, PROGRAM_KOREA)
+logger = logging.getLogger(__name__)
 
 DEFAULT_FETCH_TIMEOUT_SEC = 12
 DEFAULT_ITEMS_PER_FEED = 3
@@ -369,6 +383,22 @@ class LiveSourceSmokeResult:
     hold_reason: Optional[str] = None
     exposure_dedup_backfill_used: bool = False
     internal_issue_codes: List[str] = field(default_factory=list)
+    generation_attempt_count: int = 0
+    generation_recovery_attempted: bool = False
+    generation_recovery_family: Optional[str] = None
+    generation_recovery_result: str = "not_needed"
+    initial_generation_issue_codes: List[str] = field(default_factory=list)
+    recovery_generation_issue_codes: List[str] = field(default_factory=list)
+    # Token fields stay Optional[int]: None means unavailable, not zero usage.
+    initial_input_tokens: Optional[int] = None
+    initial_output_tokens: Optional[int] = None
+    recovery_input_tokens: Optional[int] = None
+    recovery_output_tokens: Optional[int] = None
+    total_input_tokens: Optional[int] = None
+    total_output_tokens: Optional[int] = None
+    reconciled_top5: bool = False
+    replaced_source_ids: List[str] = field(default_factory=list)
+    replacement_source_ids: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -426,6 +456,21 @@ class LiveSourceSmokeResult:
             "hold_reason": self.hold_reason,
             "exposure_dedup_backfill_used": self.exposure_dedup_backfill_used,
             "internal_issue_codes": list(self.internal_issue_codes),
+            "generation_attempt_count": self.generation_attempt_count,
+            "generation_recovery_attempted": self.generation_recovery_attempted,
+            "generation_recovery_family": self.generation_recovery_family,
+            "generation_recovery_result": self.generation_recovery_result,
+            "initial_generation_issue_codes": list(self.initial_generation_issue_codes),
+            "recovery_generation_issue_codes": list(self.recovery_generation_issue_codes),
+            "initial_input_tokens": self.initial_input_tokens,
+            "initial_output_tokens": self.initial_output_tokens,
+            "recovery_input_tokens": self.recovery_input_tokens,
+            "recovery_output_tokens": self.recovery_output_tokens,
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "reconciled_top5": self.reconciled_top5,
+            "replaced_source_ids": list(self.replaced_source_ids),
+            "replacement_source_ids": list(self.replacement_source_ids),
         }
 
 
@@ -1039,6 +1084,1079 @@ def normalize_generated_briefing_closing_aliases(
     return out
 
 
+STRUCTURAL_CONTRACT_FAILURE = "STRUCTURAL_CONTRACT_FAILURE"
+SEMANTIC_SCOPE_FAILURE = "SEMANTIC_SCOPE_FAILURE"
+_STRUCTURAL_RECOVERY_CODES = frozenset(
+    {
+        "json_extract_failed",
+        "parse_multiple_json_objects_unrecoverable",
+        "parse_multiple_json_objects_ambiguous",
+        "gemini_multiple_json_objects_no_valid_schema",
+        "gemini_json_missing_required_keys",
+        "gemini_json_recovery_failed",
+    }
+)
+_SEMANTIC_RECOVERY_CODES = frozenset(
+    {
+        "korea_tech_top5_irrelevant_item",
+        "news_scope_mismatch",
+        "section_heading_mismatch",
+        "top_5_news_scope_wrong",
+        "top_5_news_heading_wrong",
+        "top_5_sequence_mismatch",
+        "top_5_fixed_source_ids_mismatch",
+        "top_5_unapproved_url",
+    }
+)
+RECOVERY_RECONCILIATION_INSUFFICIENT = (
+    "korea_generation_reconciliation_insufficient_valid_candidates"
+)
+
+
+def _parse_with_schema_alias_fallback(
+    raw_text: str,
+    program_id: str,
+    prompt_input: dict,
+) -> dict:
+    result = parse_keysuri_generated_response(raw_text, program_id, prompt_input)
+    if result.get("parse_status") == "parsed_valid":
+        return _apply_fixed_selection_contract(result, prompt_input)
+    try:
+        parsed_obj = extract_json_object_from_model_text(raw_text)
+        parsed_obj = normalize_generated_briefing_schema_aliases(parsed_obj, prompt_input)
+        normalized_result = parse_keysuri_generated_response(
+            json.dumps(parsed_obj, ensure_ascii=False),
+            program_id,
+            prompt_input,
+        )
+        contracted = _apply_fixed_selection_contract(normalized_result, prompt_input)
+        return _attach_candidate_briefing_for_recovery(contracted, parsed_obj)
+    except ValueError:
+        return _attach_candidate_briefing_for_recovery(result, None, raw_text=raw_text, prompt_input=prompt_input)
+
+
+def _attach_candidate_briefing_for_recovery(
+    parse_result: dict,
+    candidate: Optional[dict],
+    *,
+    raw_text: Optional[str] = None,
+    prompt_input: Optional[dict] = None,
+) -> dict:
+    """Keep an invalid candidate briefing for news_id mapping only.
+
+    ``generated_briefing`` stays ``None`` on parsed_invalid (existing contract).
+    Recovery maps semantic issue indexes via ``parse_meta.candidate_generated_briefing``.
+    """
+    if parse_result.get("parse_status") == "parsed_valid":
+        return parse_result
+    if isinstance(parse_result.get("generated_briefing"), dict):
+        return parse_result
+    briefing = candidate if isinstance(candidate, dict) else None
+    if briefing is None and raw_text:
+        try:
+            briefing = extract_json_object_from_model_text(raw_text)
+            if prompt_input is not None and isinstance(briefing, dict):
+                briefing = normalize_generated_briefing_schema_aliases(
+                    briefing, prompt_input
+                )
+        except ValueError:
+            briefing = None
+    if not isinstance(briefing, dict):
+        return parse_result
+    out = dict(parse_result)
+    meta = (
+        dict(out["parse_meta"])
+        if isinstance(out.get("parse_meta"), dict)
+        else {}
+    )
+    meta["candidate_generated_briefing"] = briefing
+    out["parse_meta"] = meta
+    return out
+
+
+def _approved_url_values_for_sources(
+    source_ids: Sequence[str],
+    source_map: Mapping[str, Mapping[str, Any]],
+) -> set[str]:
+    """Build the approved URL set with both raw and canonical forms."""
+    approved: set[str] = set()
+    for source_id in source_ids:
+        source = source_map.get(str(source_id))
+        if not isinstance(source, dict):
+            continue
+        for candidate in (
+            source.get("url"),
+            source.get("source_url"),
+            source.get("canonical_url"),
+        ):
+            value = str(candidate or "").strip()
+            if not value:
+                continue
+            approved.add(value)
+            canonical = canonicalize_url(value)
+            if canonical:
+                approved.add(canonical)
+    return approved
+
+
+def _url_is_approved(value: str, approved_urls: set[str]) -> bool:
+    """Accept a URL when its raw or canonical form is in the approved set."""
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    if raw in approved_urls:
+        return True
+    canonical = canonicalize_url(raw)
+    return bool(canonical) and canonical in approved_urls
+
+
+def _apply_fixed_selection_contract(parse_result: dict, prompt_input: dict) -> dict:
+    """Block generated TOP5 source IDs/URLs that are outside the fixed input."""
+    if (
+        parse_result.get("parse_status") != "parsed_valid"
+        or str(prompt_input.get("program_id") or "") != PROGRAM_KOREA
+    ):
+        return parse_result
+    generated = parse_result.get("generated_briefing")
+    generated_top = generated.get("top_5_news") if isinstance(generated, dict) else {}
+    generated_items = (
+        generated_top.get("items") if isinstance(generated_top, dict) else []
+    )
+    expected_top = (
+        prompt_input.get("top_5_news")
+        if isinstance(prompt_input.get("top_5_news"), dict)
+        else {}
+    )
+    expected_items = (
+        expected_top.get("items") if isinstance(expected_top.get("items"), list) else []
+    )
+    source_pack = (
+        prompt_input.get("source_pack")
+        if isinstance(prompt_input.get("source_pack"), dict)
+        else {}
+    )
+    source_map = _source_map_for_reconciliation(source_pack)
+    issues: List[dict] = []
+    for idx, expected in enumerate(expected_items):
+        actual = generated_items[idx] if idx < len(generated_items) else None
+        if not isinstance(expected, dict) or not isinstance(actual, dict):
+            continue
+        expected_ids = [
+            str(source_id) for source_id in (expected.get("source_ids") or []) if source_id
+        ]
+        actual_ids = [
+            str(source_id) for source_id in (actual.get("source_ids") or []) if source_id
+        ]
+        if actual_ids != expected_ids:
+            issues.append(
+                {
+                    "code": "top_5_fixed_source_ids_mismatch",
+                    "message": "Generated TOP5 source_ids must exactly match the fixed selection",
+                    "path": f"top_5_news.items[{idx}].source_ids",
+                }
+            )
+        allowed_urls = _approved_url_values_for_sources(expected_ids, source_map)
+        for field_name in ("url", "canonical_url", "source_url"):
+            value = str(actual.get(field_name) or "").strip()
+            if value and not _url_is_approved(value, allowed_urls):
+                issues.append(
+                    {
+                        "code": "top_5_unapproved_url",
+                        "message": "Generated TOP5 URL is not present in the fixed source pack",
+                        "path": f"top_5_news.items[{idx}].{field_name}",
+                    }
+                )
+    if not issues:
+        return parse_result
+    parse_meta = (
+        parse_result.get("parse_meta")
+        if isinstance(parse_result.get("parse_meta"), dict)
+        else {}
+    )
+    return {
+        "parse_status": "parsed_invalid",
+        "program_id": parse_result.get("program_id"),
+        "issues": issues,
+        "generated_briefing": None,
+        "parse_meta": {
+            **parse_meta,
+            "parse_failure_stage": "fixed_selection_contract",
+            "schema_issue_codes": [issue["code"] for issue in issues],
+        },
+    }
+
+
+def _apply_fixed_deep_dive_contract(
+    parse_result: dict,
+    approved_source_ids: Sequence[str],
+) -> dict:
+    """Require deep_dive.source_ids to be a non-empty subset of TOP5 approved ids."""
+    if parse_result.get("parse_status") != "parsed_valid":
+        return parse_result
+    generated = parse_result.get("generated_briefing")
+    deep_dive = generated.get("deep_dive") if isinstance(generated, dict) else {}
+    actual_ids = [
+        str(source_id)
+        for source_id in (
+            deep_dive.get("source_ids") if isinstance(deep_dive, dict) else []
+        )
+        if source_id
+    ]
+    approved_ids = {
+        str(source_id) for source_id in approved_source_ids if source_id
+    }
+    issue_message = ""
+    if not actual_ids:
+        issue_message = "deep_dive.source_ids must be a non-empty subset of approved TOP5 source ids"
+    elif len(actual_ids) != len(set(actual_ids)):
+        issue_message = "deep_dive.source_ids must not contain duplicates"
+    elif any(source_id not in approved_ids for source_id in actual_ids):
+        issue_message = "deep_dive.source_ids contains an id outside the approved TOP5 set"
+    if not issue_message:
+        return parse_result
+    parse_meta = (
+        parse_result.get("parse_meta")
+        if isinstance(parse_result.get("parse_meta"), dict)
+        else {}
+    )
+    return {
+        "parse_status": "parsed_invalid",
+        "program_id": parse_result.get("program_id"),
+        "issues": [
+            {
+                "code": "deep_dive_fixed_source_ids_mismatch",
+                "message": issue_message,
+                "path": "deep_dive.source_ids",
+            }
+        ],
+        "generated_briefing": None,
+        "parse_meta": {
+            **parse_meta,
+            "parse_failure_stage": "fixed_deep_dive_contract",
+            "schema_issue_codes": ["deep_dive_fixed_source_ids_mismatch"],
+        },
+    }
+
+
+def _issue_codes(parse_result: dict) -> List[str]:
+    return list(
+        dict.fromkeys(
+            str(issue.get("code"))
+            for issue in (parse_result.get("issues") or [])
+            if isinstance(issue, dict) and issue.get("code")
+        )
+    )
+
+
+def _classify_generation_failure(issue_codes: Sequence[str]) -> Optional[str]:
+    codes = {str(code) for code in issue_codes if code}
+    if codes & _STRUCTURAL_RECOVERY_CODES:
+        return STRUCTURAL_CONTRACT_FAILURE
+    if codes & _SEMANTIC_RECOVERY_CODES:
+        return SEMANTIC_SCOPE_FAILURE
+    return None
+
+
+def _optional_token_count(
+    usage: Mapping[str, Any], *keys: str
+) -> Optional[int]:
+    """Return the first present token field as Optional[int].
+
+    Missing keys and explicit ``None`` stay ``None``. Only an actual numeric
+    value (including ``0``) is converted to ``int``.
+    """
+    for key in keys:
+        if key not in usage:
+            continue
+        value = usage.get(key)
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _sum_optional_tokens(*values: Optional[int]) -> Optional[int]:
+    """Exact sum only when every attempt value is a confirmed int.
+
+    If any attempt is ``None``, return ``None`` so callers do not treat a
+    partial sum as a complete total.
+    """
+    if not values:
+        return None
+    if any(value is None for value in values):
+        return None
+    return int(sum(values))
+
+
+def _partial_sum_optional_tokens(*values: Optional[int]) -> Optional[int]:
+    """Sum only the confirmed attempt values; never invent zeros."""
+    present = [value for value in values if value is not None]
+    if not present:
+        return None
+    return int(sum(present))
+
+
+_USAGE_DIAGNOSTIC_OVERWRITE_KEYS = frozenset(
+    {
+        "initial_input_tokens",
+        "initial_output_tokens",
+        "recovery_input_tokens",
+        "recovery_output_tokens",
+        "total_input_tokens",
+        "total_output_tokens",
+        "partial_input_tokens",
+        "partial_output_tokens",
+        "input_tokens_complete",
+        "output_tokens_complete",
+        "usage_tokens_complete",
+    }
+)
+
+
+def _merge_into_diagnostics(
+    diagnostics: MutableMapping[str, Any],
+    incoming: Mapping[str, Any],
+    *,
+    overwrite_keys: Optional[Sequence[str]] = None,
+) -> None:
+    """Merge diagnostics consistently for success and failure paths.
+
+    Keys in ``overwrite_keys`` intentionally replace existing values (used for
+    usage totals). Other colliding keys keep the existing value and record the
+    collision name for operators.
+    """
+    overwrite = {str(key) for key in (overwrite_keys or ())}
+    collisions: List[str] = []
+    for key, value in incoming.items():
+        if (
+            key in diagnostics
+            and key not in overwrite
+            and diagnostics[key] != value
+        ):
+            collisions.append(str(key))
+            continue
+        diagnostics[key] = value
+    if collisions:
+        prior = diagnostics.get("diagnostics_collisions")
+        merged = [str(item) for item in prior] if isinstance(prior, list) else []
+        for key in collisions:
+            if key not in merged:
+                merged.append(key)
+        diagnostics["diagnostics_collisions"] = merged
+
+
+def _merge_generation_usage(
+    outer: Optional[MutableMapping[str, Any]],
+    initial: MutableMapping[str, Any],
+    recovery: MutableMapping[str, Any],
+) -> Dict[str, Any]:
+    """Merge initial/recovery usage while preserving Optional[int] semantics.
+
+    Exact ``total_*`` fields are set only when every executed attempt reports a
+    confirmed integer for that metric. Confirmed partial sums are exposed via
+    ``partial_*`` fields and never written into cost-facing ``*_token_count``
+    totals when incomplete.
+    """
+    initial_input = _optional_token_count(initial, "prompt_token_count", "input_tokens")
+    initial_output = _optional_token_count(
+        initial, "candidates_token_count", "output_tokens"
+    )
+    initial_thoughts = _optional_token_count(initial, "thoughts_token_count")
+    initial_total = _optional_token_count(initial, "total_token_count")
+
+    recovery_executed = bool(recovery)
+    if not recovery_executed:
+        totals: Dict[str, Any] = {
+            "initial_input_tokens": initial_input,
+            "initial_output_tokens": initial_output,
+            "recovery_input_tokens": None,
+            "recovery_output_tokens": None,
+            "total_input_tokens": initial_input,
+            "total_output_tokens": initial_output,
+            "partial_input_tokens": initial_input,
+            "partial_output_tokens": initial_output,
+            "input_tokens_complete": initial_input is not None,
+            "output_tokens_complete": initial_output is not None,
+            "usage_tokens_complete": initial_input is not None
+            and initial_output is not None,
+        }
+        if outer is not None:
+            outer.clear()
+            outer.update(initial)
+        return totals
+
+    recovery_input = _optional_token_count(recovery, "prompt_token_count", "input_tokens")
+    recovery_output = _optional_token_count(
+        recovery, "candidates_token_count", "output_tokens"
+    )
+    recovery_thoughts = _optional_token_count(recovery, "thoughts_token_count")
+    recovery_total = _optional_token_count(recovery, "total_token_count")
+
+    total_input = _sum_optional_tokens(initial_input, recovery_input)
+    total_output = _sum_optional_tokens(initial_output, recovery_output)
+    total_thoughts = _sum_optional_tokens(initial_thoughts, recovery_thoughts)
+    total_token_count = _sum_optional_tokens(initial_total, recovery_total)
+    partial_input = _partial_sum_optional_tokens(initial_input, recovery_input)
+    partial_output = _partial_sum_optional_tokens(initial_output, recovery_output)
+    input_complete = initial_input is not None and recovery_input is not None
+    output_complete = initial_output is not None and recovery_output is not None
+
+    totals = {
+        "initial_input_tokens": initial_input,
+        "initial_output_tokens": initial_output,
+        "recovery_input_tokens": recovery_input,
+        "recovery_output_tokens": recovery_output,
+        "total_input_tokens": total_input,
+        "total_output_tokens": total_output,
+        "partial_input_tokens": partial_input,
+        "partial_output_tokens": partial_output,
+        "input_tokens_complete": input_complete,
+        "output_tokens_complete": output_complete,
+        "usage_tokens_complete": input_complete and output_complete,
+    }
+    if outer is not None:
+        outer.clear()
+        outer.update(initial)
+        for key in ("model", "program_id", "max_output_tokens"):
+            if recovery.get(key) not in (None, ""):
+                outer[key] = recovery[key]
+        # Cost estimators must only see exact totals. Incomplete metrics stay
+        # None on the usage sink; partial sums live on diagnostic-only keys.
+        outer["prompt_token_count_partial_sum"] = partial_input
+        outer["candidates_token_count_partial_sum"] = partial_output
+        if input_complete and output_complete:
+            outer["prompt_token_count"] = total_input
+            outer["candidates_token_count"] = total_output
+            outer["thoughts_token_count"] = total_thoughts
+            outer["total_token_count"] = total_token_count
+            outer["usage_tokens_complete"] = True
+        else:
+            # Do not price a partial attempt mix as a complete generation total.
+            outer["prompt_token_count"] = None
+            outer["candidates_token_count"] = None
+            outer["thoughts_token_count"] = None
+            outer["total_token_count"] = None
+            outer["usage_tokens_complete"] = False
+            outer["cost_estimate_status_hint"] = "partial_usage_unpriced"
+    return totals
+
+
+def _optional_diag_int(
+    diagnostics: Mapping[str, Any], key: str
+) -> Optional[int]:
+    """Read an Optional[int] diagnostic without coercing None to 0."""
+    if key not in diagnostics:
+        return None
+    value = diagnostics.get(key)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_generation_event(event: str, **fields: Any) -> None:
+    payload: Dict[str, Any] = {"event": event}
+    for key in (
+        "program_id",
+        "failure_family",
+        "generation_attempt_count",
+        "issue_codes",
+        "replaced_source_ids",
+        "replacement_source_ids",
+        "result",
+    ):
+        value = fields.get(key)
+        if value not in (None, "", []):
+            payload[key] = value
+    logger.info(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+def _fixed_top5_context(prompt_input: dict) -> Tuple[List[dict], List[str]]:
+    top = prompt_input.get("top_5_news") if isinstance(prompt_input.get("top_5_news"), dict) else {}
+    items = [item for item in (top.get("items") or []) if isinstance(item, dict)]
+    compact: List[dict] = []
+    source_ids: List[str] = []
+    for item in items:
+        item_source_ids = [
+            str(source_id) for source_id in (item.get("source_ids") or []) if source_id
+        ]
+        compact.append(
+            {
+                "rank": int(item.get("rank") or 0),
+                "news_id": str(item.get("news_id") or ""),
+                "source_ids": item_source_ids,
+            }
+        )
+        for source_id in item_source_ids:
+            if source_id not in source_ids:
+                source_ids.append(source_id)
+    return compact, source_ids
+
+
+def _generated_top5_items(parse_result: dict) -> List[dict]:
+    generated = parse_result.get("generated_briefing")
+    if not isinstance(generated, dict):
+        meta = (
+            parse_result.get("parse_meta")
+            if isinstance(parse_result.get("parse_meta"), dict)
+            else {}
+        )
+        generated = meta.get("candidate_generated_briefing")
+    if not isinstance(generated, dict):
+        return []
+    top = generated.get("top_5_news") if isinstance(generated.get("top_5_news"), dict) else {}
+    items = top.get("items") if isinstance(top.get("items"), list) else []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _semantic_item_issue_generated_indexes(parse_result: dict) -> List[int]:
+    """Extract generated-response indexes from item-level semantic validation issues."""
+    indexes: List[int] = []
+    for issue in parse_result.get("issues") or []:
+        if not isinstance(issue, dict):
+            continue
+        if str(issue.get("code") or "") not in {
+            "korea_tech_top5_irrelevant_item",
+            "top_5_fixed_source_ids_mismatch",
+            "top_5_unapproved_url",
+        }:
+            continue
+        match = re.search(
+            r"top_5_news\.items\[(\d+)\]",
+            str(issue.get("path") or issue.get("field") or ""),
+        )
+        if match:
+            idx = int(match.group(1))
+            if idx not in indexes:
+                indexes.append(idx)
+    return indexes
+
+
+def _original_indexes_for_semantic_item_issues(
+    parse_result: dict,
+    prompt_input: dict,
+) -> List[int]:
+    """Map generated-response semantic issue indexes onto original TOP5 by news_id.
+
+    Never falls back to treating a generated index as an original index. Issues
+    that cannot be mapped safely are skipped so no arbitrary original slot is
+    replaced.
+    """
+    generated_indexes = _semantic_item_issue_generated_indexes(parse_result)
+    if not generated_indexes:
+        return []
+
+    original_top = (
+        prompt_input.get("top_5_news")
+        if isinstance(prompt_input.get("top_5_news"), dict)
+        else {}
+    )
+    original_items = [
+        item for item in (original_top.get("items") or []) if isinstance(item, dict)
+    ]
+    generated_items = _generated_top5_items(parse_result)
+
+    original_by_news_id: Dict[str, List[int]] = {}
+    for idx, item in enumerate(original_items):
+        news_id = str(item.get("news_id") or "").strip()
+        if not news_id:
+            continue
+        original_by_news_id.setdefault(news_id, []).append(idx)
+
+    mapped: List[int] = []
+    for generated_index in generated_indexes:
+        if generated_index < 0 or generated_index >= len(generated_items):
+            continue
+        generated_item = generated_items[generated_index]
+        news_id = str(generated_item.get("news_id") or "").strip()
+        if not news_id:
+            continue
+        matches = original_by_news_id.get(news_id) or []
+        if len(matches) != 1:
+            # Missing or duplicate news_id — do not guess an original slot.
+            continue
+        original_index = matches[0]
+        if original_index not in mapped:
+            mapped.append(original_index)
+    return sorted(mapped)
+
+
+def _invalid_semantic_item_indexes(parse_result: dict, prompt_input: dict) -> List[int]:
+    """Compatibility wrapper: original TOP5 indexes needing replacement."""
+    return _original_indexes_for_semantic_item_issues(parse_result, prompt_input)
+
+
+def _hydrate_diversity_source_fields(
+    item: dict, source_map: Dict[str, dict]
+) -> dict:
+    """Copy source_name onto a TOP5 item when missing so diversity keys align."""
+    if not isinstance(item, dict):
+        return item
+    if str(item.get("source_name") or "").strip():
+        return item
+    out = dict(item)
+    for source_id in item.get("source_ids") or []:
+        source = source_map.get(str(source_id))
+        if not isinstance(source, dict):
+            continue
+        name = str(source.get("source_name") or "").strip()
+        if name:
+            out["source_name"] = name
+            break
+    return out
+
+
+def _trial_passes_strict_diversity(
+    trial: List[dict],
+    *,
+    candidate_news_id: Optional[str] = None,
+    source_map: Optional[Dict[str, dict]] = None,
+) -> bool:
+    """Reject replacement trials that only admit the candidate via relaxation.
+
+    The deterministic Korea sample TOP5 may already contain a pre-existing
+    same-source relaxation among retained items. Do not reject a candidate
+    solely for that baseline. Instead evaluate the candidate last against the
+    retained set using the existing diversity gate; if the candidate itself is
+    deferred then reintroduced (``diversity_relaxed``), reject it.
+    """
+    if not trial:
+        return False
+    hydrated = [
+        _hydrate_diversity_source_fields(item, source_map or {})
+        for item in trial
+        if isinstance(item, dict)
+    ]
+    if candidate_news_id:
+        retained = [
+            item
+            for item in hydrated
+            if str(item.get("news_id") or "") != str(candidate_news_id)
+        ]
+        candidate_items = [
+            item
+            for item in hydrated
+            if str(item.get("news_id") or "") == str(candidate_news_id)
+        ]
+        if len(candidate_items) != 1:
+            return False
+        ordered = retained + candidate_items
+    else:
+        ordered = list(hydrated)
+
+    diversity = select_with_diversity_caps(ordered, required_count=len(ordered))
+    selected_items = [
+        item
+        for item in (diversity.get("selected_items") or [])
+        if isinstance(item, dict)
+    ]
+    if len(selected_items) != len(ordered):
+        return False
+    selected_ids = {str(item.get("news_id") or "") for item in selected_items}
+    ordered_ids = {str(item.get("news_id") or "") for item in ordered}
+    if not ordered_ids or selected_ids != ordered_ids:
+        return False
+
+    if candidate_news_id:
+        for item in selected_items:
+            if str(item.get("news_id") or "") != str(candidate_news_id):
+                continue
+            # Candidate only survived because caps were relaxed — reject.
+            if item.get("diversity_relaxed"):
+                return False
+            return True
+        return False
+
+    summary = diversity.get("diversity_summary") if isinstance(diversity, dict) else {}
+    if isinstance(summary, dict) and summary.get("relaxed_due_to_candidate_shortage"):
+        return False
+    if any(item.get("diversity_relaxed") for item in selected_items):
+        return False
+    return True
+
+
+def _source_map_for_reconciliation(source_pack: dict) -> Dict[str, dict]:
+    source_map: Dict[str, dict] = {}
+    for key in ("sources", "backfill_sources"):
+        for source in source_pack.get(key) if isinstance(source_pack.get(key), list) else []:
+            if not isinstance(source, dict):
+                continue
+            source_id = str(source.get("source_id") or "").strip()
+            if source_id:
+                source_map[source_id] = source
+    return source_map
+
+
+def _fixed_prompt_input_for_top5(prompt_input: dict, top5: dict) -> dict:
+    fixed = copy.deepcopy(prompt_input)
+    fixed["top_5_news"] = copy.deepcopy(top5)
+    fixed["selected_items"] = copy.deepcopy(top5.get("items") or [])
+    pack = copy.deepcopy(fixed.get("source_pack") or {})
+    all_sources = _source_map_for_reconciliation(pack)
+    all_claims = [
+        claim
+        for key in ("claims", "backfill_claims")
+        for claim in (pack.get(key) if isinstance(pack.get(key), list) else [])
+        if isinstance(claim, dict)
+    ]
+    selected_items = [item for item in (top5.get("items") or []) if isinstance(item, dict)]
+    selected_ids: List[str] = []
+    for item in selected_items:
+        for source_id in item.get("source_ids") or []:
+            value = str(source_id)
+            if value and value not in selected_ids:
+                selected_ids.append(value)
+    selected_news_ids = {str(item.get("news_id") or "") for item in selected_items}
+    pack["sources"] = [
+        copy.deepcopy(all_sources[source_id])
+        for source_id in selected_ids
+        if source_id in all_sources
+    ]
+    pack["claims"] = [
+        copy.deepcopy(claim)
+        for claim in all_claims
+        if str(claim.get("claim_id") or "") in selected_news_ids
+    ]
+    pack["backfill_sources"] = []
+    pack["backfill_claims"] = []
+    fixed["source_pack"] = pack
+    return fixed
+
+
+def _reconcile_korea_top5(
+    prompt_input: dict,
+    parse_result: dict,
+) -> Tuple[Optional[dict], List[str], List[str]]:
+    """Replace bad generated slots from the original ranked backfill pool only."""
+    generated_item_issue_indexes = _semantic_item_issue_generated_indexes(parse_result)
+    invalid_indexes = _original_indexes_for_semantic_item_issues(parse_result, prompt_input)
+    original_top = (
+        prompt_input.get("top_5_news")
+        if isinstance(prompt_input.get("top_5_news"), dict)
+        else {}
+    )
+    original_items = [
+        copy.deepcopy(item)
+        for item in (original_top.get("items") or [])
+        if isinstance(item, dict)
+    ]
+    if len(original_items) != 5:
+        return None, [], []
+    if not generated_item_issue_indexes:
+        # Scope/heading/sequence-only semantic failures do not change article selection.
+        return _fixed_prompt_input_for_top5(prompt_input, copy.deepcopy(original_top)), [], []
+    if not invalid_indexes:
+        # Item-level issues existed but could not be mapped safely by news_id.
+        # Keep the deterministic original TOP5 and allow one fixed corrective call.
+        return _fixed_prompt_input_for_top5(prompt_input, copy.deepcopy(original_top)), [], []
+
+    source_pack = prompt_input.get("source_pack") if isinstance(prompt_input.get("source_pack"), dict) else {}
+    source_map = _source_map_for_reconciliation(source_pack)
+    backfill_claims = (
+        source_pack.get("backfill_claims")
+        if isinstance(source_pack.get("backfill_claims"), list)
+        else []
+    )
+    sent_rows = [
+        row for row in (recent_sent_news_log(PROGRAM_KOREA) or []) if isinstance(row, dict)
+    ]
+    used_news_ids = {str(item.get("news_id") or "") for item in original_items}
+    replaced_source_ids: List[str] = []
+    replacement_source_ids: List[str] = []
+    cursor = 0
+
+    for bad_index in invalid_indexes:
+        if bad_index < 0 or bad_index >= len(original_items):
+            return None, replaced_source_ids, replacement_source_ids
+        bad_item = original_items[bad_index]
+        chosen: Optional[dict] = None
+        for candidate_index in range(cursor, len(backfill_claims)):
+            cursor = candidate_index + 1
+            claim = backfill_claims[candidate_index]
+            if not isinstance(claim, dict):
+                continue
+            qualified, _reason = _claim_is_qualified(claim, source_map, PROGRAM_KOREA)
+            if not qualified or not str(claim.get("business_implication") or "").strip():
+                continue
+            candidate = _claim_to_news_item(claim, rank=bad_index + 1, smap=source_map)
+            news_id = str(candidate.get("news_id") or "")
+            if not news_id or news_id in used_news_ids:
+                continue
+            if recent_log_duplicate_reason(candidate, sent_rows):
+                continue
+            retained = [
+                item
+                for idx, item in enumerate(original_items)
+                if idx != bad_index and isinstance(item, dict)
+            ]
+            if recent_log_duplicate_reason(candidate, retained):
+                continue
+            trial = copy.deepcopy(original_items)
+            trial[bad_index] = candidate
+            for idx, item in enumerate(trial):
+                item["rank"] = idx + 1
+            if not _trial_passes_strict_diversity(
+                trial,
+                candidate_news_id=news_id,
+                source_map=source_map,
+            ):
+                continue
+            chosen = candidate
+            break
+        if chosen is None:
+            return None, replaced_source_ids, replacement_source_ids
+        for source_id in bad_item.get("source_ids") or []:
+            value = str(source_id)
+            if value and value not in replaced_source_ids:
+                replaced_source_ids.append(value)
+        for source_id in chosen.get("source_ids") or []:
+            value = str(source_id)
+            if value and value not in replacement_source_ids:
+                replacement_source_ids.append(value)
+        used_news_ids.discard(str(bad_item.get("news_id") or ""))
+        used_news_ids.add(str(chosen.get("news_id") or ""))
+        original_items[bad_index] = chosen
+
+    for idx, item in enumerate(original_items):
+        item["rank"] = idx + 1
+    reconciled_top = {
+        "news_scope": str(original_top.get("news_scope") or "korea"),
+        "section_heading": str(original_top.get("section_heading") or "국내 테크 TOP 5"),
+        "items": original_items,
+    }
+    if validate_top_5_news_block(PROGRAM_KOREA, reconciled_top):
+        return None, replaced_source_ids, replacement_source_ids
+    return (
+        _fixed_prompt_input_for_top5(prompt_input, reconciled_top),
+        replaced_source_ids,
+        replacement_source_ids,
+    )
+
+
+def generate_keysuri_with_bounded_recovery(
+    prompt_input: dict,
+    *,
+    gemini_caller: Any,
+    project_id: Optional[str] = None,
+    model: Optional[str] = None,
+    usage_sink: Optional[MutableMapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Run Korea generation with at most one corrective attempt in this call."""
+    program_id = str(prompt_input.get("program_id") or "")
+    initial_usage: Dict[str, Any] = {}
+    recovery_usage: Dict[str, Any] = {}
+    raw_text, initial_generation = generate_keysuri_body_raw_text(
+        prompt_input,
+        gemini_caller=gemini_caller,
+        project_id=project_id,
+        model=model,
+        usage_sink=initial_usage,
+    )
+    parse_result = _parse_with_schema_alias_fallback(raw_text, program_id, prompt_input)
+    initial_codes = _issue_codes(parse_result)
+    diagnostics: Dict[str, Any] = {
+        **initial_generation,
+        "generation_attempt_count": 1,
+        "generation_recovery_attempted": False,
+        "generation_recovery_family": None,
+        "generation_recovery_result": "not_needed",
+        "initial_generation_issue_codes": initial_codes,
+        "recovery_generation_issue_codes": [],
+        "reconciled_top5": False,
+        "replaced_source_ids": [],
+        "replacement_source_ids": [],
+    }
+    if parse_result.get("parse_status") == "parsed_valid" or program_id != PROGRAM_KOREA:
+        _merge_into_diagnostics(
+            diagnostics,
+            _merge_generation_usage(usage_sink, initial_usage, recovery_usage),
+            overwrite_keys=_USAGE_DIAGNOSTIC_OVERWRITE_KEYS,
+        )
+        return {
+            "raw_text": raw_text,
+            "parse_result": parse_result,
+            "prompt_input": prompt_input,
+            "generation_diagnostics": diagnostics,
+        }
+
+    failure_family = _classify_generation_failure(initial_codes)
+    diagnostics["generation_recovery_family"] = failure_family
+    _safe_generation_event(
+        "keysuri_initial_generation_validation_failure",
+        program_id=program_id,
+        failure_family=failure_family,
+        generation_attempt_count=1,
+        issue_codes=initial_codes,
+    )
+    if failure_family is None:
+        diagnostics["generation_recovery_result"] = "not_attempted_unknown_failure"
+        _merge_into_diagnostics(
+            diagnostics,
+            _merge_generation_usage(usage_sink, initial_usage, recovery_usage),
+            overwrite_keys=_USAGE_DIAGNOSTIC_OVERWRITE_KEYS,
+        )
+        return {
+            "raw_text": raw_text,
+            "parse_result": parse_result,
+            "prompt_input": prompt_input,
+            "generation_diagnostics": diagnostics,
+        }
+
+    corrective_input = prompt_input
+    replaced_source_ids: List[str] = []
+    replacement_source_ids: List[str] = []
+    if failure_family == SEMANTIC_SCOPE_FAILURE:
+        corrective_input, replaced_source_ids, replacement_source_ids = _reconcile_korea_top5(
+            prompt_input, parse_result
+        )
+        diagnostics["reconciled_top5"] = bool(replaced_source_ids or replacement_source_ids)
+        diagnostics["replaced_source_ids"] = replaced_source_ids
+        diagnostics["replacement_source_ids"] = replacement_source_ids
+        if corrective_input is None:
+            parse_result = dict(parse_result)
+            parse_result["issues"] = list(parse_result.get("issues") or []) + [
+                {
+                    "code": RECOVERY_RECONCILIATION_INSUFFICIENT,
+                    "message": "Deterministic Korea TOP5 reconciliation could not produce five valid candidates",
+                    "path": "top_5_news.items",
+                }
+            ]
+            diagnostics["generation_recovery_result"] = "not_attempted_reconciliation_failed"
+            diagnostics["recovery_generation_issue_codes"] = [
+                RECOVERY_RECONCILIATION_INSUFFICIENT
+            ]
+            _merge_into_diagnostics(
+                diagnostics,
+                _merge_generation_usage(usage_sink, initial_usage, recovery_usage),
+                overwrite_keys=_USAGE_DIAGNOSTIC_OVERWRITE_KEYS,
+            )
+            _safe_generation_event(
+                "keysuri_generation_recovery_failed",
+                program_id=program_id,
+                failure_family=failure_family,
+                generation_attempt_count=1,
+                issue_codes=diagnostics["recovery_generation_issue_codes"],
+                result=diagnostics["generation_recovery_result"],
+            )
+            return {
+                "raw_text": raw_text,
+                "parse_result": parse_result,
+                "prompt_input": prompt_input,
+                "generation_diagnostics": diagnostics,
+            }
+
+    fixed_order, fixed_source_ids = _fixed_top5_context(corrective_input)
+    # Preferred deep-dive ids remain TOP1-first for the prompt hint, but the
+    # approved validation set is the full TOP5 union (fixed_source_ids).
+    preferred_deep_dive_source_ids = (
+        list(fixed_order[0].get("source_ids") or []) if fixed_order else []
+    )
+    corrective_context = {
+        "failure_family": failure_family,
+        "initial_issue_codes": initial_codes,
+        "missing_required_fields": list(
+            (parse_result.get("parse_meta") or {}).get("missing_required_keys") or []
+        ),
+        "fixed_source_ids": fixed_source_ids,
+        "fixed_top5_order": fixed_order,
+        "fixed_deep_dive_source_ids": preferred_deep_dive_source_ids,
+        "approved_deep_dive_source_ids": list(fixed_source_ids),
+    }
+    diagnostics["generation_recovery_attempted"] = True
+    diagnostics["generation_attempt_count"] = 2
+    _safe_generation_event(
+        "keysuri_generation_recovery_attempted",
+        program_id=program_id,
+        failure_family=failure_family,
+        generation_attempt_count=2,
+        issue_codes=initial_codes,
+        replaced_source_ids=replaced_source_ids,
+        replacement_source_ids=replacement_source_ids,
+    )
+    try:
+        recovery_raw, recovery_generation = generate_keysuri_body_raw_text(
+            corrective_input,
+            gemini_caller=gemini_caller,
+            project_id=project_id,
+            model=model,
+            usage_sink=recovery_usage,
+            corrective_context=corrective_context,
+        )
+        diagnostics["recovery_generation_diagnostics"] = recovery_generation
+        recovery_parse = _parse_with_schema_alias_fallback(
+            recovery_raw, program_id, corrective_input
+        )
+        recovery_parse = _apply_fixed_deep_dive_contract(
+            recovery_parse, fixed_source_ids
+        )
+        recovery_codes = _issue_codes(recovery_parse)
+        diagnostics["recovery_generation_issue_codes"] = recovery_codes
+        raw_text = recovery_raw
+        parse_result = recovery_parse
+    except KeysuriGeminiError as exc:
+        recovery_codes = list(
+            dict.fromkeys(
+                [
+                    "generation_recovery_call_failed",
+                    *[
+                        str(code)
+                        for code in (
+                            (getattr(exc, "diagnostics", None) or {}).get("issue_codes")
+                            or []
+                        )
+                        if code
+                    ],
+                ]
+            )
+        )
+        diagnostics["recovery_generation_issue_codes"] = recovery_codes
+        parse_result = {
+            "parse_status": "parsed_invalid",
+            "program_id": program_id,
+            "issues": [
+                {
+                    "code": code,
+                    "message": "Corrective generation failed safely",
+                    "path": "generation",
+                }
+                for code in recovery_codes
+            ],
+            "generated_briefing": None,
+            "parse_meta": {"parse_failure_stage": "corrective_generation"},
+        }
+
+    success = parse_result.get("parse_status") == "parsed_valid"
+    diagnostics["generation_recovery_result"] = "succeeded" if success else "failed"
+    _merge_into_diagnostics(
+        diagnostics,
+        _merge_generation_usage(usage_sink, initial_usage, recovery_usage),
+        overwrite_keys=_USAGE_DIAGNOSTIC_OVERWRITE_KEYS,
+    )
+    _safe_generation_event(
+        "keysuri_generation_recovery_succeeded"
+        if success
+        else "keysuri_generation_recovery_failed",
+        program_id=program_id,
+        failure_family=failure_family,
+        generation_attempt_count=2,
+        issue_codes=diagnostics["recovery_generation_issue_codes"],
+        replaced_source_ids=replaced_source_ids,
+        replacement_source_ids=replacement_source_ids,
+        result=diagnostics["generation_recovery_result"],
+    )
+    return {
+        "raw_text": raw_text,
+        "parse_result": parse_result,
+        "prompt_input": corrective_input,
+        "generation_diagnostics": diagnostics,
+    }
+
+
 def scan_sample_markers(*texts: str) -> List[SampleMarkerHit]:
     hits: List[SampleMarkerHit] = []
     for text in texts:
@@ -1399,13 +2517,17 @@ def run_keysuri_live_source_smoke(
     if use_gemini:
         caller = gemini_caller or call_keysuri_gemini_text
         try:
-            raw_text, generation_diagnostics = generate_keysuri_body_raw_text(
+            generation_result = generate_keysuri_with_bounded_recovery(
                 prompt_input,
                 gemini_caller=caller,
                 project_id=project_id,
                 model=model,
                 usage_sink=usage_sink,
             )
+            raw_text = str(generation_result["raw_text"])
+            parse_result = generation_result["parse_result"]
+            prompt_input = generation_result["prompt_input"]
+            generation_diagnostics = generation_result["generation_diagnostics"]
             side_effects["called_gemini"] = True
         except KeysuriGeminiError as exc:
             gen_diag = dict(getattr(exc, "diagnostics", None) or {})
@@ -1431,6 +2553,7 @@ def run_keysuri_live_source_smoke(
                 use_gemini=True,
                 side_effects=side_effects,
                 generation_diagnostics=gen_diag,
+                generation_attempt_count=1,
                 validation_issues=issue_codes,
                 candidate_funnel_summary=(
                     prompt_input.get("candidate_funnel_summary")
@@ -1449,18 +2572,6 @@ def run_keysuri_live_source_smoke(
         raw_path.write_text(raw_text, encoding="utf-8")
         raw_response_path = str(raw_path.resolve())
 
-        parse_result = parse_keysuri_generated_response(raw_text, program_id, prompt_input)
-        if parse_result.get("parse_status") != "parsed_valid":
-            try:
-                parsed_obj = extract_json_object_from_model_text(raw_text)
-                parsed_obj = normalize_generated_briefing_schema_aliases(parsed_obj, prompt_input)
-                parse_result = parse_keysuri_generated_response(
-                    json.dumps(parsed_obj, ensure_ascii=False),
-                    program_id,
-                    prompt_input,
-                )
-            except ValueError:
-                pass
         parse_status = str(parse_result.get("parse_status") or "")
         parse_meta = (
             parse_result.get("parse_meta")
@@ -1499,6 +2610,7 @@ def run_keysuri_live_source_smoke(
                 parse_status=parse_status,
                 parse_meta=parse_meta,
                 parse_diagnostics=_parse_failure_diagnostics(parse_result, prompt_input),
+                generation_diagnostics=generation_diagnostics,
                 validation_issues=validation_issue_codes,
                 raw_response_path=raw_response_path,
                 side_effects=side_effects,
@@ -1514,6 +2626,51 @@ def run_keysuri_live_source_smoke(
                 internal_issue_codes=prompt_internal_codes + [
                     code for code in parse_internal_codes if code not in prompt_internal_codes
                 ],
+                generation_attempt_count=int(
+                    generation_diagnostics.get("generation_attempt_count") or 0
+                ),
+                generation_recovery_attempted=bool(
+                    generation_diagnostics.get("generation_recovery_attempted")
+                ),
+                generation_recovery_family=generation_diagnostics.get(
+                    "generation_recovery_family"
+                ),
+                generation_recovery_result=str(
+                    generation_diagnostics.get("generation_recovery_result") or "not_needed"
+                ),
+                initial_generation_issue_codes=list(
+                    generation_diagnostics.get("initial_generation_issue_codes") or []
+                ),
+                recovery_generation_issue_codes=list(
+                    generation_diagnostics.get("recovery_generation_issue_codes") or []
+                ),
+                initial_input_tokens=_optional_diag_int(
+                    generation_diagnostics, "initial_input_tokens"
+                ),
+                initial_output_tokens=_optional_diag_int(
+                    generation_diagnostics, "initial_output_tokens"
+                ),
+                recovery_input_tokens=_optional_diag_int(
+                    generation_diagnostics, "recovery_input_tokens"
+                ),
+                recovery_output_tokens=_optional_diag_int(
+                    generation_diagnostics, "recovery_output_tokens"
+                ),
+                total_input_tokens=_optional_diag_int(
+                    generation_diagnostics, "total_input_tokens"
+                ),
+                total_output_tokens=_optional_diag_int(
+                    generation_diagnostics, "total_output_tokens"
+                ),
+                reconciled_top5=bool(
+                    generation_diagnostics.get("reconciled_top5")
+                ),
+                replaced_source_ids=list(
+                    generation_diagnostics.get("replaced_source_ids") or []
+                ),
+                replacement_source_ids=list(
+                    generation_diagnostics.get("replacement_source_ids") or []
+                ),
                 error=f"Gemini parse failed ({parse_status}): {issue_text}",
             )
 
@@ -1760,6 +2917,49 @@ def run_keysuri_live_source_smoke(
             if code
             not in [str(c) for c in (prompt_input.get("internal_issue_codes") or [])]
         ],
+        generation_attempt_count=int(
+            generation_diagnostics.get("generation_attempt_count") or 0
+        ),
+        generation_recovery_attempted=bool(
+            generation_diagnostics.get("generation_recovery_attempted")
+        ),
+        generation_recovery_family=generation_diagnostics.get(
+            "generation_recovery_family"
+        ),
+        generation_recovery_result=str(
+            generation_diagnostics.get("generation_recovery_result") or "not_needed"
+        ),
+        initial_generation_issue_codes=list(
+            generation_diagnostics.get("initial_generation_issue_codes") or []
+        ),
+        recovery_generation_issue_codes=list(
+            generation_diagnostics.get("recovery_generation_issue_codes") or []
+        ),
+        initial_input_tokens=_optional_diag_int(
+            generation_diagnostics, "initial_input_tokens"
+        ),
+        initial_output_tokens=_optional_diag_int(
+            generation_diagnostics, "initial_output_tokens"
+        ),
+        recovery_input_tokens=_optional_diag_int(
+            generation_diagnostics, "recovery_input_tokens"
+        ),
+        recovery_output_tokens=_optional_diag_int(
+            generation_diagnostics, "recovery_output_tokens"
+        ),
+        total_input_tokens=_optional_diag_int(
+            generation_diagnostics, "total_input_tokens"
+        ),
+        total_output_tokens=_optional_diag_int(
+            generation_diagnostics, "total_output_tokens"
+        ),
+        reconciled_top5=bool(generation_diagnostics.get("reconciled_top5")),
+        replaced_source_ids=list(
+            generation_diagnostics.get("replaced_source_ids") or []
+        ),
+        replacement_source_ids=list(
+            generation_diagnostics.get("replacement_source_ids") or []
+        ),
     )
 
     if not send:

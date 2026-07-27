@@ -1224,6 +1224,81 @@ def build_keysuri_generation_prompt_compact(
     return "\n".join(sections)
 
 
+def build_keysuri_corrective_generation_prompt(
+    prompt_input: dict,
+    corrective_context: dict,
+) -> str:
+    """Build one bounded corrective prompt without echoing the first response.
+
+    The normal generation prompt remains the schema/source authority.  This
+    suffix only states the failure family and the immutable selection contract;
+    callers must pass a prompt_input whose TOP5/source pack is already the
+    deterministic selection that the second response must follow.
+    """
+    if not isinstance(corrective_context, dict):
+        raise ValueError("corrective_context must be a dict")
+    safe_context = {
+        "failure_family": str(corrective_context.get("failure_family") or ""),
+        "initial_issue_codes": [
+            str(code)
+            for code in (corrective_context.get("initial_issue_codes") or [])
+            if code
+        ][:30],
+        "missing_required_fields": [
+            str(field)
+            for field in (corrective_context.get("missing_required_fields") or [])
+            if field
+        ][:30],
+        "fixed_source_ids": [
+            str(source_id)
+            for source_id in (corrective_context.get("fixed_source_ids") or [])
+            if source_id
+        ],
+        "fixed_top5_order": [
+            {
+                "rank": int(item.get("rank") or 0),
+                "news_id": str(item.get("news_id") or ""),
+                "source_ids": [
+                    str(source_id)
+                    for source_id in (item.get("source_ids") or [])
+                    if source_id
+                ],
+            }
+            for item in (corrective_context.get("fixed_top5_order") or [])
+            if isinstance(item, dict)
+        ],
+        "fixed_deep_dive_source_ids": [
+            str(source_id)
+            for source_id in (corrective_context.get("fixed_deep_dive_source_ids") or [])
+            if source_id
+        ],
+        "approved_deep_dive_source_ids": [
+            str(source_id)
+            for source_id in (
+                corrective_context.get("approved_deep_dive_source_ids")
+                or corrective_context.get("fixed_source_ids")
+                or []
+            )
+            if source_id
+        ],
+    }
+    suffix = [
+        "",
+        "=== BOUNDED CORRECTIVE GENERATION (attempt 2 of 2) ===",
+        "The first response failed validation. Do not reproduce, quote, or discuss it.",
+        "Return exactly one complete JSON object and nothing else.",
+        "Markdown fences, prefaces, postscripts, fragments, and multiple drafts are forbidden.",
+        "Do not add, remove, replace, reorder, or invent an article, URL, news_id, or source_id.",
+        "Use only the fixed TOP5 order and source IDs below.",
+        "deep_dive.source_ids must be a non-empty subset of approved_deep_dive_source_ids "
+        "(or fixed_source_ids); preferred ids may appear in fixed_deep_dive_source_ids.",
+        "CORRECTIVE_CONTEXT",
+        json.dumps(safe_context, ensure_ascii=False, sort_keys=True),
+        "END CORRECTIVE CONTRACT — output the single final JSON object only.",
+    ]
+    return build_keysuri_generation_prompt(prompt_input) + "\n" + "\n".join(suffix)
+
+
 def generate_keysuri_body_raw_text(
     prompt_input: dict,
     *,
@@ -1231,6 +1306,7 @@ def generate_keysuri_body_raw_text(
     project_id: Optional[str] = None,
     model: Optional[str] = None,
     usage_sink: Optional[MutableMapping[str, Any]] = None,
+    corrective_context: Optional[dict] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """Generate Kee-Suri body JSON text with Global-only MAX_TOKENS empty retry.
 
@@ -1252,7 +1328,11 @@ def generate_keysuri_body_raw_text(
     program_id = str(prompt_input.get("program_id") or "").strip()
     caller = gemini_caller or call_keysuri_gemini_text
     max_out = resolve_keysuri_body_max_output_tokens(program_id)
-    prompt_text = build_keysuri_generation_prompt(prompt_input)
+    prompt_text = (
+        build_keysuri_corrective_generation_prompt(prompt_input, corrective_context)
+        if corrective_context is not None
+        else build_keysuri_generation_prompt(prompt_input)
+    )
     diagnostics: Dict[str, Any] = {
         "program_id": program_id or None,
         "max_output_tokens": max_out,

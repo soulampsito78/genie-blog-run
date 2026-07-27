@@ -47,8 +47,24 @@ def estimate_keysuri_gemini_cost(
     validation_result, HTTP status, or customer-send decisions.
     """
     try:
+        usage_for_estimate: Optional[Mapping[str, Any]] = usage
+        force_partial_unpriced = False
+        if isinstance(usage, Mapping) and (
+            usage.get("cost_estimate_status_hint") == "partial_usage_unpriced"
+            or usage.get("usage_tokens_complete") is False
+        ):
+            force_partial_unpriced = True
+            usage_for_estimate = {
+                **dict(usage),
+                "prompt_token_count": None,
+                "candidates_token_count": None,
+                "thoughts_token_count": None,
+                "total_token_count": None,
+                "input_tokens": None,
+                "output_tokens": None,
+            }
         common = estimate_genie_generation_cost(
-            usage,
+            usage_for_estimate,
             service_family="keysuri",
             text_model=model,
             image_model=image_model,
@@ -58,7 +74,7 @@ def estimate_keysuri_gemini_cost(
             image_usage=image_usage,
         )
         common_usage = common.get("usage") if isinstance(common.get("usage"), dict) else {}
-        return {
+        result = {
             **common,
             "model": model,
             "usage": {
@@ -67,10 +83,32 @@ def estimate_keysuri_gemini_cost(
                 "thoughts_token_count": common_usage.get("thoughts_token_count"),
                 "total_token_count": common_usage.get("total_token_count"),
                 "generated_image_count": common_usage.get("generated_image_count"),
+                "prompt_token_count_partial_sum": (
+                    usage.get("prompt_token_count_partial_sum")
+                    if isinstance(usage, Mapping)
+                    else None
+                ),
+                "candidates_token_count_partial_sum": (
+                    usage.get("candidates_token_count_partial_sum")
+                    if isinstance(usage, Mapping)
+                    else None
+                ),
             },
             "image_model": image_model,
             "image_usage": dict(common.get("image_usage") or {}),
         }
+        if force_partial_unpriced:
+            result["cost_estimate_status"] = "partial_usage_unpriced"
+            result["total_cost_usd"] = None
+            result["total_cost_krw"] = None
+            note = str(result.get("pricing_note") or "").strip()
+            partial_note = (
+                "partial generation usage is incomplete and was not priced as an exact total"
+            )
+            result["pricing_note"] = (
+                f"{note}; {partial_note}" if note else partial_note
+            )
+        return result
     except Exception as exc:  # pragma: no cover - defensive, cost estimate is best-effort
         return {
             "estimate_only": True,

@@ -48,6 +48,63 @@ from weather_image_context import build_image_weather_context_for_today
 from keysuri_gemini_client import extract_gemini_usage_metadata
 from genie_cost_estimate import estimate_genie_generation_cost
 
+
+def configure_application_logging() -> None:
+    """Expose application INFO events without raising third-party logger noise.
+
+    Prefer app-scoped loggers over root-level INFO so Cloud Run still receives
+    recovery events while google/urllib3/httpx stay at WARNING+.
+    Idempotent: repeated calls do not add duplicate handlers.
+    """
+    app_logger_names = (
+        "keysuri_live_source_smoke",
+        "keysuri_service_full_run",
+        "internal_jobs",
+        "main",
+        __name__,
+    )
+    third_party_logger_names = (
+        "google",
+        "google.auth",
+        "google.api_core",
+        "urllib3",
+        "httpx",
+        "httpcore",
+        "asyncio",
+    )
+
+    for name in third_party_logger_names:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+    root_logger = logging.getLogger()
+    shared_handler: Optional[logging.Handler] = None
+    for name in app_logger_names:
+        app_logger = logging.getLogger(name)
+        app_logger.setLevel(logging.INFO)
+        has_owned_handler = any(
+            getattr(handler, "_genie_application_handler", False)
+            for handler in app_logger.handlers
+        )
+        if has_owned_handler:
+            continue
+        # When Uvicorn (or another host) already configured root handlers,
+        # propagate app INFO records through them without touching root level.
+        if root_logger.handlers:
+            app_logger.propagate = True
+            continue
+        if shared_handler is None:
+            shared_handler = logging.StreamHandler()
+            shared_handler.setLevel(logging.INFO)
+            shared_handler.setFormatter(
+                logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+            )
+            setattr(shared_handler, "_genie_application_handler", True)
+        app_logger.addHandler(shared_handler)
+        app_logger.propagate = False
+
+
+configure_application_logging()
+
 # Vertex AI SDK
 # 설치 필요:
 # pip install google-cloud-aiplatform vertexai fastapi uvicorn
