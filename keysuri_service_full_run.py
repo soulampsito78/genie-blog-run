@@ -27,6 +27,7 @@ from admin_store import (
 )
 from admin_cost_ledger import save_cost_record_best_effort
 from admin_urls import build_owner_review_admin_url
+from owner_review_failure_events import emit_owner_review_failure_from_artifact_meta
 import email_sender
 from email_sender import send_genie_email
 from keysuri_approved_image_assets import KOREA_BOTTOM_ROLE, list_approved_assets
@@ -3732,6 +3733,12 @@ def run_keysuri_service_full_run(
     run_id = generate_run_id(pid)
     runner = smoke_runner or run_keysuri_live_source_smoke
     gemini_usage_sink: Dict[str, Any] = {}
+
+    def _save_failed_run_artifact(meta: Dict[str, Any], email_html: str = "") -> None:
+        """Persist failure artifact and emit one scheduled ERROR event (deduped)."""
+        save_run_artifact(meta, email_html=email_html)
+        emit_owner_review_failure_from_artifact_meta(meta, dry_run=False)
+
     smoke: LiveSourceSmokeResult = runner(
         program_id=pid,
         use_gemini=True,
@@ -3803,7 +3810,7 @@ def run_keysuri_service_full_run(
                 list(meta.get("internal_issue_codes") or []),
                 smoke_internal_codes,
             )
-        save_run_artifact(meta, email_html="")
+        _save_failed_run_artifact(meta, email_html="")
         failure_payload = {
             "ok": False,
             "run_id": run_id,
@@ -3850,7 +3857,7 @@ def run_keysuri_service_full_run(
         )
         if top_image_variation_fields:
             meta.update(top_image_variation_fields)
-        save_run_artifact(meta, email_html="")
+        _save_failed_run_artifact(meta, email_html="")
         return {
             "ok": False,
             "run_id": run_id,
@@ -3885,7 +3892,7 @@ def run_keysuri_service_full_run(
             email_sent=False,
             error_code="generated_briefing_reload_failed",
         )
-        save_run_artifact(meta, email_html="")
+        _save_failed_run_artifact(meta, email_html="")
         return {"ok": False, "run_id": run_id, "program_id": pid, "service_full_run": True, "email_sent": False, "error": "generated_briefing_reload_failed"}
 
     generated_briefing, visible_text_quality_fields = validate_and_repair_keysuri_visible_text_quality(
@@ -3910,7 +3917,7 @@ def run_keysuri_service_full_run(
             error_code=KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
         )
         meta.update(visible_text_quality_fields)
-        save_run_artifact(meta, email_html="")
+        _save_failed_run_artifact(meta, email_html="")
         return {
             "ok": False,
             "run_id": run_id,
@@ -3945,7 +3952,7 @@ def run_keysuri_service_full_run(
         meta["generated_image_path_raw"] = raw_generated_image_path
         meta["top_shot_watermark_status"] = "failed"
         meta["top_shot_watermark_error_type"] = type(exc).__name__
-        save_run_artifact(meta, email_html="")
+        _save_failed_run_artifact(meta, email_html="")
         return {
             "ok": False,
             "run_id": run_id,
@@ -4044,7 +4051,7 @@ def run_keysuri_service_full_run(
         )
         meta.update(visible_text_quality_fields)
         meta.update(subject_fields)
-        save_run_artifact(meta, email_html="")
+        _save_failed_run_artifact(meta, email_html="")
         return {
             "ok": False,
             "run_id": run_id,
@@ -4150,7 +4157,7 @@ def run_keysuri_service_full_run(
         )
         meta.update(subject_fields)
         meta.update(visible_text_quality_fields)
-        save_run_artifact(meta, email_html="")
+        _save_failed_run_artifact(meta, email_html="")
         return {
             "ok": False,
             "run_id": run_id,
@@ -4199,7 +4206,7 @@ def run_keysuri_service_full_run(
         )
         meta.update(subject_fields)
         meta.update(_post_render_qa_diagnostic_fields(post_render_qa))
-        save_run_artifact(meta, email_html="")
+        _save_failed_run_artifact(meta, email_html="")
         failure = {
             "ok": False,
             "run_id": run_id,
