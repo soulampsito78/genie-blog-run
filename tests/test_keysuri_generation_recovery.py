@@ -1713,5 +1713,270 @@ def _optional_or_none_probe() -> Optional[int]:
     )
 
 
+def _global_prompt_input() -> dict:
+    path = _REPO / "ops" / "feeds" / "keysuri_global_prompt_input.sample.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _global_generated() -> dict:
+    path = _REPO / "ops" / "feeds" / "keysuri_global_generated_briefing.sample.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.pop("_fixture_note", None)
+    return payload
+
+
+def _global_missing_required_keys_payload() -> dict:
+    """Reproduce today's Global failure: single JSON missing required contract keys."""
+    return {
+        "news_scope": "global_tech",
+        "section_heading": "글로벌 테크",
+    }
+
+
+class GlobalBoundedContractRepairTests(unittest.TestCase):
+    def test_initial_pass_does_not_repair(self) -> None:
+        prompt_input = _global_prompt_input()
+        generated = _global_generated()
+        caller, calls = _fake_caller(
+            [json.dumps(generated, ensure_ascii=False)],
+            usages=[(90, 30)],
+        )
+        result = generate_keysuri_with_bounded_recovery(
+            prompt_input, gemini_caller=caller, usage_sink={}
+        )
+        self.assertEqual(len(calls), 1)
+        diag = result["generation_diagnostics"]
+        self.assertFalse(diag.get("global_recovery_attempted"))
+        self.assertEqual(diag.get("global_recovery_result"), "not_needed")
+        self.assertEqual(diag.get("global_recovery_call_count"), 0)
+        self.assertEqual(diag.get("global_generation_call_count"), 1)
+        self.assertEqual(diag.get("global_generation_call_budget"), 3)
+        self.assertEqual(result["parse_result"]["parse_status"], "parsed_valid")
+
+    def test_missing_required_keys_repairs_once_and_passes(self) -> None:
+        prompt_input = _global_prompt_input()
+        caller, calls = _fake_caller(
+            [
+                json.dumps(_global_missing_required_keys_payload(), ensure_ascii=False),
+                json.dumps(_global_generated(), ensure_ascii=False),
+            ],
+            usages=[(80, 10), (70, 40)],
+        )
+        usage: dict = {}
+        result = generate_keysuri_with_bounded_recovery(
+            prompt_input, gemini_caller=caller, usage_sink=usage
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertIn("BOUNDED CORRECTIVE GENERATION", calls[1]["prompt"])
+        self.assertIn("Global full-contract repair", calls[1]["prompt"])
+        diag = result["generation_diagnostics"]
+        self.assertTrue(diag["global_recovery_attempted"])
+        self.assertEqual(diag["global_recovery_result"], "succeeded")
+        self.assertIn(
+            "gemini_json_missing_required_keys", diag["global_recovery_error_codes"]
+        )
+        self.assertEqual(diag["global_recovery_call_count"], 1)
+        self.assertEqual(diag["global_generation_call_count"], 2)
+        self.assertLessEqual(diag["global_generation_call_count"], 3)
+        self.assertFalse(diag["global_generation_budget_exhausted"])
+        self.assertEqual(result["parse_result"]["parse_status"], "parsed_valid")
+        self.assertEqual(usage.get("prompt_token_count"), 150)
+
+    def test_repair_still_missing_keys_safe_fails(self) -> None:
+        prompt_input = _global_prompt_input()
+        bad = json.dumps(_global_missing_required_keys_payload(), ensure_ascii=False)
+        caller, calls = _fake_caller([bad, bad], usages=[(10, 5), (10, 5)])
+        result = generate_keysuri_with_bounded_recovery(
+            prompt_input, gemini_caller=caller, usage_sink={}
+        )
+        self.assertEqual(len(calls), 2)
+        diag = result["generation_diagnostics"]
+        self.assertTrue(diag["global_recovery_attempted"])
+        self.assertEqual(diag["global_recovery_result"], "failed")
+        self.assertNotEqual(result["parse_result"]["parse_status"], "parsed_valid")
+        self.assertIsNone(result["parse_result"].get("generated_briefing"))
+
+    def test_max_tokens_then_repair_stays_within_three_calls(self) -> None:
+        from keysuri_gemini_client import KeysuriGeminiError
+
+        prompt_input = _global_prompt_input()
+        calls: list = []
+
+        def _caller(prompt: str, **kwargs):
+            idx = len(calls)
+            calls.append({"prompt": prompt, "kwargs": kwargs})
+            sink = kwargs.get("usage_sink")
+            if idx == 0:
+                if isinstance(sink, dict):
+                    sink.update(
+                        {
+                            "prompt_token_count": 11,
+                            "candidates_token_count": 0,
+                            "total_token_count": 11,
+                        }
+                    )
+                raise KeysuriGeminiError(
+                    "keysuri_gemini_max_tokens_no_text: empty",
+                    diagnostics={
+                        "issue_codes": ["keysuri_gemini_max_tokens_no_text"],
+                        "finish_reason": "MAX_TOKENS",
+                        "text_length": 0,
+                    },
+                )
+            if isinstance(sink, dict):
+                sink.update(
+                    {
+                        "prompt_token_count": 20 + idx,
+                        "candidates_token_count": 15,
+                        "total_token_count": 35 + idx,
+                    }
+                )
+            if idx == 1:
+                # Compact retry returns malformed contract.
+                return json.dumps(
+                    _global_missing_required_keys_payload(), ensure_ascii=False
+                )
+            return json.dumps(_global_generated(), ensure_ascii=False)
+
+        result = generate_keysuri_with_bounded_recovery(
+            prompt_input, gemini_caller=_caller, usage_sink={}
+        )
+        self.assertEqual(len(calls), 3)
+        diag = result["generation_diagnostics"]
+        self.assertTrue(diag.get("retry_applied") or diag.get("recovery_generation_diagnostics"))
+        self.assertTrue(diag["global_recovery_attempted"])
+        self.assertEqual(diag["global_recovery_result"], "succeeded")
+        self.assertEqual(diag["global_generation_call_count"], 3)
+        self.assertLessEqual(diag["global_generation_call_count"], 3)
+        self.assertEqual(result["parse_result"]["parse_status"], "parsed_valid")
+
+    def test_budget_exhaustion_blocks_fourth_call(self) -> None:
+        from keysuri_gemini_client import KeysuriGeminiError
+
+        prompt_input = _global_prompt_input()
+        calls: list = []
+
+        def _caller(prompt: str, **kwargs):
+            idx = len(calls)
+            calls.append({"prompt": prompt})
+            if idx < 2:
+                raise KeysuriGeminiError(
+                    "keysuri_gemini_max_tokens_no_text: empty",
+                    diagnostics={
+                        "issue_codes": ["keysuri_gemini_max_tokens_no_text"],
+                        "finish_reason": "MAX_TOKENS",
+                        "text_length": 0,
+                    },
+                )
+            return json.dumps(
+                _global_missing_required_keys_payload(), ensure_ascii=False
+            )
+
+        # Initial raises MAX_TOKENS, compact retry also raises → no text, exception path.
+        with self.assertRaises(KeysuriGeminiError):
+            generate_keysuri_with_bounded_recovery(
+                prompt_input, gemini_caller=_caller, usage_sink={}
+            )
+        self.assertEqual(len(calls), 2)
+
+        # Separate: 3 successful text calls then no fourth.
+        calls.clear()
+
+        def _three_then_fail(prompt: str, **kwargs):
+            idx = len(calls)
+            calls.append({"prompt": prompt})
+            if idx >= 3:
+                raise AssertionError("fourth Gemini call must not happen")
+            return json.dumps(
+                _global_missing_required_keys_payload(), ensure_ascii=False
+            )
+
+        result = generate_keysuri_with_bounded_recovery(
+            prompt_input, gemini_caller=_three_then_fail, usage_sink={}
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(
+            result["generation_diagnostics"]["global_generation_call_count"], 2
+        )
+        self.assertEqual(
+            result["generation_diagnostics"]["global_recovery_result"], "failed"
+        )
+
+    def test_failed_global_repair_skips_image_and_smtp(self) -> None:
+        image_runner = MagicMock()
+        send_fn = MagicMock()
+        diagnostics = {
+            "generation_attempt_count": 2,
+            "generation_recovery_attempted": True,
+            "generation_recovery_family": "GLOBAL_MALFORMED_CONTRACT",
+            "generation_recovery_result": "failed",
+            "initial_generation_issue_codes": ["gemini_json_missing_required_keys"],
+            "recovery_generation_issue_codes": ["gemini_json_missing_required_keys"],
+            "global_recovery_attempted": True,
+            "global_recovery_reason": "gemini_json_missing_required_keys",
+            "global_recovery_error_codes": ["gemini_json_missing_required_keys"],
+            "global_recovery_call_count": 1,
+            "global_recovery_result": "failed",
+            "global_generation_call_count": 2,
+            "global_generation_call_budget": 3,
+            "global_generation_budget_exhausted": False,
+            "global_usage_by_attempt": [],
+        }
+        smoke = LiveSourceSmokeResult(
+            ok=False,
+            program_id="keysuri_global_tech",
+            source_pack_path="/tmp/global-recovery-pack.json",
+            html_path="",
+            fetched_item_count=10,
+            feed_urls_used=[],
+            sample_marker_pass=False,
+            placeholder_gate_pass=False,
+            called_gemini=True,
+            use_gemini=True,
+            parse_status="parsed_invalid",
+            validation_issues=["gemini_json_missing_required_keys"],
+            generation_diagnostics=diagnostics,
+            error="Gemini parse failed safely",
+        )
+
+        with patch("keysuri_service_full_run.save_run_artifact") as save_artifact:
+            result = run_keysuri_service_full_run(
+                "keysuri_global_tech",
+                smoke_runner=lambda **_kwargs: smoke,
+                image_canary_runner=image_runner,
+                send_fn=send_fn,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["called_image_api"])
+        self.assertFalse(result["smtp_attempted"])
+        self.assertFalse(result["email_sent"])
+        image_runner.assert_not_called()
+        send_fn.assert_not_called()
+        save_artifact.assert_called_once()
+        meta = save_artifact.call_args.args[0]
+        self.assertTrue(meta.get("global_recovery_attempted"))
+        self.assertEqual(meta.get("global_recovery_result"), "failed")
+        self.assertEqual(meta.get("global_generation_call_budget"), 3)
+
+    def test_korea_recovery_unchanged_and_independent(self) -> None:
+        prompt_input = _prompt_input()
+        caller, calls = _fake_caller(
+            [
+                _three_incomplete_fragments("korea"),
+                json.dumps(_structural_corrective_generated(), ensure_ascii=False),
+            ],
+            usages=[(40, 10), (20, 10)],
+        )
+        result = generate_keysuri_with_bounded_recovery(
+            prompt_input, gemini_caller=caller, usage_sink={}
+        )
+        self.assertEqual(len(calls), 2)
+        diag = result["generation_diagnostics"]
+        self.assertFalse(bool(diag.get("global_recovery_attempted")))
+        self.assertTrue(diag["generation_recovery_attempted"])
+        self.assertEqual(diag["generation_recovery_result"], "succeeded")
+
+
 if __name__ == "__main__":
     unittest.main()

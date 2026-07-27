@@ -1108,10 +1108,36 @@ _SEMANTIC_RECOVERY_CODES = frozenset(
         "top_5_unapproved_url",
     }
 )
+# Global bounded full-contract repair targets (exact names + current aliases).
+_GLOBAL_CONTRACT_REPAIR_CODES = frozenset(
+    {
+        "gemini_json_missing_required_keys",
+        "gemini_json_required_field_invalid",
+        "gemini_json_schema_validation_failed",
+        "top_5_count_invalid",
+        "top_5_item_count_invalid",
+        "top_5_item_missing_required_field",
+        "top_5_news_item_invalid",
+        "top_5_news_missing_or_invalid",
+        "deep_dive_missing_required_field",
+        "deep_dive_heading_invalid",
+        "deep_dive_key_implications_invalid",
+    }
+)
+GLOBAL_GENERATION_CALL_BUDGET = 3
 RECOVERY_RECONCILIATION_INSUFFICIENT = (
     "korea_generation_reconciliation_insufficient_valid_candidates"
 )
 
+
+def _is_global_program(program_id: str) -> bool:
+    value = str(program_id or "").strip()
+    return value == PROGRAM_GLOBAL or value.startswith("keysuri_global")
+
+
+def _global_contract_repair_codes(issue_codes: Sequence[str]) -> List[str]:
+    codes = {str(code) for code in issue_codes if code}
+    return sorted(codes & _GLOBAL_CONTRACT_REPAIR_CODES)
 
 def _parse_with_schema_alias_fallback(
     raw_text: str,
@@ -1938,6 +1964,278 @@ def _reconcile_korea_top5(
     )
 
 
+def _default_global_recovery_diagnostics(
+    *,
+    call_state: Mapping[str, Any],
+    attempted: bool = False,
+    reason: Optional[str] = None,
+    error_codes: Optional[Sequence[str]] = None,
+    result: str = "not_needed",
+) -> Dict[str, Any]:
+    count = int(call_state.get("count") or 0)
+    budget = int(call_state.get("budget") or GLOBAL_GENERATION_CALL_BUDGET)
+    return {
+        "global_recovery_attempted": attempted,
+        "global_recovery_reason": reason,
+        "global_recovery_error_codes": list(error_codes or []),
+        "global_recovery_call_count": 1 if attempted else 0,
+        "global_recovery_result": result,
+        "global_generation_call_count": count,
+        "global_generation_call_budget": budget,
+        "global_generation_budget_exhausted": bool(call_state.get("exhausted")),
+        "global_usage_by_attempt": [],
+    }
+
+
+def _preservable_fields_from_parse(parse_result: Mapping[str, Any]) -> List[str]:
+    meta = (
+        parse_result.get("parse_meta")
+        if isinstance(parse_result.get("parse_meta"), dict)
+        else {}
+    )
+    candidate = meta.get("candidate_generated_briefing")
+    if not isinstance(candidate, dict):
+        candidate = parse_result.get("generated_briefing")
+    if not isinstance(candidate, dict):
+        return []
+    from keysuri_generation_prompt import KEYSURI_EXPECTED_TOP_LEVEL_KEYS
+
+    present: List[str] = []
+    for key in KEYSURI_EXPECTED_TOP_LEVEL_KEYS:
+        value = candidate.get(key)
+        if value not in (None, "", [], {}):
+            present.append(str(key))
+    return present
+
+
+def _run_global_bounded_contract_repair(
+    *,
+    prompt_input: dict,
+    program_id: str,
+    raw_text: str,
+    parse_result: dict,
+    initial_codes: Sequence[str],
+    initial_generation: Mapping[str, Any],
+    initial_usage: MutableMapping[str, Any],
+    gemini_caller: Any,
+    project_id: Optional[str],
+    model: Optional[str],
+    usage_sink: Optional[MutableMapping[str, Any]],
+    call_state: MutableMapping[str, Any],
+) -> Dict[str, Any]:
+    """Bounded Global full-contract repair — never Korea item reconciliation."""
+    recovery_usage: Dict[str, Any] = {}
+    repair_codes = _global_contract_repair_codes(initial_codes)
+    diagnostics: Dict[str, Any] = {
+        **initial_generation,
+        "generation_attempt_count": 1,
+        "generation_recovery_attempted": False,
+        "generation_recovery_family": None,
+        "generation_recovery_result": "not_needed",
+        "initial_generation_issue_codes": list(initial_codes),
+        "recovery_generation_issue_codes": [],
+        "reconciled_top5": False,
+        "replaced_source_ids": [],
+        "replacement_source_ids": [],
+        **_default_global_recovery_diagnostics(call_state=call_state),
+        "global_usage_by_attempt": [
+            {
+                "attempt": "initial",
+                "prompt_token_count": _optional_token_count(
+                    initial_usage, "prompt_token_count", "input_tokens"
+                ),
+                "candidates_token_count": _optional_token_count(
+                    initial_usage, "candidates_token_count", "output_tokens"
+                ),
+            }
+        ],
+    }
+    if not repair_codes:
+        diagnostics.update(
+            _default_global_recovery_diagnostics(
+                call_state=call_state,
+                result="not_attempted_non_repairable",
+            )
+        )
+        diagnostics["global_usage_by_attempt"] = diagnostics.get(
+            "global_usage_by_attempt"
+        ) or []
+        _merge_into_diagnostics(
+            diagnostics,
+            _merge_generation_usage(usage_sink, initial_usage, recovery_usage),
+            overwrite_keys=_USAGE_DIAGNOSTIC_OVERWRITE_KEYS,
+        )
+        return {
+            "raw_text": raw_text,
+            "parse_result": parse_result,
+            "prompt_input": prompt_input,
+            "generation_diagnostics": diagnostics,
+        }
+
+    remaining = int(call_state.get("budget") or GLOBAL_GENERATION_CALL_BUDGET) - int(
+        call_state.get("count") or 0
+    )
+    if remaining < 1:
+        call_state["exhausted"] = True
+        diagnostics.update(
+            _default_global_recovery_diagnostics(
+                call_state=call_state,
+                reason="budget_exhausted_before_repair",
+                error_codes=repair_codes,
+                result="not_attempted_budget_exhausted",
+            )
+        )
+        diagnostics["global_generation_budget_exhausted"] = True
+        _merge_into_diagnostics(
+            diagnostics,
+            _merge_generation_usage(usage_sink, initial_usage, recovery_usage),
+            overwrite_keys=_USAGE_DIAGNOSTIC_OVERWRITE_KEYS,
+        )
+        return {
+            "raw_text": raw_text,
+            "parse_result": parse_result,
+            "prompt_input": prompt_input,
+            "generation_diagnostics": diagnostics,
+        }
+
+    from keysuri_generation_prompt import KEYSURI_EXPECTED_TOP_LEVEL_KEYS
+
+    fixed_order, fixed_source_ids = _fixed_top5_context(prompt_input)
+    missing_fields = list(
+        (parse_result.get("parse_meta") or {}).get("missing_required_keys") or []
+    )
+    if not missing_fields:
+        missing_fields = [
+            key
+            for key in KEYSURI_EXPECTED_TOP_LEVEL_KEYS
+            if key
+            not in set(_preservable_fields_from_parse(parse_result))
+        ]
+    corrective_context = {
+        "failure_family": "GLOBAL_MALFORMED_CONTRACT",
+        "initial_issue_codes": list(initial_codes),
+        "missing_required_fields": missing_fields,
+        "preservable_fields": _preservable_fields_from_parse(parse_result),
+        "global_output_contract_keys": list(KEYSURI_EXPECTED_TOP_LEVEL_KEYS),
+        "fixed_source_ids": fixed_source_ids,
+        "fixed_top5_order": fixed_order,
+        "fixed_deep_dive_source_ids": (
+            list(fixed_order[0].get("source_ids") or []) if fixed_order else []
+        ),
+        "approved_deep_dive_source_ids": list(fixed_source_ids),
+    }
+    diagnostics["generation_recovery_attempted"] = True
+    diagnostics["generation_recovery_family"] = "GLOBAL_MALFORMED_CONTRACT"
+    diagnostics["generation_attempt_count"] = 2
+    diagnostics["global_recovery_attempted"] = True
+    diagnostics["global_recovery_reason"] = ",".join(repair_codes)
+    diagnostics["global_recovery_error_codes"] = list(repair_codes)
+    _safe_generation_event(
+        "keysuri_global_contract_repair_attempted",
+        program_id=program_id,
+        failure_family="GLOBAL_MALFORMED_CONTRACT",
+        generation_attempt_count=int(call_state.get("count") or 0) + 1,
+        issue_codes=repair_codes,
+    )
+    calls_before_repair = int(call_state.get("count") or 0)
+    try:
+        recovery_raw, recovery_generation = generate_keysuri_body_raw_text(
+            prompt_input,
+            gemini_caller=gemini_caller,
+            project_id=project_id,
+            model=model,
+            usage_sink=recovery_usage,
+            corrective_context=corrective_context,
+            generation_call_state=call_state,
+        )
+        diagnostics["recovery_generation_diagnostics"] = recovery_generation
+        recovery_parse = _parse_with_schema_alias_fallback(
+            recovery_raw, program_id, prompt_input
+        )
+        recovery_codes = _issue_codes(recovery_parse)
+        diagnostics["recovery_generation_issue_codes"] = recovery_codes
+        raw_text = recovery_raw
+        parse_result = recovery_parse
+    except KeysuriGeminiError as exc:
+        recovery_codes = list(
+            dict.fromkeys(
+                [
+                    "generation_recovery_call_failed",
+                    *[
+                        str(code)
+                        for code in (
+                            (getattr(exc, "diagnostics", None) or {}).get("issue_codes")
+                            or []
+                        )
+                        if code
+                    ],
+                ]
+            )
+        )
+        diagnostics["recovery_generation_issue_codes"] = recovery_codes
+        parse_result = {
+            "parse_status": "parsed_invalid",
+            "program_id": program_id,
+            "issues": [
+                {
+                    "code": code,
+                    "message": "Global contract repair failed safely",
+                    "path": "generation",
+                }
+                for code in recovery_codes
+            ],
+            "generated_briefing": None,
+            "parse_meta": {"parse_failure_stage": "global_contract_repair"},
+        }
+
+    success = parse_result.get("parse_status") == "parsed_valid"
+    repair_calls = max(
+        0, int(call_state.get("count") or 0) - calls_before_repair
+    )
+    diagnostics["generation_recovery_result"] = "succeeded" if success else "failed"
+    diagnostics["global_recovery_result"] = "succeeded" if success else "failed"
+    diagnostics["global_recovery_call_count"] = repair_calls
+    diagnostics["global_generation_call_count"] = int(call_state.get("count") or 0)
+    diagnostics["global_generation_call_budget"] = int(
+        call_state.get("budget") or GLOBAL_GENERATION_CALL_BUDGET
+    )
+    diagnostics["global_generation_budget_exhausted"] = bool(call_state.get("exhausted"))
+    usage_attempts = list(diagnostics.get("global_usage_by_attempt") or [])
+    usage_attempts.append(
+        {
+            "attempt": "contract_repair",
+            "prompt_token_count": _optional_token_count(
+                recovery_usage, "prompt_token_count", "input_tokens"
+            ),
+            "candidates_token_count": _optional_token_count(
+                recovery_usage, "candidates_token_count", "output_tokens"
+            ),
+        }
+    )
+    diagnostics["global_usage_by_attempt"] = usage_attempts
+    _merge_into_diagnostics(
+        diagnostics,
+        _merge_generation_usage(usage_sink, initial_usage, recovery_usage),
+        overwrite_keys=_USAGE_DIAGNOSTIC_OVERWRITE_KEYS,
+    )
+    _safe_generation_event(
+        "keysuri_global_contract_repair_succeeded"
+        if success
+        else "keysuri_global_contract_repair_failed",
+        program_id=program_id,
+        failure_family="GLOBAL_MALFORMED_CONTRACT",
+        generation_attempt_count=int(call_state.get("count") or 0),
+        issue_codes=diagnostics["recovery_generation_issue_codes"],
+        result=diagnostics["global_recovery_result"],
+    )
+    return {
+        "raw_text": raw_text,
+        "parse_result": parse_result,
+        "prompt_input": prompt_input,
+        "generation_diagnostics": diagnostics,
+    }
+
+
 def generate_keysuri_with_bounded_recovery(
     prompt_input: dict,
     *,
@@ -1946,8 +2244,19 @@ def generate_keysuri_with_bounded_recovery(
     model: Optional[str] = None,
     usage_sink: Optional[MutableMapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Run Korea generation with at most one corrective attempt in this call."""
+    """Run Kee-Suri generation with bounded recovery.
+
+    Korea: at most one corrective attempt (semantic reconciliation + structural).
+    Global: unified call budget of 3 (initial + optional MAX_TOKENS compact +
+    optional full-contract repair). Never copies Korea item-level reconciliation.
+    """
     program_id = str(prompt_input.get("program_id") or "")
+    is_global = _is_global_program(program_id)
+    call_state: Dict[str, Any] = {
+        "count": 0,
+        "budget": GLOBAL_GENERATION_CALL_BUDGET if is_global else None,
+        "exhausted": False,
+    }
     initial_usage: Dict[str, Any] = {}
     recovery_usage: Dict[str, Any] = {}
     raw_text, initial_generation = generate_keysuri_body_raw_text(
@@ -1956,6 +2265,7 @@ def generate_keysuri_with_bounded_recovery(
         project_id=project_id,
         model=model,
         usage_sink=initial_usage,
+        generation_call_state=call_state if is_global else None,
     )
     parse_result = _parse_with_schema_alias_fallback(raw_text, program_id, prompt_input)
     initial_codes = _issue_codes(parse_result)
@@ -1971,7 +2281,60 @@ def generate_keysuri_with_bounded_recovery(
         "replaced_source_ids": [],
         "replacement_source_ids": [],
     }
-    if parse_result.get("parse_status") == "parsed_valid" or program_id != PROGRAM_KOREA:
+    if is_global:
+        diagnostics.update(
+            _default_global_recovery_diagnostics(call_state=call_state)
+        )
+        diagnostics["global_usage_by_attempt"] = [
+            {
+                "attempt": "initial",
+                "prompt_token_count": _optional_token_count(
+                    initial_usage, "prompt_token_count", "input_tokens"
+                ),
+                "candidates_token_count": _optional_token_count(
+                    initial_usage, "candidates_token_count", "output_tokens"
+                ),
+            }
+        ]
+        if initial_generation.get("retry_applied"):
+            diagnostics["global_usage_by_attempt"].append(
+                {
+                    "attempt": "max_tokens_compact_retry",
+                    "prompt_token_count": None,
+                    "candidates_token_count": None,
+                }
+            )
+
+    if parse_result.get("parse_status") == "parsed_valid":
+        _merge_into_diagnostics(
+            diagnostics,
+            _merge_generation_usage(usage_sink, initial_usage, recovery_usage),
+            overwrite_keys=_USAGE_DIAGNOSTIC_OVERWRITE_KEYS,
+        )
+        return {
+            "raw_text": raw_text,
+            "parse_result": parse_result,
+            "prompt_input": prompt_input,
+            "generation_diagnostics": diagnostics,
+        }
+
+    if is_global:
+        return _run_global_bounded_contract_repair(
+            prompt_input=prompt_input,
+            program_id=program_id,
+            raw_text=raw_text,
+            parse_result=parse_result,
+            initial_codes=initial_codes,
+            initial_generation=initial_generation,
+            initial_usage=initial_usage,
+            gemini_caller=gemini_caller,
+            project_id=project_id,
+            model=model,
+            usage_sink=usage_sink,
+            call_state=call_state,
+        )
+
+    if program_id != PROGRAM_KOREA:
         _merge_into_diagnostics(
             diagnostics,
             _merge_generation_usage(usage_sink, initial_usage, recovery_usage),
@@ -2155,7 +2518,6 @@ def generate_keysuri_with_bounded_recovery(
         "prompt_input": corrective_input,
         "generation_diagnostics": diagnostics,
     }
-
 
 def scan_sample_markers(*texts: str) -> List[SampleMarkerHit]:
     hits: List[SampleMarkerHit] = []

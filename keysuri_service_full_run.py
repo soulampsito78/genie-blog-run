@@ -116,6 +116,15 @@ _GENERATION_RECOVERY_DIAGNOSTIC_KEYS = (
     "reconciled_top5",
     "replaced_source_ids",
     "replacement_source_ids",
+    "global_recovery_attempted",
+    "global_recovery_reason",
+    "global_recovery_error_codes",
+    "global_recovery_call_count",
+    "global_recovery_result",
+    "global_generation_call_count",
+    "global_generation_call_budget",
+    "global_generation_budget_exhausted",
+    "global_usage_by_attempt",
 )
 
 _REPO = Path(__file__).resolve().parent

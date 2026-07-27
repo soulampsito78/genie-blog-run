@@ -1281,6 +1281,16 @@ def build_keysuri_corrective_generation_prompt(
             )
             if source_id
         ],
+        "preservable_fields": [
+            str(field)
+            for field in (corrective_context.get("preservable_fields") or [])
+            if field
+        ][:30],
+        "global_output_contract_keys": [
+            str(field)
+            for field in (corrective_context.get("global_output_contract_keys") or [])
+            if field
+        ][:30],
     }
     suffix = [
         "",
@@ -1296,6 +1306,15 @@ def build_keysuri_corrective_generation_prompt(
         json.dumps(safe_context, ensure_ascii=False, sort_keys=True),
         "END CORRECTIVE CONTRACT — output the single final JSON object only.",
     ]
+    program_id = str(prompt_input.get("program_id") or "")
+    if program_id == PROGRAM_GLOBAL or program_id.startswith("keysuri_global"):
+        suffix[4:4] = [
+            "This is a Global full-contract repair. Restore every required top-level key.",
+            "Do not invent articles, URLs, news_ids, or source_ids outside the source pack.",
+            "Preserve any already-valid fields from the prior attempt when listed in "
+            "preservable_fields; fill only missing or invalid required fields.",
+            "Output exactly one JSON object. No markdown fences, no commentary.",
+        ]
     return build_keysuri_generation_prompt(prompt_input) + "\n" + "\n".join(suffix)
 
 
@@ -1307,6 +1326,7 @@ def generate_keysuri_body_raw_text(
     model: Optional[str] = None,
     usage_sink: Optional[MutableMapping[str, Any]] = None,
     corrective_context: Optional[dict] = None,
+    generation_call_state: Optional[MutableMapping[str, Any]] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """Generate Kee-Suri body JSON text with Global-only MAX_TOKENS empty retry.
 
@@ -1314,6 +1334,10 @@ def generate_keysuri_body_raw_text(
     raw Gemini response body. On persistent empty MAX_TOKENS failure the original
     KeysuriGeminiError is re-raised with diagnostics attached — callers must keep
     treating that as validation block (never invent a fake briefing).
+
+    ``generation_call_state`` (optional) tracks a shared Global call budget:
+    ``{"count": int, "budget": int}``. Every Gemini invocation increments
+    ``count`` and raises when the budget is exhausted.
     """
     from keysuri_gemini_client import (
         KEYSURI_GLOBAL_BODY_MAX_OUTPUT_TOKENS_RETRY,
@@ -1345,7 +1369,35 @@ def generate_keysuri_body_raw_text(
         "compact_prompt_used": False,
     }
 
+    def _budget_remaining() -> Optional[int]:
+        if not isinstance(generation_call_state, MutableMapping):
+            return None
+        budget = generation_call_state.get("budget")
+        if budget is None:
+            return None
+        used = int(generation_call_state.get("count") or 0)
+        return max(0, int(budget) - used)
+
+    def _register_call() -> None:
+        if not isinstance(generation_call_state, MutableMapping):
+            return
+        budget = generation_call_state.get("budget")
+        used = int(generation_call_state.get("count") or 0)
+        if budget is not None and used >= int(budget):
+            generation_call_state["exhausted"] = True
+            raise KeysuriGeminiError(
+                "global_generation_budget_exhausted: Gemini call budget exhausted",
+                diagnostics={
+                    "issue_codes": ["global_generation_budget_exhausted"],
+                    "global_generation_call_count": used,
+                    "global_generation_call_budget": int(budget),
+                    "global_generation_budget_exhausted": True,
+                },
+            )
+        generation_call_state["count"] = used + 1
+
     try:
+        _register_call()
         raw_text = caller(
             prompt_text,
             project_id=project_id,
@@ -1356,6 +1408,10 @@ def generate_keysuri_body_raw_text(
         )
         diagnostics["text_length"] = len(str(raw_text or ""))
         diagnostics["retry_result"] = "not_needed"
+        if isinstance(generation_call_state, MutableMapping):
+            diagnostics["global_generation_call_count"] = int(
+                generation_call_state.get("count") or 0
+            )
         return str(raw_text), diagnostics
     except KeysuriGeminiError as first_exc:
         first_diag = dict(getattr(first_exc, "diagnostics", None) or {})
@@ -1367,9 +1423,22 @@ def generate_keysuri_body_raw_text(
             code = "keysuri_gemini_max_tokens_no_text" if is_max_tokens_no_text_error(first_exc) else None
             if code and code not in diagnostics["issue_codes"]:
                 diagnostics["issue_codes"].append(code)
+            if "global_generation_budget_exhausted" in str(first_exc):
+                if "global_generation_budget_exhausted" not in diagnostics["issue_codes"]:
+                    diagnostics["issue_codes"].append("global_generation_budget_exhausted")
 
         is_global = program_id == PROGRAM_GLOBAL or program_id.startswith("keysuri_global")
-        if not (is_global and is_max_tokens_no_text_error(first_exc)):
+        # Corrective repair already consumed a budget slot; never nest a compact
+        # MAX_TOKENS retry underneath it (would risk exceeding the Global cap).
+        allow_compact_retry = corrective_context is None
+        remaining = _budget_remaining()
+        if remaining is not None and remaining < 1:
+            allow_compact_retry = False
+        if not (
+            is_global
+            and allow_compact_retry
+            and is_max_tokens_no_text_error(first_exc)
+        ):
             try:
                 first_exc.diagnostics = {**first_diag, **diagnostics, **first_diag}
             except Exception:
@@ -1386,6 +1455,7 @@ def generate_keysuri_body_raw_text(
             prompt_input, reason="max_tokens_empty_retry"
         )
         try:
+            _register_call()
             raw_text = caller(
                 compact_prompt,
                 project_id=project_id,
@@ -1397,6 +1467,10 @@ def generate_keysuri_body_raw_text(
             diagnostics["retry_result"] = "success"
             diagnostics["text_length"] = len(str(raw_text or ""))
             diagnostics["finish_reason"] = diagnostics.get("finish_reason") or "STOP"
+            if isinstance(generation_call_state, MutableMapping):
+                diagnostics["global_generation_call_count"] = int(
+                    generation_call_state.get("count") or 0
+                )
             return str(raw_text), diagnostics
         except KeysuriGeminiError as retry_exc:
             retry_diag = dict(getattr(retry_exc, "diagnostics", None) or {})
@@ -1421,6 +1495,10 @@ def generate_keysuri_body_raw_text(
             # Never expose raw prompt/response bodies in diagnostics.
             for banned in ("raw_text", "prompt", "compact_prompt", "response", "raw_response"):
                 merged.pop(banned, None)
+            if isinstance(generation_call_state, MutableMapping):
+                merged["global_generation_call_count"] = int(
+                    generation_call_state.get("count") or 0
+                )
             try:
                 retry_exc.diagnostics = merged
             except Exception:
