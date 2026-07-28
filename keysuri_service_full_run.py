@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 
 from admin_store import (
@@ -3713,6 +3713,69 @@ def run_keysuri_service_full_run(
     send_fn: Optional[Callable[..., bool]] = None,
     image_upload_fn=None,
 ) -> Dict[str, Any]:
+    """Service-level Kee-Suri full run for keysuri_global_tech or keysuri_korea_tech.
+
+    Thin boundary around the implementation: an unexpected exception is still a
+    final failure for a scheduled run, so it gets the same operator event before
+    the original exception is re-raised unchanged.
+    """
+    run_context: Dict[str, Any] = {"program_id": str(program_id or "").strip()}
+    try:
+        return _run_keysuri_service_full_run_impl(
+            program_id,
+            trigger_source=trigger_source,
+            send_owner_email=send_owner_email,
+            dry_run=dry_run,
+            smoke_runner=smoke_runner,
+            image_canary_runner=image_canary_runner,
+            bottom_generate_fn=bottom_generate_fn,
+            bottom_watermark_fn=bottom_watermark_fn,
+            send_fn=send_fn,
+            image_upload_fn=image_upload_fn,
+            _run_context=run_context,
+        )
+    except Exception as exc:
+        try:
+            emit_owner_review_failure_from_artifact_meta(
+                {
+                    "program_id": run_context.get("program_id") or "",
+                    "run_id": run_context.get("run_id") or "",
+                    "trigger_source": trigger_source,
+                    "email_sent": False,
+                },
+                dry_run=dry_run,
+                first_failed_stage="service_exception",
+                error_code="service_unexpected_exception",
+                artifact_saved=bool(run_context.get("artifact_saved")),
+            )
+        except Exception:
+            logger.exception(
+                "keysuri_service_full_run: exception-boundary failure event emit failed run_id=%s",
+                run_context.get("run_id"),
+            )
+        # Exception class only — never a traceback, prompt, or secret in the event.
+        logger.exception(
+            "keysuri_service_full_run: unexpected exception run_id=%s error_type=%s",
+            run_context.get("run_id"),
+            type(exc).__name__,
+        )
+        raise
+
+
+def _run_keysuri_service_full_run_impl(
+    program_id: str,
+    *,
+    trigger_source: str = SERVICE_FULL_RUN_TRIGGER,
+    send_owner_email: bool = True,
+    dry_run: bool = False,
+    smoke_runner=None,
+    image_canary_runner=None,
+    bottom_generate_fn: Optional[Callable[..., Path]] = None,
+    bottom_watermark_fn: Optional[Callable[[Path, Path], Path]] = None,
+    send_fn: Optional[Callable[..., bool]] = None,
+    image_upload_fn=None,
+    _run_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Service-level Kee-Suri full run for keysuri_global_tech or keysuri_korea_tech."""
     pid = str(program_id or "").strip()
     if pid not in _KEYSURI_PROGRAMS:
@@ -3731,13 +3794,52 @@ def run_keysuri_service_full_run(
     request_start = now_kst_iso()
     request_started_perf = time.perf_counter()
     run_id = generate_run_id(pid)
+    if _run_context is not None:
+        # Expose identity to the exception boundary as soon as it exists.
+        _run_context["run_id"] = run_id
+        _run_context["program_id"] = pid
     runner = smoke_runner or run_keysuri_live_source_smoke
     gemini_usage_sink: Dict[str, Any] = {}
 
+    def _emit_failure_event(
+        meta: Mapping[str, Any],
+        *,
+        artifact_saved: bool = True,
+        first_failed_stage: Optional[str] = None,
+        error_code: Optional[str] = None,
+    ) -> None:
+        """Best-effort operations event. Never replaces the real run failure."""
+        try:
+            emit_owner_review_failure_from_artifact_meta(
+                meta,
+                dry_run=False,
+                first_failed_stage=first_failed_stage,
+                error_code=error_code,
+                artifact_saved=artifact_saved,
+            )
+        except Exception:
+            logger.exception(
+                "keysuri_service_full_run: owner-review failure event emit failed run_id=%s",
+                meta.get("run_id"),
+            )
+
     def _save_failed_run_artifact(meta: Dict[str, Any], email_html: str = "") -> None:
-        """Persist failure artifact and emit one scheduled ERROR event (deduped)."""
-        save_run_artifact(meta, email_html=email_html)
-        emit_owner_review_failure_from_artifact_meta(meta, dry_run=False)
+        """Persist failure artifact and emit one scheduled ERROR event (deduped).
+
+        Persistence and notification are independent: a storage fault must not
+        swallow the operator event, and the event must not mask the run failure.
+        """
+        artifact_saved = True
+        try:
+            save_run_artifact(meta, email_html=email_html)
+        except Exception:
+            artifact_saved = False
+            meta["artifact_save_failed"] = True
+            logger.exception(
+                "keysuri_service_full_run: failure artifact save failed run_id=%s",
+                meta.get("run_id"),
+            )
+        _emit_failure_event(meta, artifact_saved=artifact_saved)
 
     smoke: LiveSourceSmokeResult = runner(
         program_id=pid,
@@ -4408,9 +4510,38 @@ def run_keysuri_service_full_run(
         meta["cost_estimate"] = cost_estimate
         meta.update(save_cost_record_best_effort(meta))
 
-    save_run_artifact(meta, email_html=email_html)
+    artifact_saved = True
+    try:
+        save_run_artifact(meta, email_html=email_html)
+    except Exception:
+        artifact_saved = False
+        meta["artifact_save_failed"] = True
+        logger.exception(
+            "keysuri_service_full_run: run artifact save failed run_id=%s", run_id
+        )
 
-    ok = image_outcome.ok and (not send_owner_email or email_sent)
+    ok = image_outcome.ok and (not send_owner_email or email_sent) and artifact_saved
+    if not ok:
+        # Terminal failures after the validation gate (SMTP, send gate, image,
+        # artifact persistence) are still final safe-fails and must reach the
+        # same operator event as the earlier finalizers.
+        if send_owner_email and not email_sent:
+            final_error_code = (
+                "smtp_send_failed" if smtp_attempted else "owner_review_send_gate_off"
+            )
+            final_stage = "email_delivery"
+        elif not image_outcome.ok:
+            final_error_code = image_outcome.error_code or ERROR_IMAGE_GENERATION_FAILED
+            final_stage = "image_generation"
+        else:
+            final_error_code = "artifact_persistence_failed"
+            final_stage = "artifact_persistence"
+        _emit_failure_event(
+            meta,
+            artifact_saved=artifact_saved,
+            first_failed_stage=final_stage,
+            error_code=final_error_code,
+        )
     success_payload = {
         "ok": ok,
         "run_id": run_id,
