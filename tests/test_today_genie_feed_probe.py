@@ -22,10 +22,20 @@ def _cnbc_html(price: str, change: str, pct: str, last_time: str) -> str:
     )
 
 
-def _naver_html(close: str, pts: str, pct: str, direction: str, day: str) -> str:
+def _naver_html(
+    close: str, pts: str, pct: str, direction: str, day: str, container: str = "quotient dn"
+) -> str:
+    """Naver index page shape, matching the live markup.
+
+    The container class is the documented direction signal (상승장일때 up,
+    하락장일때 dn); the blind label is a stale literal that reads 상승 even on a
+    falling session, so fixtures pair `dn` with a 상승 label on purpose.
+    """
     return f"""
+    <div class="{container}" id="quotient">
     <em id="now_value">{close}</em>
-    <span id="change_value_and_rate"><span>{pts}</span> {pct}%<span class="blind">{direction}</span></span>
+    <span class="fluc" id="change_value_and_rate"><span>{pts}</span> {pct}%<span class="blind">{direction}</span></span>
+    </div>
     <em id="time">{day}</em>
     """
 
@@ -65,9 +75,11 @@ class TodayGenieFeedProbeTests(unittest.TestCase):
             if url == probe.CNBC_QUOTES["NIKKEI"]:
                 return _cnbc_html("64,024.60", "UNCH", "UNCH", "2026-06-08")
             if url == probe.NAVER_INDEX["KOSPI"]:
-                return _naver_html("7,484.41", "676.18", "+8.29", "상승", "2026.06.08")
+                # 8160.59 -> 7484.41 is -676.18pts = -8.29%; the 상승 label is stale.
+                return _naver_html("7,484.41", "676.18", "-8.29", "상승", "2026.06.08")
             if url == probe.NAVER_INDEX["KOSDAQ"]:
-                return _naver_html("911.39", "91.05", "+9.08", "상승", "2026.06.08")
+                # 1002.44 -> 911.39 is -91.05pts = -9.08%; the 상승 label is stale.
+                return _naver_html("911.39", "91.05", "-9.08", "상승", "2026.06.08")
             if url == probe.CNBC_MARKET_NEWS_RSS:
                 return _rss_xml(
                     [
@@ -97,6 +109,9 @@ class TodayGenieFeedProbeTests(unittest.TestCase):
         for sym in ("KOSPI", "KOSDAQ", "NIKKEI"):
             self.assertIn(sym, out["indices"])
             self.assertIsNotNone(out["indices"][sym]["close"])
+        self.assertEqual(out["indices"]["KOSPI"]["change_pct"], -8.29)
+        self.assertEqual(out["indices"]["KOSDAQ"]["change_pct"], -9.08)
+        self.assertEqual(out["errors"], {"KOSPI": None, "KOSDAQ": None, "NIKKEI": None})
 
     def test_valid_macro_schema(self) -> None:
         fetch = self._mock_fetch()

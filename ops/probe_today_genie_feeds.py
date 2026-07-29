@@ -195,6 +195,7 @@ def parse_cnbc_quote_html(html: str, symbol: str) -> Dict[str, Any]:
 
 NAVER_DIRECTION_SIGNS = {"상승": 1, "하락": -1, "보합": 0}
 _NAVER_CHANGE_WINDOW_CHARS = 400
+_NAVER_RATE_MATCH_TOLERANCE_PP = 0.05
 
 
 def _naver_change_scope(html: str) -> str:
@@ -213,16 +214,111 @@ def _naver_change_scope(html: str) -> str:
     return html[idx : idx + _NAVER_CHANGE_WINDOW_CHARS]
 
 
-def _naver_direction_sign(scope: str) -> Optional[int]:
-    """+1/-1/0 from Naver's 상승·하락·보합 marker; None when undetermined.
+def _naver_label_sign(scope: str) -> Optional[int]:
+    """+1/-1/0 from Naver's 상승·하락·보합 accessibility label.
 
-    Matched on the word alone so a changed wrapper element or class list does
-    not silently drop the direction.
+    Advisory only. Observed live, this label is a template literal that reads
+    상승 on falling sessions, so it must never establish or flip a sign on its
+    own — it is corroboration and a staleness signal, nothing more.
     """
     m = re.search(r"(상승|하락|보합)", scope)
     if not m:
         return None
     return NAVER_DIRECTION_SIGNS[m.group(1)]
+
+
+def _naver_container_sign(html: str) -> Optional[int]:
+    """+1/-1 from the quote container class; None when it says nothing.
+
+    Naver documents the contract inline on the page:
+    "상승장일때 up, 하락장일때 dn 클래스 추가 (보합시 추가 없음)". Absence of
+    both classes is treated as no evidence rather than as a flat assertion,
+    so a markup change cannot silently claim 보합.
+    """
+    m = re.search(r'class="quotient([^"]*)"', html)
+    if not m:
+        return None
+    classes = m.group(1).split()
+    if "dn" in classes:
+        return -1
+    if "up" in classes:
+        return 1
+    return None
+
+
+def _recomputed_direction_sign(
+    close: Optional[float],
+    points_magnitude: Optional[float],
+    rate_value: Optional[float],
+    *,
+    tolerance: float = _NAVER_RATE_MATCH_TOLERANCE_PP,
+) -> Optional[int]:
+    """Which direction hypothesis reproduces the published rate from close/points.
+
+    previous_close is close + |points| when falling and close - |points| when
+    rising, so for a non-zero point change the two hypotheses yield different
+    rate magnitudes and at most one can match. Matching on magnitude keeps this
+    independent of whatever sign the rate text carries, which is what lets it
+    act as a genuine adjudicator rather than a tie-breaker. Returns None when
+    neither matches, or when the move is too small for the two to differ.
+    """
+    if close is None or points_magnitude is None or rate_value is None:
+        return None
+    magnitude = abs(points_magnitude)
+    if magnitude == 0 or close <= 0:
+        return None
+
+    candidates: List[Tuple[int, float]] = []
+    down_prev = close + magnitude
+    if down_prev > 0:
+        candidates.append((-1, magnitude / down_prev * 100.0))
+    up_prev = close - magnitude
+    if up_prev > 0:
+        candidates.append((1, magnitude / up_prev * 100.0))
+
+    target = abs(rate_value)
+    matches = [sign for sign, candidate in candidates if abs(candidate - target) <= tolerance]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _resolve_index_direction(
+    code: str,
+    *,
+    rate_sign: Optional[int],
+    recomputed_sign: Optional[int],
+    container_sign: Optional[int],
+    label_sign: Optional[int],
+) -> Tuple[int, List[str]]:
+    """Reconcile direction evidence into one sign, or raise on a real conflict.
+
+    Strong evidence is the rate's own sign, the close/points recomputation and
+    the container class. They must not disagree. The accessibility label is
+    weak evidence: it is reported when it dissents but never overrides.
+    """
+    diagnostics: List[str] = []
+    strong = {
+        "signed_rate": rate_sign,
+        "recomputed": recomputed_sign,
+        "container_class": container_sign,
+    }
+    present = {name: sign for name, sign in strong.items() if sign is not None}
+    if not present:
+        raise FeedProbeError(
+            f"Naver {code}: change direction undetermined "
+            "(no signed rate, recomputation or container class)"
+        )
+
+    distinct = set(present.values())
+    if len(distinct) > 1:
+        detail = ", ".join(f"{name}={sign:+d}" for name, sign in sorted(present.items()))
+        raise FeedProbeError(f"Naver {code}: conflicting direction evidence ({detail})")
+
+    resolved = distinct.pop()
+    if label_sign is not None and label_sign != resolved:
+        diagnostics.append(
+            f"stale_blind_label:{code}:label={label_sign:+d}:resolved={resolved:+d}"
+        )
+    return resolved, diagnostics
 
 
 def parse_naver_index_html(html: str, code: str) -> Dict[str, Any]:
@@ -246,35 +342,24 @@ def parse_naver_index_html(html: str, code: str) -> Dict[str, Any]:
     if change_pct is None:
         raise FeedProbeError(f"Naver {code}: missing change rate")
 
-    # Naver publishes the rate as an unsigned magnitude plus a separate
-    # direction marker. Resolve the two into one signed number, and refuse to
-    # emit a rate whose direction could not be established — an undetermined
-    # direction must never fall through as a gain.
-    direction_sign = _naver_direction_sign(scope)
-    explicit_sign = _explicit_sign(raw_pct)
-    if direction_sign is None and explicit_sign is None and change_pct != 0:
-        raise FeedProbeError(
-            f"Naver {code}: change direction undetermined for magnitude {change_pct}"
+    rate_sign = _explicit_sign(raw_pct)
+    if change_pct == 0:
+        # A flat tape needs no direction, and none may be inferred from it.
+        sign, diagnostics = 0, []
+    else:
+        sign, diagnostics = _resolve_index_direction(
+            code,
+            rate_sign=rate_sign,
+            recomputed_sign=_recomputed_direction_sign(close, change_pts, change_pct),
+            container_sign=_naver_container_sign(html),
+            label_sign=_naver_label_sign(scope),
         )
-    if direction_sign is not None and explicit_sign is not None and direction_sign != explicit_sign:
-        raise FeedProbeError(
-            f"Naver {code}: direction marker and signed rate conflict "
-            f"(direction={direction_sign}, rate={change_pct})"
-        )
-    if direction_sign == 0 and change_pct != 0:
-        raise FeedProbeError(
-            f"Naver {code}: 보합 marker contradicts non-zero rate {change_pct}"
-        )
-    sign = direction_sign if direction_sign is not None else (explicit_sign or 0)
 
     change_pct = 0.0 if sign == 0 else sign * abs(change_pct)
+    previous_close: Optional[float] = None
     if change_pts is not None:
-        pts_sign = _explicit_sign(raw_pts)
-        if pts_sign is not None and sign != 0 and pts_sign != sign:
-            raise FeedProbeError(
-                f"Naver {code}: point change sign conflicts with rate direction"
-            )
         change_pts = 0.0 if sign == 0 else sign * abs(change_pts)
+        previous_close = round(close - change_pts, 2)
 
     as_of: Optional[str] = None
     if time_m:
@@ -282,11 +367,12 @@ def parse_naver_index_html(html: str, code: str) -> Dict[str, Any]:
         if len(parts) == 3:
             as_of = f"{parts[0]}-{parts[1]}-{parts[2]}"
 
-    return {
+    row = {
         "close": round(close, 2),
         "change_pts": None if change_pts is None else round(change_pts, 2),
         "change_pct": round(change_pct, 2),
         "change_direction": sign,
+        "previous_close": previous_close,
         "as_of": as_of,
         "source_name": "Naver Finance",
         "source_url": NAVER_INDEX[code],
@@ -295,6 +381,9 @@ def parse_naver_index_html(html: str, code: str) -> Dict[str, Any]:
         "accuracy_status": "verified",
         "notes": f"Parsed from Naver Finance public index page for {code}.",
     }
+    if diagnostics:
+        row["direction_diagnostics"] = diagnostics
+    return row
 
 
 def parse_cnbc_rss_xml(xml: str, *, min_items: int = 4, max_items: int = 6) -> List[Dict[str, str]]:
@@ -334,6 +423,27 @@ def _index_row(symbol: str, row: Dict[str, Any], *, session: str = "") -> Dict[s
     return payload
 
 
+def _probe_one_index(
+    symbol: str,
+    fetch_fn: FetchFn,
+    timeout_sec: int,
+    *,
+    url: str,
+    parse: Callable[[str, str], Dict[str, Any]],
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Fetch and parse a single index, returning (row, error) instead of raising.
+
+    Isolation is the point: one unusable symbol must not discard the symbols
+    that parsed cleanly. Whether a partial feed may be published is a separate
+    decision, made by the required-row validation downstream.
+    """
+    try:
+        html = fetch_fn(url, timeout_sec)
+        return parse(html, symbol), None
+    except Exception as exc:  # noqa: BLE001 - per-symbol isolation boundary.
+        return None, f"{type(exc).__name__}: {str(exc)[:200]}"
+
+
 def probe_overnight_us_market(
     target_date: str,
     fetch_fn: FetchFn = default_fetch_url,
@@ -342,21 +452,36 @@ def probe_overnight_us_market(
 ) -> Dict[str, Any]:
     fetched_at = _utc_now_iso()
     indices: Dict[str, Any] = {}
+    errors: Dict[str, Optional[str]] = {}
     as_of_dates: List[str] = []
 
     for symbol in ("SPX", "NASDAQ", "DJI"):
-        html = fetch_fn(CNBC_QUOTES[symbol], timeout_sec)
-        row = parse_cnbc_quote_html(html, symbol)
+        row, error = _probe_one_index(
+            symbol,
+            fetch_fn,
+            timeout_sec,
+            url=CNBC_QUOTES[symbol],
+            parse=parse_cnbc_quote_html,
+        )
+        errors[symbol] = error
+        if row is None:
+            continue
         if row.get("as_of"):
             as_of_dates.append(str(row["as_of"]))
         indices[symbol] = _index_row(symbol, row)
+
+    if not indices:
+        raise FeedProbeError(f"overnight_us_market: no index parsed ({errors})")
 
     as_of = max(as_of_dates) if as_of_dates else target_date
     _assert_as_of_fresh(as_of, target_date, "overnight_us_market")
 
     parts = []
     for sym, label in (("SPX", "S&P 500"), ("NASDAQ", "Nasdaq"), ("DJI", "Dow")):
-        r = indices[sym]
+        r = indices.get(sym)
+        if r is None:
+            parts.append(f"{label} n/a")
+            continue
         parts.append(f"{label} {_fmt_summary_pct(r.get('change_pct'))}")
     summary = (
         f"US indexes closed on {as_of}: {', '.join(parts)}. "
@@ -371,6 +496,7 @@ def probe_overnight_us_market(
         "verified_by": VERIFIED_BY,
         "source_scope": SOURCE_SCOPE,
         "indices": indices,
+        "errors": errors,
         "summary": summary,
     }
 
@@ -383,33 +509,53 @@ def probe_korea_japan_indices(
 ) -> Dict[str, Any]:
     fetched_at = _utc_now_iso()
     indices: Dict[str, Any] = {}
+    errors: Dict[str, Optional[str]] = {}
     as_of_dates: List[str] = []
 
     for code in ("KOSPI", "KOSDAQ"):
-        html = fetch_fn(NAVER_INDEX[code], timeout_sec)
-        row = parse_naver_index_html(html, code)
+        row, error = _probe_one_index(
+            code,
+            fetch_fn,
+            timeout_sec,
+            url=NAVER_INDEX[code],
+            parse=parse_naver_index_html,
+        )
+        errors[code] = error
+        if row is None:
+            continue
         if row.get("as_of"):
             as_of_dates.append(str(row["as_of"]))
         indices[code] = _index_row(code, row)
 
-    nikkei_html = fetch_fn(CNBC_QUOTES["NIKKEI"], timeout_sec)
-    nikkei_row = parse_cnbc_quote_html(nikkei_html, "NIKKEI")
-    if nikkei_row.get("as_of"):
-        as_of_dates.append(str(nikkei_row["as_of"]))
-    indices["NIKKEI"] = _index_row(
+    nikkei_row, nikkei_error = _probe_one_index(
         "NIKKEI",
-        nikkei_row,
-        session="Japan cash close (JST, CNBC public quote probe)",
+        fetch_fn,
+        timeout_sec,
+        url=CNBC_QUOTES["NIKKEI"],
+        parse=parse_cnbc_quote_html,
     )
-    indices["NIKKEI"]["session"] = "Japan cash close (JST, CNBC public quote probe)"
+    errors["NIKKEI"] = nikkei_error
+    if nikkei_row is not None:
+        if nikkei_row.get("as_of"):
+            as_of_dates.append(str(nikkei_row["as_of"]))
+        indices["NIKKEI"] = _index_row(
+            "NIKKEI",
+            nikkei_row,
+            session="Japan cash close (JST, CNBC public quote probe)",
+        )
+        indices["NIKKEI"]["session"] = "Japan cash close (JST, CNBC public quote probe)"
+
+    if not indices:
+        raise FeedProbeError(f"korea_japan_indices: no index parsed ({errors})")
 
     as_of = max(as_of_dates) if as_of_dates else target_date
     _assert_as_of_fresh(as_of, target_date, "korea_japan_indices")
 
     summary = (
-        f"Asia indexes as of {as_of}: KOSPI {_fmt_summary_pct(indices['KOSPI'].get('change_pct'))}, "
-        f"KOSDAQ {_fmt_summary_pct(indices['KOSDAQ'].get('change_pct'))}, "
-        f"Nikkei {_fmt_summary_pct(indices['NIKKEI'].get('change_pct'))}. "
+        f"Asia indexes as of {as_of}: "
+        f"KOSPI {_fmt_summary_pct((indices.get('KOSPI') or {}).get('change_pct'))}, "
+        f"KOSDAQ {_fmt_summary_pct((indices.get('KOSDAQ') or {}).get('change_pct'))}, "
+        f"Nikkei {_fmt_summary_pct((indices.get('NIKKEI') or {}).get('change_pct'))}. "
         "Public-source draft only. Not a licensed automated market-data feed."
     )
 
@@ -421,6 +567,7 @@ def probe_korea_japan_indices(
         "verified_by": VERIFIED_BY,
         "source_scope": SOURCE_SCOPE,
         "indices": indices,
+        "errors": errors,
         "summary": summary,
     }
 

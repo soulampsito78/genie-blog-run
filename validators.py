@@ -1495,6 +1495,19 @@ def _market_index_feed_slot(
     return None
 
 
+def _market_index_source_failure(source: Any, keys: tuple[str, ...]) -> str:
+    """Why a required index is absent — the probe's per-symbol error when known."""
+    if not isinstance(source, dict):
+        return "feed_absent"
+    errors = source.get("errors")
+    if isinstance(errors, dict):
+        for key in keys:
+            detail = errors.get(key)
+            if detail:
+                return f"source_parse_failure: {str(detail)[:160]}"
+    return "row_absent"
+
+
 def market_index_validation_report(
     data: Dict[str, Any], runtime_input: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -1506,6 +1519,8 @@ def market_index_validation_report(
     """
     issues: List[str] = []
     sign_conflicts: List[str] = []
+    missing_required: List[str] = []
+    warnings: List[str] = []
     source_values: Dict[str, Any] = {}
     normalized_values: Dict[str, Any] = {}
     recomputed: Dict[str, Any] = {}
@@ -1522,7 +1537,13 @@ def market_index_validation_report(
     for label, keys, source_name in _REQUIRED_TODAY_INDEX_ROWS:
         slot = _market_index_feed_slot(runtime_input, source_name, keys)
         if slot is None:
-            # Absence of the whole row is already covered by the required-row check.
+            # A required index that never made it into the feed is a blocking
+            # state, not a silent skip: reporting "pass" here is what let a
+            # three-of-six tape look healthy.
+            source = runtime_input.get(source_name)
+            reason = _market_index_source_failure(source, keys)
+            missing_required.append(f"{label}: 필수 지수 행 누락({reason})")
+            normalized_values[label] = None
             continue
 
         raw_close = slot.get("close")
@@ -1552,6 +1573,12 @@ def market_index_validation_report(
         direction_sign = _market_index_direction_sign(slot)
         if direction_sign is not None and direction_sign != _market_index_signum(pct):
             sign_conflicts.append(f"{label}: direction={direction_sign} vs change_pct={pct}")
+
+        # Weak-evidence dissent recorded by the parser (e.g. Naver's stale
+        # accessibility label). Diagnostic only — it must not block a rate the
+        # strong evidence already corroborated.
+        for note in slot.get("direction_diagnostics") or []:
+            warnings.append(f"{label}: {note}")
 
         pts = _market_index_numeric(slot.get("change_pts"))
         if pts is not None and pts != 0 and pct != 0:
@@ -1587,10 +1614,13 @@ def market_index_validation_report(
             elif abs(row_pct - pct) > MARKET_INDEX_RATE_TOLERANCE_PP:
                 issues.append(f"{label}: 숫자표 등락률 {row_pct} 이 피드 {pct} 와 불일치")
 
-    all_issues = issues + sign_conflicts
+    # Warnings alone never block; every other category does.
+    blocking = missing_required + issues + sign_conflicts
     return {
-        "market_index_validation_status": "fail" if all_issues else "pass",
-        "market_index_validation_issues": all_issues,
+        "market_index_validation_status": "block" if blocking else "pass",
+        "market_index_validation_issues": blocking + warnings,
+        "market_index_missing_required_rows": missing_required,
+        "market_index_warnings": warnings,
         "market_index_source_values": source_values,
         "market_index_normalized_values": normalized_values,
         "market_index_recomputed_change_rates": recomputed,
@@ -1612,12 +1642,16 @@ def _today_market_index_integrity_issues(
                 "error",
             )
         )
-    other = [m for m in report["market_index_validation_issues"] if m not in conflicts]
-    if other:
+    # Missing required rows already block via market_snapshot_missing_required_rows;
+    # they are reported in the diagnostics status but not duplicated as an issue.
+    skip = set(conflicts) | set(report["market_index_missing_required_rows"])
+    skip |= set(report["market_index_warnings"])
+    invalid = [m for m in report["market_index_validation_issues"] if m not in skip]
+    if invalid:
         issues.append(
             ValidationIssue(
                 "market_index_rate_invalid",
-                "시장지수 등락률 검증 실패: " + "; ".join(other[:12]),
+                "시장지수 등락률 검증 실패: " + "; ".join(invalid[:12]),
                 "error",
             )
         )
