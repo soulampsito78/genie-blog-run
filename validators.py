@@ -1408,6 +1408,222 @@ def _today_number_table_contract_accuracy_issues(
     return issues
 
 
+MARKET_INDEX_RATE_TOLERANCE_PP = 0.05
+MARKET_INDEX_LARGE_MOVE_PP = 5.0
+MARKET_INDEX_ABSURD_MOVE_PP = 40.0
+
+_MARKET_INDEX_DIRECTION_SIGNS: Dict[str, int] = {
+    "up": 1, "rise": 1, "gain": 1, "plus": 1, "상승": 1, "1": 1, "+1": 1,
+    "down": -1, "fall": -1, "loss": -1, "minus": -1, "하락": -1, "-1": -1,
+    "flat": 0, "unchanged": 0, "보합": 0, "0": 0,
+}
+
+
+def _market_index_signum(value: float) -> int:
+    if value > 0:
+        return 1
+    if value < 0:
+        return -1
+    return 0
+
+
+def _market_index_direction_sign(slot: Dict[str, Any]) -> Optional[int]:
+    """Explicit direction carried alongside the rate, when the source supplies one."""
+    for key in ("change_direction", "direction", "sign"):
+        if key not in slot:
+            continue
+        raw = slot.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, bool):
+            return None
+        if isinstance(raw, (int, float)):
+            return _market_index_signum(float(raw))
+        token = _norm_text(raw).lower()
+        if token in _MARKET_INDEX_DIRECTION_SIGNS:
+            return _MARKET_INDEX_DIRECTION_SIGNS[token]
+    return None
+
+
+def _market_index_numeric(raw: Any) -> Optional[float]:
+    """Signed finite number, or None. A blank/absent field is None, never 0."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+    else:
+        text = _norm_text(raw)
+        if not text:
+            return None
+        value = _parse_floatish(text)
+        if value is None:
+            return None
+    if value != value or value in (float("inf"), float("-inf")):
+        return None
+    return value
+
+
+def _market_index_recomputed_rate(slot: Dict[str, Any], close: Optional[float]) -> Optional[float]:
+    """Rate re-derived from previous_close, or from close and the point change."""
+    prev = None
+    for key in ("previous_close", "prev_close", "prior_close"):
+        prev = _market_index_numeric(slot.get(key))
+        if prev is not None:
+            break
+    if prev is None and close is not None:
+        pts = _market_index_numeric(slot.get("change_pts"))
+        if pts is not None:
+            prev = close - pts
+    if prev is None or prev <= 0 or close is None:
+        return None
+    return (close - prev) / prev * 100.0
+
+
+def _market_index_feed_slot(
+    runtime_input: Dict[str, Any], source_name: str, keys: tuple[str, ...]
+) -> Optional[Dict[str, Any]]:
+    source = runtime_input.get(source_name)
+    if not isinstance(source, dict):
+        return None
+    indices = source.get("indices")
+    if not isinstance(indices, dict):
+        return None
+    for key in keys:
+        slot = indices.get(key)
+        if isinstance(slot, dict):
+            return slot
+    return None
+
+
+def market_index_validation_report(
+    data: Dict[str, Any], runtime_input: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Sign/consistency audit of the six required index rows.
+
+    Publishing must stop rather than ship a rate whose direction is unproven:
+    a lost sign reads as the opposite market, and a missing rate substituted
+    with 0 reads as a flat tape that never happened.
+    """
+    issues: List[str] = []
+    sign_conflicts: List[str] = []
+    source_values: Dict[str, Any] = {}
+    normalized_values: Dict[str, Any] = {}
+    recomputed: Dict[str, Any] = {}
+
+    snapshot_rows: Dict[str, Any] = {}
+    snap = data.get("market_snapshot")
+    if isinstance(snap, list):
+        snapshot_rows = {
+            _canonical_index_key(item.get("label")): item
+            for item in snap
+            if isinstance(item, dict)
+        }
+
+    for label, keys, source_name in _REQUIRED_TODAY_INDEX_ROWS:
+        slot = _market_index_feed_slot(runtime_input, source_name, keys)
+        if slot is None:
+            # Absence of the whole row is already covered by the required-row check.
+            continue
+
+        raw_close = slot.get("close")
+        raw_pct = slot.get("change_pct")
+        source_values[label] = {"close": raw_close, "change_pct": raw_pct}
+
+        close = _market_index_numeric(raw_close)
+        if close is None or close <= 0:
+            issues.append(f"{label}: close 가 양수 숫자가 아님({raw_close!r})")
+            continue
+
+        if raw_pct is None or (isinstance(raw_pct, str) and not _norm_text(raw_pct)):
+            issues.append(f"{label}: 등락률 미확인 — 0으로 대체하지 않고 발행 보류")
+            normalized_values[label] = None
+            continue
+
+        pct = _market_index_numeric(raw_pct)
+        if pct is None:
+            issues.append(f"{label}: 등락률이 유한한 숫자가 아님({raw_pct!r})")
+            normalized_values[label] = None
+            continue
+        normalized_values[label] = pct
+
+        if abs(pct) >= MARKET_INDEX_ABSURD_MOVE_PP:
+            issues.append(f"{label}: 등락률 {pct}% 가 허용 범위를 벗어남")
+
+        direction_sign = _market_index_direction_sign(slot)
+        if direction_sign is not None and direction_sign != _market_index_signum(pct):
+            sign_conflicts.append(f"{label}: direction={direction_sign} vs change_pct={pct}")
+
+        pts = _market_index_numeric(slot.get("change_pts"))
+        if pts is not None and pts != 0 and pct != 0:
+            if _market_index_signum(pts) != _market_index_signum(pct):
+                sign_conflicts.append(f"{label}: change_pts={pts} vs change_pct={pct}")
+
+        recomputed_pct = _market_index_recomputed_rate(slot, close)
+        recomputed[label] = None if recomputed_pct is None else round(recomputed_pct, 4)
+        corroborated = False
+        if recomputed_pct is not None:
+            if abs(recomputed_pct - pct) > MARKET_INDEX_RATE_TOLERANCE_PP:
+                issues.append(
+                    f"{label}: 제공 등락률 {pct}% 와 재계산 {recomputed_pct:.2f}% 오차가 "
+                    f"{MARKET_INDEX_RATE_TOLERANCE_PP}%p 를 초과"
+                )
+            else:
+                corroborated = True
+
+        # A large move is exactly the case where a flipped sign is most costly,
+        # so it may not ship on an uncorroborated rate alone.
+        if abs(pct) >= MARKET_INDEX_LARGE_MOVE_PP and not corroborated and direction_sign is None:
+            issues.append(
+                f"{label}: 대폭 변동 {pct}% 인데 방향 표기·재계산 교차검증이 없어 발행 보류"
+            )
+
+        row = snapshot_rows.get(label)
+        if isinstance(row, dict):
+            row_pct = _market_index_numeric(row.get("change_pct"))
+            if row_pct is None:
+                issues.append(f"{label}: 숫자표 행의 등락률을 숫자로 해석할 수 없음")
+            elif _market_index_signum(row_pct) != _market_index_signum(pct):
+                sign_conflicts.append(f"{label}: 숫자표 {row_pct} vs 피드 {pct} 부호 불일치")
+            elif abs(row_pct - pct) > MARKET_INDEX_RATE_TOLERANCE_PP:
+                issues.append(f"{label}: 숫자표 등락률 {row_pct} 이 피드 {pct} 와 불일치")
+
+    all_issues = issues + sign_conflicts
+    return {
+        "market_index_validation_status": "fail" if all_issues else "pass",
+        "market_index_validation_issues": all_issues,
+        "market_index_source_values": source_values,
+        "market_index_normalized_values": normalized_values,
+        "market_index_recomputed_change_rates": recomputed,
+        "market_index_sign_conflicts": sign_conflicts,
+    }
+
+
+def _today_market_index_integrity_issues(
+    data: Dict[str, Any], runtime_input: Dict[str, Any]
+) -> List[ValidationIssue]:
+    report = market_index_validation_report(data, runtime_input)
+    issues: List[ValidationIssue] = []
+    conflicts = report["market_index_sign_conflicts"]
+    if conflicts:
+        issues.append(
+            ValidationIssue(
+                "market_index_sign_conflict",
+                "시장지수 등락 방향 충돌: " + "; ".join(conflicts[:12]),
+                "error",
+            )
+        )
+    other = [m for m in report["market_index_validation_issues"] if m not in conflicts]
+    if other:
+        issues.append(
+            ValidationIssue(
+                "market_index_rate_invalid",
+                "시장지수 등락률 검증 실패: " + "; ".join(other[:12]),
+                "error",
+            )
+        )
+    return issues
+
+
 def _parse_iso_date(raw: Any) -> Optional[date]:
     if not isinstance(raw, str) or len(raw) < 10:
         return None
@@ -2018,6 +2234,7 @@ def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) ->
     issues.extend(_forbidden_surface_cliche_issues(data))
     issues.extend(_target_weekday_accuracy_issues(data, runtime_input))
     issues.extend(_today_required_number_table_issues(data, runtime_input))
+    issues.extend(_today_market_index_integrity_issues(data, runtime_input))
     issues.extend(_today_number_table_contract_accuracy_issues(data, runtime_input))
     issues.extend(_today_stale_date_issues(data, runtime_input))
     issues.extend(_polish_vague_phrase_issues(data))

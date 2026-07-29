@@ -810,8 +810,11 @@ def _norm_change_pct(txt: str) -> str:
         return c
     if c.startswith(("+", "-")):
         return c
-    if re.match(r"^[0-9]+(?:\.[0-9]+)?%$", c):
-        return f"+{c}"
+    m = re.match(r"^([0-9]+(?:\.[0-9]+)?)%$", c)
+    if m:
+        # A flat tape is 보합, not a gain: only a positive value takes a '+'.
+        # This also runs over already-formatted cells, so it must be idempotent.
+        return c if float(m.group(1)) == 0 else f"+{c}"
     return c
 
 

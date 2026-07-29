@@ -41,6 +41,7 @@ from sent_news_dedup_gate import metadata_from_gate_result, run_sent_news_dedup_
 from sent_news_log_store import recent_sent_news_log
 from validators import (
     NUMBER_TABLE_ACCURACY_STATUSES,
+    market_index_validation_report,
     validate_today_genie,
     validate_tomorrow_genie,
 )
@@ -1642,6 +1643,7 @@ def _runtime_validation_check_payload(
     workflow_status: str,
     issues: List[Any],
     content_quality_warnings: List[Any],
+    data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     issue_details = response_issues(issues)
     payload = {
@@ -1659,6 +1661,9 @@ def _runtime_validation_check_payload(
     for key in TODAY_GENIE_FEED_DIAGNOSTIC_KEYS:
         if key in runtime_input:
             payload[key] = runtime_input.get(key)
+    if data is not None:
+        # Index sign/rate diagnostics only — no raw source payloads, no secrets.
+        payload.update(market_index_validation_report(data, runtime_input))
     if payload.get("pipeline_success") is None:
         payload["pipeline_success"] = validation_result == "pass"
     if payload.get("owner_review_created") is None:
@@ -2203,6 +2208,7 @@ def generate(job: JobRequest) -> Dict[str, Any]:
             workflow_status="review_required",
             issues=validation.issues,
             content_quality_warnings=list(validation.content_quality_warnings),
+            data=data if mode == "today_genie" else None,
         )
         logger.error(
             "genie_api failure mode=%s reason=validation_block issue_count=%s issue_codes=%s",
@@ -2248,6 +2254,7 @@ def generate(job: JobRequest) -> Dict[str, Any]:
         workflow_status=workflow_status,
         issues=validation.issues,
         content_quality_warnings=list(validation.content_quality_warnings),
+        data=data if mode == "today_genie" else None,
     )
 
     # Best-effort cost estimate — never affects validation_result/HTTP status;

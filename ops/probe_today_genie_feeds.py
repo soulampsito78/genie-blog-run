@@ -93,6 +93,42 @@ def _parse_float(value: Any) -> Optional[float]:
         return None
 
 
+def _explicit_sign(raw: Any) -> Optional[int]:
+    """+1/-1 when the source text carried its own sign, else None (magnitude only)."""
+    text = str(raw or "").strip()
+    if text.startswith("-"):
+        return -1
+    if text.startswith("+"):
+        return 1
+    return None
+
+
+def recompute_change_pct(
+    close: Optional[float],
+    change_pts: Optional[float],
+) -> Optional[float]:
+    """Percent change derived from close and point change; None when underivable.
+
+    previous_close = close - change_pts, so this stays correct for both
+    directions without ever assuming a sign.
+    """
+    if close is None or change_pts is None:
+        return None
+    previous_close = close - change_pts
+    if previous_close <= 0:
+        return None
+    return round(change_pts / previous_close * 100.0, 2)
+
+
+def _fmt_summary_pct(value: Optional[float]) -> str:
+    """Summary-line percent. Never renders an unknown or a flat tape as a gain."""
+    if value is None:
+        return "n/a"
+    if value == 0:
+        return "0.00%"
+    return f"{value:+.2f}%"
+
+
 def default_fetch_url(url: str, timeout_sec: int = 20) -> str:
     req = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
     with urlopen(req, timeout=timeout_sec) as resp:
@@ -109,8 +145,12 @@ def parse_cnbc_quote_html(html: str, symbol: str) -> Dict[str, Any]:
 
     idx = html.find('"price"')
     chunk = html[idx : idx + 400] if idx >= 0 else html[:400]
-    change_m = re.search(r'"priceChange"\s*:\s*"([^"]+)"', chunk)
-    pct_m = re.search(r'"priceChangePercent"\s*:\s*"([^"]+)"', chunk)
+    change_re = re.compile(r'"priceChange"\s*:\s*"([^"]+)"')
+    pct_re = re.compile(r'"priceChangePercent"\s*:\s*"([^"]+)"')
+    # The quote block layout varies; fall back to the whole document rather than
+    # letting a narrow window turn a real move into a missing (then zeroed) rate.
+    change_m = change_re.search(chunk) or change_re.search(html)
+    pct_m = pct_re.search(chunk) or pct_re.search(html)
     time_m = re.search(r'"last_time"\s*:\s*"([^"]+)"', html)
 
     close = _parse_float(price_m.group(1))
@@ -119,10 +159,10 @@ def parse_cnbc_quote_html(html: str, symbol: str) -> Dict[str, Any]:
 
     change_pts = _parse_float(change_m.group(1) if change_m else None)
     change_pct = _parse_float(pct_m.group(1) if pct_m else None)
-    if change_pts is None:
-        change_pts = 0.0
     if change_pct is None:
-        change_pct = 0.0
+        # Missing rate is recomputed from close/point change when possible, and
+        # otherwise stays unknown. It is never silently substituted with 0.
+        change_pct = recompute_change_pct(close, change_pts)
 
     as_of: Optional[str] = None
     if time_m:
@@ -139,10 +179,11 @@ def parse_cnbc_quote_html(html: str, symbol: str) -> Dict[str, Any]:
             except ValueError:
                 pass
 
+    digits = 4 if symbol == "NASDAQ" else 2
     return {
-        "close": round(close, 4 if symbol == "NASDAQ" else 2),
-        "change_pts": round(change_pts, 4 if symbol == "NASDAQ" else 2),
-        "change_pct": round(change_pct, 2),
+        "close": round(close, digits),
+        "change_pts": None if change_pts is None else round(change_pts, digits),
+        "change_pct": None if change_pct is None else round(change_pct, 2),
         "as_of": as_of,
         "source_name": "CNBC",
         "source_url": CNBC_QUOTES[symbol],
@@ -152,35 +193,88 @@ def parse_cnbc_quote_html(html: str, symbol: str) -> Dict[str, Any]:
     }
 
 
+NAVER_DIRECTION_SIGNS = {"상승": 1, "하락": -1, "보합": 0}
+_NAVER_CHANGE_WINDOW_CHARS = 400
+
+
+def _naver_change_scope(html: str) -> str:
+    """Markup scope carrying Naver's change value, rate and direction marker.
+
+    The container's closing tags vary between page revisions, so an unmatched
+    anchor falls back to a bounded window instead of yielding an empty scope
+    (which used to make every field parse as a missing, then zeroed, value).
+    """
+    block_m = re.search(r'id="change_value_and_rate"[^>]*>([\s\S]*?)</span>\s*</div>', html)
+    if block_m and block_m.group(1).strip():
+        return block_m.group(1)
+    idx = html.find('id="change_value_and_rate"')
+    if idx < 0:
+        return ""
+    return html[idx : idx + _NAVER_CHANGE_WINDOW_CHARS]
+
+
+def _naver_direction_sign(scope: str) -> Optional[int]:
+    """+1/-1/0 from Naver's 상승·하락·보합 marker; None when undetermined.
+
+    Matched on the word alone so a changed wrapper element or class list does
+    not silently drop the direction.
+    """
+    m = re.search(r"(상승|하락|보합)", scope)
+    if not m:
+        return None
+    return NAVER_DIRECTION_SIGNS[m.group(1)]
+
+
 def parse_naver_index_html(html: str, code: str) -> Dict[str, Any]:
     close_m = re.search(r'id="now_value"[^>]*>([0-9,.]+)', html)
     if not close_m:
         raise FeedProbeError(f"Naver {code}: missing close")
 
-    block_m = re.search(r'id="change_value_and_rate"[^>]*>([\s\S]*?)</span>\s*</div>', html)
-    block = block_m.group(1) if block_m else ""
-    pts_m = re.search(r"<span>([0-9,.]+)</span>", block)
-    pct_m = re.search(r"([-+]?[0-9,.]+)%", block)
-    dir_m = re.search(r'class="blind">(상승|하락|보합)</span>', block)
+    scope = _naver_change_scope(html)
+    pts_m = re.search(r"<span>\s*([-+]?[0-9,.]+)\s*</span>", scope)
+    pct_m = re.search(r"([-+]?[0-9,.]+)\s*%", scope)
     time_m = re.search(r'id="time"[^>]*>([0-9.]+)', html)
 
     close = _parse_float(close_m.group(1))
     if close is None:
         raise FeedProbeError(f"Naver {code}: invalid close")
 
-    direction = dir_m.group(1) if dir_m else None
-    change_pts = _parse_float(pts_m.group(1) if pts_m else None) or 0.0
-    change_pct = _parse_float(pct_m.group(1) if pct_m else None) or 0.0
+    raw_pct = pct_m.group(1) if pct_m else None
+    raw_pts = pts_m.group(1) if pts_m else None
+    change_pct = _parse_float(raw_pct)
+    change_pts = _parse_float(raw_pts)
+    if change_pct is None:
+        raise FeedProbeError(f"Naver {code}: missing change rate")
 
-    if direction == "하락":
-        change_pts = -abs(change_pts)
-        change_pct = -abs(change_pct)
-    elif direction == "상승":
-        change_pts = abs(change_pts)
-        change_pct = abs(change_pct)
-    elif direction == "보합":
-        change_pts = 0.0
-        change_pct = 0.0
+    # Naver publishes the rate as an unsigned magnitude plus a separate
+    # direction marker. Resolve the two into one signed number, and refuse to
+    # emit a rate whose direction could not be established — an undetermined
+    # direction must never fall through as a gain.
+    direction_sign = _naver_direction_sign(scope)
+    explicit_sign = _explicit_sign(raw_pct)
+    if direction_sign is None and explicit_sign is None and change_pct != 0:
+        raise FeedProbeError(
+            f"Naver {code}: change direction undetermined for magnitude {change_pct}"
+        )
+    if direction_sign is not None and explicit_sign is not None and direction_sign != explicit_sign:
+        raise FeedProbeError(
+            f"Naver {code}: direction marker and signed rate conflict "
+            f"(direction={direction_sign}, rate={change_pct})"
+        )
+    if direction_sign == 0 and change_pct != 0:
+        raise FeedProbeError(
+            f"Naver {code}: 보합 marker contradicts non-zero rate {change_pct}"
+        )
+    sign = direction_sign if direction_sign is not None else (explicit_sign or 0)
+
+    change_pct = 0.0 if sign == 0 else sign * abs(change_pct)
+    if change_pts is not None:
+        pts_sign = _explicit_sign(raw_pts)
+        if pts_sign is not None and sign != 0 and pts_sign != sign:
+            raise FeedProbeError(
+                f"Naver {code}: point change sign conflicts with rate direction"
+            )
+        change_pts = 0.0 if sign == 0 else sign * abs(change_pts)
 
     as_of: Optional[str] = None
     if time_m:
@@ -190,8 +284,9 @@ def parse_naver_index_html(html: str, code: str) -> Dict[str, Any]:
 
     return {
         "close": round(close, 2),
-        "change_pts": round(change_pts, 2),
+        "change_pts": None if change_pts is None else round(change_pts, 2),
         "change_pct": round(change_pct, 2),
+        "change_direction": sign,
         "as_of": as_of,
         "source_name": "Naver Finance",
         "source_url": NAVER_INDEX[code],
@@ -262,7 +357,7 @@ def probe_overnight_us_market(
     parts = []
     for sym, label in (("SPX", "S&P 500"), ("NASDAQ", "Nasdaq"), ("DJI", "Dow")):
         r = indices[sym]
-        parts.append(f"{label} {r['change_pct']:+.2f}%")
+        parts.append(f"{label} {_fmt_summary_pct(r.get('change_pct'))}")
     summary = (
         f"US indexes closed on {as_of}: {', '.join(parts)}. "
         "Public-source draft only. Not a licensed automated market-data feed."
@@ -312,9 +407,9 @@ def probe_korea_japan_indices(
     _assert_as_of_fresh(as_of, target_date, "korea_japan_indices")
 
     summary = (
-        f"Asia indexes as of {as_of}: KOSPI {indices['KOSPI']['change_pct']:+.2f}%, "
-        f"KOSDAQ {indices['KOSDAQ']['change_pct']:+.2f}%, "
-        f"Nikkei {indices['NIKKEI']['change_pct']:+.2f}%. "
+        f"Asia indexes as of {as_of}: KOSPI {_fmt_summary_pct(indices['KOSPI'].get('change_pct'))}, "
+        f"KOSDAQ {_fmt_summary_pct(indices['KOSDAQ'].get('change_pct'))}, "
+        f"Nikkei {_fmt_summary_pct(indices['NIKKEI'].get('change_pct'))}. "
         "Public-source draft only. Not a licensed automated market-data feed."
     )
 
