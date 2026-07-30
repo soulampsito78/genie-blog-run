@@ -535,6 +535,87 @@ def _repair_top_level_scope_heading_for_parse(
     return out, diagnostics
 
 
+MODEL_OUTPUT_SNAPSHOT_MAX_CHARS = 2000
+
+# Credential-shaped tokens are redacted before any snapshot is stored. The model
+# body should never contain these, so this is a belt-and-braces guard rather
+# than an expected code path.
+_SNAPSHOT_REDACTION_RES = (
+    re.compile(r"(?i)(authorization|bearer|api[_-]?key|token|password|secret|cookie)"
+               r"\s*[:=]\s*\S+"),
+    re.compile(r"\bAIza[0-9A-Za-z._\-]{10,}\b"),
+    re.compile(r"\bya29\.[0-9A-Za-z._\-]{10,}\b"),
+    re.compile(r"\bX-Genie-Internal-Job-Token\b\s*:?\s*\S*"),
+)
+
+
+def sanitized_model_output_snapshot(raw_text: Any) -> Dict[str, Any]:
+    """Bounded, redacted snapshot of the model body for failure diagnosis.
+
+    Stores only what is needed to attribute a parse/schema failure: length, a
+    truncated head of the body, and whether redaction fired. Never stores
+    prompt or system content — the caller passes the model's own output only.
+    """
+    text = str(raw_text or "")
+    redacted = text
+    for pattern in _SNAPSHOT_REDACTION_RES:
+        redacted = pattern.sub("[REDACTED]", redacted)
+    head = redacted[:MODEL_OUTPUT_SNAPSHOT_MAX_CHARS]
+    return {
+        "captured": bool(text),
+        "original_length": len(text),
+        "truncated": len(redacted) > MODEL_OUTPUT_SNAPSHOT_MAX_CHARS,
+        "redaction_applied": redacted != text,
+        "body_head": head,
+    }
+
+
+def _repair_program_id_for_parse(
+    obj: Dict[str, Any],
+    program_id: str,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Fill a missing/blank top-level program_id from the trusted run context.
+
+    program_id is program-deterministic: it comes from the internal production
+    trigger, not from the model's judgement, exactly like news_scope and
+    section_heading. A wrong non-empty value (a korea briefing arriving on a
+    global run) is left untouched so the schema validator still blocks it —
+    this only grafts the value when the model omitted it.
+
+    Run 20260730_202944_keysuri_global_tech_12c08526 reported
+    program_id_mismatch with '' as its headline issue while the scope/heading
+    repair had already run, which made an empty-content response look like a
+    program_id problem.
+    """
+    pid = (program_id or "").strip()
+    diagnostics: Dict[str, Any] = {
+        "program_id_repair_attempted": False,
+        "program_id_repair_applied": False,
+        "program_id_actual_before_repair": None,
+        "program_id_actual": None,
+    }
+    if not isinstance(obj, dict):
+        return obj, diagnostics
+    if pid not in KEYSURI_PROGRAM_IDS:
+        return obj, diagnostics
+
+    diagnostics["program_id_repair_attempted"] = True
+    raw_pid = obj.get("program_id")
+    diagnostics["program_id_actual_before_repair"] = raw_pid
+
+    out = obj
+    if _is_missing_or_blank(raw_pid):
+        out = copy.deepcopy(obj)
+        out["program_id"] = pid
+        diagnostics["program_id_repair_applied"] = True
+        diagnostics["repair_applied"] = True
+        diagnostics["repaired_fields"] = ["program_id"]
+        diagnostics["internal_issue_codes"] = ["keysuri_program_id_repaired"]
+
+    diagnostics["program_id_actual"] = out.get("program_id") if isinstance(out, dict) else None
+    return out, diagnostics
+
+
 def _closing_message_presence(value: Any) -> str:
     """Compact presence label for diagnostics — never the full message text."""
     if value is None:
@@ -658,9 +739,10 @@ def _repair_parsed_candidate_for_parse(
     repaired, deep_diag = _repair_deep_dive_key_implications_for_parse(obj, prompt_input)
     repaired, lens_diag = _repair_korea_market_lens_for_parse(repaired, program_id)
     repaired, scope_diag = _repair_top_level_scope_heading_for_parse(repaired, program_id)
+    repaired, pid_diag = _repair_program_id_for_parse(repaired, program_id)
     repaired, closing_diag = _repair_closing_message_for_parse(repaired, program_id)
     return repaired, _merge_parse_repair_diagnostics(
-        deep_diag, lens_diag, scope_diag, closing_diag
+        deep_diag, lens_diag, scope_diag, pid_diag, closing_diag
     )
 
 
@@ -1768,6 +1850,7 @@ def parse_keysuri_generated_response(
             "program_id": pid,
             "issues": [_issue("json_extract_failed", str(exc), "raw_text")],
             "generated_briefing": None,
+            "raw_response_snapshot": sanitized_model_output_snapshot(raw_text),
             "parse_meta": _parse_meta(candidate_count=0, selected_index=None, recovery_used=False),
         }
 
@@ -1783,6 +1866,7 @@ def parse_keysuri_generated_response(
                 )
             ],
             "generated_briefing": None,
+            "raw_response_snapshot": sanitized_model_output_snapshot(raw_text),
             "parse_meta": _parse_meta(candidate_count=0, selected_index=None, recovery_used=False),
         }
 
@@ -1913,6 +1997,7 @@ def parse_keysuri_generated_response(
         "program_id": pid,
         "issues": issues,
         "generated_briefing": None,
+        "raw_response_snapshot": sanitized_model_output_snapshot(raw_text),
         "parse_meta": _parse_meta(
             candidate_count=candidate_count,
             selected_index=selected_index,

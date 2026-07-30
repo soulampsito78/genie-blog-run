@@ -560,9 +560,11 @@ class UnrecoverableParseDiagnosticsTests(unittest.TestCase):
         self.assertEqual(meta.get("news_scope_actual"), "korea")
         self.assertEqual(meta.get("section_heading_actual"), "국내 테크 TOP 5")
         self.assertTrue(meta.get("repair_applied"))
+        # program_id joins scope/heading: all three are program-deterministic
+        # and are grafted from the trusted run context when blank.
         self.assertEqual(
             set(meta.get("repaired_fields") or []),
-            {"news_scope", "section_heading"},
+            {"news_scope", "section_heading", "program_id"},
         )
 
     def test_recoverable_case_does_not_add_failure_diagnostics(self) -> None:
