@@ -140,3 +140,50 @@ GENIE_MODE=tomorrow_genie python run_orchestrator.py
 1. **Add a small runner entrypoint** (e.g. `run_orchestrator.py` or a single function) that: accepts `mode` (env or CLI), calls `run_genie_job(mode)`, then `send_email_if_allowed(result)` and `create_naver_draft_if_allowed(result)`, and logs one non-PII summary line (mode, reason_summary, email_sent, naver_draft_created).
 2. **Optional**: Implement Naver cookie/session reuse (load Playwright storage state from a secret or GCS before opening the blog page).
 3. **Optional**: Add one retry for SMTP send and/or Naver draft on timeout.
+
+---
+
+## 9. 변경 통제 — Kee-Suri Global 생성 컨트롤 (2026-07-31 신설)
+
+아래 항목을 수정하는 변경은 **명시적 회귀 검토(regression review)** 없이 병합·배포하지
+않는다. 정본 근거:
+[docs/keysuri/KEYSURI_GLOBAL_RECURRENCE_PREVENTION_CLOSEOUT_2026_07_31.md](docs/keysuri/KEYSURI_GLOBAL_RECURRENCE_PREVENTION_CLOSEOUT_2026_07_31.md)
+
+### 9.1 변경 통제 대상
+
+- generation call budget (`GLOBAL_GENERATION_CALL_BUDGET`)
+- 재시도 자격 코드 (`_GLOBAL_CONTRACT_REPAIR_CODES`)
+- `program_id` 결정적 보정 (`_repair_program_id_for_parse`)
+- generation contract fingerprint 필드 (`generation_contract_record`)
+- prompt-template fingerprint / schema fingerprint 산출 방식
+- 실패 우선순위 순서 (`FAILURE_PRIORITY_TIERS`)
+- sanitized snapshot 상한 (`MODEL_OUTPUT_SNAPSHOT_MAX_CHARS`)
+- recurrence counter 이름 (`RECURRENCE_COUNTER_NAMES`)
+- image / owner-review email side-effect 게이트
+- cross-mode 동작 (Today / Korea / Tomorrow)
+
+### 9.2 필수 증거
+
+변경 시 다음 테스트가 모두 존재하고 통과해야 한다.
+
+| 요구 | 내용 |
+|------|------|
+| production-path test | fake 는 외부 경계에만. 실제 production 함수를 구동할 것 |
+| bounded-attempt test | Global 총 모델 호출이 **2회를 넘지 않음**을 단언 |
+| conflicting-identifier hard-block test | 충돌 non-empty `program_id` 가 보정되지 않고 재시도 자격도 없음 |
+| no-double-send test | 성공 경로에서 owner-review email 이 정확히 1회 |
+| side-effect isolation test | 실패 경로에서 publishable payload 없음 / SMTP 미도달 |
+| cross-mode regression test | Global 보정이 Today / Korea / Tomorrow 로 유출되지 않음 |
+| exact SHA deployment verification | ROLLOUT.md §7 의 동일성 체인 |
+
+### 9.3 테스트 거버넌스 (불변 조건)
+
+fake 나 recorder 에 대한 단언은 **그 fake 가 실제로 대상 경로에 연결되어 있을 때에만**
+유효하다. 연결되지 않은 recorder 에 대한 `calls == 0` 류 단언은 결코 실패할 수 없으므로
+증거로 인정하지 않는다. 실제 송신 횟수는 production send path 를 구동하는 테스트가
+담당한다.
+
+### 9.4 프로덕션 성공 판정
+
+owner-review 성공은 endpoint HTTP 200 / `email_sent=true` / SMTP accepted 단독으로
+판정하지 않는다. **Gmail 실제 수신 확인까지 필요**하다.

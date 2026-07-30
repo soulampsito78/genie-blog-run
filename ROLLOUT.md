@@ -188,4 +188,68 @@ Execute in this order for the first safe rollout.
 
 ---
 
+## 7. Kee-Suri Global 컨트롤 배포 검증 절차 (2026-07-31 신설)
+
+Kee-Suri Global 생성 컨트롤(A~D)을 건드리는 배포는 아래 검증을 모두 통과해야
+한다. **`/health` HTTP 200 단독으로는 배포 성공으로 판정하지 않는다.**
+
+정본 기록:
+[docs/keysuri/KEYSURI_GLOBAL_RECURRENCE_PREVENTION_CLOSEOUT_2026_07_31.md](docs/keysuri/KEYSURI_GLOBAL_RECURRENCE_PREVENTION_CLOSEOUT_2026_07_31.md)
+
+### 7.1 저장소 증거
+
+| 검사 | 명령 |
+|------|------|
+| 커밋 SHA | `git rev-parse HEAD` |
+| clean tree | `git status --short` — tracked 변경 0 |
+| 변경 파일 범위 | `git show --name-only --format= <SHA>` — Admin UI / Scheduler / Today / Korea / Tomorrow / customer-delivery 파일 미포함 |
+| budget 상한 | diff 에서 `GLOBAL_GENERATION_CALL_BUDGET` 값이 **2** 인지 |
+| 충돌 식별자 | conflicting non-empty `program_id` 가 보정되지 않고 재시도 자격도 없는지 |
+
+### 7.2 테스트 증거
+
+```bash
+python3 -m pytest -q tests/test_keysuri_generation_recovery.py                      tests/test_keysuri_global_recurrence_harness.py     # 88 passed
+python3 -m pytest -q                                                     # full suite
+```
+
+full suite 는 baseline 실패 목록과 **byte-identical** 이어야 하며 **신규 실패 0**
+이어야 한다. 신규 `xfail` / `skip` 추가 금지.
+
+### 7.3 빌드 및 배포 증거
+
+```bash
+gcloud builds describe <BUILD_ID> --region global   --format="value(status,substitutions.COMMIT_SHA,results.images[0].digest)"
+
+gcloud run revisions describe <REVISION> --region asia-northeast3   --format="value(metadata.labels['commit-sha'],status.conditions[0].status,spec.containers[0].image)"
+
+gcloud run services describe genie-blog-run --region asia-northeast3   --format="value(status.traffic)"
+```
+
+확인: build `SUCCESS` · revision `Ready=True` · traffic 100% ·
+revision `commit-sha` label 은 **revision 이름에서 추론하지 말고 label 에서 직접 확인**.
+
+### 7.4 필수 동일성 체인
+
+```
+tested SHA = committed SHA = Cloud Build source SHA = deployed revision commit-sha
+build image digest = deployed image digest
+```
+
+어느 하나라도 불일치하면 배포 실패로 판정한다.
+
+### 7.5 검증 중 금지 부작용
+
+검증 절차는 다음을 호출하지 않는다: Cloud Scheduler 실행, live generation
+endpoint, Gemini, image API, SMTP, Gmail, owner approval, customer delivery.
+증거는 Scheduler `lastAttemptTime`, Cloud Run 요청 로그, GCS artifact 신규
+기록 여부로 확인한다.
+
+### 7.6 프로덕션 owner-review 성공 판정
+
+owner-review 성공은 endpoint 200 / `email_sent=true` / SMTP accepted 단독으로
+판정하지 않는다. **Gmail 실제 수신 확인까지 필요**하다.
+
+---
+
 Reference: OPERATIONS.md (hardening, secrets, worker split, logging); README.md (env vars, modes).

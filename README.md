@@ -74,6 +74,25 @@ When conflicts occur between documents, use this priority order:
 4. SCHEDULE_OVERRIDE.md — schedule authority during doc-alignment interim
 5. README.md (this file) — general reference
 
+Incident / recurrence-prevention records (historical evidence and binding lessons):
+
+- docs/keysuri/KEYSURI_GLOBAL_RECURRENCE_PREVENTION_CLOSEOUT_2026_07_31.md —
+  Kee-Suri Global 재발방지 클로즈아웃 (Controls A–D, 시나리오 매트릭스, 증거 체인)
+- docs/keysuri/KEYSURI_RECOVERY_CLOSEOUT_2026_06_26.md — Kee-Suri recovery closeout
+
+Kee-Suri Global generation operations entry points:
+
+- Bounded recovery / call budget: `keysuri_live_source_smoke.py`
+  (`generate_keysuri_with_bounded_recovery`, `_run_global_bounded_contract_repair`,
+  `GLOBAL_GENERATION_CALL_BUDGET`, `_GLOBAL_CONTRACT_REPAIR_CODES`)
+- Contract fingerprint / failure priority / sanitized snapshot:
+  `keysuri_generation_prompt.py` (`generation_contract_record`,
+  `classify_failure_priority`, `sanitized_model_output_snapshot`)
+- Recurrence counters: `keysuri_recurrence_metrics.py`
+- QA harness: `tests/test_keysuri_generation_recovery.py`,
+  `tests/test_keysuri_global_recurrence_harness.py`
+- Deployment verification procedure: ROLLOUT.md §7
+
 Note: GENIE_PROJECT_SSOT_v2 and related v2 documents referenced above
 do not exist in this repository as of 2026-06-23 audit. GCP live state
 and the documents listed above are the current authority.

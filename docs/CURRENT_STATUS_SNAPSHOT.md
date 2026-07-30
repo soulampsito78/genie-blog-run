@@ -2,6 +2,7 @@
 
 **As of: 2026-06-23 (KST) — full GCP audit**
 **Cloud Run / commit / health + Kee-Suri recovery: re-verified 2026-06-26 (KST)**
+**Kee-Suri Global 재발방지: 재검증 2026-07-31 (KST) — §1, §9**
 **Basis: GCP audit — Cloud Scheduler, Cloud Run, GCS artifact inspection**
 **Service: `genie-blog-run`, region `asia-northeast3`**
 
@@ -13,6 +14,13 @@ This document is the authoritative operational snapshot. Update it after each au
 > The Scheduler (§2), Program Run (§3), PASS Criteria (§4), Key Config (§5), and
 > Secrets (§6) tables retain their **2026-06-23 audit basis** and were not
 > re-audited on 2026-06-26.
+
+> **Kee-Suri Global 재발방지 클로즈아웃 (2026-07-31):**
+> `KEESURI_GLOBAL_RECURRENCE_PREVENTION_COMPLETE` — 2026-07-30 Global 장애 2건
+> (visible-text truncation 오탐, `program_id == ""` schema block)이 닫혔고
+> 재발방지 컨트롤 A~D가 배포되었다. 전체 기록:
+> [docs/keysuri/KEYSURI_GLOBAL_RECURRENCE_PREVENTION_CLOSEOUT_2026_07_31.md](keysuri/KEYSURI_GLOBAL_RECURRENCE_PREVENTION_CLOSEOUT_2026_07_31.md).
+> 식별된 재발 경로는 통제되었으나 이후 자연실행은 통상 운영 모니터링 대상으로 남는다.
 
 > **Kee-Suri recovery closeout (2026-06-26):**
 > `CLOSED_FOR_VERIFIED_SCOPES` — verified scopes closed; remaining conditions held
@@ -27,10 +35,14 @@ This document is the authoritative operational snapshot. Update it after each au
 |------|-------|
 | Service name | `genie-blog-run` |
 | Region | `asia-northeast3` |
-| Active revision | `genie-blog-run-00201-447` (100% traffic) — re-verified 2026-06-26 |
-| Commit SHA | `0ef8fb9` (`0ef8fb9cf873b1057cdc87f4eedb42298dc0f4ae`) — revision `commit-sha` label match |
-| Commit message | `fix(keysuri): track owner review exposures for cross-day dedup` |
-| Health | `/health` → HTTP 200 ✅ (re-verified 2026-06-26) |
+| Active revision | `genie-blog-run-00268-fxh` (100% traffic, `latestRevision: true`) — re-verified 2026-07-31 |
+| Commit SHA | `f846f1b` (`f846f1bfc7cf14c238a0b41e12a293666d3d4e67`) — revision `commit-sha` label match |
+| Commit message | `fix(keysuri): complete global generation recurrence controls` |
+| Cloud Build | `f837c5f4-9e9f-4822-8a63-4d6b77b6a08c` (SUCCESS) |
+| Image digest | `sha256:a72ecb79f84c2eb813a8fa8ac72353e357f3cae7ce305c0693f466672365221f` (build = deployed) |
+| Ready condition | `True` — re-verified 2026-07-31 |
+| Health | `/health` → HTTP 200 ✅ (re-verified 2026-07-31; HTTP 200 alone is **not** deployment success — see §9) |
+| Prior revision (2026-06-26) | `genie-blog-run-00201-447`, commit `0ef8fb9` |
 | Public URL | `https://genie-blog-run-2sftivmzga-du.a.run.app` |
 | Scheduler URL | `https://genie-blog-run-1055014091206.asia-northeast3.run.app` |
 | Architecture | **Single Cloud Run Service** (not API+Worker split) |
@@ -143,6 +155,65 @@ This document is the authoritative operational snapshot. Update it after each au
 
 Recovery scope detail and runtime verification:
 [docs/keysuri/KEYSURI_RECOVERY_CLOSEOUT_2026_06_26.md](keysuri/KEYSURI_RECOVERY_CLOSEOUT_2026_06_26.md).
+
+---
+
+## 9. Kee-Suri Global 재발방지 컨트롤 (2026-07-31)
+
+**운영 판정: `KEESURI_GLOBAL_RECURRENCE_PREVENTION_COMPLETE`**
+정본 기록: [KEYSURI_GLOBAL_RECURRENCE_PREVENTION_CLOSEOUT_2026_07_31.md](keysuri/KEYSURI_GLOBAL_RECURRENCE_PREVENTION_CLOSEOUT_2026_07_31.md)
+
+### 불변 조건 (production invariants)
+
+| 조건 | 값 |
+|------|-----|
+| Global 최대 모델 호출 | **2회** (`GLOBAL_GENERATION_CALL_BUDGET = 2`) — initial + 최대 1회 corrective |
+| 재시도 자격 | `_GLOBAL_CONTRACT_REPAIR_CODES` 명시 코드에 한정. 통상 validation 실패는 자동 재시도 대상 아님 |
+| missing / empty `program_id` | 신뢰된 run context 로 결정적 보정 |
+| conflicting non-empty `program_id` | **hard block — 보정 안 함, 재시도 자격 없음** |
+| sanitized snapshot 상한 | 2000자, truncation 여부 기록. hidden prompt·secret 미저장 |
+| recovery 소진 | image / email side effect **이전에** safe-fail, 진단 보존 |
+| recovery 성공 | image 및 owner-review email 정확히 **1회** |
+| cross-mode | Today / Korea / Tomorrow 로 유출 금지. contamination 은 hard block |
+
+### 실패 우선순위 (Control C)
+
+`no_extractable_json` → `contentless_or_missing_structure` →
+`conflicting_mode_or_identifier` → `missing_identifier_after_repair` →
+`section_schema_defect` → ordinary-content fall-through →
+`post_render_visible_text_defect`
+
+후행 defect 가 선행 구조적 실패를 가리지 않는다. secondary issue code 는 보존된다.
+
+### 재발 카운터 (Control D)
+
+`keysuri_recurrence_metrics.py` — `recurrence_counters_for_run()`,
+`aggregate_recurrence_counters()`, `log_recurrence_counters()`.
+카운터: `generation_attempts`, `bounded_retry_count`, `retry_success`,
+`retry_exhausted`, `json_extraction_failure`, `contentless_response_failure`,
+`program_id_repair_count`, `conflicting_program_id_block_count`,
+`schema_validation_failure`, `post_render_truncation_block`,
+`global_run_success`, `global_run_safe_fail`.
+이미 저장된 진단에서 파생되는 read-only 집계이며 side effect 가 없다.
+
+### 프로덕션 성공 판정 기준 (불변 조건)
+
+owner-review 성공은 **endpoint HTTP 200 / `email_sent=true` / SMTP accepted
+단독으로 판정하지 않는다.** Gmail 실제 수신까지 확인되어야 한다
+(참조 실행 `20260731_022412_keysuri_global_tech_36012cbb`,
+`KEESURI_GLOBAL_PRODUCTION_OWNER_REVIEW_PASS`).
+
+### 테스트 기준선
+
+recovery+recurrence harness `88 passed` · targeted `136 passed` ·
+full suite `2436 passed, 21 failed, 1 skipped, 1 xfailed` ·
+baseline 실패 목록 byte-identical · **신규 실패 0**.
+21건은 기존 baseline 실패이며 본 작업과 무관하다.
+
+### 향후 자연실행 관찰 사항
+
+식별된 재발 경로는 통제되었다. 이후 자연실행은 통상적인 운영 모니터링 대상으로
+남으며, 위 카운터 추세를 관찰한다.
 
 ---
 

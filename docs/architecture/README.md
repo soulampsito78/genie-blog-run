@@ -1,7 +1,7 @@
 # GENIE × KeeSuri — 아키텍처 문서
 
 > **시스템**: GENIE × KeeSuri 자동화 브리핑 파이프라인  
-> **최종 갱신**: 2026-07-03  
+> **최종 갱신**: 2026-07-31 (Kee-Suri Global 생성 흐름 §추가)  
 > **형식**: Mermaid 원본 + SVG + PNG (+ PDF 번들)
 
 ---
@@ -238,3 +238,72 @@ docs/architecture/
   * state machine, node graph, retry/safe-fail/resume 처리의 표준화
 * **LangSmith 도입 후보**:
   * tracing, observability, eval, regression tracking 기능 적용
+
+---
+
+## Kee-Suri Global 생성 흐름 및 안전 게이트 (2026-07-31)
+
+Kee-Suri Global 자연실행의 컴포넌트·데이터 흐름과 safe-fail 게이트.
+불변 조건은 `docs/CURRENT_STATUS_SNAPSHOT.md` §9, 검증 절차는 `ROLLOUT.md` §7,
+사건 근거는
+[KEYSURI_GLOBAL_RECURRENCE_PREVENTION_CLOSEOUT_2026_07_31.md](../keysuri/KEYSURI_GLOBAL_RECURRENCE_PREVENTION_CLOSEOUT_2026_07_31.md).
+
+```mermaid
+flowchart TD
+  SCHED["Cloud Scheduler<br/>KeeSuri_Global_Tech (12:30 KST)"]
+  EP["internal owner-review endpoint<br/>/internal/jobs/create-keysuri-owner-review"]
+  CTX["runtime context<br/>source fetch / normalize / rank / dedup"]
+  G1["generation attempt 1<br/>generate_keysuri_with_bounded_recovery()"]
+  PARSE["parse + contract checks<br/>parse_keysuri_generated_response()"]
+  ELIG{"eligible repair code?<br/>_GLOBAL_CONTRACT_REPAIR_CODES"}
+  G2["corrective attempt 2 (최대 1회)<br/>_run_global_bounded_contract_repair()"]
+  IDR{"program_id 상태"}
+  VAL["validation"]
+  REN["rendering"]
+  PRQ["post-render visible-text QA<br/>validate_global_post_render_visible_quality()"]
+  ART["artifact persistence (JSON/HTML)"]
+  IMG["image generation"]
+  MAIL["owner-review email"]
+  SMTP["SMTP accepted"]
+  GMAIL["Gmail 수신 확인 (owner)"]
+  APPR["owner approval"]
+  CUST["customer delivery"]
+  HOLD["safe-fail / HOLD<br/>진단 보존, side effect 없음"]
+
+  SCHED --> EP --> CTX --> G1 --> PARSE
+  PARSE -->|valid| IDR
+  PARSE -->|invalid| ELIG
+  ELIG -->|no| HOLD
+  ELIG -->|yes, budget 잔여| G2 --> PARSE
+  ELIG -->|budget 소진| HOLD
+  IDR -->|missing / empty| VAL
+  IDR -->|conflicting non-empty| HOLD
+  IDR -->|일치| VAL
+  VAL -->|pass| REN --> PRQ
+  VAL -->|block| HOLD
+  PRQ -->|pass| ART --> IMG --> MAIL --> SMTP --> GMAIL --> APPR --> CUST
+  PRQ -->|block| HOLD
+```
+
+### 안전 게이트 및 금지 부작용
+
+| 게이트 | 통과 실패 시 |
+|--------|--------------|
+| parse / contract | eligible 코드면 corrective 1회, 아니면 safe-fail |
+| generation budget | **총 2회 초과 호출 금지**. 소진 시 safe-fail |
+| `program_id` 충돌 | hard block — 보정·재시도 없음 |
+| validation | block 시 image / email 미도달 |
+| post-render visible-text QA | block 시 email 미도달 |
+| owner approval | 승인 전 customer delivery 절대 불가 |
+
+safe-fail 은 **image 및 email side effect 이전에** 발생하며 진단을 보존한다.
+
+### 컨트롤 데이터가 생성되는 위치
+
+| 데이터 | 생성 위치 |
+|--------|-----------|
+| sanitized model-output snapshot | `keysuri_generation_prompt.sanitized_model_output_snapshot()` — parse/schema 실패 반환 경로 |
+| generation contract fingerprint | `keysuri_generation_prompt.generation_contract_record()` — 시도별 |
+| primary/secondary failure 분류 | `keysuri_generation_prompt.classify_failure_priority()` |
+| post-render QA 진단 | `_post_render_qa_diagnostic_fields()` → 실패 artifact |
+| recurrence counters | `keysuri_recurrence_metrics.recurrence_counters_for_run()` — 저장된 진단에서 파생 (read-only) |
