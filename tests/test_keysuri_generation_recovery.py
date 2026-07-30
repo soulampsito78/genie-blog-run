@@ -1750,7 +1750,7 @@ class GlobalBoundedContractRepairTests(unittest.TestCase):
         self.assertEqual(diag.get("global_recovery_result"), "not_needed")
         self.assertEqual(diag.get("global_recovery_call_count"), 0)
         self.assertEqual(diag.get("global_generation_call_count"), 1)
-        self.assertEqual(diag.get("global_generation_call_budget"), 3)
+        self.assertEqual(diag.get("global_generation_call_budget"), 2)
         self.assertEqual(result["parse_result"]["parse_status"], "parsed_valid")
 
     def test_missing_required_keys_repairs_once_and_passes(self) -> None:
@@ -1796,7 +1796,7 @@ class GlobalBoundedContractRepairTests(unittest.TestCase):
         self.assertNotEqual(result["parse_result"]["parse_status"], "parsed_valid")
         self.assertIsNone(result["parse_result"].get("generated_briefing"))
 
-    def test_max_tokens_then_repair_stays_within_three_calls(self) -> None:
+    def test_max_tokens_compact_retry_consumes_the_two_call_ceiling(self) -> None:
         from keysuri_gemini_client import KeysuriGeminiError
 
         prompt_input = _global_prompt_input()
@@ -1841,14 +1841,18 @@ class GlobalBoundedContractRepairTests(unittest.TestCase):
         result = generate_keysuri_with_bounded_recovery(
             prompt_input, gemini_caller=_caller, usage_sink={}
         )
-        self.assertEqual(len(calls), 3)
+        # Ceiling is two model attempts: the MAX_TOKENS compact retry is the
+        # single corrective call, so no third full-contract repair may follow.
+        self.assertEqual(len(calls), 2)
         diag = result["generation_diagnostics"]
-        self.assertTrue(diag.get("retry_applied") or diag.get("recovery_generation_diagnostics"))
-        self.assertTrue(diag["global_recovery_attempted"])
-        self.assertEqual(diag["global_recovery_result"], "succeeded")
-        self.assertEqual(diag["global_generation_call_count"], 3)
-        self.assertLessEqual(diag["global_generation_call_count"], 3)
-        self.assertEqual(result["parse_result"]["parse_status"], "parsed_valid")
+        self.assertEqual(diag["global_generation_call_count"], 2)
+        self.assertLessEqual(diag["global_generation_call_count"], 2)
+        self.assertEqual(diag["global_generation_call_budget"], 2)
+        self.assertTrue(diag.get("global_generation_budget_exhausted"))
+        self.assertEqual(
+            diag["global_recovery_result"], "not_attempted_budget_exhausted"
+        )
+        self.assertNotEqual(result["parse_result"]["parse_status"], "parsed_valid")
 
     def test_budget_exhaustion_blocks_fourth_call(self) -> None:
         from keysuri_gemini_client import KeysuriGeminiError

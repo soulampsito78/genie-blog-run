@@ -1,6 +1,8 @@
 """Kee-Suri offline generation prompt contract and JSON parse guard (no LLM runtime)."""
 from __future__ import annotations
 
+import hashlib
+
 import copy
 import json
 import re
@@ -13,6 +15,7 @@ from keysuri_generated_briefing import (
 from keysuri_news_contract import (
     KEYSURI_MARKET_LENS_NORMALIZED_ISSUE_CODE,
     KEYSURI_PROGRAM_IDS,
+    KEYSURI_TOP_NEWS_COUNT,
     expected_news_scope_for_program,
     expected_top5_heading_for_program,
     repair_korea_market_lens_fields_in_top5,
@@ -533,6 +536,104 @@ def _repair_top_level_scope_heading_for_parse(
         out.get("section_heading") if isinstance(out, dict) else None
     )
     return out, diagnostics
+
+
+GENERATION_CONTRACT_VERSION = "keysuri-global-generation/1"
+
+# CONTROL C — substantive failure ordering. The first matching tier becomes the
+# primary failure, so a response with no briefing sections reports its missing
+# structure rather than whichever field happened to be validated first. Run
+# 20260730_202944_keysuri_global_tech_12c08526 reported program_id_mismatch as
+# its headline issue while carrying none of the required top-level keys.
+FAILURE_PRIORITY_TIERS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("no_extractable_json", ("json_extract_failed",)),
+    (
+        "contentless_or_missing_structure",
+        (
+            "gemini_json_missing_required_keys",
+            "top_5_news_missing_or_invalid",
+            "deep_dive_missing",
+            "top_5_news_missing",
+            "one_line_checkpoint_missing",
+            "closing_sources_missing",
+        ),
+    ),
+    (
+        "conflicting_mode_or_identifier",
+        ("program_id_mismatch", "news_scope_mismatch", "unsupported_program_id"),
+    ),
+    ("missing_identifier_after_repair", ("program_id_missing",)),
+    (
+        "section_schema_defect",
+        (
+            "gemini_json_required_field_invalid",
+            "top_5_count_invalid",
+            "top_5_item_count_invalid",
+            "top_5_item_missing_required_field",
+            "top_5_news_item_invalid",
+            "deep_dive_missing_required_field",
+            "deep_dive_heading_invalid",
+            "deep_dive_key_implications_invalid",
+            "gemini_json_schema_validation_failed",
+        ),
+    ),
+    ("post_render_visible_text_defect", ("global_visible_text_truncated_deep_dive",)),
+)
+
+
+def classify_failure_priority(issue_codes: Sequence[str]) -> Dict[str, Any]:
+    """Primary/secondary failure classification by substantive tier."""
+    codes = [str(c) for c in (issue_codes or []) if c]
+    seen: List[str] = []
+    for code in codes:
+        if code not in seen:
+            seen.append(code)
+    for tier, tier_codes in FAILURE_PRIORITY_TIERS:
+        for code in seen:
+            if code in tier_codes:
+                return {
+                    "primary_failure_code": code,
+                    "primary_failure_tier": tier,
+                    "secondary_failure_codes": [c for c in seen if c != code],
+                }
+    return {
+        "primary_failure_code": seen[0] if seen else None,
+        "primary_failure_tier": "ordinary_content_validation_defect" if seen else None,
+        "secondary_failure_codes": seen[1:],
+    }
+
+
+def _fingerprint(*parts: Any) -> str:
+    payload = "|".join(str(p) for p in parts)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def generation_contract_record(
+    program_id: str,
+    *,
+    attempt: int = 1,
+    retry_reason: Optional[str] = None,
+    model: Optional[str] = None,
+    prompt_text: Optional[str] = None,
+) -> Dict[str, Any]:
+    """CONTROL B — machine-verifiable record of the contract each attempt used.
+
+    Fingerprints only; never the hidden system prompt itself.
+    """
+    pid = (program_id or "").strip()
+    required_keys = list(KEYSURI_EXPECTED_TOP_LEVEL_KEYS)
+    return {
+        "generation_contract_version": GENERATION_CONTRACT_VERSION,
+        "expected_program_id": pid,
+        "expected_news_scope": expected_news_scope_for_program(pid) if pid in KEYSURI_PROGRAM_IDS else None,
+        "required_top_level_keys": required_keys,
+        "required_item_count": KEYSURI_TOP_NEWS_COUNT,
+        "schema_fingerprint": _fingerprint(GENERATION_CONTRACT_VERSION, pid, tuple(required_keys), KEYSURI_TOP_NEWS_COUNT),
+        "prompt_template_fingerprint": _fingerprint(prompt_text) if prompt_text else None,
+        "model_identifier": model,
+        "generation_attempt": int(attempt),
+        "retry_reason": retry_reason,
+    }
 
 
 MODEL_OUTPUT_SNAPSHOT_MAX_CHARS = 2000
@@ -1851,6 +1952,8 @@ def parse_keysuri_generated_response(
             "issues": [_issue("json_extract_failed", str(exc), "raw_text")],
             "generated_briefing": None,
             "raw_response_snapshot": sanitized_model_output_snapshot(raw_text),
+            "failure_classification": classify_failure_priority(["json_extract_failed"]),
+            "generation_contract": generation_contract_record(pid),
             "parse_meta": _parse_meta(candidate_count=0, selected_index=None, recovery_used=False),
         }
 
@@ -1867,6 +1970,8 @@ def parse_keysuri_generated_response(
             ],
             "generated_briefing": None,
             "raw_response_snapshot": sanitized_model_output_snapshot(raw_text),
+            "failure_classification": classify_failure_priority(["json_extract_failed"]),
+            "generation_contract": generation_contract_record(pid),
             "parse_meta": _parse_meta(candidate_count=0, selected_index=None, recovery_used=False),
         }
 
@@ -1998,6 +2103,10 @@ def parse_keysuri_generated_response(
         "issues": issues,
         "generated_briefing": None,
         "raw_response_snapshot": sanitized_model_output_snapshot(raw_text),
+        "failure_classification": classify_failure_priority(
+            [str(iss.get("code") or "") for iss in issues]
+        ),
+        "generation_contract": generation_contract_record(pid),
         "parse_meta": _parse_meta(
             candidate_count=candidate_count,
             selected_index=selected_index,

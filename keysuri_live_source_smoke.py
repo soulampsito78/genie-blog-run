@@ -1124,7 +1124,10 @@ _GLOBAL_CONTRACT_REPAIR_CODES = frozenset(
         "deep_dive_key_implications_invalid",
     }
 )
-GLOBAL_GENERATION_CALL_BUDGET = 3
+# Ceiling of two total model attempts per Global run: the initial call plus at
+# most one corrective call. A third call was previously possible when a
+# MAX_TOKENS compact retry preceded a full-contract repair.
+GLOBAL_GENERATION_CALL_BUDGET = 2
 RECOVERY_RECONCILIATION_INSUFFICIENT = (
     "korea_generation_reconciliation_insufficient_valid_candidates"
 )
@@ -2247,8 +2250,9 @@ def generate_keysuri_with_bounded_recovery(
     """Run Kee-Suri generation with bounded recovery.
 
     Korea: at most one corrective attempt (semantic reconciliation + structural).
-    Global: unified call budget of 3 (initial + optional MAX_TOKENS compact +
-    optional full-contract repair). Never copies Korea item-level reconciliation.
+    Global: unified call budget of 2 (initial + at most one corrective call,
+    either MAX_TOKENS compact or full-contract repair). Never copies Korea
+    item-level reconciliation.
     """
     program_id = str(prompt_input.get("program_id") or "")
     is_global = _is_global_program(program_id)
