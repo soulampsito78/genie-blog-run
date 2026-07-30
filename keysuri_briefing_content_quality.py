@@ -248,6 +248,22 @@ _VISIBLE_ELLIPSIS_RE = re.compile(r"…|\.{2,}")
 _LABEL_ACCUMULATION_RE = re.compile(r"(?<![가-힣])([가-힣]{2,6})(?:\s+\1){2,}(?![가-힣])")
 
 
+_HANGUL_SYLLABLE_RE = re.compile(r"[가-힣]")
+
+# A trailing particle sits on top of a noun, so a truncated tail is normally
+# 3+ syllables ("발표가", "투자에", "기능을"). Two-syllable Sino-Korean nouns
+# collide with those particle syllables as ordinary words -- 추가, 증가, 결과,
+# 효과, 도로 -- and a headline ending in one is complete, not cut off. Run
+# 20260730_185212_keysuri_global_tech_b09b8b02 blocked on exactly that:
+# "구글 Gemini API 3.6 Flash 지원 및 훅 기능 추가" was flagged because "추가"
+# ends in the syllable "가".
+_MIN_PARTICLE_TAIL_SYLLABLES = 3
+
+
+def _hangul_syllable_count(text: str) -> int:
+    return len(_HANGUL_SYLLABLE_RE.findall(str(text or "")))
+
+
 def _find_truncated_visible_lines(html: str) -> List[str]:
     """Lines showing literal ellipsis or a dangling-connective ending."""
     bad: List[str] = []
@@ -261,8 +277,12 @@ def _find_truncated_visible_lines(html: str) -> List[str]:
             if last_word in GLOBAL_DANGLING_CONNECTIVE_ENDINGS:
                 bad.append(line[:120])
                 continue
-            if len(line) > 30 and last_word.endswith(
-                ("이", "가", "은", "는", "을", "를", "와", "과", "로", "에", "에서")
+            if (
+                len(line) > 30
+                and _hangul_syllable_count(last_word) >= _MIN_PARTICLE_TAIL_SYLLABLES
+                and last_word.endswith(
+                    ("이", "가", "은", "는", "을", "를", "와", "과", "로", "에", "에서")
+                )
             ):
                 bad.append(line[:120])
     return bad
