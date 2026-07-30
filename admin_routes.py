@@ -504,11 +504,19 @@ def _render_delivery_report_sections(meta: dict) -> str:
 
 
 def _mode_supports_image_only_reissue(mode: str) -> bool:
-    return str(mode or "").strip() in ("keysuri_global_tech", "keysuri_korea_tech")
+    return str(mode or "").strip() in (
+        "today_genie",
+        "keysuri_global_tech",
+        "keysuri_korea_tech",
+    )
 
 
 def _mode_supports_body_only_reissue(mode: str) -> bool:
-    return str(mode or "").strip() in ("keysuri_global_tech", "keysuri_korea_tech")
+    return str(mode or "").strip() in (
+        "today_genie",
+        "keysuri_global_tech",
+        "keysuri_korea_tech",
+    )
 
 
 def _mode_supports_body_and_image_reissue(mode: str) -> bool:

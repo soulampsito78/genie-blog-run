@@ -335,7 +335,7 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("선택한 범위만 서버에서 재발행합니다.", resp.text)
         self.assertIn("고객 최종 발송은 별도 승인 전까지 수행되지 않습니다.", resp.text)
 
-    def test_today_reissue_scope_radios_match_backend_support(self) -> None:
+    def test_today_reissue_scope_radios_enable_all_scopes(self) -> None:
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
         run_id = "20260530_121100_today_genie_aabbccdd"
         save_run_artifact(
@@ -351,12 +351,34 @@ class AdminRoutesTests(unittest.TestCase):
         )
         resp = self.client.get(f"/admin/runs/{run_id}")
         self.assertEqual(resp.status_code, 200)
-        self.assertRegex(resp.text, r'value="body_only"[^>]*\bdisabled\b')
-        self.assertRegex(resp.text, r'value="image_only"[^>]*\bdisabled\b')
+        self.assertNotRegex(resp.text, r'value="body_only"[^>]*\bdisabled\b')
+        self.assertNotRegex(resp.text, r'value="image_only"[^>]*\bdisabled\b')
         self.assertRegex(resp.text, r'value="body_and_image"[^>]*\bchecked\b')
+        self.assertNotRegex(resp.text, r'value="body_and_image"[^>]*\bdisabled\b')
         self.assertIn('name="reissue_scope"', resp.text)
         self.assertIn('class="radio-scope"', resp.text)
         self.assertIn('class="radio-helper"', resp.text)
+
+    def test_tomorrow_reissue_scope_radios_remain_full_only(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        run_id = "20260530_121102_tomorrow_genie_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": run_id,
+                "mode": "tomorrow_genie",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": False,
+                "response_status": 200,
+                "reason_summary": "ok",
+            }
+        )
+        resp = self.client.get(f"/admin/runs/{run_id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertRegex(resp.text, r'value="body_only"[^>]*\bdisabled\b')
+        self.assertRegex(resp.text, r'value="image_only"[^>]*\bdisabled\b')
+        self.assertRegex(resp.text, r'value="body_and_image"[^>]*\bchecked\b')
+        self.assertNotRegex(resp.text, r'value="body_and_image"[^>]*\bdisabled\b')
 
     def test_keysuri_reissue_scope_radios_enable_all_scopes(self) -> None:
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
@@ -387,6 +409,28 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("뉴스 수집부터 다시 수행하고, 본문과 이미지 산출물을 모두 새로 생성합니다.", resp.text)
         self.assertIn("이미지 품질 이슈", resp.text)
         self.assertIn("reissue-reason-select", resp.text)
+
+    def test_keysuri_global_reissue_scope_radios_remain_all_enabled(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        run_id = "20260530_121103_keysuri_global_tech_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": run_id,
+                "mode": "keysuri_global_tech",
+                "program_id": "keysuri_global_tech",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": False,
+                "response_status": 200,
+                "reason_summary": "ok",
+            }
+        )
+        resp = self.client.get(f"/admin/runs/{run_id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotRegex(resp.text, r'value="body_only"[^>]*\bdisabled\b')
+        self.assertNotRegex(resp.text, r'value="image_only"[^>]*\bdisabled\b')
+        self.assertRegex(resp.text, r'value="body_and_image"[^>]*\bchecked\b')
+        self.assertNotRegex(resp.text, r'value="body_and_image"[^>]*\bdisabled\b')
 
     def test_reason_dropdown_body_only_default_is_news_duplicate(self) -> None:
         from admin_routes import REISSUE_REASON_OPTIONS_BY_SCOPE
