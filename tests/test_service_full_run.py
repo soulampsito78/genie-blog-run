@@ -204,9 +204,13 @@ def _live_reselection_items(prefix: str = "live") -> list[dict]:
                 "headline": f"Live Signal {idx}",
                 "korean_title": f"라이브 신호 {idx}",
                 "category": "market_signal",
-                "summary": f"Live summary {idx}",
-                "why_it_matters": f"Live why {idx}",
-                "business_implication": f"Live business implication {idx}",
+                # Korean, article-specific prose, matching what Gemini actually
+                # returns. English body text here would fall back to the shared
+                # generic templates and trip the content gate as a fixture
+                # artifact rather than a real defect.
+                "summary": f"라이브 신호 {idx} 관련 공식 발표가 {idx}건 확인되었습니다.",
+                "why_it_matters": f"라이브 신호 {idx}는 {idx}분기 인프라 투자 계획에 직접 영향을 줍니다.",
+                "business_implication": f"주인님께서는 라이브 신호 {idx}의 도입 비용을 {idx}순위로 점검하시면 됩니다.",
                 "source_ids": [f"{prefix}-src-{idx}"],
                 "source_name": f"Live Source {idx}",
                 "source_url": f"https://example.com/{prefix}-{idx}",
@@ -261,6 +265,26 @@ def _briefing_for_live_items(items: list[dict], program_id: str = PROGRAM_GLOBAL
             "closing_message": "오늘 신호는 여기까지 정리했습니다.",
         },
     }
+
+
+def _korean_gemini_briefing_for_live_items(items: list[dict], program_id: str = PROGRAM_GLOBAL) -> dict:
+    """A complete, correlatable Gemini briefing with Korean article-specific prose.
+
+    Mirrors real model output: one entry per live item, keyed to the same
+    news_id, with distinct concrete prose. Fixtures that only need a valid
+    reissue child use this instead of a 2-of-5 partial, because filling the
+    missing cards with shared templates is now a content hold.
+    """
+    gemini_items = []
+    for idx, live in enumerate(items, start=1):
+        item = dict(live)
+        item["headline"] = f"제미나이 한국어 제목 {idx}"
+        item["korean_title"] = f"제미나이 한국어 제목 {idx}"
+        item["summary"] = f"제미나이가 정리한 한국어 요약 {idx}입니다."
+        item["why_it_matters"] = f"주요 시장 흐름을 판단하는 데 필요한 한국어 이유 {idx}입니다."
+        item["business_implication"] = f"주인님이 점검할 실행 포인트 {idx}입니다."
+        gemini_items.append(item)
+    return _briefing_for_live_items(gemini_items, program_id=program_id)
 
 
 def _live_smoke_result_for_pack(source_pack_path: str, program_id: str = PROGRAM_GLOBAL):
@@ -378,7 +402,7 @@ class KeysuriReissueTop5RepairTests(unittest.TestCase):
     def _live_items_with_raw_english_ellipsis(self) -> list[dict]:
         return _live_reselection_items_with_raw_english_ellipsis()
 
-    def test_live_reissue_raw_english_ellipsis_fallback_is_sanitized(self) -> None:
+    def test_live_reissue_partial_gemini_holds_without_generic_fallback(self) -> None:
         from keysuri_service_full_run import _repair_reissue_top5_from_live_selection
         from keysuri_visible_text_quality import validate_and_repair_keysuri_visible_text_quality
 
@@ -388,8 +412,9 @@ class KeysuriReissueTop5RepairTests(unittest.TestCase):
             "source_pack": {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []},
             "top_5_news": {"news_scope": "global", "section_heading": "글로벌 테크 TOP 5", "items": live_items},
         }
-        # Gemini returns only a partial TOP5; the remaining visible prose must be
-        # clean Korean fallback, never raw claim snippets.
+        # Gemini returns only a partial TOP5. Filling the remaining cards with
+        # shared generic templates is what produced the 2026-07-30 placeholder
+        # briefing, so this must hold instead of publishing.
         partial_gemini = _briefing_for_live_items(live_items[:2])
 
         repaired_prompt, repaired_briefing, fields, err = _repair_reissue_top5_from_live_selection(
@@ -399,21 +424,22 @@ class KeysuriReissueTop5RepairTests(unittest.TestCase):
             parent={},
         )
 
-        self.assertIsNone(err)
-        self.assertIsNotNone(repaired_prompt)
-        self.assertEqual(fields["reissue_top5_repair_source"], "reissue_live_selected_items")
-        self.assertTrue(fields["reissue_visible_text_sanitized"])
-        self.assertTrue(fields["reissue_top5_clean_korean_fallback_used"])
-        self.assertEqual(fields["reissue_text_quality_gate_before"], "block")
-        self.assertEqual(fields["reissue_text_quality_gate_after"], "pass")
-        repaired_items = repaired_briefing["top_5_news"]["items"]
-        self.assertEqual(len(repaired_items), 5)
-        rendered = json.dumps(repaired_items, ensure_ascii=False)
-        self.assertNotIn("…", rendered)
-        self.assertNotIn("..", rendered)
-        self.assertNotIn("report maps how AI could reshape jobs", rendered)
-        _payload, quality = validate_and_repair_keysuri_visible_text_quality(repaired_briefing)
-        self.assertFalse(quality.get("visible_text_ellipsis_blocked"))
+        self.assertEqual(err, "reissue_top5_content_integrity_hold")
+        self.assertIsNone(repaired_prompt)
+        self.assertIsNone(repaired_briefing)
+        self.assertIn(
+            "reissue_top5_shared_generic_body",
+            fields["reissue_top5_content_issue_codes"],
+        )
+        # The correlated cards are still reported, so the operator can see that
+        # only 2 of 5 were groundable rather than the failure being hidden.
+        self.assertEqual(fields["reissue_correlation_matched_count"], 2)
+        self.assertEqual(fields["reissue_correlation_unmatched_ranks"], [3, 4, 5])
+        self.assertFalse(fields["reissue_correlation_positional_used"])
+        # A held reissue produces no publishable briefing at all, so raw English
+        # claim prose cannot reach a rendered surface by any path.
+        self.assertNotIn("reissue_top5_repair_source", fields)
+        del validate_and_repair_keysuri_visible_text_quality
 
     def test_live_reissue_valid_gemini_korean_is_preserved(self) -> None:
         from keysuri_service_full_run import _repair_reissue_top5_from_live_selection
@@ -1507,7 +1533,7 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
             json.dump(source_pack, sp_file)
             source_pack_path = sp_file.name
         live_items = _live_reselection_items_with_raw_english_ellipsis(prefix="dry-body")
-        partial_gemini = _briefing_for_live_items(live_items[:2], program_id=PROGRAM_GLOBAL)
+        partial_gemini = _korean_gemini_briefing_for_live_items(live_items, program_id=PROGRAM_GLOBAL)
         prompt_input = {
             "program_id": PROGRAM_GLOBAL,
             "source_pack": source_pack,
@@ -1571,8 +1597,13 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         send_fn.assert_not_called()
         child = load_run_artifact(child_id) or {}
         self.assertEqual(child.get("customer_delivery_status"), "not_sent")
-        self.assertTrue(child.get("reissue_visible_text_sanitized"))
-        self.assertTrue(child.get("reissue_top5_clean_korean_fallback_used"))
+        # Complete, correlatable Korean output needs no template substitution:
+        # every card keeps its own model prose and its live grounding.
+        self.assertFalse(child.get("reissue_top5_clean_korean_fallback_used"))
+        self.assertEqual(child.get("reissue_top5_content_issue_codes"), [])
+        self.assertEqual(child.get("reissue_correlation_matched_count"), 5)
+        self.assertEqual(child.get("reissue_correlation_unmatched_ranks"), [])
+        self.assertFalse(child.get("reissue_correlation_positional_used"))
         self.assertEqual(child.get("reissue_text_quality_gate_after_enrich"), "pass")
         snap = child.get("regen_generated_briefing_snapshot") or {}
         items = (snap.get("top_5_news") or {}).get("items") or []
@@ -1757,7 +1788,7 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
             json.dump(source_pack, sp_file)
             source_pack_path = sp_file.name
         live_items = _live_reselection_items_with_raw_english_ellipsis(prefix="dry-both")
-        partial_gemini = _briefing_for_live_items(live_items[:2], program_id=PROGRAM_GLOBAL)
+        partial_gemini = _korean_gemini_briefing_for_live_items(live_items, program_id=PROGRAM_GLOBAL)
         smoke_result = LiveSourceSmokeResult(
             ok=True,
             program_id=PROGRAM_GLOBAL,
@@ -1835,8 +1866,13 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         child = load_run_artifact(child_id) or {}
         self.assertEqual(child.get("customer_delivery_status"), "not_sent")
         self.assertTrue(child.get("image_generation_called"))
-        self.assertTrue(child.get("reissue_visible_text_sanitized"))
-        self.assertTrue(child.get("reissue_top5_clean_korean_fallback_used"))
+        # Complete, correlatable Korean output needs no template substitution:
+        # every card keeps its own model prose and its live grounding.
+        self.assertFalse(child.get("reissue_top5_clean_korean_fallback_used"))
+        self.assertEqual(child.get("reissue_top5_content_issue_codes"), [])
+        self.assertEqual(child.get("reissue_correlation_matched_count"), 5)
+        self.assertEqual(child.get("reissue_correlation_unmatched_ranks"), [])
+        self.assertFalse(child.get("reissue_correlation_positional_used"))
         self.assertEqual(child.get("reissue_text_quality_gate_after_enrich"), "pass")
         self.assertNotIn("bottom_image_cid", child)
         snap = child.get("regen_generated_briefing_snapshot") or {}

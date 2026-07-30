@@ -216,6 +216,33 @@ def _split_clauses_to_sentences(text: str) -> str:
     return stripped
 
 
+_NEAR_DUPLICATE_STRIP_RE = re.compile(r"[\s,·，、.!?\"'“”‘’()\[\]「」]+")
+
+
+def near_duplicate_key(text: str) -> str:
+    """Punctuation/whitespace-insensitive key for near-duplicate comparison.
+
+    ``_split_clauses_to_sentences`` rewrites comma-separated clauses, so an
+    exact substring check treats "플랫폼 인프라 AI" and "플랫폼, 인프라, AI" as
+    different strings and appends the second on top of the first. Comparing on
+    this key is what stops that double-append.
+    """
+    return _NEAR_DUPLICATE_STRIP_RE.sub("", str(text or ""))
+
+
+def _is_near_duplicate_of(candidate: str, existing_parts: List[str]) -> bool:
+    key = near_duplicate_key(candidate)
+    if not key:
+        return True
+    for part in existing_parts:
+        part_key = near_duplicate_key(part)
+        if not part_key:
+            continue
+        if key == part_key or key in part_key or part_key in key:
+            return True
+    return False
+
+
 def _ensure_sentence_depth(
     text: str,
     *,
@@ -230,8 +257,9 @@ def _ensure_sentence_depth(
         if _sentence_count(". ".join(parts) + ".") >= min_sentences:
             break
         pad_clean = _text(pad).rstrip(".")
-        joined = " ".join(parts).rstrip(".")
-        if pad_clean and pad_clean not in joined:
+        # Padding that only differs in punctuation is not additional meaning:
+        # a short paragraph is preferable to the same sentence twice.
+        if pad_clean and not _is_near_duplicate_of(pad_clean, parts):
             parts.append(pad_clean)
     out = ". ".join(p for p in parts if p).strip()
     if out and not out.endswith((".", "!", "?")):

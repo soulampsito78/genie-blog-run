@@ -155,6 +155,8 @@ _KOREAN_TEXT_RE = re.compile(r"[가-힣]")
 _REISSUE_RAW_VISIBLE_ELLIPSIS_RE = re.compile(r"…|\.{2,}")
 _REISSUE_HARD_TITLE_SIMILARITY_THRESHOLD = 0.88
 _REISSUE_HARD_TITLE_CROSS_SOURCE_THRESHOLD = 0.96
+_REISSUE_TITLE_FIELDS = frozenset({"headline", "korean_title", "title", "display_title"})
+
 _REISSUE_VISIBLE_TOP5_FIELDS = (
     "headline",
     "korean_title",
@@ -1813,9 +1815,15 @@ def _reissue_clean_fallback_templates(
     item: Dict[str, Any],
     rank: int,
 ) -> Dict[str, str]:
+    """Prose-only fallbacks for body fields.
+
+    Deliberately has no ``headline`` entry. A title fabricated from source name
+    plus rank ("{source} 기반 AI·테크 신호 {rank}") destroys the real article
+    identity and reads as genuine content, so a missing title must become a
+    validation hold instead — see ``reissue_top5_content_issue_codes``.
+    """
     source_label = _reissue_source_label(item, rank)
     return {
-        "headline": f"{source_label} 기반 AI·테크 신호 {rank}",
         "summary": (
             f"{source_label}의 최신 발표를 바탕으로 AI·테크 업계에 영향을 줄 수 있는 "
             "변화로 선별했습니다."
@@ -1829,6 +1837,272 @@ def _reissue_clean_fallback_templates(
             "점검하면 좋겠습니다."
         ),
     }
+
+
+_REISSUE_PLACEHOLDER_TITLE_RE = re.compile(r"기반\s*AI[·\s]*테크\s*신호\s*\d+\s*$")
+
+_REISSUE_GENERIC_BODY_MARKERS = (
+    "최신 발표를 바탕으로 AI·테크 업계에 영향을 줄 수 있는 변화로 선별했습니다",
+    "관련 변화가 보고되었습니다",
+    "후속 공식 발표에서 보완될 수 있습니다",
+    "플랫폼, 인프라, AI 활용 흐름에 영향을 줄 수 있어",
+    "사업 운영, 파트너십, 기술 도입 우선순위에 주는 변화를 점검하면",
+)
+
+_REISSUE_BROKEN_JOIN_RE = re.compile(r"(?:습니다|좋겠습니다)\.\s*(?:은|는|이|가|을|를)\s")
+
+
+def _reissue_norm_compare_key(text: Any) -> str:
+    """Punctuation-insensitive key, so a comma-stripped copy is still a duplicate."""
+    return re.sub(r"[\s,·，、.!?\"'“”‘’()\[\]「」]+", "", str(text or ""))
+
+
+def _reissue_real_title(item: Dict[str, Any]) -> str:
+    """Original article title, in whatever language the source published it.
+
+    Global sources publish in English; that is not a reason to drop the title.
+    """
+    # normalized_title is a lowercased matching key, so it is only a last
+    # resort for display.
+    for key in ("original_title", "title", "headline", "normalized_title"):
+        value = str(item.get(key) or "").strip()
+        if value and not _REISSUE_PLACEHOLDER_TITLE_RE.search(value):
+            return value
+    return ""
+
+
+def _reissue_canonical_url(item: Dict[str, Any]) -> str:
+    for key in ("canonical_url", "source_url", "url"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _reissue_correlation_keys(item: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """Stable identity keys for pairing model prose to a live article.
+
+    Ordered strongest first. Each is an assertion about the same article, so a
+    match on any of them cannot bind article A's prose to article B.
+    """
+    keys: List[Tuple[str, str]] = []
+    news_id = str(item.get("news_id") or item.get("claim_id") or "").strip()
+    if news_id:
+        keys.append(("news_id", news_id))
+    url = _reissue_canonical_url(item)
+    if url:
+        keys.append(("canonical_url", url.rstrip("/")))
+    title = _reissue_norm_compare_key(
+        item.get("normalized_title") or item.get("original_title") or item.get("title")
+    )
+    source = _reissue_norm_compare_key(
+        item.get("normalized_source") or item.get("source_name") or item.get("source")
+    )
+    if title and source:
+        keys.append(("title_source", f"{title}|{source}"))
+    for index_key in ("prompt_index", "selection_index"):
+        raw = item.get(index_key)
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            keys.append(("prompt_index", str(raw)))
+            break
+    return keys
+
+
+def correlate_reissue_seeds(
+    *,
+    live_items: List[Dict[str, Any]],
+    base_items: Any,
+    expected_count: int = KEYSURI_TOP_NEWS_COUNT,
+) -> Tuple[List[Optional[Dict[str, Any]]], Dict[str, Any]]:
+    """Pair each live article with the model output written about that article.
+
+    Identity keys are tried strongest-first. Positional pairing is a last
+    resort and only permitted when the batch is provably the same one, because
+    mis-paired prose (article A's body under article B's title and URL) is a
+    worse failure than a visible hold.
+    """
+    bases = [b for b in (base_items or []) if isinstance(b, dict)] if isinstance(base_items, list) else []
+    diagnostics: Dict[str, Any] = {
+        "reissue_correlation_live_count": len(live_items),
+        "reissue_correlation_base_count": len(bases),
+        "reissue_correlation_methods": [],
+        "reissue_correlation_positional_used": False,
+        "reissue_correlation_unmatched_ranks": [],
+    }
+
+    index: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    ambiguous: set = set()
+    for base in bases:
+        for key in _reissue_correlation_keys(base):
+            if key in index and index[key] is not base:
+                ambiguous.add(key)
+            index[key] = base
+    for key in ambiguous:
+        index.pop(key, None)
+
+    seeds: List[Optional[Dict[str, Any]]] = []
+    methods: List[str] = []
+    used: List[int] = []
+    for rank, live_item in enumerate(live_items, start=1):
+        match: Optional[Dict[str, Any]] = None
+        method = "unmatched"
+        for kind, value in _reissue_correlation_keys(live_item):
+            candidate = index.get((kind, value))
+            if candidate is not None and id(candidate) not in used:
+                match = candidate
+                method = kind
+                break
+        if match is not None:
+            used.append(id(match))
+        else:
+            diagnostics["reissue_correlation_unmatched_ranks"].append(rank)
+        seeds.append(match)
+        methods.append(method)
+
+    unmatched = [i for i, seed in enumerate(seeds) if seed is None]
+    if unmatched and bases:
+        # Last-resort positional recovery, gated so it can only ever apply to a
+        # provably identical batch: equal counts, the expected size, nothing
+        # already bound by identity, and a unique article per output slot.
+        guards_ok = (
+            len(bases) == len(live_items) == expected_count
+            and not used
+            and len(unmatched) == len(live_items)
+            and len({_reissue_norm_compare_key(_reissue_real_title(i)) for i in live_items}) == expected_count
+            and all(_reissue_canonical_url(i) for i in live_items)
+            and len({_reissue_canonical_url(i).rstrip("/") for i in live_items}) == expected_count
+        )
+        diagnostics["reissue_correlation_positional_guards_passed"] = bool(guards_ok)
+        if guards_ok:
+            seeds = list(bases[: len(live_items)])
+            methods = ["positional"] * len(live_items)
+            diagnostics["reissue_correlation_positional_used"] = True
+            diagnostics["reissue_correlation_unmatched_ranks"] = []
+
+    diagnostics["reissue_correlation_methods"] = methods
+    diagnostics["reissue_correlation_matched_count"] = sum(1 for s in seeds if s is not None)
+    return seeds, diagnostics
+
+
+_REISSUE_VISIBLE_BODY_FIELDS = (
+    "summary",
+    "why_it_matters",
+    "business_implication",
+    "what_happened",
+    "why_now",
+    "owner_view",
+)
+
+# One shared connective phrase across cards is ordinary padding; the enricher
+# anchors it on each article's own title ("「<title>」 관련 변화가 …"). Template
+# fan-out looks different: several distinct generic phrases repeating across
+# nearly every card, in nearly every field.
+_REISSUE_SHARED_GENERIC_CARD_THRESHOLD = 4
+_REISSUE_SHARED_GENERIC_MARKER_THRESHOLD = 2
+
+_REISSUE_ARTICLE_HOOK_RE = re.compile(r"「([^」]{4,})」")
+
+
+def _reissue_has_article_specific_hook(value: str, item: Dict[str, Any]) -> bool:
+    """Whether this sentence is individualised to its own article.
+
+    A 「…」 hook carrying real article words, or a concrete token (version,
+    figure, product/company name) beyond the source label, marks the sentence as
+    this article's own rather than a shared template.
+    """
+    source = _reissue_norm_compare_key(item.get("source_name") or item.get("source"))
+    for hook in _REISSUE_ARTICLE_HOOK_RE.findall(value):
+        hook_key = _reissue_norm_compare_key(hook)
+        if not hook_key or hook_key == source:
+            continue
+        if _REISSUE_PLACEHOLDER_TITLE_RE.search(hook):
+            continue
+        return True
+    if re.search(r"\d", value):
+        return True
+    return False
+
+
+def reissue_top5_content_issue_codes(
+    items: Any,
+    *,
+    require_source_url: bool = False,
+) -> List[str]:
+    """Hard content gate for a reissued TOP5.
+
+    Any code returned means the briefing must not be published: no owner-review
+    email, no customer email, no SMTP.
+
+    ``require_source_url`` separates the two validation contexts. A model
+    briefing snapshot legitimately keeps grounding in ``closing_sources``, so
+    item-level URLs are not required there. The composed live reissue item is
+    the opposite: it is bound to a live candidate and must carry that
+    candidate's canonical URL, so a missing URL there is a hard hold.
+    """
+    codes: List[str] = []
+    if not isinstance(items, list) or not items:
+        return ["reissue_top5_items_missing"]
+
+    titles: List[str] = []
+    marker_cards: Dict[str, set] = {}
+    marker_generic_cards: Dict[str, set] = {}
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            codes.append("reissue_top5_item_malformed")
+            continue
+        title = str(item.get("headline") or item.get("korean_title") or item.get("title") or "").strip()
+        if not title:
+            codes.append("reissue_top5_title_missing")
+        if _REISSUE_PLACEHOLDER_TITLE_RE.search(title):
+            codes.append("reissue_top5_placeholder_title")
+        if require_source_url and not _reissue_canonical_url(item):
+            codes.append("reissue_top5_source_url_missing")
+        titles.append(_reissue_norm_compare_key(title))
+
+        for field in _REISSUE_VISIBLE_BODY_FIELDS:
+            value = str(item.get(field) or "").strip()
+            if not value:
+                continue
+            if _REISSUE_BROKEN_JOIN_RE.search(value):
+                codes.append("reissue_top5_broken_particle_join")
+            sentences = [s for s in re.split(r"(?<=[.!?])\s+", value) if s.strip()]
+            seen: List[str] = []
+            for sentence in sentences:
+                key = _reissue_norm_compare_key(sentence)
+                if not key:
+                    continue
+                if any(key == s or key in s or s in key for s in seen):
+                    codes.append("reissue_top5_duplicate_sentence")
+                    break
+                seen.append(key)
+            for marker in _REISSUE_GENERIC_BODY_MARKERS:
+                if marker not in value:
+                    continue
+                marker_cards.setdefault(marker, set()).add(idx)
+                if not _reissue_has_article_specific_hook(value, item):
+                    marker_generic_cards.setdefault(marker, set()).add(idx)
+
+    if titles and len(titles) != len({t for t in titles if t}):
+        codes.append("reissue_top5_duplicate_titles")
+
+    widely_repeated = [
+        marker
+        for marker, cards in marker_cards.items()
+        if len(cards) >= _REISSUE_SHARED_GENERIC_CARD_THRESHOLD
+    ]
+    generic_repeated = [
+        marker
+        for marker in widely_repeated
+        if len(marker_generic_cards.get(marker, set())) >= _REISSUE_SHARED_GENERIC_CARD_THRESHOLD
+    ]
+    if len(widely_repeated) >= _REISSUE_SHARED_GENERIC_MARKER_THRESHOLD or generic_repeated:
+        codes.append("reissue_top5_shared_generic_body")
+
+    ordered: List[str] = []
+    for code in codes:
+        if code not in ordered:
+            ordered.append(code)
+    return ordered
 
 
 def _reissue_pick_visible_value(
@@ -1892,6 +2166,12 @@ def _reissue_pick_visible_value(
         value = _first_clean_korean_value(seed.get(field), live_item.get(field))
     if value:
         return value, False
+    if field == "headline":
+        # No Korean headline: keep the real article title, English included.
+        # The clean-Korean gate decides prose style, never whether the article
+        # has an identity. An empty result becomes a hold, never a placeholder.
+        real = _reissue_real_title(seed) or _reissue_real_title(live_item)
+        return real, not bool(real)
     fallback_key = field if field in templates else "summary"
     return templates[fallback_key], True
 
@@ -1965,6 +2245,11 @@ def _normalize_reissue_visible_top5_item(
             sanitized_fields.append(f"top_5_news.items[{rank - 1}].{field}")
 
     for field in _REISSUE_VISIBLE_TOP5_FIELDS:
+        # Title fields were already resolved above and may legitimately hold the
+        # original English headline of a Global source, so the clean-Korean
+        # sweep must not overwrite them.
+        if field in _REISSUE_TITLE_FIELDS:
+            continue
         if field in item and isinstance(item.get(field), str):
             value = str(item.get(field) or "").strip()
             if not _reissue_visible_text_is_clean_korean(value):
@@ -2003,22 +2288,16 @@ def _compose_reissue_top5_visible_items(
     *,
     live_items: List[Dict[str, Any]],
     base_items: Any,
-) -> Tuple[List[Dict[str, Any]], List[str], bool]:
-    seed_by_news_id: Dict[str, Dict[str, Any]] = {}
-    if isinstance(base_items, list):
-        for item in base_items:
-            if not isinstance(item, dict):
-                continue
-            news_id = str(item.get("news_id") or "").strip()
-            if news_id:
-                seed_by_news_id[news_id] = item
+) -> Tuple[List[Dict[str, Any]], List[str], bool, Dict[str, Any]]:
+    # news_id alone is not enough: a body_only reissue re-selects fresh live
+    # articles, so the model's prose must be bound by any stable identity key.
+    seeds, correlation = correlate_reissue_seeds(live_items=live_items, base_items=base_items)
 
     normalized: List[Dict[str, Any]] = []
     sanitized_fields: List[str] = []
     fallback_used = False
     for idx, live_item in enumerate(live_items, start=1):
-        news_id = str(live_item.get("news_id") or "").strip()
-        seed = seed_by_news_id.get(news_id)
+        seed = seeds[idx - 1] if idx - 1 < len(seeds) else None
         item, fields, used_fallback = _normalize_reissue_visible_top5_item(
             live_item,
             rank=idx,
@@ -2029,7 +2308,7 @@ def _compose_reissue_top5_visible_items(
             if field not in sanitized_fields:
                 sanitized_fields.append(field)
         fallback_used = fallback_used or used_fallback
-    return normalized, sanitized_fields, fallback_used
+    return normalized, sanitized_fields, fallback_used, correlation
 
 
 def _reissue_visible_quality_status(payload: Dict[str, Any]) -> str:
@@ -2076,6 +2355,7 @@ def _repair_reissue_top5_from_live_selection(
         bases.append(("parent_scaffold", parent_base, True))
 
     last_codes: List[str] = []
+    content_hold_fields: Dict[str, Any] = {}
     for _label, base_briefing, rewrite_sources in bases:
         base = copy.deepcopy(base_briefing)
         # Prefer matching Gemini-visible prose, but never graft raw live claim
@@ -2090,10 +2370,24 @@ def _repair_reissue_top5_from_live_selection(
             "items": copy.deepcopy(live_items),
         }
         before_status = _reissue_visible_quality_status(pre_sanitize_base)
-        top5_for_base, sanitized_fields, fallback_used = _compose_reissue_top5_visible_items(
+        top5_for_base, sanitized_fields, fallback_used, correlation = _compose_reissue_top5_visible_items(
             live_items=live_items,
             base_items=base_items,
         )
+        # Composed reissue items are bound to live candidates, so their
+        # canonical URLs are mandatory here.
+        content_codes = reissue_top5_content_issue_codes(top5_for_base, require_source_url=True)
+        if content_codes:
+            # Placeholder or generic-only content must never reach owner review,
+            # even though every structural gate would otherwise pass.
+            last_codes = content_codes
+            content_hold_fields = {
+                "reissue_top5_content_issue_codes": content_codes,
+                "reissue_top5_clean_korean_fallback_used": bool(fallback_used),
+                "reissue_visible_text_sanitized_fields": sanitized_fields,
+            }
+            content_hold_fields.update(correlation)
+            continue
         if rewrite_sources:
             base = _rewrite_briefing_sources_to_items(base, top5_for_base)
         repaired_prompt, repaired_briefing, issue_codes = _build_repaired_reissue_payload(
@@ -2123,9 +2417,11 @@ def _repair_reissue_top5_from_live_selection(
                 "reissue_visible_text_sanitized": bool(sanitized_fields),
                 "reissue_visible_text_sanitized_fields": sanitized_fields,
                 "reissue_top5_clean_korean_fallback_used": bool(fallback_used),
+                "reissue_top5_content_issue_codes": [],
                 "reissue_text_quality_gate_before": before_status,
                 "reissue_text_quality_gate_after": after_status,
             }
+            fields.update(correlation)
             fields.update(after_quality_fields)
             return repaired_prompt, repaired_briefing, fields, None
         last_codes = issue_codes
@@ -2137,7 +2433,13 @@ def _repair_reissue_top5_from_live_selection(
         "reissue_top5_original_count": original_count,
         "reissue_top5_repair_failed_sections": last_codes,
     }
-    return None, None, fields, "reissue_top5_live_repair_validation_failed"
+    fields.update(content_hold_fields)
+    reason = (
+        "reissue_top5_content_integrity_hold"
+        if content_hold_fields
+        else "reissue_top5_live_repair_validation_failed"
+    )
+    return None, None, fields, reason
 
 
 # ---------------------------------------------------------------------------
