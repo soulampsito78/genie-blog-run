@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from admin_store import (
+    admin_runs_dir,
     artifact_email_path,
     load_run_artifact,
     load_run_email_html,
@@ -1256,7 +1257,7 @@ class KeysuriTopImageGcsPersistenceTests(unittest.TestCase):
             "exposure_log_read_count": 0,
         }
         send_fn = MagicMock(return_value=True)
-        restored_dest = repo / "output" / "admin_runs" / "keysuri_service_assets" / f"{parent_id}_restored_top.jpg"
+        restored_dest = admin_runs_dir() / "keysuri_service_assets" / f"{parent_id}_restored_top.jpg"
         if restored_dest.exists():
             restored_dest.unlink()
 
