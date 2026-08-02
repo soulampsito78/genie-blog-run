@@ -26,6 +26,12 @@ from delivery_status import (
 )
 from execution_state import build_logical_execution_key
 from internal_auth import verify_internal_request
+from keysuri_customer_delivery import resolve_keysuri_inline_jpeg_parts
+from keysuri_service_full_run import (
+    keysuri_global_service_email_cid_token,
+    keysuri_korea_bottom_service_email_cid_token,
+    keysuri_korea_service_email_cid_token,
+)
 from main import app, secure_unhandled_exception
 from orchestrator import run_genie_job
 from owner_review_exposure_log_store import append_owner_review_exposure, load_owner_review_exposure_log
@@ -502,6 +508,120 @@ class OwnerExposureAtomicContractTests(IsolatedContractTestCase):
         for thread in threads:
             thread.join()
         self.assertEqual(len(load_owner_review_exposure_log()), 2)
+
+
+class CidCompatibilityContractTests(IsolatedContractTestCase):
+    def test_cids_are_run_and_slot_specific(self) -> None:
+        run_a = "20260803_123000_keysuri_korea_tech_aabbccdd"
+        run_b = "20260803_123001_keysuri_korea_tech_eeff0011"
+        self.assertNotEqual(
+            keysuri_korea_service_email_cid_token(run_a),
+            keysuri_korea_service_email_cid_token(run_b),
+        )
+        self.assertNotEqual(
+            keysuri_korea_service_email_cid_token(run_a),
+            keysuri_korea_bottom_service_email_cid_token(run_a),
+        )
+        self.assertNotEqual(
+            keysuri_global_service_email_cid_token(run_a),
+            keysuri_korea_service_email_cid_token(run_a),
+        )
+
+    def test_legacy_date_cids_are_preserved_for_global_and_korea(self) -> None:
+        root = Path(self.tmp.name)
+        top = root / "top.jpg"
+        bottom = root / "bottom.jpg"
+        top.write_bytes(b"top")
+        bottom.write_bytes(b"bottom")
+        cases = (
+            (
+                "keysuri_global_tech",
+                "20260803_123000_keysuri_global_tech_aabbccdd",
+                '<img src="cid:keysuri_topshot_global_20260803">',
+                {"generated_image_path": str(top)},
+                ["keysuri_topshot_global_20260803"],
+            ),
+            (
+                "keysuri_korea_tech",
+                "20260803_183000_keysuri_korea_tech_aabbccdd",
+                '<img src="cid:keysuri_topshot_korea_20260803">'
+                '<img src="cid:keysuri_bottomshot_korea_20260803">',
+                {
+                    "generated_image_path": str(top),
+                    "korea_bottom_shot_path": str(bottom),
+                    "bottom_shot_image_path": str(bottom),
+                    "bottom_shot_source": "fixed_105936_fallback",
+                },
+                ["keysuri_topshot_korea_20260803", "keysuri_bottomshot_korea_20260803"],
+            ),
+        )
+        for program_id, run_id, saved_html, fields, expected in cases:
+            with self.subTest(program_id=program_id):
+                meta = {
+                    "run_id": run_id,
+                    "mode": program_id,
+                    "program_id": program_id,
+                    "service_full_run": True,
+                    **fields,
+                }
+                parts = resolve_keysuri_inline_jpeg_parts(saved_html, meta)
+                self.assertEqual([part[1] for part in parts or []], expected)
+
+    def test_new_artifacts_use_run_scoped_cids(self) -> None:
+        root = Path(self.tmp.name)
+        top = root / "new-top.jpg"
+        bottom = root / "new-bottom.jpg"
+        top.write_bytes(b"top")
+        bottom.write_bytes(b"bottom")
+        global_run = "20260803_123000_keysuri_global_tech_ccddeeff"
+        global_parts = resolve_keysuri_inline_jpeg_parts(
+            "<html></html>",
+            {
+                "run_id": global_run,
+                "mode": "keysuri_global_tech",
+                "service_full_run": True,
+                "generated_image_path": str(top),
+            },
+        )
+        korea_run = "20260803_183000_keysuri_korea_tech_ccddeeff"
+        korea_parts = resolve_keysuri_inline_jpeg_parts(
+            "<html></html>",
+            {
+                "run_id": korea_run,
+                "mode": "keysuri_korea_tech",
+                "service_full_run": True,
+                "generated_image_path": str(top),
+                "korea_bottom_shot_path": str(bottom),
+                "bottom_shot_source": "fixed_105936_fallback",
+            },
+        )
+        self.assertEqual(
+            (global_parts or [])[0][1],
+            keysuri_global_service_email_cid_token(global_run),
+        )
+        self.assertEqual(
+            (korea_parts or [])[0][1],
+            keysuri_korea_service_email_cid_token(korea_run),
+        )
+        self.assertEqual(
+            (korea_parts or [])[1][1],
+            keysuri_korea_bottom_service_email_cid_token(korea_run),
+        )
+
+    def test_stored_legacy_cid_metadata_is_preserved_without_html_reference(self) -> None:
+        top = Path(self.tmp.name) / "metadata-top.jpg"
+        top.write_bytes(b"top")
+        parts = resolve_keysuri_inline_jpeg_parts(
+            "<html><body>pending artifact</body></html>",
+            {
+                "run_id": "20260803_123000_keysuri_global_tech_aabbcc04",
+                "mode": "keysuri_global_tech",
+                "service_full_run": True,
+                "generated_image_path": str(top),
+                "top_image_cid": "keysuri_topshot_global_20260803",
+            },
+        )
+        self.assertEqual((parts or [])[0][1], "keysuri_topshot_global_20260803")
 
 
 if __name__ == "__main__":

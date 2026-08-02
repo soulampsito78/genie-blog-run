@@ -213,8 +213,8 @@ def _kst_dashed_date_from_run_id(run_id: str) -> str:
 
 def keysuri_global_service_email_cid_token(run_id: str) -> str:
     """Content-ID token for Global service_full_run owner-review email hero image."""
-    stamp = _kst_date_from_run_id(run_id)
-    return f"{KEYSURI_GLOBAL_SERVICE_EMAIL_CID_PREFIX}_{stamp}"
+    token = re.sub(r"[^A-Za-z0-9_.-]", "_", str(run_id or ""))
+    return f"{KEYSURI_GLOBAL_SERVICE_EMAIL_CID_PREFIX}_{token}"
 
 
 def keysuri_global_service_email_cid_src(run_id: str) -> str:
@@ -223,8 +223,8 @@ def keysuri_global_service_email_cid_src(run_id: str) -> str:
 
 def keysuri_korea_service_email_cid_token(run_id: str) -> str:
     """Content-ID token for Korea service_full_run owner-review email hero image."""
-    stamp = _kst_date_from_run_id(run_id)
-    return f"{KEYSURI_KOREA_SERVICE_EMAIL_CID_PREFIX}_{stamp}"
+    token = re.sub(r"[^A-Za-z0-9_.-]", "_", str(run_id or ""))
+    return f"{KEYSURI_KOREA_SERVICE_EMAIL_CID_PREFIX}_{token}"
 
 
 def keysuri_korea_service_email_cid_src(run_id: str) -> str:
@@ -233,8 +233,8 @@ def keysuri_korea_service_email_cid_src(run_id: str) -> str:
 
 def keysuri_korea_bottom_service_email_cid_token(run_id: str) -> str:
     """Content-ID token for Korea service_full_run bottom-shot image."""
-    stamp = _kst_date_from_run_id(run_id)
-    return f"{KEYSURI_KOREA_BOTTOM_SERVICE_EMAIL_CID_PREFIX}_{stamp}"
+    token = re.sub(r"[^A-Za-z0-9_.-]", "_", str(run_id or ""))
+    return f"{KEYSURI_KOREA_BOTTOM_SERVICE_EMAIL_CID_PREFIX}_{token}"
 
 
 def keysuri_korea_bottom_service_email_cid_src(run_id: str) -> str:
@@ -4890,9 +4890,7 @@ def _run_keysuri_service_full_run_impl(
     meta.update(top_image_persist_fields)
     meta["top_shot_watermark_status"] = "applied"
     meta["top_shot_watermark_text"] = "MirAI:ON"
-    # Image CID tracking for owner/customer email alignment validation.
-    # NOTE: CIDs are date-scoped (keysuri_{top,bottom}shot_korea_YYYYMMDD).
-    # TODO: migrate to run_id-scoped CIDs to eliminate same-day cache collision risk.
+    # Reissues use distinct run-scoped CIDs and cannot collide in message caches.
     top_cid = (
         keysuri_global_service_email_cid_token(run_id)
         if pid == PROGRAM_GLOBAL
