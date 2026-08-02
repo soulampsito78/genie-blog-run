@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from admin_store import resolve_customer_recipients
+from compliance_footer import (
+    append_compliance_footer,
+    compliance_readiness,
+)
 from email_sender import parse_customer_to_addrs, send_genie_email
 from keysuri_email_identity import build_keysuri_customer_subject, sanitize_preheader_text
 from keysuri_contract_preview_renderer import (
@@ -110,6 +114,9 @@ def customer_delivery_config_ready() -> tuple[bool, str]:
     user = os.getenv("SMTP_USER", "").strip()
     if not (host and user):
         return False, "missing_smtp"
+    compliance = compliance_readiness()
+    if not compliance["ready"]:
+        return False, "compliance_not_ready"
     return True, "ok"
 
 
@@ -499,7 +506,12 @@ def send_keysuri_customer_final_email(
 
     try:
         html_body = prepare_keysuri_customer_final_html(saved_html, meta=meta)
-    except ValueError as exc:
+        html_body = append_compliance_footer(
+            html_body,
+            run_id=str(meta.get("run_id") or ""),
+            program_id=mode,
+        )
+    except (ValueError, RuntimeError) as exc:
         _last_delivery_result = KeysuriCustomerDeliveryResult(
             sent=False,
             reason=str(exc),

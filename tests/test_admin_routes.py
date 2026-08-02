@@ -20,6 +20,7 @@ from admin_store import (
     save_run_artifact,
 )
 from main import app
+from tests.compliance_test_support import explicit_compliance_ready
 
 
 def post_customer_approve_with_confirm(
@@ -1376,6 +1377,7 @@ class AdminApprovalHardeningTests(unittest.TestCase):
         mock_send.assert_not_called()
 
     @patch("today_geenee_customer_delivery.send_today_geenee_customer_final_email")
+    @explicit_compliance_ready
     def test_post_approve_with_valid_nonce_and_checkbox_sends_once(self, mock_send: MagicMock) -> None:
         mock_send.return_value = True
         run_id = "20260615_170200_today_genie_aabbccdd"
@@ -1392,6 +1394,7 @@ class AdminApprovalHardeningTests(unittest.TestCase):
         self.assertEqual(meta.get("approval_note"), "browser ok")
 
     @patch("today_geenee_customer_delivery.send_today_geenee_customer_final_email")
+    @explicit_compliance_ready
     def test_approval_nonce_cannot_be_reused(self, mock_send: MagicMock) -> None:
         mock_send.return_value = True
         run_id = "20260615_170300_today_genie_aabbccdd"
@@ -1425,6 +1428,7 @@ class AdminApprovalHardeningTests(unittest.TestCase):
         self.assertIn("approve_error", second.headers.get("location", ""))
         mock_send.assert_called_once()
 
+    @explicit_compliance_ready
     def test_approve_confirm_includes_checkbox_and_hidden_nonce(self) -> None:
         run_id = "20260615_170400_today_genie_aabbccdd"
         self._save_today_run(run_id)

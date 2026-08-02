@@ -25,6 +25,7 @@ from today_genie_orchestrator_images import (
     TodayGenieOrchestratorImageResult,
     persist_today_genie_customer_images,
 )
+from tests.compliance_test_support import explicit_compliance_ready
 
 
 def _generated_meta(top: str, bottom: str) -> dict:
@@ -55,6 +56,7 @@ class TodayGenieCustomerImageSourceTests(unittest.TestCase):
         self.assertNotIn("static/email", " ".join(row[0] for row in result.inline_parts or []))
 
     @patch("today_geenee_customer_delivery.send_genie_email")
+    @explicit_compliance_ready
     def test_customer_mime_paths_and_cids_match_artifact(self, mock_send: MagicMock) -> None:
         mock_send.return_value = True
         env = {
@@ -113,6 +115,7 @@ class TodayGenieCustomerImageSourceTests(unittest.TestCase):
         self.assertEqual(result.reason_code, TODAY_IMAGE_REASON_GENERATED_FILES_UNAVAILABLE)
 
     @patch("today_geenee_customer_delivery.send_genie_email")
+    @explicit_compliance_ready
     def test_inaccessible_generated_paths_block_send_with_reason(
         self, mock_send: MagicMock
     ) -> None:

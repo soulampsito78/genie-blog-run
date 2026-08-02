@@ -1215,22 +1215,23 @@ def process_approval_timeouts(
     if now is None:
         now = datetime.now(ZoneInfo("Asia/Seoul"))
 
-    ready, config_err = customer_delivery_config_ready()
-    if not ready:
-        return {
-            "ok": False,
-            "error": config_err,
-            "scanned": 0,
-            "eligible": 0,
-            "sent": 0,
-            "skipped": 0,
-            "errors": 0,
-            "run_ids_sent": [],
-            "skip_reasons": {},
-            "error_run_ids": [],
-        }
-
     retired = _timeout_customer_send_retired()
+    if not retired:
+        ready, config_err = customer_delivery_config_ready()
+        if not ready:
+            return {
+                "ok": False,
+                "error": config_err,
+                "scanned": 0,
+                "eligible": 0,
+                "sent": 0,
+                "skipped": 0,
+                "errors": 0,
+                "run_ids_sent": [],
+                "skip_reasons": {},
+                "error_run_ids": [],
+            }
+
     summary: Dict[str, Any] = {
         "ok": True,
         "error": None,

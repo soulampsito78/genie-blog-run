@@ -16,6 +16,7 @@ from keysuri_service_full_run import keysuri_global_service_email_cid_src
 from main import app
 from programs.registry import list_programs, resolve_program_id
 from tests.test_admin_routes import post_customer_approve_with_confirm
+from tests.compliance_test_support import explicit_compliance_ready
 
 
 def _keysuri_global_gmail_owner_review_email_html(
@@ -171,6 +172,7 @@ class KeysuriApproveRunGateTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(err, "korea_bottom_baseline_source_unconfirmed")
 
+    @explicit_compliance_ready
     def test_keysuri_korea_can_approve_when_baseline_confirmed(self) -> None:
         # Korea with 041559 baseline confirmed → allowed (owner PASS gate next)
         run_id = "20260612_120000_keysuri_korea_tech_aabbccdd"
@@ -179,6 +181,7 @@ class KeysuriApproveRunGateTests(unittest.TestCase):
         self.assertTrue(ok, f"expected approvable with baseline, got err={err!r}")
         self.assertEqual(err, "ok")
 
+    @explicit_compliance_ready
     def test_keysuri_korea_can_approve_generated_v6_with_valid_anchor_contract(self) -> None:
         run_id = "20260618_183000_keysuri_korea_tech_generated"
         meta = _keysuri_korea_artifact_meta_with_generated_bottom(run_id)
@@ -202,6 +205,7 @@ class KeysuriApproveRunGateTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(err, "korea_bottom_generated_secondary_slot_invalid")
 
+    @explicit_compliance_ready
     def test_keysuri_korea_can_approve_blocked_when_already_approved(self) -> None:
         # Korea with baseline confirmed but already approved → blocked (not double-send)
         run_id = "20260612_120000_keysuri_korea_tech_aabbccdd"
@@ -211,6 +215,7 @@ class KeysuriApproveRunGateTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(err, "already_approved")
 
+    @explicit_compliance_ready
     def test_keysuri_global_can_approve_when_ready(self) -> None:
         run_id = "20260612_120000_keysuri_global_tech_aabbccdd"
         meta = _keysuri_global_artifact_meta(run_id)
@@ -245,6 +250,7 @@ class KeysuriGlobalApproveRunTests(unittest.TestCase):
         os.environ["SMTP_PASSWORD"] = "secret"
 
     @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
+    @explicit_compliance_ready
     def test_keysuri_global_approve_run_sends_customer_email(self, mock_send: MagicMock) -> None:
         mock_send.return_value = True
         run_id = "20260612_120000_keysuri_global_tech_aabbccdd"
@@ -328,6 +334,7 @@ class KeysuriApproveRunBlockedTests(unittest.TestCase):
         self.assertEqual(meta.get("owner_review_status"), "pending_review")
         self.assertEqual(meta.get("customer_delivery_status"), "not_sent")
 
+    @explicit_compliance_ready
     def test_keysuri_korea_approve_run_sends_when_baseline_confirmed(self) -> None:
         # Korea with 041559 baseline confirmed → approve_run sends customer email
         run_id = "20260612_120001_keysuri_korea_tech_aabbccdd"
@@ -463,6 +470,7 @@ class KeysuriAdminApproveButtonTests(unittest.TestCase):
         else:
             os.environ["GENIE_ADMIN_PASSWORD"] = self._prev_pwd
 
+    @explicit_compliance_ready
     def test_admin_run_detail_keysuri_global_shows_active_approve_button(self) -> None:
         run_id = "20260612_130000_keysuri_global_tech_bbccddee"
         save_run_artifact(
@@ -520,6 +528,7 @@ class KeysuriApproveRouteTests(unittest.TestCase):
                 os.environ[key] = prev
 
     @patch("keysuri_customer_delivery.send_keysuri_customer_final_email")
+    @explicit_compliance_ready
     def test_approve_post_keysuri_global_sends_via_confirm_flow(self, mock_send: MagicMock) -> None:
         mock_send.return_value = True
         run_id = "20260612_140000_keysuri_global_tech_ccddeeff"
@@ -590,6 +599,7 @@ class TodayServiceFullRunCustomerImageTests(unittest.TestCase):
         os.environ["SMTP_PASSWORD"] = "secret"
 
     @patch("today_geenee_customer_delivery.send_genie_email")
+    @explicit_compliance_ready
     def test_today_service_full_run_approve_uses_generated_images(self, mock_send: MagicMock) -> None:
         mock_send.return_value = True
         repo = Path(__file__).resolve().parents[1]
@@ -644,6 +654,7 @@ class ServiceFullRunRegistryApprovalTests(unittest.TestCase):
         os.environ["SMTP_USER"] = "user@example.com"
         os.environ["SMTP_PASSWORD"] = "secret"
 
+    @explicit_compliance_ready
     def test_today_still_approvable_via_registry(self) -> None:
         for spec in list_programs():
             if not spec.customer_send_requires_approval:
@@ -798,6 +809,7 @@ class KeysuriKoreaCustomerEmailBottomCidTests(unittest.TestCase):
         self.assertEqual(missing, set(), f"CIDs in HTML but not in MIME parts: {missing}")
 
     # T4: Bottom CID missing → customer email blocked with specific reason code
+    @explicit_compliance_ready
     def test_bottom_missing_blocks_customer_email_with_reason_code(self) -> None:
         import tempfile
 
@@ -1330,6 +1342,7 @@ class KeysuriKoreaGeneratedV6PersistenceTests(unittest.TestCase):
         self.assertEqual(Path(parts[1][0]).resolve(), bottom.resolve())
 
     # T_GCS11: send_keysuri_customer_final_email blocks with generated reason code
+    @explicit_compliance_ready
     def test_send_keysuri_blocks_with_generated_reason_when_files_missing(self) -> None:
         import tempfile
 
