@@ -8,11 +8,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from fastapi import HTTPException
 from email_sender import send_genie_email
 from genie_schedule_policy import ScheduledWeekendSkip, today_genie_weekend_skip_payload
 from naver_draft import create_naver_draft
@@ -149,14 +151,11 @@ def _dedup_fields_from_api_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 def run_genie_job(mode: str) -> OrchestrationResult:
     """
-    Call the Genie API for the given mode, then apply publishing policy.
-    Retries transient failures (timeout, connection error) up to GENIE_API_RETRIES.
-    """
-    import time
-    import urllib.error
-    import urllib.request
+    Run generation in-process, then apply publishing policy.
 
-    url = GENIE_API_URL.rstrip("/") + "/"
+    The authenticated internal Scheduler endpoint is the trust boundary. The
+    retired public root is never reopened as a loopback generation API.
+    """
     payload: Dict[str, Any] = {"type": mode}
     controlled_flag = os.getenv("GENIE_CONTROLLED_TEST_MODE", "").strip().lower()
     controlled_target = os.getenv("GENIE_CONTROLLED_TEST_TARGET_DATE", "").strip()
@@ -164,48 +163,36 @@ def run_genie_job(mode: str) -> OrchestrationResult:
         payload["controlled_test_mode"] = True
         payload["controlled_test_target_date"] = controlled_target
         logger.info("controlled_test_mode active target_date=%s", controlled_target)
-    body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=body,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-
-    last_exc = None
-    for attempt in range(GENIE_API_RETRIES + 1):
-        try:
-            with urllib.request.urlopen(req, timeout=GENIE_REQUEST_TIMEOUT) as resp:
-                status = resp.getcode()
-                raw = resp.read()
-            break
-        except urllib.error.HTTPError as e:
-            status = e.code
-            raw = e.read()
-            break
-        except (urllib.error.URLError, OSError, TimeoutError) as e:
-            last_exc = e
-            if attempt < GENIE_API_RETRIES:
-                time.sleep(GENIE_API_RETRY_DELAY_SEC)
-                continue
-            logger.warning("Genie API request failed after %d attempts: %s", attempt + 1, type(e).__name__)
-            decision = decide_publishing_actions(mode, None, None, [], None)
-            return OrchestrationResult(
-                decision=decision,
-                reason_summary="request_failed",
-                response_status=None,
-                mode=mode,
-            )
-
     try:
-        data = json.loads(raw.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError):
+        # Runtime import avoids main -> internal_jobs -> orchestrator import cycles.
+        from main import JobRequest, generate_internal_payload
+
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="today-generation")
+        future = executor.submit(generate_internal_payload, JobRequest(**payload))
+        try:
+            data = future.result(timeout=max(1, min(280, GENIE_REQUEST_TIMEOUT)))
+        except FuturesTimeoutError as exc:
+            future.cancel()
+            raise TimeoutError("generation_timeout") from exc
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+        status = 200
+    except HTTPException as exc:
+        status = int(exc.status_code)
+        data = {"detail": exc.detail}
+    except Exception as exc:
+        logger.error(
+            "in-process Genie generation failed mode=%s error_type=%s",
+            mode,
+            type(exc).__name__,
+        )
         decision = decide_publishing_actions(mode, None, None, [], None)
         return OrchestrationResult(
             decision=decision,
-            reason_summary="invalid_response_body",
-            response_status=status,
+            reason_summary="generation_failed",
+            response_status=500,
             mode=mode,
+            response_data={"detail": {"reason": type(exc).__name__}},
         )
 
     if status == 200:

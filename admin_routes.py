@@ -359,6 +359,11 @@ def _session_token_from_request(request: Request) -> str:
     return str(request.cookies.get(SESSION_COOKIE, "") or "")
 
 
+def _secure_cookie_for_request(request: Request) -> bool:
+    forwarded = str(request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    return forwarded == "https" or request.url.scheme == "https"
+
+
 def _sign_approval_nonce(run_id: str, nonce: str, exp: int, session_token: str) -> str:
     pwd = admin_password()
     payload = f"{session_token}|{run_id}|{nonce}|{exp}".encode("utf-8")
@@ -750,6 +755,7 @@ def admin_login(request: Request, password: str = Form(...)) -> Response:
         samesite="lax",
         max_age=7 * 86400,
         path="/",
+        secure=_secure_cookie_for_request(request),
     )
     return resp
 
@@ -1147,6 +1153,7 @@ def admin_run_approve_confirm(request: Request, run_id: str):
         samesite="lax",
         max_age=APPROVE_NONCE_TTL_SECONDS,
         path="/",
+        secure=_secure_cookie_for_request(request),
     )
     return resp
 

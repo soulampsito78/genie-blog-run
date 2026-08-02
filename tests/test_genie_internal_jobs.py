@@ -388,23 +388,17 @@ class KeysuriEndpointRegressionTests(unittest.TestCase):
 class RootEndpointRegressionTests(unittest.TestCase):
     def test_today_genie_root_unchanged(self) -> None:
         client = TestClient(app)
-        with mock.patch(
-            "main.build_runtime_input",
-            return_value={"today_genie_feed_gate": "block"},
-        ):
+        with mock.patch("main.build_runtime_input") as build_runtime:
             resp = client.post("/", json={"type": "today_genie"})
-        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.status_code, 410)
+        build_runtime.assert_not_called()
 
     def test_tomorrow_genie_root_unchanged(self) -> None:
         client = TestClient(app, raise_server_exceptions=False)
-        with mock.patch("main.build_runtime_input", return_value={}):
-            with mock.patch("main.build_full_prompt", return_value="prompt"):
-                with mock.patch(
-                    "main.call_gemini",
-                    side_effect=RuntimeError("mocked-gemini"),
-                ):
-                    resp = client.post("/", json={"type": "tomorrow_genie"})
-        self.assertEqual(resp.status_code, 500)
+        with mock.patch("main.call_gemini") as call_gemini:
+            resp = client.post("/", json={"type": "tomorrow_genie"})
+        self.assertEqual(resp.status_code, 410)
+        call_gemini.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -1,7 +1,6 @@
 """Internal job endpoints for scheduler/automation dispatch."""
 from __future__ import annotations
 
-import hmac
 import json
 import logging
 import os
@@ -21,6 +20,7 @@ from admin_store import (
     normalize_artifact_view,
     process_approval_timeouts,
 )
+from internal_auth import verify_internal_request
 from keysuri_live_source_smoke import (
     PROGRAM_GLOBAL,
     PROGRAM_KOREA,
@@ -195,25 +195,18 @@ def _finish_reservation(reservation, payload: Dict[str, Any]) -> None:
     )
 
 
-def _internal_job_token() -> str:
-    return os.getenv("GENIE_INTERNAL_JOB_TOKEN", "").strip()
-
-
 def _verify_internal_job_token(
     request: Request,
     header_token: Optional[str],
 ) -> Optional[JSONResponse]:
-    expected = _internal_job_token()
-    if not expected:
+    result = verify_internal_request(
+        authorization=request.headers.get("Authorization", ""),
+        header_token=header_token,
+    )
+    if not result.ok:
         return JSONResponse(
-            status_code=503,
-            content={"ok": False, "error": "internal_job_token_not_configured"},
-        )
-    provided = (header_token or "").strip()
-    if not provided or not hmac.compare_digest(provided, expected):
-        return JSONResponse(
-            status_code=403,
-            content={"ok": False, "error": "forbidden"},
+            status_code=result.status_code,
+            content={"ok": False, "error": result.error},
         )
     return None
 
