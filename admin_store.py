@@ -208,9 +208,25 @@ def _get_gcs_bucket() -> Any:
     return _get_gcs_client().bucket(bucket_name)
 
 
-def _gcs_upload_text(key: str, text: str, *, content_type: str) -> None:
+def _gcs_upload_text(
+    key: str,
+    text: str,
+    *,
+    content_type: str,
+    if_generation_match: Optional[int] = None,
+) -> None:
     blob = _get_gcs_bucket().blob(key)
-    blob.upload_from_string(text, content_type=content_type)
+    if if_generation_match is None:
+        blob.upload_from_string(text, content_type=content_type)
+        return
+    try:
+        blob.upload_from_string(
+            text,
+            content_type=content_type,
+            if_generation_match=if_generation_match,
+        )
+    except TypeError as exc:
+        raise RuntimeError("gcs_generation_precondition_unsupported") from exc
 
 
 def _gcs_download_text(key: str) -> Optional[str]:
@@ -218,6 +234,51 @@ def _gcs_download_text(key: str) -> Optional[str]:
     if not blob.exists():
         return None
     return blob.download_as_text(encoding="utf-8")
+
+
+def _gcs_download_text_with_generation(key: str) -> tuple[Optional[str], int]:
+    blob = _get_gcs_bucket().blob(key)
+    if not blob.exists():
+        return None, 0
+    if hasattr(blob, "reload"):
+        blob.reload()
+    raw = blob.download_as_text(encoding="utf-8")
+    generation = int(getattr(blob, "generation", 0) or 0)
+    if generation <= 0:
+        raise RuntimeError("gcs_generation_unavailable")
+    return raw, generation
+
+
+def _gcs_atomic_update_json(
+    key: str,
+    *,
+    mutator: Callable[[Dict[str, Any]], None],
+    attempts: int = 5,
+) -> Dict[str, Any]:
+    """Optimistic read-modify-write with mandatory GCS generation fencing."""
+    last_error: Optional[Exception] = None
+    for _ in range(max(1, attempts)):
+        raw, generation = _gcs_download_text_with_generation(key)
+        current: Dict[str, Any] = {}
+        if raw:
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                raise RuntimeError("gcs_atomic_json_not_object")
+            current = parsed
+        mutator(current)
+        try:
+            _gcs_upload_text(
+                key,
+                json.dumps(current, ensure_ascii=False, indent=2),
+                content_type="application/json",
+                if_generation_match=generation,
+            )
+            return current
+        except Exception as exc:
+            if type(exc).__name__ not in {"PreconditionFailed", "Conflict"}:
+                raise
+            last_error = exc
+    raise RuntimeError("gcs_generation_conflict") from last_error
 
 
 def _gcs_delete_object(key: str) -> None:

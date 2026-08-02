@@ -12,9 +12,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from admin_store import (
+    admin_artifact_bucket_name,
     check_artifact_store_ready,
     derive_artifact_status,
     find_scheduled_owner_review_for_kst_date,
+    generate_run_id,
     load_run_artifact,
     normalize_artifact_view,
     process_approval_timeouts,
@@ -91,6 +93,106 @@ class KeysuriOwnerReviewJobRequest(BaseModel):
     send_owner_email: bool = True
     dry_run: bool = False
     trigger_source: str = DEFAULT_TRIGGER_SOURCE
+
+
+def _execution_reservations_enabled() -> bool:
+    raw = os.getenv("GENIE_EXECUTION_RESERVATIONS", "").strip().lower()
+    if raw:
+        return raw in {"1", "true", "yes", "on"}
+    return bool(
+        admin_artifact_bucket_name()
+        or os.getenv("GENIE_EXECUTION_STATE_ROOT", "").strip()
+    )
+
+
+def _owner_review_delivery_configured() -> bool:
+    """True only when this process could reach the real owner SMTP sender."""
+    from email_sender import smtp_configured
+
+    gate = os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip().lower()
+    return gate in {"1", "true", "yes", "on"} or smtp_configured()
+
+
+def _reserve_owner_review_execution(program_id: str, trigger_source: str):
+    if not _execution_reservations_enabled():
+        return None
+    from execution_state import manual_execution_key, reserve_execution, scheduled_execution_key
+
+    run_id = generate_run_id(program_id)
+    trigger = str(trigger_source or DEFAULT_TRIGGER_SOURCE).strip() or DEFAULT_TRIGGER_SOURCE
+    if trigger.lower().startswith("scheduled"):
+        logical_key = scheduled_execution_key(program_id, trigger_source="scheduled")
+    else:
+        logical_key = manual_execution_key(program_id, run_id, trigger_source=trigger)
+    return reserve_execution(logical_key, program_id=program_id, run_id=run_id)
+
+
+def _reservation_response(reservation):
+    if reservation is None:
+        return None
+    if reservation.execute and reservation.accepted_repair:
+        from execution_state import update_execution
+
+        update_execution(
+            reservation.logical_execution_key,
+            expected_owner_id=reservation.owner_id,
+            state="owner_review_emailed",
+            last_safe_state="owner_review_emailed",
+        )
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "email_sent": True,
+                "sender_called": False,
+                "checkpoint_repaired": True,
+                "logical_execution_key": reservation.logical_execution_key,
+                "run_id": reservation.run_id,
+            },
+        )
+    if not reservation.execute:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "skipped_duplicate": True,
+                "logical_execution_key": reservation.logical_execution_key,
+                "existing_run_id": reservation.run_id,
+                "state": reservation.previous_state,
+            },
+        )
+    return None
+
+
+def _finish_reservation(reservation, payload: Dict[str, Any]) -> None:
+    if reservation is None:
+        return
+    from execution_state import owner_review_accepted, load_execution, update_execution
+
+    current = load_execution(reservation.logical_execution_key) or {}
+    if owner_review_accepted(current):
+        state = "owner_review_emailed"
+        last_safe = state
+    elif payload.get("ok") and not payload.get("email_sent"):
+        state = "artifacts_ready"
+        last_safe = state
+    else:
+        terminal_errors = {
+            "validation_blocked",
+            "global_post_render_qa_blocked",
+            "korea_post_render_qa_blocked",
+            "keysuri_korean_connector_ellipsis_blocked",
+        }
+        is_today = str(current.get("program_id") or "") == "today_genie"
+        state = "failed_terminal" if is_today or str(payload.get("error") or "") in terminal_errors else "failed_retryable"
+        last_safe = "artifacts_ready" if payload.get("html_path") else "running"
+    update_execution(
+        reservation.logical_execution_key,
+        expected_owner_id=reservation.owner_id,
+        state=state,
+        last_safe_state=last_safe,
+        error_code=str(payload.get("error") or "")[:120],
+    )
 
 
 def _internal_job_token() -> str:
@@ -310,6 +412,10 @@ def create_keysuri_owner_review_job(
     service_full_run: bool = False,
     send_owner_email: bool = True,
     smoke_runner: Optional[Callable[..., LiveSourceSmokeResult]] = None,
+    run_id_override: Optional[str] = None,
+    logical_execution_key: str = "",
+    expected_owner_id: str = "",
+    attempt: int = 1,
 ) -> Dict[str, Any]:
     """
     Dispatch Kee-Suri scheduled owner-review generation.
@@ -326,13 +432,20 @@ def create_keysuri_owner_review_job(
     if service_full_run:
         from keysuri_service_full_run import run_keysuri_service_full_run
 
-        return run_keysuri_service_full_run(
-            normalized,
-            trigger_source=trigger,
-            send_owner_email=send_owner_email,
-            dry_run=dry_run,
-            smoke_runner=smoke_runner,
-        )
+        kwargs: Dict[str, Any] = {
+            "trigger_source": trigger,
+            "send_owner_email": send_owner_email,
+            "dry_run": dry_run,
+            "smoke_runner": smoke_runner,
+        }
+        if run_id_override:
+            kwargs.update(
+                run_id_override=run_id_override,
+                logical_execution_key=logical_execution_key,
+                expected_owner_id=expected_owner_id,
+                attempt=attempt,
+            )
+        return run_keysuri_service_full_run(normalized, **kwargs)
 
     if dry_run:
         return {
@@ -384,16 +497,46 @@ def create_owner_review_endpoint(
     if store_err:
         return _artifact_store_not_ready_response()
 
+    existing = find_scheduled_owner_review_for_kst_date("today_genie")
+    if existing:
+        return JSONResponse(
+            status_code=200,
+            content=_safe_owner_review_summary(
+                existing,
+                skipped_duplicate=True,
+                message="owner_review_already_exists_for_kst_date",
+            ),
+        )
+
+    reservation = None
+    if body.send_owner_email and not body.dry_run:
+        if not _execution_reservations_enabled():
+            return JSONResponse(status_code=503, content={"ok": False, "error": "execution_reservations_disabled"})
+        reservation = _reserve_owner_review_execution("today_genie", trigger)
+        reservation_response = _reservation_response(reservation)
+        if reservation_response is not None:
+            return reservation_response
+
     if body.service_full_run:
         from today_genie_service_full_run import run_today_genie_service_full_run
 
         try:
-            payload = run_today_genie_service_full_run(
-                trigger_source=trigger,
-                send_owner_email=body.send_owner_email,
-                dry_run=body.dry_run,
-            )
+            kwargs: Dict[str, Any] = {
+                "trigger_source": trigger,
+                "send_owner_email": body.send_owner_email,
+                "dry_run": body.dry_run,
+            }
+            if reservation is not None:
+                kwargs.update(
+                    run_id_override=reservation.run_id,
+                    logical_execution_key=reservation.logical_execution_key,
+                    expected_owner_id=reservation.owner_id,
+                    attempt=reservation.attempt,
+                )
+            payload = run_today_genie_service_full_run(**kwargs)
         except Exception as exc:
+            if reservation is not None:
+                _finish_reservation(reservation, {"ok": False, "error": "orchestration_failed"})
             logger.exception(
                 "create_owner_review service_full_run failed error_type=%s",
                 type(exc).__name__,
@@ -407,30 +550,31 @@ def create_owner_review_endpoint(
                     "service_full_run": True,
                 },
             )
+        _finish_reservation(reservation, payload)
+        if reservation is not None:
+            payload["logical_execution_key"] = reservation.logical_execution_key
+            payload["attempt"] = reservation.attempt
         status_code = 200 if payload.get("ok") else 500
         return JSONResponse(status_code=status_code, content=payload)
 
-    existing = find_scheduled_owner_review_for_kst_date("today_genie")
-    if existing:
-        return JSONResponse(
-            status_code=200,
-            content=_safe_owner_review_summary(
-                existing,
-                skipped_duplicate=True,
-                message="owner_review_already_exists_for_kst_date",
-            ),
-        )
-
     try:
-        run_id, result, email_sent = execute_orchestrator_run(
-            "today_genie",
-            trigger_source=trigger,
-            send_owner_email=body.send_owner_email,
-        )
+        kwargs = {
+            "trigger_source": trigger,
+            "send_owner_email": body.send_owner_email,
+        }
+        if reservation is not None:
+            kwargs.update(
+                run_id_override=reservation.run_id,
+                logical_execution_key=reservation.logical_execution_key,
+                expected_owner_id=reservation.owner_id,
+            )
+        run_id, result, email_sent = execute_orchestrator_run("today_genie", **kwargs)
     except ScheduledWeekendSkip as exc:
         logger.info("create_owner_review: orchestrator weekend guard payload=%s", exc.payload)
         return JSONResponse(status_code=200, content=exc.payload)
     except Exception as exc:
+        if reservation is not None:
+            _finish_reservation(reservation, {"ok": False, "error": "orchestration_failed"})
         logger.exception(
             "create_owner_review: orchestration_failed error_type=%s",
             type(exc).__name__,
@@ -443,6 +587,16 @@ def create_owner_review_endpoint(
                 "error_type": type(exc).__name__,
             },
         )
+
+    _finish_reservation(
+        reservation,
+        {
+            "ok": bool(run_id),
+            "email_sent": email_sent,
+            "error": "" if run_id else "orchestration_failed",
+            "html_path": run_id or "",
+        },
+    )
 
     if not run_id:
         logger.error(
@@ -519,15 +673,45 @@ def create_keysuri_owner_review_endpoint(
     if err:
         return JSONResponse(status_code=400, content=err)
 
+    reservation = None
+    if body.service_full_run and body.send_owner_email and not body.dry_run:
+        if not _execution_reservations_enabled():
+            return JSONResponse(status_code=503, content={"ok": False, "error": "execution_reservations_disabled"})
+        reservation = _reserve_owner_review_execution(normalized, body.trigger_source)
+        reservation_response = _reservation_response(reservation)
+        if reservation_response is not None:
+            return reservation_response
+
     try:
-        payload = create_keysuri_owner_review_job(
-            normalized,
-            trigger_source=body.trigger_source,
-            dry_run=body.dry_run,
-            service_full_run=body.service_full_run,
-            send_owner_email=body.send_owner_email,
-        )
+        resume_email_only = False
+        if reservation is not None and reservation.resume:
+            from execution_state import load_execution
+
+            current = load_execution(reservation.logical_execution_key) or {}
+            resume_email_only = current.get("last_safe_state") == "artifacts_ready"
+        if resume_email_only:
+            from keysuri_service_full_run import resume_keysuri_owner_review_email
+
+            payload = resume_keysuri_owner_review_email(
+                reservation.run_id,
+                logical_execution_key=reservation.logical_execution_key,
+                expected_owner_id=reservation.owner_id,
+            )
+        else:
+            payload = create_keysuri_owner_review_job(
+                normalized,
+                trigger_source=body.trigger_source,
+                dry_run=body.dry_run,
+                service_full_run=body.service_full_run,
+                send_owner_email=body.send_owner_email,
+                run_id_override=reservation.run_id if reservation else None,
+                logical_execution_key=reservation.logical_execution_key if reservation else "",
+                expected_owner_id=reservation.owner_id if reservation else "",
+                attempt=reservation.attempt if reservation else 1,
+            )
     except Exception as exc:
+        if reservation is not None:
+            _finish_reservation(reservation, {"ok": False, "error": "orchestration_failed"})
         _log_keysuri_owner_review_job_event(
             event="keysuri_owner_review_endpoint_exception",
             program_id=normalized,
@@ -554,6 +738,11 @@ def create_keysuri_owner_review_endpoint(
                 "program_id": normalized,
             },
         )
+
+    _finish_reservation(reservation, payload)
+    if reservation is not None:
+        payload["logical_execution_key"] = reservation.logical_execution_key
+        payload["attempt"] = reservation.attempt
 
     status_code = 200 if payload.get("ok", True) else 500
     if status_code == 200:

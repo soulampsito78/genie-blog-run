@@ -112,11 +112,14 @@ class GenieCreateOwnerReviewTests(unittest.TestCase):
                 mock_exec.return_value = (run_id, result, True)
                 resp = self.client.post(_GENIE_OWNER_REVIEW, json={}, headers=_auth_headers())
         self.assertEqual(resp.status_code, 200)
-        mock_exec.assert_called_once_with(
-            "today_genie",
-            trigger_source="scheduled_owner_review",
-            send_owner_email=True,
-        )
+        mock_exec.assert_called_once()
+        call = mock_exec.call_args
+        self.assertEqual(call.args, ("today_genie",))
+        self.assertEqual(call.kwargs["trigger_source"], "scheduled_owner_review")
+        self.assertTrue(call.kwargs["send_owner_email"])
+        self.assertTrue(call.kwargs["run_id_override"])
+        self.assertTrue(call.kwargs["logical_execution_key"].startswith("today_genie:"))
+        self.assertTrue(call.kwargs["expected_owner_id"])
         body = resp.json()
         self.assertTrue(body["ok"])
         self.assertEqual(body["mode"], "today_genie")
@@ -136,11 +139,13 @@ class GenieCreateOwnerReviewTests(unittest.TestCase):
                     headers=_auth_headers(),
                 )
         self.assertEqual(resp.status_code, 200)
-        mock_exec.assert_called_once_with(
-            "today_genie",
-            trigger_source="scheduled_owner_review",
-            send_owner_email=True,
-        )
+        mock_exec.assert_called_once()
+        call = mock_exec.call_args
+        self.assertEqual(call.args, ("today_genie",))
+        self.assertEqual(call.kwargs["trigger_source"], "scheduled_owner_review")
+        self.assertTrue(call.kwargs["send_owner_email"])
+        self.assertTrue(call.kwargs["logical_execution_key"].startswith("today_genie:"))
+        self.assertTrue(call.kwargs["expected_owner_id"])
 
     def test_does_not_call_keysuri_runner(self) -> None:
         with mock.patch("internal_jobs.create_keysuri_owner_review_job") as mock_keysuri:
