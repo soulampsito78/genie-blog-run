@@ -35,6 +35,7 @@ from admin_store import (
 )
 from fastapi.testclient import TestClient
 from main import app
+from tests.compliance_test_support import explicit_compliance_ready
 
 
 # ---------------------------------------------------------------------------
@@ -392,12 +393,14 @@ class TodayGenieDeliveryMergedRecipientsTests(unittest.TestCase):
         for k in ("GENIE_CUSTOMER_EMAIL_TO", "SMTP_HOST", "SMTP_USER"):
             os.environ.pop(k, None)
 
+    @explicit_compliance_ready
     def test_config_ready_with_env_only(self):
         from today_geenee_customer_delivery import customer_delivery_config_ready
         ok, reason = customer_delivery_config_ready()
         self.assertTrue(ok)
         self.assertEqual(reason, "ok")
 
+    @explicit_compliance_ready
     def test_config_ready_with_admin_recipient_no_env(self):
         os.environ.pop("GENIE_CUSTOMER_EMAIL_TO", None)
         save_beta_recipient_config(["admin@example.com"])
@@ -415,6 +418,7 @@ class TodayGenieDeliveryMergedRecipientsTests(unittest.TestCase):
 
     @patch("today_geenee_customer_delivery.send_genie_email")
     @patch("today_geenee_customer_delivery._resolve_today_genie_inline_jpeg_parts")
+    @explicit_compliance_ready
     def test_send_uses_merged_recipient_list(self, mock_parts, mock_send):
         """send_today_geenee_customer_final_email passes merged list to send_genie_email."""
         mock_parts.return_value = [("top.jpg", "cid_top", b"\xff\xd8")]
@@ -458,12 +462,14 @@ class KeysuriDeliveryMergedRecipientsTests(unittest.TestCase):
         for k in ("GENIE_CUSTOMER_EMAIL_TO", "SMTP_HOST", "SMTP_USER"):
             os.environ.pop(k, None)
 
+    @explicit_compliance_ready
     def test_keysuri_config_ready_with_env(self):
         from keysuri_customer_delivery import customer_delivery_config_ready
         ok, reason = customer_delivery_config_ready()
         self.assertTrue(ok)
         self.assertEqual(reason, "ok")
 
+    @explicit_compliance_ready
     def test_keysuri_config_ready_admin_only(self):
         os.environ.pop("GENIE_CUSTOMER_EMAIL_TO", None)
         save_beta_recipient_config(["admin@example.com"])
@@ -481,6 +487,7 @@ class KeysuriDeliveryMergedRecipientsTests(unittest.TestCase):
 
     @patch("keysuri_customer_delivery.send_genie_email")
     @patch("keysuri_customer_delivery.resolve_keysuri_inline_jpeg_parts")
+    @explicit_compliance_ready
     def test_keysuri_global_send_uses_merged_list(self, mock_parts, mock_send):
         """Global send passes merged recipient list to send_genie_email."""
         mock_parts.return_value = [("top.jpg", "cid_top", b"\xff\xd8")]
@@ -510,6 +517,7 @@ class KeysuriDeliveryMergedRecipientsTests(unittest.TestCase):
 
     @patch("keysuri_customer_delivery.send_genie_email")
     @patch("keysuri_customer_delivery.resolve_keysuri_inline_jpeg_parts")
+    @explicit_compliance_ready
     def test_keysuri_korea_send_uses_merged_list(self, mock_parts, mock_send):
         """Korea send passes merged recipient list to send_genie_email."""
         mock_parts.return_value = [

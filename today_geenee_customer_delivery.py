@@ -11,6 +11,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from admin_store import resolve_customer_recipients
 from email_sender import parse_customer_to_addrs, send_genie_email
 from renderers import today_genie_email_inline_cid_pair
+from compliance_footer import (
+    append_compliance_footer,
+    compliance_readiness,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +82,9 @@ def customer_delivery_config_ready() -> tuple[bool, str]:
     user = os.getenv("SMTP_USER", "").strip()
     if not (host and user):
         return False, "missing_smtp"
+    compliance = compliance_readiness()
+    if not compliance["ready"]:
+        return False, "compliance_not_ready"
     return True, "ok"
 
 
@@ -283,8 +290,16 @@ def send_today_geenee_customer_final_email(
             saved_html,
             review_confirmation_state=REVIEW_CONFIRMATION_STATE_REVIEW_PASSED,
         )
-    except ValueError as exc:
-        logger.warning("send_today_geenee_customer_final_email: %s", exc)
+        html_body = append_compliance_footer(
+            html_body,
+            run_id=str(meta.get("run_id") or ""),
+            program_id="today_genie",
+        )
+    except (ValueError, RuntimeError) as exc:
+        logger.warning(
+            "send_today_geenee_customer_final_email blocked error_type=%s",
+            type(exc).__name__,
+        )
         return False
 
     global _LAST_CUSTOMER_IMAGE_RESOLUTION_REASON

@@ -8,11 +8,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from fastapi import HTTPException
 from email_sender import send_genie_email
 from genie_schedule_policy import ScheduledWeekendSkip, today_genie_weekend_skip_payload
 from naver_draft import create_naver_draft
@@ -149,14 +151,11 @@ def _dedup_fields_from_api_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 def run_genie_job(mode: str) -> OrchestrationResult:
     """
-    Call the Genie API for the given mode, then apply publishing policy.
-    Retries transient failures (timeout, connection error) up to GENIE_API_RETRIES.
-    """
-    import time
-    import urllib.error
-    import urllib.request
+    Run generation in-process, then apply publishing policy.
 
-    url = GENIE_API_URL.rstrip("/") + "/"
+    The authenticated internal Scheduler endpoint is the trust boundary. The
+    retired public root is never reopened as a loopback generation API.
+    """
     payload: Dict[str, Any] = {"type": mode}
     controlled_flag = os.getenv("GENIE_CONTROLLED_TEST_MODE", "").strip().lower()
     controlled_target = os.getenv("GENIE_CONTROLLED_TEST_TARGET_DATE", "").strip()
@@ -164,48 +163,36 @@ def run_genie_job(mode: str) -> OrchestrationResult:
         payload["controlled_test_mode"] = True
         payload["controlled_test_target_date"] = controlled_target
         logger.info("controlled_test_mode active target_date=%s", controlled_target)
-    body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=body,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-
-    last_exc = None
-    for attempt in range(GENIE_API_RETRIES + 1):
-        try:
-            with urllib.request.urlopen(req, timeout=GENIE_REQUEST_TIMEOUT) as resp:
-                status = resp.getcode()
-                raw = resp.read()
-            break
-        except urllib.error.HTTPError as e:
-            status = e.code
-            raw = e.read()
-            break
-        except (urllib.error.URLError, OSError, TimeoutError) as e:
-            last_exc = e
-            if attempt < GENIE_API_RETRIES:
-                time.sleep(GENIE_API_RETRY_DELAY_SEC)
-                continue
-            logger.warning("Genie API request failed after %d attempts: %s", attempt + 1, type(e).__name__)
-            decision = decide_publishing_actions(mode, None, None, [], None)
-            return OrchestrationResult(
-                decision=decision,
-                reason_summary="request_failed",
-                response_status=None,
-                mode=mode,
-            )
-
     try:
-        data = json.loads(raw.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError):
+        # Runtime import avoids main -> internal_jobs -> orchestrator import cycles.
+        from main import JobRequest, generate_internal_payload
+
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="today-generation")
+        future = executor.submit(generate_internal_payload, JobRequest(**payload))
+        try:
+            data = future.result(timeout=max(1, min(280, GENIE_REQUEST_TIMEOUT)))
+        except FuturesTimeoutError as exc:
+            future.cancel()
+            raise TimeoutError("generation_timeout") from exc
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+        status = 200
+    except HTTPException as exc:
+        status = int(exc.status_code)
+        data = {"detail": exc.detail}
+    except Exception as exc:
+        logger.error(
+            "in-process Genie generation failed mode=%s error_type=%s",
+            mode,
+            type(exc).__name__,
+        )
         decision = decide_publishing_actions(mode, None, None, [], None)
         return OrchestrationResult(
             decision=decision,
-            reason_summary="invalid_response_body",
-            response_status=status,
+            reason_summary="generation_failed",
+            response_status=500,
             mode=mode,
+            response_data={"detail": {"reason": type(exc).__name__}},
         )
 
     if status == 200:
@@ -420,6 +407,8 @@ def send_email_if_allowed(
     run_id: str | None = None,
     today_image_result: Any = None,
     send_owner_email: bool = True,
+    logical_execution_key: str = "",
+    expected_owner_id: str = "",
 ) -> bool:
     """
     If policy allows sending email and we have payload, send via email_sender.
@@ -569,12 +558,23 @@ def send_email_if_allowed(
             ]
 
         os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
-        return send_genie_email(
-            html_body,
-            subject,
-            inline_jpeg_parts=inline_parts,
-            attachment_jpeg_parts=[],
+        send_call = lambda: bool(
+            send_genie_email(
+                html_body,
+                subject,
+                inline_jpeg_parts=inline_parts,
+                attachment_jpeg_parts=[],
+            )
         )
+        if logical_execution_key:
+            from execution_state import deliver_owner_review_once
+
+            return deliver_owner_review_once(
+                logical_execution_key,
+                expected_owner_id=expected_owner_id,
+                send=send_call,
+            ).accepted
+        return send_call()
 
     html_body = channels.get("email_body_html") or ""
 
@@ -582,7 +582,16 @@ def send_email_if_allowed(
         logger.warning("send_email_if_allowed: skipped (empty email_body_html)")
         return False
 
-    return send_genie_email(html_body, subject)
+    send_call = lambda: bool(send_genie_email(html_body, subject))
+    if logical_execution_key:
+        from execution_state import deliver_owner_review_once
+
+        return deliver_owner_review_once(
+            logical_execution_key,
+            expected_owner_id=expected_owner_id,
+            send=send_call,
+        ).accepted
+    return send_call()
 
 
 def create_naver_draft_if_allowed(result: OrchestrationResult) -> bool:
@@ -626,6 +635,9 @@ def execute_orchestrator_run(
     trigger_source: str | None = None,
     send_owner_email: bool = True,
     schedule_now: datetime | None = None,
+    run_id_override: str | None = None,
+    logical_execution_key: str = "",
+    expected_owner_id: str = "",
 ) -> tuple[str, OrchestrationResult, bool]:
     """
     Run Genie job, attempt owner-review email, persist admin artifact.
@@ -649,8 +661,11 @@ def execute_orchestrator_run(
         from admin_store import generate_run_id
 
         result = run_genie_job(mode)
-        run_id: str | None = None
+        run_id: str | None = str(run_id_override or "").strip() or None
         today_image_result = None
+        execution_key = str(logical_execution_key or "").strip()
+        execution_owner = str(expected_owner_id or "").strip()
+        manual_reservation = None
 
         if (
             str(mode or "") == "today_genie"
@@ -659,7 +674,7 @@ def execute_orchestrator_run(
         ):
             payload = result.response_data
             validation_result = str(payload.get("validation_result") or "pass")
-            run_id = generate_run_id("today_genie")
+            run_id = run_id or generate_run_id("today_genie")
             if validation_result == "pass":
                 data = payload.get("data") or {}
                 runtime_input = payload.get("runtime_input") or {}
@@ -672,11 +687,24 @@ def execute_orchestrator_run(
                         runtime_input,
                     )
 
+        if send_owner_email and run_id and not execution_key:
+            from execution_state import reserve_manual_execution
+
+            manual_reservation = reserve_manual_execution(
+                program_id=str(mode or "unknown"),
+                run_id=run_id,
+                trigger_source="admin_reissue" if admin_reissue else str(trigger_source or "manual"),
+            )
+            execution_key = manual_reservation.logical_execution_key
+            execution_owner = manual_reservation.owner_id
+
         email_sent = send_email_if_allowed(
             result,
             run_id=run_id,
             today_image_result=today_image_result,
             send_owner_email=send_owner_email,
+            logical_execution_key=execution_key,
+            expected_owner_id=execution_owner,
         )
         resolved_trigger = trigger_source
         if not resolved_trigger:
@@ -694,6 +722,15 @@ def execute_orchestrator_run(
             today_image_result=today_image_result,
             send_owner_email=send_owner_email,
         )
+        if manual_reservation is not None:
+            from execution_state import update_execution
+
+            update_execution(
+                execution_key,
+                expected_owner_id=execution_owner,
+                state="owner_review_emailed" if email_sent else "failed_terminal",
+                last_safe_state="owner_review_emailed" if email_sent else "artifacts_ready",
+            )
         logger.info(
             "execute_orchestrator_run: mode=%s run_id=%s email_sent=%s parent_run_id=%s",
             mode,

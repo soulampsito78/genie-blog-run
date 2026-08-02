@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from admin_store import artifact_email_path, artifact_json_path, generate_run_id, now_kst_iso, save_run_artifact
+from admin_store import admin_runs_dir, artifact_email_path, artifact_json_path, generate_run_id, now_kst_iso, save_run_artifact
 from admin_urls import build_owner_review_admin_url
 from orchestrator import OrchestrationResult, run_genie_job
 from renderers import today_genie_email_inline_cid_pair
@@ -25,7 +25,15 @@ logger = logging.getLogger(__name__)
 
 _REPO = Path(__file__).resolve().parent
 _REF_IMAGE = _REPO / "static" / "email" / "GENIE_REF_today_genie_master_v1.jpg"
-_OUTPUT_IMAGES = _REPO / "output" / "images" / "today_genie"
+_DEFAULT_OUTPUT_IMAGES = _REPO / "output" / "images" / "today_genie"
+# Retained as a patchable compatibility seam for existing image tests.
+_OUTPUT_IMAGES = _DEFAULT_OUTPUT_IMAGES
+
+
+def _output_images_dir() -> Path:
+    if _OUTPUT_IMAGES != _DEFAULT_OUTPUT_IMAGES:
+        return _OUTPUT_IMAGES
+    return admin_runs_dir().parent / "images" / "today_genie"
 
 # Today_Geenee brand footer/watermark (restores f82dbd1 behavior; see
 # today_genie_run_images.generate_today_genie_run_images orphaned at b843bc4).
@@ -146,7 +154,7 @@ def generate_today_genie_service_images(
         bundle.bottom.error_code = ERROR_IMAGE_GENERATION_FAILED
         return bundle
 
-    out_dir = _OUTPUT_IMAGES / run_id
+    out_dir = _output_images_dir() / run_id
     top_out = out_dir / f"{run_id}_top.jpg"
     bot_out = out_dir / f"{run_id}_bottom.jpg"
     top_prompt = f"{mood}{top_base}\n\n{today_genie_suffix_studio_hero(run_id)}".strip()
@@ -225,6 +233,10 @@ def run_today_genie_service_full_run(
     dry_run: bool = False,
     generate_fn: Optional[Callable[..., Path]] = None,
     send_fn: Optional[Callable[..., bool]] = None,
+    run_id_override: Optional[str] = None,
+    logical_execution_key: str = "",
+    expected_owner_id: str = "",
+    attempt: int = 1,
 ) -> Dict[str, Any]:
     """Service-level Today_Geenee full run: Gemini text, image API, admin artifact, SMTP."""
     if dry_run:
@@ -244,7 +256,10 @@ def run_today_genie_service_full_run(
     validation_result = str(payload.get("validation_result") or "")
     workflow_status = str(payload.get("workflow_status") or "")
     issue_codes = _extract_issue_codes(result)
-    run_id = generate_run_id("today_genie")
+    run_id = str(run_id_override or "").strip() or generate_run_id("today_genie")
+    execution_key = str(logical_execution_key or "").strip()
+    execution_owner = str(expected_owner_id or "").strip()
+    manual_reservation = None
 
     if result.response_status != 200 or validation_result != "pass":
         meta = build_service_artifact_fields(
@@ -383,14 +398,34 @@ def run_today_genie_service_full_run(
         smtp_attempted = True
         sender = send_fn or send_genie_email
         os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
-        email_sent = bool(
-            sender(
+        send_call = lambda: bool(sender(
                 email_html,
                 subject,
                 inline_jpeg_parts=inline_parts,
                 attachment_jpeg_parts=[],
+            ))
+        if not execution_key:
+            from execution_state import reserve_manual_execution
+
+            manual_reservation = reserve_manual_execution(
+                program_id="today_genie",
+                run_id=run_id,
+                trigger_source=trigger_source,
             )
-        )
+            execution_key = manual_reservation.logical_execution_key
+            execution_owner = manual_reservation.owner_id
+        if execution_key:
+            from execution_state import deliver_owner_review_once
+
+            delivery = deliver_owner_review_once(
+                execution_key,
+                expected_owner_id=execution_owner,
+                send=send_call,
+            )
+            email_sent = delivery.accepted
+            smtp_attempted = delivery.sender_called
+        else:
+            raise RuntimeError("owner_review_execution_identity_required")
     elif send_owner_email:
         logger.info("today_genie service_full_run: email skipped (policy send_email=False)")
 
@@ -410,6 +445,9 @@ def run_today_genie_service_full_run(
         workflow_status=workflow_status,
     )
     meta.update(_dedup_artifact_fields_from_payload(payload))
+    meta["shortfall_count"] = max(0, 3 - int(meta.get("selected_count") or 0))
+    meta["current_stage"] = "owner_review_emailed" if email_sent else "artifacts_ready"
+    meta["terminal_status"] = meta["current_stage"]
     if image_bundle.ok:
         meta["generated_image_paths"] = {
             "top": image_bundle.top.generated_image_path,
@@ -419,6 +457,8 @@ def run_today_genie_service_full_run(
         if not getattr(image_bundle, "watermark_applied", False):
             meta["issue_codes"] = list(meta.get("issue_codes") or []) + [WATERMARK_ISSUE_CODE]
     meta["artifact_status"] = "emailed" if email_sent else "stored"
+    meta["logical_execution_key"] = execution_key or None
+    meta["attempt"] = max(1, int(attempt or 1))
 
     # Best-effort cost estimate — text usage came from the /generate response
     # (main.py); fold in the image count generated in THIS step. Never affects
@@ -492,6 +532,15 @@ def run_today_genie_service_full_run(
             pass
 
     save_run_artifact(meta, email_html=email_html)
+    if manual_reservation is not None:
+        from execution_state import update_execution
+
+        update_execution(
+            execution_key,
+            expected_owner_id=execution_owner,
+            state="owner_review_emailed" if email_sent else "failed_terminal",
+            last_safe_state="owner_review_emailed" if email_sent else "artifacts_ready",
+        )
 
     ok = image_bundle.ok and (not send_owner_email or email_sent)
     return {

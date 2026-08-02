@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from artifact_atomic import atomic_update_json, atomic_write_text
 from sent_news_dedup_gate import (
     canonicalize_url,
     editorial_cluster_key as _compute_editorial_cluster_key,
@@ -119,7 +120,7 @@ def _write_text(text: str) -> None:
 
         _gcs_upload_text(_gcs_log_key(), text, content_type="application/json")
         return
-    _local_log_path().write_text(text, encoding="utf-8")
+    atomic_write_text(_local_log_path(), text)
 
 
 def load_owner_review_exposure_log_with_status() -> Dict[str, Any]:
@@ -150,7 +151,8 @@ def load_owner_review_exposure_log() -> List[Dict[str, Any]]:
 
 def save_owner_review_exposure_log(rows: List[Dict[str, Any]]) -> None:
     payload = {
-        "schema": "owner_review_exposure_log_v1",
+        "schema_version": "owner_review_exposure_log_v2",
+        "exposure_type": "owner_review",
         "updated_at": _now_kst().isoformat(),
         "items": rows,
     }
@@ -217,6 +219,7 @@ def _row_from_item(
         "topic_key": normalized.get("topic_key") or "",
         "story_key": str(item.get("story_key") or item.get("story_id") or "").strip(),
         "exposure_kind": exposure_kind,
+        "exposure_type": "owner_review",
     }
 
 
@@ -268,8 +271,6 @@ def append_owner_review_exposure(
         raise ValueError(f"invalid exposure_kind: {exposure_kind!r}")
 
     timestamp = exposed_at or (now or _now_kst()).astimezone(ZoneInfo("Asia/Seoul")).isoformat()
-    rows = load_owner_review_exposure_log()
-    before_count = len(rows)
     new_rows = rows_from_selected_items(
         selected_items,
         run_id=run_id,
@@ -278,45 +279,71 @@ def append_owner_review_exposure(
         exposed_at=timestamp,
     )
 
-    by_run_url: Dict[Tuple[str, str], int] = {}
-    by_day_url: Dict[Tuple[str, str, str], int] = {}
-    for idx, row in enumerate(rows):
-        run_key = (str(row.get("run_id") or ""), str(row.get("canonical_url") or ""))
-        day_key = (
-            str(row.get("program_id") or ""),
-            str(row.get("exposed_date_kst") or _exposed_date_kst(row.get("exposed_at"))),
-            str(row.get("canonical_url") or ""),
-        )
-        by_run_url[run_key] = idx
-        by_day_url[day_key] = idx
+    stats = {"before_count": 0, "appended": 0, "updated": 0, "pruned": 0}
 
-    appended = 0
-    updated = 0
-    for row in new_rows:
-        canonical_url = str(row.get("canonical_url") or "")
-        run_key = (run_id, canonical_url)
-        day_key = (program_id, str(row.get("exposed_date_kst") or ""), canonical_url)
-        target_idx = by_run_url.get(run_key)
-        if target_idx is None:
-            target_idx = by_day_url.get(day_key)
-        if target_idx is None:
-            rows.append(row)
-            idx = len(rows) - 1
+    def _mut(payload: Dict[str, Any]) -> None:
+        existing_rows = payload.get("items") if isinstance(payload, dict) else None
+        rows = (
+            [dict(row) for row in existing_rows if isinstance(row, dict)]
+            if isinstance(existing_rows, list)
+            else []
+        )
+        stats["before_count"] = len(rows)
+        by_run_url: Dict[Tuple[str, str], int] = {}
+        by_day_url: Dict[Tuple[str, str, str], int] = {}
+        for idx, row in enumerate(rows):
+            run_key = (str(row.get("run_id") or ""), str(row.get("canonical_url") or ""))
+            day_key = (
+                str(row.get("program_id") or ""),
+                str(row.get("exposed_date_kst") or _exposed_date_kst(row.get("exposed_at"))),
+                str(row.get("canonical_url") or ""),
+            )
             by_run_url[run_key] = idx
             by_day_url[day_key] = idx
-            appended += 1
-        else:
-            rows[target_idx] = {**rows[target_idx], **row}
-            updated += 1
+        for row in new_rows:
+            canonical_url = str(row.get("canonical_url") or "")
+            run_key = (run_id, canonical_url)
+            day_key = (program_id, str(row.get("exposed_date_kst") or ""), canonical_url)
+            target_idx = by_run_url.get(run_key)
+            if target_idx is None:
+                target_idx = by_day_url.get(day_key)
+            if target_idx is None:
+                rows.append(row)
+                idx = len(rows) - 1
+                by_run_url[run_key] = idx
+                by_day_url[day_key] = idx
+                stats["appended"] += 1
+            else:
+                rows[target_idx] = {**rows[target_idx], **row}
+                stats["updated"] += 1
+        rows, stats["pruned"] = prune_owner_review_exposure_log(rows, now=now)
+        payload.clear()
+        payload.update(
+            {
+                "schema_version": "owner_review_exposure_log_v2",
+                "exposure_type": "owner_review",
+                "updated_at": _now_kst().isoformat(),
+                "items": rows,
+            }
+        )
 
-    rows, pruned = prune_owner_review_exposure_log(rows, now=now)
-    save_owner_review_exposure_log(rows)
+    if _uses_gcs():
+        from admin_store import _gcs_atomic_update_json
+
+        payload = _gcs_atomic_update_json(_gcs_log_key(), mutator=_mut)
+    else:
+        payload, _ = atomic_update_json(
+            _local_log_path(),
+            default={"items": load_owner_review_exposure_log()},
+            mutator=_mut,
+        )
+    rows = payload.get("items") if isinstance(payload.get("items"), list) else []
     return {
         "ok": True,
-        "before_count": before_count,
+        "before_count": stats["before_count"],
         "after_count": len(rows),
-        "appended_count": appended,
-        "updated_count": updated,
-        "pruned_count": pruned,
+        "appended_count": stats["appended"],
+        "updated_count": stats["updated"],
+        "pruned_count": stats["pruned"],
         "logical_path": logical_log_path(),
     }

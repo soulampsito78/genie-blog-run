@@ -112,11 +112,14 @@ class GenieCreateOwnerReviewTests(unittest.TestCase):
                 mock_exec.return_value = (run_id, result, True)
                 resp = self.client.post(_GENIE_OWNER_REVIEW, json={}, headers=_auth_headers())
         self.assertEqual(resp.status_code, 200)
-        mock_exec.assert_called_once_with(
-            "today_genie",
-            trigger_source="scheduled_owner_review",
-            send_owner_email=True,
-        )
+        mock_exec.assert_called_once()
+        call = mock_exec.call_args
+        self.assertEqual(call.args, ("today_genie",))
+        self.assertEqual(call.kwargs["trigger_source"], "scheduled_owner_review")
+        self.assertTrue(call.kwargs["send_owner_email"])
+        self.assertTrue(call.kwargs["run_id_override"])
+        self.assertTrue(call.kwargs["logical_execution_key"].startswith("today_genie:"))
+        self.assertTrue(call.kwargs["expected_owner_id"])
         body = resp.json()
         self.assertTrue(body["ok"])
         self.assertEqual(body["mode"], "today_genie")
@@ -136,11 +139,13 @@ class GenieCreateOwnerReviewTests(unittest.TestCase):
                     headers=_auth_headers(),
                 )
         self.assertEqual(resp.status_code, 200)
-        mock_exec.assert_called_once_with(
-            "today_genie",
-            trigger_source="scheduled_owner_review",
-            send_owner_email=True,
-        )
+        mock_exec.assert_called_once()
+        call = mock_exec.call_args
+        self.assertEqual(call.args, ("today_genie",))
+        self.assertEqual(call.kwargs["trigger_source"], "scheduled_owner_review")
+        self.assertTrue(call.kwargs["send_owner_email"])
+        self.assertTrue(call.kwargs["logical_execution_key"].startswith("today_genie:"))
+        self.assertTrue(call.kwargs["expected_owner_id"])
 
     def test_does_not_call_keysuri_runner(self) -> None:
         with mock.patch("internal_jobs.create_keysuri_owner_review_job") as mock_keysuri:
@@ -383,23 +388,17 @@ class KeysuriEndpointRegressionTests(unittest.TestCase):
 class RootEndpointRegressionTests(unittest.TestCase):
     def test_today_genie_root_unchanged(self) -> None:
         client = TestClient(app)
-        with mock.patch(
-            "main.build_runtime_input",
-            return_value={"today_genie_feed_gate": "block"},
-        ):
+        with mock.patch("main.build_runtime_input") as build_runtime:
             resp = client.post("/", json={"type": "today_genie"})
-        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.status_code, 410)
+        build_runtime.assert_not_called()
 
     def test_tomorrow_genie_root_unchanged(self) -> None:
         client = TestClient(app, raise_server_exceptions=False)
-        with mock.patch("main.build_runtime_input", return_value={}):
-            with mock.patch("main.build_full_prompt", return_value="prompt"):
-                with mock.patch(
-                    "main.call_gemini",
-                    side_effect=RuntimeError("mocked-gemini"),
-                ):
-                    resp = client.post("/", json={"type": "tomorrow_genie"})
-        self.assertEqual(resp.status_code, 500)
+        with mock.patch("main.call_gemini") as call_gemini:
+            resp = client.post("/", json={"type": "tomorrow_genie"})
+        self.assertEqual(resp.status_code, 410)
+        call_gemini.assert_not_called()
 
 
 if __name__ == "__main__":

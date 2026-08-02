@@ -21,6 +21,7 @@ from today_geenee_customer_delivery import (
     strip_owner_operational_handoff,
 )
 from tests.test_admin_routes import post_customer_approve_with_confirm
+from tests.compliance_test_support import explicit_compliance_ready
 
 _FULL_RUNTIME = {"overnight_us_market": {"k": 1}, "macro_indicators": {"k": 2}}
 
@@ -106,6 +107,7 @@ class Batch83TimeoutRemovalTests(unittest.TestCase):
     def test_send_customer_timeout_draft_email_noop(self) -> None:
         self.assertFalse(send_customer_timeout_draft_email("<p>x</p>", {}))
 
+    @explicit_compliance_ready
     def test_approve_never_writes_timeout_statuses(self) -> None:
         run_id = "20260604_120000_today_genie_aabbccdd"
         trace = {
@@ -199,6 +201,7 @@ class Batch83ApproveRouteTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 303)
 
     @patch("today_geenee_customer_delivery.send_today_geenee_customer_final_email")
+    @explicit_compliance_ready
     def test_approve_post_sends_once(self, mock_send: MagicMock) -> None:
         mock_send.return_value = True
         run_id = "20260604_130000_today_genie_bbccddee"
@@ -228,6 +231,7 @@ class Batch83ApproveRouteTests(unittest.TestCase):
 
     @patch("today_geenee_customer_delivery.send_genie_email")
     @patch("today_geenee_customer_delivery._resolve_today_genie_inline_jpeg_parts")
+    @explicit_compliance_ready
     def test_approve_post_outbound_html_contains_review_confirmation_box(
         self,
         mock_inline: MagicMock,
@@ -288,6 +292,7 @@ class Batch83ApproveRouteTests(unittest.TestCase):
         self.assertEqual(err, "already_approved")
 
     @patch("today_geenee_customer_delivery.send_today_geenee_customer_final_email")
+    @explicit_compliance_ready
     def test_approve_failure_persists_failed_delivery_metadata(self, mock_send: MagicMock) -> None:
         mock_send.return_value = False
         trace = {
@@ -362,6 +367,7 @@ class Batch83MimeTests(unittest.TestCase):
 
     @patch("today_geenee_customer_delivery.send_genie_email")
     @patch("today_geenee_customer_delivery._resolve_today_genie_inline_jpeg_parts")
+    @explicit_compliance_ready
     def test_customer_send_no_attachments(self, mock_inline, mock_send) -> None:
         mock_inline.return_value = [("/tmp/top.jpg", "cid.top", "top.jpg")]
         mock_send.return_value = True

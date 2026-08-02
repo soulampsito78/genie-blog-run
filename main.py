@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -117,6 +118,10 @@ import urllib.request
 
 app = FastAPI(title="Genie Project API")
 
+from security_headers import SecurityHeadersMiddleware  # noqa: E402
+
+app.add_middleware(SecurityHeadersMiddleware)
+
 from admin_routes import router as admin_router  # noqa: E402
 from internal_jobs import router as internal_jobs_router  # noqa: E402
 
@@ -128,6 +133,17 @@ if _static_dir.is_dir():
     app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 logger = logging.getLogger(__name__)
+
+
+@app.exception_handler(Exception)
+async def secure_unhandled_exception(_request, exc):
+    """Return a credential-safe 500 with the same headers as normal paths."""
+    from security_headers import apply_security_headers
+
+    logger.error("unhandled application exception error_type=%s", type(exc).__name__)
+    return apply_security_headers(
+        JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+    )
 
 PROJECT_ID = os.getenv("PROJECT_ID", "")
 VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "global")
@@ -152,7 +168,9 @@ def _openweather_query_q() -> str:
         return f"{city},{country}"
     return OPENWEATHER_CITY.strip() or "Seoul,KR"
 
-SUPPORTED_MODES = ["today_genie", "tomorrow_genie"]
+# Public generation is retired. Active programs run only through authenticated
+# internal Scheduler routes; Tomorrow remains paused/inactive.
+SUPPORTED_MODES = ["today_genie"]
 TODAY_GENIE_REQUIRED_NEWS_COUNT = 3
 TODAY_GENIE_CORE_DATE_FEEDS = (
     "overnight_us_market",
@@ -2105,15 +2123,22 @@ def build_today_genie_email_html_for_cid_mime_send(
 def health() -> Dict[str, Any]:
     return {
         "status": "ok",
-        "project_id": PROJECT_ID,
-        "location": VERTEX_LOCATION,
-        "model": VERTEX_MODEL,
-        "supported_modes": SUPPORTED_MODES,
+        "service": "genie-blog-run",
+        "public_generation": False,
     }
 
 
 @app.post("/")
-def generate(job: JobRequest) -> Dict[str, Any]:
+def generate():
+    # Block before runtime input, Vertex initialization, or model work.
+    return JSONResponse(
+        status_code=410,
+        content={"ok": False, "error": "public_generation_retired"},
+    )
+
+
+def generate_internal_payload(job: JobRequest) -> Dict[str, Any]:
+    """Generate for authenticated in-process callers; this is not an HTTP route."""
     mode = job.type
     if mode not in SUPPORTED_MODES:
         raise HTTPException(status_code=400, detail=f"Unsupported type: {mode}")

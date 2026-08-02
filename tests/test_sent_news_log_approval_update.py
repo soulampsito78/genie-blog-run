@@ -8,6 +8,7 @@ from unittest import mock
 
 from admin_store import approve_run, save_run_artifact
 from sent_news_log_store import load_sent_news_log
+from tests.compliance_test_support import explicit_compliance_ready
 
 
 def _selected_items(count: int = 3) -> list[dict]:
@@ -90,6 +91,7 @@ class SentNewsApprovalUpdateTests(unittest.TestCase):
         )
         self.assertEqual(load_sent_news_log(), [])
 
+    @explicit_compliance_ready
     def test_approve_success_updates_sent_log(self) -> None:
         run_id = "20260625_090000_today_genie_aabbcc02"
         _save_approvable(run_id, selected_items=_selected_items(), required_count=3)
@@ -99,6 +101,7 @@ class SentNewsApprovalUpdateTests(unittest.TestCase):
         self.assertTrue(updated.get("sent_log_updated"))
         self.assertEqual(len(load_sent_news_log()), 3)
 
+    @explicit_compliance_ready
     def test_approve_send_failure_does_not_update_sent_log(self) -> None:
         run_id = "20260625_090000_today_genie_aabbcc03"
         _save_approvable(run_id, selected_items=_selected_items(), required_count=3)
@@ -107,6 +110,7 @@ class SentNewsApprovalUpdateTests(unittest.TestCase):
         self.assertIsNone(updated)
         self.assertEqual(load_sent_news_log(), [])
 
+    @explicit_compliance_ready
     def test_selected_items_missing_does_not_update_sent_log(self) -> None:
         run_id = "20260625_090000_today_genie_aabbcc04"
         _save_approvable(run_id)
@@ -117,6 +121,7 @@ class SentNewsApprovalUpdateTests(unittest.TestCase):
         self.assertEqual(updated.get("sent_log_update_error"), "selected_items_missing")
         self.assertEqual(load_sent_news_log(), [])
 
+    @explicit_compliance_ready
     def test_selected_items_below_required_count_does_not_update_sent_log(self) -> None:
         run_id = "20260625_090000_today_genie_aabbcc05"
         _save_approvable(run_id, selected_items=_selected_items(2), required_count=3)
@@ -127,6 +132,7 @@ class SentNewsApprovalUpdateTests(unittest.TestCase):
         self.assertEqual(updated.get("sent_log_update_error"), "selected_items_below_required_count")
         self.assertEqual(load_sent_news_log(), [])
 
+    @explicit_compliance_ready
     def test_required_count_missing_does_not_update_sent_log(self) -> None:
         run_id = "20260625_090000_today_genie_aabbcc06"
         _save_approvable(run_id, selected_items=_selected_items())

@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 
 from admin_store import (
+    admin_runs_dir,
     admin_artifact_bucket_name,
     admin_artifact_gcs_prefix,
     artifact_email_path,
@@ -24,6 +25,7 @@ from admin_store import (
     load_run_email_html,
     now_kst_iso,
     save_run_artifact,
+    update_run_artifact,
 )
 from admin_cost_ledger import save_cost_record_best_effort
 from admin_urls import build_owner_review_admin_url
@@ -211,8 +213,8 @@ def _kst_dashed_date_from_run_id(run_id: str) -> str:
 
 def keysuri_global_service_email_cid_token(run_id: str) -> str:
     """Content-ID token for Global service_full_run owner-review email hero image."""
-    stamp = _kst_date_from_run_id(run_id)
-    return f"{KEYSURI_GLOBAL_SERVICE_EMAIL_CID_PREFIX}_{stamp}"
+    token = re.sub(r"[^A-Za-z0-9_.-]", "_", str(run_id or ""))
+    return f"{KEYSURI_GLOBAL_SERVICE_EMAIL_CID_PREFIX}_{token}"
 
 
 def keysuri_global_service_email_cid_src(run_id: str) -> str:
@@ -221,8 +223,8 @@ def keysuri_global_service_email_cid_src(run_id: str) -> str:
 
 def keysuri_korea_service_email_cid_token(run_id: str) -> str:
     """Content-ID token for Korea service_full_run owner-review email hero image."""
-    stamp = _kst_date_from_run_id(run_id)
-    return f"{KEYSURI_KOREA_SERVICE_EMAIL_CID_PREFIX}_{stamp}"
+    token = re.sub(r"[^A-Za-z0-9_.-]", "_", str(run_id or ""))
+    return f"{KEYSURI_KOREA_SERVICE_EMAIL_CID_PREFIX}_{token}"
 
 
 def keysuri_korea_service_email_cid_src(run_id: str) -> str:
@@ -231,8 +233,8 @@ def keysuri_korea_service_email_cid_src(run_id: str) -> str:
 
 def keysuri_korea_bottom_service_email_cid_token(run_id: str) -> str:
     """Content-ID token for Korea service_full_run bottom-shot image."""
-    stamp = _kst_date_from_run_id(run_id)
-    return f"{KEYSURI_KOREA_BOTTOM_SERVICE_EMAIL_CID_PREFIX}_{stamp}"
+    token = re.sub(r"[^A-Za-z0-9_.-]", "_", str(run_id or ""))
+    return f"{KEYSURI_KOREA_BOTTOM_SERVICE_EMAIL_CID_PREFIX}_{token}"
 
 
 def keysuri_korea_bottom_service_email_cid_src(run_id: str) -> str:
@@ -721,7 +723,7 @@ def resolve_korea_bottom_email_asset_path(run_id: str) -> Tuple[Optional[Path], 
             return local, []
         return None, ["korea_bottom_asset_local_sha_mismatch"]
 
-    dest = _REPO / "output" / "admin_runs" / "keysuri_service_assets" / f"{run_id}_korea_bottom_105936.jpg"
+    dest = admin_runs_dir() / "keysuri_service_assets" / f"{run_id}_korea_bottom_105936.jpg"
     gcs_object = getattr(asset, "gcs_object", "") or KEYSURI_KOREA_BOTTOM_GCS_OBJECT
     issue = _download_korea_bottom_asset_from_gcs(dest, gcs_object)
     if issue:
@@ -2758,7 +2760,7 @@ def _saved_top_image_reference(parent: Dict[str, Any]) -> Tuple[Optional[Path], 
         token = re.sub(r"[^A-Za-z0-9_]", "", str(parent.get("run_id") or "")) or hashlib.sha256(
             f"{gcs_refs[0][0]}/{gcs_refs[0][1]}".encode("utf-8")
         ).hexdigest()[:16]
-        dest = _REPO / "output" / "admin_runs" / "keysuri_service_assets" / f"{token}_restored_top.jpg"
+        dest = admin_runs_dir() / "keysuri_service_assets" / f"{token}_restored_top.jpg"
         last_issue = ""
         for bucket, obj, label in gcs_refs:
             issue = _download_keysuri_top_image_from_gcs(dest, bucket_name=bucket, object_name=obj)
@@ -2986,6 +2988,106 @@ def _maybe_write_owner_review_exposure_log(
     _write_owner_review_exposure_log(meta, exposure_kind=exposure_kind)
 
 
+def resume_keysuri_owner_review_email(
+    run_id: str,
+    *,
+    logical_execution_key: str,
+    expected_owner_id: str,
+    send_fn: Optional[Callable[..., bool]] = None,
+) -> Dict[str, Any]:
+    """Resume only the email stage of an artifacts-ready KeeSuri execution."""
+    meta = load_run_artifact(run_id, normalize=False) or {}
+    pid = str(meta.get("program_id") or meta.get("mode") or "")
+    if pid not in _KEYSURI_PROGRAMS:
+        return {"ok": False, "run_id": run_id, "error": "resume_artifact_missing"}
+    email_html = load_run_email_html(run_id) or ""
+    top_path, _fields = _saved_top_image_reference(meta)
+    bottom_path = _saved_korea_bottom_image_path(meta) if pid == PROGRAM_KOREA else None
+    if not email_html.strip() or top_path is None or not top_path.is_file():
+        return {"ok": False, "run_id": run_id, "error": "resume_artifacts_unavailable"}
+    if pid == PROGRAM_KOREA and (bottom_path is None or not bottom_path.is_file()):
+        return {"ok": False, "run_id": run_id, "error": "resume_artifacts_unavailable"}
+    if os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip() not in ("1", "true", "yes"):
+        return {"ok": False, "run_id": run_id, "error": "owner_review_send_gate_off"}
+
+    subject = str(meta.get("owner_email_subject") or _PROGRAM_EMAIL_SUBJECT.get(pid) or "")
+    if pid == PROGRAM_GLOBAL:
+        inline_parts = inline_jpeg_parts_for_global_service_email(top_path, run_id)
+    else:
+        inline_parts = inline_jpeg_parts_for_korea_service_email(
+            top_path,
+            run_id,
+            bottom_image_path=bottom_path,
+        )
+    sender = send_fn or send_genie_email
+    from execution_state import deliver_owner_review_once
+
+    delivery = deliver_owner_review_once(
+        logical_execution_key,
+        expected_owner_id=expected_owner_id,
+        send=lambda: bool(
+            sender(
+                email_html,
+                subject,
+                inline_jpeg_parts=inline_parts,
+                attachment_jpeg_parts=[],
+            )
+        ),
+    )
+
+    def _mut(current: Dict[str, Any]) -> None:
+        current["email_sent"] = delivery.accepted
+        current["owner_email_delivery_status"] = "smtp_accepted" if delivery.accepted else "failed"
+        current["owner_email_smtp_attempted"] = delivery.sender_called
+
+    update_run_artifact(run_id, _mut)
+    return {
+        "ok": delivery.accepted,
+        "run_id": run_id,
+        "program_id": pid,
+        "email_sent": delivery.accepted,
+        "sender_called": delivery.sender_called,
+        "skipped_duplicate": delivery.duplicate_suppressed,
+        "html_path": str(meta.get("html_path") or run_id),
+        "error": None if delivery.accepted else "smtp_send_failed",
+    }
+
+
+def _deliver_manual_owner_review(
+    *,
+    program_id: str,
+    run_id: str,
+    trigger_source: str,
+    send: Callable[[], bool],
+):
+    from execution_state import deliver_owner_review_once, reserve_manual_execution
+
+    reservation = reserve_manual_execution(
+        program_id=program_id,
+        run_id=run_id,
+        trigger_source=trigger_source,
+    )
+    delivery = deliver_owner_review_once(
+        reservation.logical_execution_key,
+        expected_owner_id=reservation.owner_id,
+        send=send,
+    )
+    return delivery.accepted, delivery.sender_called, reservation
+
+
+def _finish_manual_owner_review(reservation, *, email_sent: bool) -> None:
+    if reservation is None:
+        return
+    from execution_state import update_execution
+
+    update_execution(
+        reservation.logical_execution_key,
+        expected_owner_id=reservation.owner_id,
+        state="owner_review_emailed" if email_sent else "failed_retryable",
+        last_safe_state="owner_review_emailed" if email_sent else "artifacts_ready",
+    )
+
+
 def _owner_subject_for_regen(parent: Dict[str, Any], regenerated_subject: str, regen_type: str) -> str:
     prefix = _text_regen_subject_prefix(regen_type)
     if regen_type == "image_only":
@@ -3140,6 +3242,7 @@ def run_keysuri_image_only_reissue(
 
     email_sent = False
     smtp_attempted = False
+    delivery_reservation = None
     if send_owner_email:
         if os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip() not in ("1", "true", "yes"):
             issue_codes.append("owner_review_send_gate_off")
@@ -3158,13 +3261,16 @@ def run_keysuri_image_only_reissue(
                     )
                 )
             sender = send_fn or send_genie_email
-            email_sent = bool(
-                sender(
+            email_sent, smtp_attempted, delivery_reservation = _deliver_manual_owner_review(
+                program_id=pid,
+                run_id=child_run_id,
+                trigger_source=trigger_source,
+                send=lambda: bool(sender(
                     email_html,
                     subject,
                     inline_jpeg_parts=inline_parts,
                     attachment_jpeg_parts=[],
-                )
+                )),
             )
 
     meta = build_service_artifact_fields(
@@ -3250,6 +3356,7 @@ def run_keysuri_image_only_reissue(
     meta["owner_email_subject"] = subject
     _log_owner_email_delivery_event(program_id=pid, run_id=child_run_id, fields=owner_email_fields)
     saved_run_id = save_run_artifact(meta, email_html=email_html)
+    _finish_manual_owner_review(delivery_reservation, email_sent=email_sent)
 
     return {
         "ok": image_outcome.ok and (not send_owner_email or email_sent),
@@ -3372,7 +3479,7 @@ def run_keysuri_text_only_reissue(
         image_mode=IMAGE_MODE_PREVIEW,
         auto_prepare=False,
     )
-    out_dir = _REPO / "output" / "admin_runs" / "keysuri_service"
+    out_dir = admin_runs_dir() / "keysuri_service"
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path = out_dir / f"{child_run_id}.html"
     html_path.write_text(preview_html, encoding="utf-8")
@@ -3441,6 +3548,7 @@ def run_keysuri_text_only_reissue(
 
     smtp_attempted = False
     email_sent = False
+    delivery_reservation = None
     if send_owner_email:
         if os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip() not in ("1", "true", "yes"):
             pass
@@ -3457,13 +3565,16 @@ def run_keysuri_text_only_reissue(
                     )
                 )
             sender = send_fn or send_genie_email
-            email_sent = bool(
-                sender(
+            email_sent, smtp_attempted, delivery_reservation = _deliver_manual_owner_review(
+                program_id=pid,
+                run_id=child_run_id,
+                trigger_source=trigger_source,
+                send=lambda: bool(sender(
                     email_html,
                     owner_subject,
                     inline_jpeg_parts=inline_parts,
                     attachment_jpeg_parts=[],
-                )
+                )),
             )
 
     meta = build_service_artifact_fields(
@@ -3543,6 +3654,7 @@ def run_keysuri_text_only_reissue(
         meta, email_sent=email_sent, exposure_kind="owner_review_reissue_body", parent=parent
     )
     save_run_artifact(meta, email_html=email_html)
+    _finish_manual_owner_review(delivery_reservation, email_sent=email_sent)
     return {
         "ok": not send_owner_email or email_sent,
         "run_id": child_run_id,
@@ -3743,7 +3855,7 @@ def run_keysuri_text_and_image_reissue(
         image_mode=IMAGE_MODE_PREVIEW,
         auto_prepare=False,
     )
-    out_dir = _REPO / "output" / "admin_runs" / "keysuri_service"
+    out_dir = admin_runs_dir() / "keysuri_service"
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path = out_dir / f"{child_run_id}.html"
     html_path.write_text(preview_html, encoding="utf-8")
@@ -3804,6 +3916,7 @@ def run_keysuri_text_and_image_reissue(
 
     smtp_attempted = False
     email_sent = False
+    delivery_reservation = None
     if send_owner_email:
         if os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip() not in ("1", "true", "yes"):
             pass
@@ -3819,13 +3932,16 @@ def run_keysuri_text_and_image_reissue(
                     child_run_id,
                     bottom_image_path=bottom_image_path,
                 )
-            email_sent = bool(
-                sender(
+            email_sent, smtp_attempted, delivery_reservation = _deliver_manual_owner_review(
+                program_id=pid,
+                run_id=child_run_id,
+                trigger_source=trigger_source,
+                send=lambda: bool(sender(
                     email_html,
                     owner_subject,
                     inline_jpeg_parts=inline_parts,
                     attachment_jpeg_parts=[],
-                )
+                )),
             )
 
     meta = build_service_artifact_fields(
@@ -3900,6 +4016,7 @@ def run_keysuri_text_and_image_reissue(
         meta, email_sent=email_sent, exposure_kind="owner_review_reissue_body_and_image", parent=parent
     )
     save_run_artifact(meta, email_html=email_html)
+    _finish_manual_owner_review(delivery_reservation, email_sent=email_sent)
     return {
         "ok": image_outcome.ok and (not send_owner_email or email_sent),
         "run_id": child_run_id,
@@ -3952,7 +4069,7 @@ def _render_service_html(
     run_id: str,
     image_mode: str = IMAGE_MODE_PREVIEW,
 ) -> tuple[str, str]:
-    out_dir = _REPO / "output" / "admin_runs" / "keysuri_service"
+    out_dir = admin_runs_dir() / "keysuri_service"
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path = out_dir / f"{run_id}.html"
     contract_fixture = _build_service_contract_fixture(
@@ -4014,6 +4131,10 @@ def run_keysuri_service_full_run(
     bottom_watermark_fn: Optional[Callable[[Path, Path], Path]] = None,
     send_fn: Optional[Callable[..., bool]] = None,
     image_upload_fn=None,
+    run_id_override: Optional[str] = None,
+    logical_execution_key: str = "",
+    expected_owner_id: str = "",
+    attempt: int = 1,
 ) -> Dict[str, Any]:
     """Service-level Kee-Suri full run for keysuri_global_tech or keysuri_korea_tech.
 
@@ -4034,6 +4155,10 @@ def run_keysuri_service_full_run(
             bottom_watermark_fn=bottom_watermark_fn,
             send_fn=send_fn,
             image_upload_fn=image_upload_fn,
+            run_id_override=run_id_override,
+            logical_execution_key=logical_execution_key,
+            expected_owner_id=expected_owner_id,
+            attempt=attempt,
             _run_context=run_context,
         )
     except Exception as exc:
@@ -4076,6 +4201,10 @@ def _run_keysuri_service_full_run_impl(
     bottom_watermark_fn: Optional[Callable[[Path, Path], Path]] = None,
     send_fn: Optional[Callable[..., bool]] = None,
     image_upload_fn=None,
+    run_id_override: Optional[str] = None,
+    logical_execution_key: str = "",
+    expected_owner_id: str = "",
+    attempt: int = 1,
     _run_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Service-level Kee-Suri full run for keysuri_global_tech or keysuri_korea_tech."""
@@ -4095,7 +4224,10 @@ def _run_keysuri_service_full_run_impl(
 
     request_start = now_kst_iso()
     request_started_perf = time.perf_counter()
-    run_id = generate_run_id(pid)
+    run_id = str(run_id_override or "").strip() or generate_run_id(pid)
+    execution_key = str(logical_execution_key or "").strip()
+    execution_owner = str(expected_owner_id or "").strip()
+    manual_reservation = None
     if _run_context is not None:
         # Expose identity to the exception boundary as soon as it exists.
         _run_context["run_id"] = run_id
@@ -4479,7 +4611,7 @@ def _run_keysuri_service_full_run_impl(
         image_mode=IMAGE_MODE_PREVIEW,
         auto_prepare=False,
     )
-    out_dir = _REPO / "output" / "admin_runs" / "keysuri_service"
+    out_dir = admin_runs_dir() / "keysuri_service"
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path = out_dir / f"{run_id}.html"
     html_path.write_text(html, encoding="utf-8")
@@ -4637,20 +4769,19 @@ def _run_keysuri_service_full_run_impl(
         else:
             smtp_attempted = True
             sender = send_fn or send_genie_email
+            send_call: Optional[Callable[[], bool]] = None
             if pid == PROGRAM_GLOBAL:
                 if not gen_image_abs.is_file():
                     issue_codes.append("generated_image_missing_for_cid_email")
                 else:
                     os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
                     inline_parts = inline_jpeg_parts_for_global_service_email(gen_image_abs, run_id)
-                    email_sent = bool(
-                        sender(
+                    send_call = lambda: bool(sender(
                             email_html,
                             subject,
                             inline_jpeg_parts=inline_parts,
                             attachment_jpeg_parts=[],
-                        )
-                    )
+                        ))
             elif pid == PROGRAM_KOREA:
                 if not gen_image_abs.is_file():
                     issue_codes.append("generated_image_missing_for_cid_email")
@@ -4661,16 +4792,37 @@ def _run_keysuri_service_full_run_impl(
                         run_id,
                         bottom_image_path=bottom_image_path,
                     )
-                    email_sent = bool(
-                        sender(
+                    send_call = lambda: bool(sender(
                             email_html,
                             subject,
                             inline_jpeg_parts=inline_parts,
                             attachment_jpeg_parts=[],
-                        )
-                    )
+                        ))
             else:
-                email_sent = bool(sender(email_html, subject))
+                send_call = lambda: bool(sender(email_html, subject))
+            if send_call is not None:
+                if not execution_key:
+                    from execution_state import reserve_manual_execution
+
+                    manual_reservation = reserve_manual_execution(
+                        program_id=pid,
+                        run_id=run_id,
+                        trigger_source=trigger_source,
+                    )
+                    execution_key = manual_reservation.logical_execution_key
+                    execution_owner = manual_reservation.owner_id
+                if execution_key:
+                    from execution_state import deliver_owner_review_once
+
+                    delivery = deliver_owner_review_once(
+                        execution_key,
+                        expected_owner_id=execution_owner,
+                        send=send_call,
+                    )
+                    email_sent = delivery.accepted
+                    smtp_attempted = delivery.sender_called
+                else:
+                    raise RuntimeError("owner_review_execution_identity_required")
 
     meta = build_service_artifact_fields(
         run_id=run_id,
@@ -4719,18 +4871,26 @@ def _run_keysuri_service_full_run_impl(
             meta["generation_diagnostics"] = safe_recovery_diagnostics
             meta.update(safe_recovery_diagnostics)
     meta.update(visible_text_quality_fields)
+    meta["logical_execution_key"] = execution_key or None
+    meta["attempt"] = max(1, int(attempt or 1))
+    meta["retry_count"] = max(0, meta["attempt"] - 1)
+    meta["selected_count"] = int(meta.get("selected_count") or len(meta.get("selected_items") or []))
+    meta["shortfall_count"] = max(0, KEYSURI_TOP_NEWS_COUNT - int(meta["selected_count"]))
+    meta["required_images_complete"] = bool(
+        image_outcome.ok and (pid != PROGRAM_KOREA or bottom_image_path is not None)
+    )
     meta["owner_email_subject"] = subject
     _log_owner_email_delivery_event(program_id=pid, run_id=run_id, fields=owner_email_fields)
     meta["artifact_status"] = "emailed" if email_sent else "stored"
+    meta["current_stage"] = "owner_review_emailed" if email_sent else "artifacts_ready"
+    meta["terminal_status"] = meta["current_stage"]
     _maybe_write_owner_review_exposure_log(meta, email_sent=email_sent, exposure_kind="owner_review_email")
     meta["generated_image_path_raw"] = raw_generated_image_path
     meta["generated_image_path_watermarked"] = watermarked_generated_image_path
     meta.update(top_image_persist_fields)
     meta["top_shot_watermark_status"] = "applied"
     meta["top_shot_watermark_text"] = "MirAI:ON"
-    # Image CID tracking for owner/customer email alignment validation.
-    # NOTE: CIDs are date-scoped (keysuri_{top,bottom}shot_korea_YYYYMMDD).
-    # TODO: migrate to run_id-scoped CIDs to eliminate same-day cache collision risk.
+    # Reissues use distinct run-scoped CIDs and cannot collide in message caches.
     top_cid = (
         keysuri_global_service_email_cid_token(run_id)
         if pid == PROGRAM_GLOBAL
@@ -4820,6 +4980,16 @@ def _run_keysuri_service_full_run_impl(
         meta["artifact_save_failed"] = True
         logger.exception(
             "keysuri_service_full_run: run artifact save failed run_id=%s", run_id
+        )
+
+    if manual_reservation is not None:
+        from execution_state import update_execution
+
+        update_execution(
+            execution_key,
+            expected_owner_id=execution_owner,
+            state="owner_review_emailed" if email_sent else "failed_retryable",
+            last_safe_state="owner_review_emailed" if email_sent else "artifacts_ready",
         )
 
     ok = image_outcome.ok and (not send_owner_email or email_sent) and artifact_saved

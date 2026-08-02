@@ -458,36 +458,31 @@ class KeysuriInternalJobsRegressionTests(unittest.TestCase):
     def test_supported_modes_unchanged(self) -> None:
         import main
 
-        self.assertEqual(main.SUPPORTED_MODES, ["today_genie", "tomorrow_genie"])
+        self.assertEqual(main.SUPPORTED_MODES, ["today_genie"])
 
     def test_keysuri_not_routable_via_root_post(self) -> None:
         client = TestClient(app)
         resp = client.post("/", json={"type": "keysuri_global_tech"})
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn("Unsupported type", resp.json()["detail"])
+        self.assertEqual(resp.status_code, 410)
+        self.assertEqual(resp.json()["error"], "public_generation_retired")
 
     def test_today_genie_root_endpoint_unchanged(self) -> None:
         client = TestClient(app)
-        with mock.patch(
-            "main.build_runtime_input",
-            return_value={"today_genie_feed_gate": "block"},
-        ):
+        with mock.patch("main.build_runtime_input") as build_runtime:
             resp = client.post("/", json={"type": "today_genie"})
-        self.assertEqual(resp.status_code, 422)
-        self.assertEqual(resp.json()["detail"]["reason"], "today_genie_feed_unavailable")
+        self.assertEqual(resp.status_code, 410)
+        build_runtime.assert_not_called()
 
     def test_tomorrow_genie_root_endpoint_unchanged(self) -> None:
         client = TestClient(app, raise_server_exceptions=False)
-        with mock.patch("main.build_runtime_input", return_value={}):
-            with mock.patch("main.build_full_prompt", return_value="prompt") as build_prompt:
-                with mock.patch(
-                    "main.call_gemini",
-                    side_effect=RuntimeError("mocked-gemini"),
-                ) as call_gemini:
-                    resp = client.post("/", json={"type": "tomorrow_genie"})
-        self.assertEqual(resp.status_code, 500)
-        build_prompt.assert_called_once()
-        call_gemini.assert_called_once_with("prompt", "tomorrow_genie", usage_sink={})
+        with mock.patch("main.build_runtime_input") as build_runtime, mock.patch(
+            "main.build_full_prompt"
+        ) as build_prompt, mock.patch("main.call_gemini") as call_gemini:
+            resp = client.post("/", json={"type": "tomorrow_genie"})
+        self.assertEqual(resp.status_code, 410)
+        build_runtime.assert_not_called()
+        build_prompt.assert_not_called()
+        call_gemini.assert_not_called()
 
     def test_process_approval_timeouts_retired_policy_unchanged(self) -> None:
         os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"

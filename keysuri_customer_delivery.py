@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from admin_store import resolve_customer_recipients
+from compliance_footer import (
+    append_compliance_footer,
+    compliance_readiness,
+)
 from email_sender import parse_customer_to_addrs, send_genie_email
 from keysuri_email_identity import build_keysuri_customer_subject, sanitize_preheader_text
 from keysuri_contract_preview_renderer import (
@@ -28,6 +32,7 @@ from keysuri_service_full_run import (
     inline_jpeg_parts_for_global_service_email,
     inline_jpeg_parts_for_korea_service_email,
     keysuri_global_service_email_cid_token,
+    keysuri_korea_service_email_cid_token as _run_scoped_korea_cid_token,
 )
 from keysuri_visible_text_quality import (
     KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
@@ -37,7 +42,9 @@ from keysuri_visible_text_quality import (
 logger = logging.getLogger(__name__)
 
 _KEYSURI_MODES = frozenset({PROGRAM_GLOBAL, PROGRAM_KOREA})
+_GLOBAL_CID_PREFIX = "keysuri_topshot_global_"
 _KOREA_CID_PREFIX = "keysuri_topshot_korea"
+_KOREA_BOTTOM_CID_PREFIX = "keysuri_bottomshot_korea_"
 _KOREA_BOTTOM_MISSING_REASON = "korea_bottom_image_missing_for_customer_email"
 _GENERATED_V6_MULTI_REF_SOURCE = "generated_v6_multi_ref"
 
@@ -110,6 +117,9 @@ def customer_delivery_config_ready() -> tuple[bool, str]:
     user = os.getenv("SMTP_USER", "").strip()
     if not (host and user):
         return False, "missing_smtp"
+    compliance = compliance_readiness()
+    if not compliance["ready"]:
+        return False, "compliance_not_ready"
     return True, "ok"
 
 
@@ -124,7 +134,7 @@ def _kst_date_from_run_id(run_id: str) -> str:
 
 
 def keysuri_korea_service_email_cid_token(run_id: str) -> str:
-    return f"{_KOREA_CID_PREFIX}_{_kst_date_from_run_id(run_id)}"
+    return _run_scoped_korea_cid_token(run_id)
 
 
 def keysuri_service_email_cid_token(program_id: str, run_id: str) -> str:
@@ -430,6 +440,62 @@ def _cid_tokens_from_html(saved_html: str) -> List[str]:
     return [m.group(1).strip() for m in _CID_SRC_RE.finditer(saved_html or "") if m.group(1).strip()]
 
 
+def _normalized_cid_token(value: Any) -> str:
+    token = str(value or "").strip()
+    return token[4:] if token.lower().startswith("cid:") else token
+
+
+def _metadata_cid_list(value: Any) -> List[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [_normalized_cid_token(item) for item in value]
+
+
+def _preserved_artifact_cids(saved_html: str, meta: Dict[str, Any], mode: str) -> tuple[str, str]:
+    """Return exact CID tokens already persisted in HTML or metadata."""
+    html_tokens = _cid_tokens_from_html(saved_html)
+    top_prefix = _GLOBAL_CID_PREFIX if mode == PROGRAM_GLOBAL else f"{_KOREA_CID_PREFIX}_"
+    top = next((token for token in html_tokens if token.startswith(top_prefix)), "")
+    bottom = next((token for token in html_tokens if token.startswith(_KOREA_BOTTOM_CID_PREFIX)), "")
+
+    metadata_tokens = [
+        _normalized_cid_token(meta.get("top_image_cid")),
+        *_metadata_cid_list(meta.get("owner_email_image_cids")),
+        *_metadata_cid_list(meta.get("customer_email_image_cids")),
+    ]
+    if not top:
+        top = next((token for token in metadata_tokens if token.startswith(top_prefix)), "")
+    if mode == PROGRAM_KOREA and not bottom:
+        bottom_candidates = [
+            _normalized_cid_token(meta.get("bottom_image_cid")),
+            _normalized_cid_token(meta.get("korea_bottom_shot_cid")),
+            *metadata_tokens,
+        ]
+        bottom = next(
+            (token for token in bottom_candidates if token.startswith(_KOREA_BOTTOM_CID_PREFIX)),
+            "",
+        )
+    return top, bottom
+
+
+def _apply_preserved_artifact_cids(
+    parts: Optional[List[Tuple[str, str, str]]],
+    *,
+    saved_html: str,
+    meta: Dict[str, Any],
+    mode: str,
+) -> Optional[List[Tuple[str, str, str]]]:
+    if not parts:
+        return parts
+    top, bottom = _preserved_artifact_cids(saved_html, meta, mode)
+    resolved = list(parts)
+    if top:
+        resolved[0] = (resolved[0][0], top, resolved[0][2])
+    if mode == PROGRAM_KOREA and bottom and len(resolved) > 1:
+        resolved[1] = (resolved[1][0], bottom, resolved[1][2])
+    return resolved
+
+
 def resolve_keysuri_inline_jpeg_parts(
     saved_html: str,
     meta: Dict[str, Any],
@@ -450,20 +516,41 @@ def resolve_keysuri_inline_jpeg_parts(
 
     if mode == PROGRAM_KOREA and _is_korea_generated_v6(meta):
         parts, _ = _resolve_korea_generated_inline_parts(meta, run_id, download_fn=download_fn)
-        return parts
+        return _apply_preserved_artifact_cids(
+            parts,
+            saved_html=saved_html,
+            meta=meta,
+            mode=mode,
+        )
 
     image_path = _resolve_generated_image_path(meta)
     if image_path is None:
         return None
     if mode == PROGRAM_GLOBAL:
-        return inline_jpeg_parts_for_global_service_email(image_path, run_id)
+        parts = inline_jpeg_parts_for_global_service_email(image_path, run_id)
+        return _apply_preserved_artifact_cids(
+            parts,
+            saved_html=saved_html,
+            meta=meta,
+            mode=mode,
+        )
     # Korea fixed_105936_fallback: both Top and Bottom must be present locally.
     # If Bottom is missing the HTML will have a broken cid:keysuri_bottomshot_korea_*
     # reference, so we block rather than silently omit.
     bottom_path = _resolve_korea_bottom_image_path(meta)
     if bottom_path is None:
         return None
-    return inline_jpeg_parts_for_korea_service_email(image_path, run_id, bottom_image_path=bottom_path)
+    parts = inline_jpeg_parts_for_korea_service_email(
+        image_path,
+        run_id,
+        bottom_image_path=bottom_path,
+    )
+    return _apply_preserved_artifact_cids(
+        parts,
+        saved_html=saved_html,
+        meta=meta,
+        mode=mode,
+    )
 
 
 def send_keysuri_customer_final_email(
@@ -499,7 +586,12 @@ def send_keysuri_customer_final_email(
 
     try:
         html_body = prepare_keysuri_customer_final_html(saved_html, meta=meta)
-    except ValueError as exc:
+        html_body = append_compliance_footer(
+            html_body,
+            run_id=str(meta.get("run_id") or ""),
+            program_id=mode,
+        )
+    except (ValueError, RuntimeError) as exc:
         _last_delivery_result = KeysuriCustomerDeliveryResult(
             sent=False,
             reason=str(exc),

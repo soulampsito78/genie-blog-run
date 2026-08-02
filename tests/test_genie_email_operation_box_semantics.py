@@ -20,6 +20,7 @@ from main import email_operational_handoff_meta
 from orchestrator import OrchestrationResult, build_run_artifact_metadata
 from publishing_policy import PublishingDecision
 from renderers import render_email_operational_box
+from tests.compliance_test_support import explicit_compliance_ready
 from today_geenee_customer_delivery import (
     prepare_customer_final_html,
     send_today_geenee_customer_final_email,
@@ -307,6 +308,7 @@ class GenieCustomerReviewConfirmationBoxTests(unittest.TestCase):
 
     @patch("today_geenee_customer_delivery.send_genie_email")
     @patch("today_geenee_customer_delivery._resolve_today_genie_inline_jpeg_parts")
+    @explicit_compliance_ready
     def test_send_path_passes_review_passed_into_customer_html(
         self,
         mock_inline,
