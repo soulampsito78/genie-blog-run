@@ -226,7 +226,7 @@ class ComplianceEnvironmentIntegrityTests(unittest.TestCase):
         self.assertTrue(summary["ok"])
         self.assertTrue(summary["retired"])
         self.assertEqual(summary["sent"], 0)
-        artifact_list.assert_called_once()
+        artifact_list.assert_not_called()
         sender.assert_not_called()
 
     def test_unrelated_test_does_not_inherit_fixture_values(self) -> None:
