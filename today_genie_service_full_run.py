@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from admin_store import artifact_email_path, artifact_json_path, generate_run_id, now_kst_iso, save_run_artifact
+from admin_store import admin_runs_dir, artifact_email_path, artifact_json_path, generate_run_id, now_kst_iso, save_run_artifact
 from admin_urls import build_owner_review_admin_url
 from orchestrator import OrchestrationResult, run_genie_job
 from renderers import today_genie_email_inline_cid_pair
@@ -25,7 +25,15 @@ logger = logging.getLogger(__name__)
 
 _REPO = Path(__file__).resolve().parent
 _REF_IMAGE = _REPO / "static" / "email" / "GENIE_REF_today_genie_master_v1.jpg"
-_OUTPUT_IMAGES = _REPO / "output" / "images" / "today_genie"
+_DEFAULT_OUTPUT_IMAGES = _REPO / "output" / "images" / "today_genie"
+# Retained as a patchable compatibility seam for existing image tests.
+_OUTPUT_IMAGES = _DEFAULT_OUTPUT_IMAGES
+
+
+def _output_images_dir() -> Path:
+    if _OUTPUT_IMAGES != _DEFAULT_OUTPUT_IMAGES:
+        return _OUTPUT_IMAGES
+    return admin_runs_dir().parent / "images" / "today_genie"
 
 # Today_Geenee brand footer/watermark (restores f82dbd1 behavior; see
 # today_genie_run_images.generate_today_genie_run_images orphaned at b843bc4).
@@ -146,7 +154,7 @@ def generate_today_genie_service_images(
         bundle.bottom.error_code = ERROR_IMAGE_GENERATION_FAILED
         return bundle
 
-    out_dir = _OUTPUT_IMAGES / run_id
+    out_dir = _output_images_dir() / run_id
     top_out = out_dir / f"{run_id}_top.jpg"
     bot_out = out_dir / f"{run_id}_bottom.jpg"
     top_prompt = f"{mood}{top_base}\n\n{today_genie_suffix_studio_hero(run_id)}".strip()
@@ -437,6 +445,9 @@ def run_today_genie_service_full_run(
         workflow_status=workflow_status,
     )
     meta.update(_dedup_artifact_fields_from_payload(payload))
+    meta["shortfall_count"] = max(0, 3 - int(meta.get("selected_count") or 0))
+    meta["current_stage"] = "owner_review_emailed" if email_sent else "artifacts_ready"
+    meta["terminal_status"] = meta["current_stage"]
     if image_bundle.ok:
         meta["generated_image_paths"] = {
             "top": image_bundle.top.generated_image_path,

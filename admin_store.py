@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
+from artifact_atomic import atomic_update_json, atomic_write_text
 from delivery_trace import build_customer_email_delivery_fields, sanitize_email_diagnostic
 from sent_news_log_store import append_or_upsert_sent_news
 
@@ -126,7 +127,8 @@ def repo_root() -> Path:
 
 
 def admin_runs_dir() -> Path:
-    d = repo_root() / "output" / "admin_runs"
+    override = os.getenv("GENIE_ADMIN_ARTIFACT_ROOT", "").strip()
+    d = Path(override) if override else repo_root() / "output" / "admin_runs"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -281,6 +283,31 @@ def _gcs_atomic_update_json(
     raise RuntimeError("gcs_generation_conflict") from last_error
 
 
+def _gcs_atomic_write_text(
+    key: str,
+    text: str,
+    *,
+    content_type: str,
+    attempts: int = 5,
+) -> None:
+    last_error: Optional[Exception] = None
+    for _ in range(max(1, attempts)):
+        _raw, generation = _gcs_download_text_with_generation(key)
+        try:
+            _gcs_upload_text(
+                key,
+                text,
+                content_type=content_type,
+                if_generation_match=generation,
+            )
+            return
+        except Exception as exc:
+            if type(exc).__name__ not in {"PreconditionFailed", "Conflict"}:
+                raise
+            last_error = exc
+    raise RuntimeError("gcs_generation_conflict") from last_error
+
+
 def _gcs_delete_object(key: str) -> None:
     blob = _get_gcs_bucket().blob(key)
     if blob.exists():
@@ -288,11 +315,20 @@ def _gcs_delete_object(key: str) -> None:
 
 
 def _write_json_blob(run_id: str, meta: Dict[str, Any]) -> None:
-    payload = json.dumps(meta, ensure_ascii=False, indent=2)
     if _uses_gcs_backend():
-        _gcs_upload_text(gcs_json_object_key(run_id), payload, content_type="application/json")
+        def _replace(current: Dict[str, Any]) -> None:
+            current.clear()
+            current.update(meta)
+
+        _gcs_atomic_update_json(gcs_json_object_key(run_id), mutator=_replace)
         return
-    artifact_json_path(run_id).write_text(payload, encoding="utf-8")
+    path = artifact_json_path(run_id)
+
+    def _replace_local(current: Dict[str, Any]) -> None:
+        current.clear()
+        current.update(meta)
+
+    atomic_update_json(path, default={}, mutator=_replace_local)
 
 
 def _read_json_blob(run_id: str) -> Optional[Dict[str, Any]]:
@@ -317,13 +353,13 @@ def _read_json_blob(run_id: str) -> Optional[Dict[str, Any]]:
 
 def _write_email_blob(run_id: str, email_html: str) -> None:
     if _uses_gcs_backend():
-        _gcs_upload_text(
+        _gcs_atomic_write_text(
             gcs_email_object_key(run_id),
             email_html,
             content_type="text/html; charset=utf-8",
         )
         return
-    artifact_email_path(run_id).write_text(email_html, encoding="utf-8")
+    atomic_write_text(artifact_email_path(run_id), email_html)
 
 
 def _read_email_blob(run_id: str) -> Optional[str]:
@@ -438,11 +474,26 @@ def save_run_artifact(
     if meta.get("customer_delivery_status") is None:
         meta["customer_delivery_status"] = "not_sent"
     meta["artifact_status"] = derive_artifact_status(meta)
+    meta["artifact_schema_version"] = "admin_run_artifact_v2"
+    meta["artifact_manifest_state"] = "writing"
+    meta["required_artifacts"] = ["metadata"] + (
+        ["owner_email_html"] if email_html and email_html.strip() else []
+    )
     _apply_artifact_storage_fields(meta)
     _sync_optional_preview_artifacts(run_id, meta)
     _write_json_blob(run_id, meta)
     if email_html and email_html.strip():
         _write_email_blob(run_id, email_html)
+    meta["artifact_manifest_state"] = "complete"
+    meta["current_stage"] = str(meta.get("current_stage") or "artifacts_ready")
+    _write_json_blob(run_id, meta)
+    try:
+        from run_metadata_index import update_run_metadata_index
+
+        update_run_metadata_index(meta)
+    except Exception as exc:
+        meta["metadata_index_update_error"] = type(exc).__name__
+        _write_json_blob(run_id, meta)
 
     parent_id = str(meta.get("parent_run_id") or "").strip()
     if parent_id and validate_run_id(parent_id):
@@ -452,12 +503,11 @@ def save_run_artifact(
 
 
 def _increment_parent_reissue_count(parent_run_id: str) -> None:
-    parent = _read_json_blob(parent_run_id)
-    if not parent:
-        return
-    parent["reissue_count"] = int(parent.get("reissue_count") or 0) + 1
-    parent["artifact_status"] = "reissue_requested"
-    _write_json_blob(parent_run_id, parent)
+    def _mut(parent: Dict[str, Any]) -> None:
+        parent["reissue_count"] = int(parent.get("reissue_count") or 0) + 1
+        parent["artifact_status"] = "reissue_requested"
+
+    update_run_artifact(parent_run_id, _mut)
 
 
 def sanitize_delivery_error_summary(raw: str, *, max_len: int = 240) -> str:
@@ -808,12 +858,41 @@ def update_run_artifact(
 ) -> Optional[Dict[str, Any]]:
     if not validate_run_id(run_id):
         return None
-    meta = _read_json_blob(run_id)
-    if not meta:
-        return None
-    mutator(meta)
-    meta["artifact_status"] = derive_artifact_status(meta)
-    _write_json_blob(run_id, meta)
+    if _uses_gcs_backend():
+        key = gcs_json_object_key(run_id)
+
+        def _mut(meta: Dict[str, Any]) -> None:
+            if not meta:
+                raise RuntimeError("artifact_missing")
+            mutator(meta)
+            meta["artifact_status"] = derive_artifact_status(meta)
+            meta["artifact_schema_version"] = "admin_run_artifact_v2"
+
+        try:
+            meta = _gcs_atomic_update_json(key, mutator=_mut)
+        except RuntimeError as exc:
+            if str(exc) == "artifact_missing":
+                return None
+            raise
+    else:
+        path = artifact_json_path(run_id)
+        if not path.is_file():
+            return None
+
+        def _mut_local(meta: Dict[str, Any]) -> None:
+            if not meta:
+                raise RuntimeError("artifact_missing")
+            mutator(meta)
+            meta["artifact_status"] = derive_artifact_status(meta)
+            meta["artifact_schema_version"] = "admin_run_artifact_v2"
+
+        meta, _ = atomic_update_json(path, default={}, mutator=_mut_local)
+    try:
+        from run_metadata_index import update_run_metadata_index
+
+        update_run_metadata_index(meta)
+    except Exception:
+        pass
     return meta
 
 
@@ -1262,39 +1341,11 @@ def process_approval_timeouts(
     now: Optional[datetime] = None,
     limit: int = 500,
 ) -> Dict[str, Any]:
-    """
-    Scan artifacts for approval-timeout eligibility.
-    On main, timeout customer auto-send is retired; scan results are returned without send.
-    """
-    from collections import Counter
-
-    from today_geenee_customer_delivery import (
-        customer_delivery_config_ready,
-        send_customer_timeout_draft_email,
-    )
-
-    if now is None:
-        now = datetime.now(ZoneInfo("Asia/Seoul"))
-
-    retired = _timeout_customer_send_retired()
-    if not retired:
-        ready, config_err = customer_delivery_config_ready()
-        if not ready:
-            return {
-                "ok": False,
-                "error": config_err,
-                "scanned": 0,
-                "eligible": 0,
-                "sent": 0,
-                "skipped": 0,
-                "errors": 0,
-                "run_ids_sent": [],
-                "skip_reasons": {},
-                "error_run_ids": [],
-            }
-
-    summary: Dict[str, Any] = {
+    """Retired timeout customer-send endpoint with a true zero-I/O boundary."""
+    return {
         "ok": True,
+        "retired": True,
+        "no_op": True,
         "error": None,
         "scanned": 0,
         "eligible": 0,
@@ -1304,42 +1355,11 @@ def process_approval_timeouts(
         "run_ids_sent": [],
         "skip_reasons": {},
         "error_run_ids": [],
+        "artifact_list_calls": 0,
+        "html_load_calls": 0,
+        "customer_send_calls": 0,
+        "note": "timeout customer send permanently retired",
     }
-    skip_counter: Counter[str] = Counter()
-
-    for raw in list_run_artifacts(limit=limit):
-        run_id = str(raw.get("run_id") or "").strip()
-        if not run_id or not validate_run_id(run_id):
-            continue
-        summary["scanned"] = int(summary["scanned"]) + 1
-        view = normalize_artifact_view(raw, run_id)
-        saved_html = load_run_email_html(run_id) or ""
-        has_html = bool(saved_html.strip())
-        skip = classify_timeout_skip(view, now=now, has_email_html=has_html)
-        if skip:
-            skip_counter[skip] += 1
-            summary["skipped"] = int(summary["skipped"]) + 1
-            continue
-
-        summary["eligible"] = int(summary["eligible"]) + 1
-        if retired:
-            skip_counter["timeout_send_retired"] += 1
-            summary["skipped"] = int(summary["skipped"]) + 1
-            continue
-
-        if not send_customer_timeout_draft_email(saved_html, view):
-            summary["errors"] = int(summary["errors"]) + 1
-            summary["error_run_ids"].append(run_id)
-            continue
-
-        summary["sent"] = int(summary["sent"]) + 1
-        summary["run_ids_sent"].append(run_id)
-
-    summary["skip_reasons"] = dict(skip_counter)
-    if retired:
-        summary["retired"] = True
-        summary["note"] = "timeout customer send retired"
-    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -1374,7 +1394,7 @@ def _is_valid_email(addr: str) -> bool:
 
 
 def _beta_recipients_local_path() -> Path:
-    p = repo_root() / _BETA_RECIPIENTS_LOCAL_PATH
+    p = admin_runs_dir().parent / "admin_config" / "customer_recipients.json"
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
 

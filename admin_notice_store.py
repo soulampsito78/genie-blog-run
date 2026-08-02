@@ -10,6 +10,7 @@ count and a human-readable source label, to keep PII out of disk artifacts.
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 from datetime import datetime
@@ -74,7 +75,12 @@ def repo_root() -> Path:
 
 
 def admin_notices_dir() -> Path:
-    d = repo_root() / "output" / "admin_notices"
+    artifact_root = os.getenv("GENIE_ADMIN_ARTIFACT_ROOT", "").strip()
+    d = (
+        Path(artifact_root).parent / "admin_notices"
+        if artifact_root
+        else repo_root() / "output" / "admin_notices"
+    )
     d.mkdir(parents=True, exist_ok=True)
     return d
 

@@ -33,12 +33,25 @@ class _FakeBlob:
         self.name = key
         self.updated = None
         self.time_created = None
+        self.generation = 1 if key in store else None
 
     def exists(self) -> bool:
         return self.name in self._store
 
-    def upload_from_string(self, data: str, content_type: str | None = None) -> None:
+    def reload(self) -> None:
+        self.generation = 1 if self.name in self._store else None
+
+    def upload_from_string(
+        self,
+        data: str,
+        content_type: str | None = None,
+        if_generation_match: int | None = None,
+    ) -> None:
+        current_generation = 1 if self.name in self._store else 0
+        if if_generation_match is not None and if_generation_match != current_generation:
+            raise PreconditionFailed("generation mismatch")
         self._store[self.name] = data
+        self.generation = 1
 
     def download_as_text(self, encoding: str = "utf-8") -> str:
         return self._store[self.name]
@@ -57,6 +70,10 @@ class _FakeBucket:
     def list_blobs(self, *, prefix: str = "") -> list[_FakeBlob]:
         keys = sorted(k for k in self._store if k.startswith(prefix))
         return [_FakeBlob(self._store, k) for k in keys]
+
+
+class PreconditionFailed(RuntimeError):
+    pass
 
 
 class AdminArtifactStorageEnvTests(unittest.TestCase):

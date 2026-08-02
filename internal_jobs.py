@@ -627,10 +627,6 @@ def process_approval_timeouts_endpoint(
     if auth_fail is not None:
         return auth_fail
 
-    store_err, _desc = check_artifact_store_ready()
-    if store_err:
-        return _artifact_store_not_ready_response()
-
     try:
         summary = process_approval_timeouts()
     except Exception as exc:
@@ -649,6 +645,34 @@ def process_approval_timeouts_endpoint(
 
     status_code = 200 if summary.get("ok") else 503
     return JSONResponse(status_code=status_code, content=summary)
+
+
+@router.post("/internal/jobs/watch-business-success")
+def watch_business_success_endpoint(
+    request: Request,
+    x_genie_internal_job_token: Optional[str] = Header(None, alias="X-Genie-Internal-Job-Token"),
+):
+    """Evaluate business deadlines from the bounded metadata index only."""
+    auth_fail = _verify_internal_job_token(request, x_genie_internal_job_token)
+    if auth_fail is not None:
+        return auth_fail
+    from business_watchdog import evaluate_business_success_deadlines
+
+    try:
+        summary = evaluate_business_success_deadlines()
+    except Exception as exc:
+        logger.error("business watchdog failed error_type=%s", type(exc).__name__)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": "business_watchdog_failed",
+                "error_type": type(exc).__name__,
+            },
+        )
+    # Deadline misses are business signals, not transport failures that should
+    # retry the watchdog request itself.
+    return JSONResponse(status_code=200, content=summary)
 
 
 @router.post("/internal/jobs/create-keysuri-owner-review")

@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 
 from admin_store import (
+    admin_runs_dir,
     admin_artifact_bucket_name,
     admin_artifact_gcs_prefix,
     artifact_email_path,
@@ -722,7 +723,7 @@ def resolve_korea_bottom_email_asset_path(run_id: str) -> Tuple[Optional[Path], 
             return local, []
         return None, ["korea_bottom_asset_local_sha_mismatch"]
 
-    dest = _REPO / "output" / "admin_runs" / "keysuri_service_assets" / f"{run_id}_korea_bottom_105936.jpg"
+    dest = admin_runs_dir() / "keysuri_service_assets" / f"{run_id}_korea_bottom_105936.jpg"
     gcs_object = getattr(asset, "gcs_object", "") or KEYSURI_KOREA_BOTTOM_GCS_OBJECT
     issue = _download_korea_bottom_asset_from_gcs(dest, gcs_object)
     if issue:
@@ -2759,7 +2760,7 @@ def _saved_top_image_reference(parent: Dict[str, Any]) -> Tuple[Optional[Path], 
         token = re.sub(r"[^A-Za-z0-9_]", "", str(parent.get("run_id") or "")) or hashlib.sha256(
             f"{gcs_refs[0][0]}/{gcs_refs[0][1]}".encode("utf-8")
         ).hexdigest()[:16]
-        dest = _REPO / "output" / "admin_runs" / "keysuri_service_assets" / f"{token}_restored_top.jpg"
+        dest = admin_runs_dir() / "keysuri_service_assets" / f"{token}_restored_top.jpg"
         last_issue = ""
         for bucket, obj, label in gcs_refs:
             issue = _download_keysuri_top_image_from_gcs(dest, bucket_name=bucket, object_name=obj)
@@ -3478,7 +3479,7 @@ def run_keysuri_text_only_reissue(
         image_mode=IMAGE_MODE_PREVIEW,
         auto_prepare=False,
     )
-    out_dir = _REPO / "output" / "admin_runs" / "keysuri_service"
+    out_dir = admin_runs_dir() / "keysuri_service"
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path = out_dir / f"{child_run_id}.html"
     html_path.write_text(preview_html, encoding="utf-8")
@@ -3854,7 +3855,7 @@ def run_keysuri_text_and_image_reissue(
         image_mode=IMAGE_MODE_PREVIEW,
         auto_prepare=False,
     )
-    out_dir = _REPO / "output" / "admin_runs" / "keysuri_service"
+    out_dir = admin_runs_dir() / "keysuri_service"
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path = out_dir / f"{child_run_id}.html"
     html_path.write_text(preview_html, encoding="utf-8")
@@ -4068,7 +4069,7 @@ def _render_service_html(
     run_id: str,
     image_mode: str = IMAGE_MODE_PREVIEW,
 ) -> tuple[str, str]:
-    out_dir = _REPO / "output" / "admin_runs" / "keysuri_service"
+    out_dir = admin_runs_dir() / "keysuri_service"
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path = out_dir / f"{run_id}.html"
     contract_fixture = _build_service_contract_fixture(
@@ -4610,7 +4611,7 @@ def _run_keysuri_service_full_run_impl(
         image_mode=IMAGE_MODE_PREVIEW,
         auto_prepare=False,
     )
-    out_dir = _REPO / "output" / "admin_runs" / "keysuri_service"
+    out_dir = admin_runs_dir() / "keysuri_service"
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path = out_dir / f"{run_id}.html"
     html_path.write_text(html, encoding="utf-8")
@@ -4873,9 +4874,16 @@ def _run_keysuri_service_full_run_impl(
     meta["logical_execution_key"] = execution_key or None
     meta["attempt"] = max(1, int(attempt or 1))
     meta["retry_count"] = max(0, meta["attempt"] - 1)
+    meta["selected_count"] = int(meta.get("selected_count") or len(meta.get("selected_items") or []))
+    meta["shortfall_count"] = max(0, KEYSURI_TOP_NEWS_COUNT - int(meta["selected_count"]))
+    meta["required_images_complete"] = bool(
+        image_outcome.ok and (pid != PROGRAM_KOREA or bottom_image_path is not None)
+    )
     meta["owner_email_subject"] = subject
     _log_owner_email_delivery_event(program_id=pid, run_id=run_id, fields=owner_email_fields)
     meta["artifact_status"] = "emailed" if email_sent else "stored"
+    meta["current_stage"] = "owner_review_emailed" if email_sent else "artifacts_ready"
+    meta["terminal_status"] = meta["current_stage"]
     _maybe_write_owner_review_exposure_log(meta, email_sent=email_sent, exposure_kind="owner_review_email")
     meta["generated_image_path_raw"] = raw_generated_image_path
     meta["generated_image_path_watermarked"] = watermarked_generated_image_path
