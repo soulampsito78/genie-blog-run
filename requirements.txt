@@ -1,8 +1,80 @@
-fastapi
-uvicorn[standard]
-pydantic
-python-multipart
-google-cloud-aiplatform
-google-cloud-storage
-Pillow
-playwright
+# Runtime dependency lock for genie-blog-run (Python 3.11).
+#
+# Every version below is the exact version resolved by the Cloud Build run that
+# produced the image currently serving 100% of production traffic:
+#
+#   Cloud Run revision : genie-blog-run-00269-cf6  (asia-northeast3)
+#   image digest       : sha256:c29cf5f72eca59d46e5b2057817ed1ef1bf64d5202d2773f0d4b27d90b51ddbb
+#   Cloud Build id     : 5781dfbe-2bef-4cd5-be70-d87df9491992
+#   source commit      : 8b84e424f72ff8a3276510b9906c90d65f417c50
+#   base image         : python:3.11.15
+#
+# The build trigger runs `docker build --no-cache`, so an unpinned file is
+# re-resolved from PyPI on every merge and the deployed closure silently drifts
+# away from the one that was tested. Both the direct requirements and their full
+# transitive closure are pinned here so `pip install -r requirements.txt`
+# reproduces that image exactly.
+#
+# To refresh: rebuild, read `Successfully installed ...` from the build log, and
+# rewrite this file from it. Do not regenerate it from a macOS or non-3.11 venv.
+
+# --- direct requirements -----------------------------------------------------
+fastapi==0.141.1
+uvicorn[standard]==0.52.0
+pydantic==2.13.4
+python-multipart==0.0.32
+google-cloud-aiplatform==1.163.0
+google-cloud-storage==3.13.0
+Pillow==12.3.0
+playwright==1.61.0
+
+# --- transitive closure (pinned; do not edit by hand) ------------------------
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.14.2
+certifi==2026.7.22
+cffi==2.1.0
+charset-normalizer==3.4.9
+click==8.4.2
+cryptography==49.0.0
+distro==1.9.0
+docstring_parser==0.18.0
+google-api-core==2.33.0
+google-auth==2.56.2
+google-cloud-bigquery==3.42.3
+google-cloud-core==2.6.0
+google-cloud-resource-manager==1.18.0
+google-crc32c==1.8.0
+google-genai==2.16.0
+google-resumable-media==2.10.0
+googleapis-common-protos==1.75.0
+greenlet==3.5.4
+grpc-google-iam-v1==0.14.4
+grpcio==1.83.0
+grpcio-status==1.83.0
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.18
+proto-plus==1.28.2
+protobuf==6.33.6
+pyasn1==0.6.4
+pyasn1-modules==0.4.2
+pycparser==3.0
+pydantic-core==2.46.4
+pyee==13.0.1
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+pyyaml==6.0.3
+requests==2.34.2
+six==1.17.0
+sniffio==1.3.1
+starlette==1.3.1
+tenacity==9.1.4
+typing-extensions==4.16.0
+typing-inspection==0.4.2
+urllib3==2.7.0
+uvloop==0.22.1
+watchfiles==1.2.0
+websockets==16.1.1

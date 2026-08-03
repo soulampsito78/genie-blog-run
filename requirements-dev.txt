@@ -1,0 +1,12 @@
+# Test-only dependencies. NOT installed into the runtime image — Dockerfile
+# installs requirements.txt only, and the production image contains no pytest.
+#
+# Install on top of the runtime lock, on Python 3.11:
+#   pip install -r requirements.txt -r requirements-dev.txt
+#
+# pytest is pinned because the suite is version-sensitive: under pytest 9.x the
+# built-in `logging` plugin attaches handlers that the structured-event tests in
+# tests/test_owner_review_failure_events.py assert against, producing 10 failures
+# that do not reproduce under `python -m unittest` and do not exist in
+# production (which ships no pytest at all). pytest 8.4.2 runs the suite clean.
+pytest==8.4.2
