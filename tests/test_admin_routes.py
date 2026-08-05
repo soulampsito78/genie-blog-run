@@ -348,6 +348,11 @@ class AdminRoutesTests(unittest.TestCase):
                 "email_sent": False,
                 "response_status": 200,
                 "reason_summary": "ok",
+                # image_only regenerates from the run's stored image prompts
+                "today_image_regen_inputs": {
+                    "image_prompt_studio": "studio",
+                    "image_prompt_outdoor": "outdoor",
+                },
             }
         )
         resp = self.client.get(f"/admin/runs/{run_id}")
@@ -553,7 +558,18 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertEqual(parent.get("last_reissue_child_run_id"), child_id)
 
     @patch("admin_routes.execute_orchestrator_run")
-    def test_reissue_body_only_blocked_for_today(self, mock_exec) -> None:
+    @patch("admin_routes.run_today_body_only_reissue")
+    def test_reissue_body_only_executes_today_helper_only(self, mock_body_only, mock_exec) -> None:
+        child_id = "20260530_130300_today_genie_11223344"
+        mock_body_only.return_value = {
+            "ok": True,
+            "run_id": child_id,
+            "regen_type": "body_only",
+            "reissue_scope": "body_only",
+            "image_generation_called": False,
+            "image_generation_count": 0,
+            "email_sent": True,
+        }
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
         parent_id = "20260530_120100_today_genie_aabbccdd"
         save_run_artifact(
@@ -568,27 +584,61 @@ class AdminRoutesTests(unittest.TestCase):
                 "reissue_count": 0,
             }
         )
+        save_run_artifact(
+            {
+                "run_id": child_id,
+                "mode": "today_genie",
+                "parent_run_id": parent_id,
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+                "reason_summary": "ok",
+                "reissue_scope": "body_only",
+                "reissue_scope_supported": True,
+                "reissue_scope_status": "executed",
+            }
+        )
         resp = self.client.post(
             f"/admin/runs/{parent_id}/reissue",
             data={
-                "reason_option": "기타",
-                "reason_note": "",
+                "reason_option": "제목 수정 요청",
+                "reason_note": "body refresh",
                 "reissue_scope": "body_only",
             },
-            follow_redirects=True,
+            follow_redirects=False,
         )
-        self.assertEqual(resp.status_code, 200)
-        self.assertIn("invalid_reissue_scope", str(resp.url))
-        self.assertIn("재발행 범위가 올바르지 않습니다", resp.text)
-        self.assertNotIn("sent_archived", resp.text)
+        self.assertEqual(resp.status_code, 303)
+        self.assertIn(child_id, resp.headers.get("location", ""))
+        mock_body_only.assert_called_once()
+        self.assertEqual(mock_body_only.call_args.args[0], parent_id)
+        self.assertEqual(mock_body_only.call_args.kwargs["reissue_reason_code"], "제목 수정 요청")
+        self.assertEqual(mock_body_only.call_args.kwargs["reissue_reason_note"], "body refresh")
+        self.assertEqual(mock_body_only.call_args.kwargs["send_owner_email"], True)
+        # body_only must not fall through to the full body_and_image pipeline
         mock_exec.assert_not_called()
+        child = load_run_artifact(child_id) or {}
+        self.assertEqual(child.get("reissue_scope"), "body_only")
+        self.assertTrue(child.get("reissue_scope_supported"))
+        self.assertEqual(child.get("reissue_scope_status"), "executed")
         parent = load_run_artifact(parent_id) or {}
-        self.assertEqual(parent.get("reissue_count", 0), 0)
+        self.assertEqual(parent.get("last_reissue_scope_requested"), "body_only")
+        self.assertEqual(parent.get("last_reissue_child_run_id"), child_id)
 
     @patch("admin_routes.execute_orchestrator_run")
-    def test_reissue_legacy_text_only_alias_blocked_for_today(self, mock_exec) -> None:
-        # Backward compatibility: legacy "text_only" must still be accepted and
-        # normalized to "body_only", which today_genie still does not execute.
+    @patch("admin_routes.run_today_body_only_reissue")
+    def test_reissue_legacy_text_only_alias_executes_body_only_for_today(
+        self, mock_body_only, mock_exec
+    ) -> None:
+        # Backward compatibility: legacy "text_only" is normalized to "body_only",
+        # which today_genie now executes through the today body_only runner.
+        child_id = "20260530_130301_today_genie_11223344"
+        mock_body_only.return_value = {
+            "ok": True,
+            "run_id": child_id,
+            "regen_type": "body_only",
+            "email_sent": True,
+        }
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
         parent_id = "20260530_120105_today_genie_aabbccdd"
         save_run_artifact(
@@ -603,6 +653,17 @@ class AdminRoutesTests(unittest.TestCase):
                 "reissue_count": 0,
             }
         )
+        save_run_artifact(
+            {
+                "run_id": child_id,
+                "mode": "today_genie",
+                "parent_run_id": parent_id,
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+            }
+        )
         resp = self.client.post(
             f"/admin/runs/{parent_id}/reissue",
             data={
@@ -610,16 +671,28 @@ class AdminRoutesTests(unittest.TestCase):
                 "reason_note": "",
                 "reissue_scope": "text_only",
             },
-            follow_redirects=True,
+            follow_redirects=False,
         )
-        self.assertEqual(resp.status_code, 200)
-        self.assertIn("invalid_reissue_scope", str(resp.url))
+        self.assertEqual(resp.status_code, 303)
+        self.assertIn(child_id, resp.headers.get("location", ""))
+        mock_body_only.assert_called_once()
         mock_exec.assert_not_called()
         parent = load_run_artifact(parent_id) or {}
-        self.assertEqual(parent.get("reissue_count", 0), 0)
+        self.assertEqual(parent.get("last_reissue_scope_requested"), "body_only")
 
     @patch("admin_routes.execute_orchestrator_run")
-    def test_reissue_image_only_blocked_for_today(self, mock_exec) -> None:
+    @patch("admin_routes.run_today_image_only_reissue")
+    def test_reissue_image_only_executes_today_helper_only(self, mock_image_only, mock_exec) -> None:
+        child_id = "20260530_130302_today_genie_11223344"
+        mock_image_only.return_value = {
+            "ok": True,
+            "run_id": child_id,
+            "regen_type": "image_only",
+            "reissue_scope": "image_only",
+            "text_generation_called": False,
+            "image_generation_count": 1,
+            "email_sent": True,
+        }
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
         parent_id = "20260530_120200_today_genie_aabbccdd"
         save_run_artifact(
@@ -632,7 +705,132 @@ class AdminRoutesTests(unittest.TestCase):
                 "response_status": 200,
                 "reason_summary": "ok",
                 "reissue_count": 0,
+                "today_image_regen_inputs": {
+                    "image_prompt_studio": "studio",
+                    "image_prompt_outdoor": "outdoor",
+                },
+            },
+            email_html="<html><body><p>parent today body</p></body></html>",
+        )
+        save_run_artifact(
+            {
+                "run_id": child_id,
+                "mode": "today_genie",
+                "parent_run_id": parent_id,
+                "validation_result": "pass",
+                "workflow_status": "review_required",
+                "email_sent": True,
+                "response_status": 200,
+                "reissue_scope": "image_only",
+                "reissue_scope_supported": True,
+                "reissue_scope_status": "executed",
+                "text_generation_called": False,
             }
+        )
+        resp = self.client.post(
+            f"/admin/runs/{parent_id}/reissue",
+            data={
+                "reason_option": "이미지 품질 이슈",
+                "reason_note": "replace only images",
+                "reissue_scope": "image_only",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        self.assertIn(child_id, resp.headers.get("location", ""))
+        mock_image_only.assert_called_once()
+        self.assertEqual(mock_image_only.call_args.args[0], parent_id)
+        self.assertEqual(mock_image_only.call_args.kwargs["reissue_reason_code"], "이미지 품질 이슈")
+        self.assertEqual(
+            mock_image_only.call_args.kwargs["reissue_reason_note"], "replace only images"
+        )
+        # image_only must not touch the text pipeline
+        mock_exec.assert_not_called()
+        child = load_run_artifact(child_id) or {}
+        self.assertEqual(child.get("reissue_scope"), "image_only")
+        self.assertTrue(child.get("reissue_scope_supported"))
+        self.assertEqual(child.get("reissue_scope_status"), "executed")
+        self.assertFalse(child.get("text_generation_called"))
+        parent = load_run_artifact(parent_id) or {}
+        self.assertEqual(parent.get("last_reissue_scope_requested"), "image_only")
+
+    @patch("admin_routes.execute_orchestrator_run")
+    @patch("admin_routes.run_today_image_only_reissue")
+    def test_today_image_only_dry_run_skips_owner_email(self, mock_image_only, mock_exec) -> None:
+        child_id = "20260530_130303_today_genie_11223344"
+        mock_image_only.return_value = {
+            "ok": True,
+            "run_id": child_id,
+            "regen_type": "image_only",
+            "email_sent": False,
+        }
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120216_today_genie_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "today_genie",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+                "today_image_regen_inputs": {
+                    "image_prompt_studio": "studio",
+                    "image_prompt_outdoor": "outdoor",
+                },
+            },
+            email_html="<html><body><p>parent today body</p></body></html>",
+        )
+        save_run_artifact(
+            {
+                "run_id": child_id,
+                "mode": "today_genie",
+                "parent_run_id": parent_id,
+                "validation_result": "pass",
+                "workflow_status": "review_required",
+                "email_sent": False,
+                "customer_delivery_status": "not_sent",
+                "response_status": 200,
+            }
+        )
+        resp = self.client.post(
+            f"/admin/runs/{parent_id}/reissue",
+            data={
+                "reason_option": "이미지 품질 이슈",
+                "reason_note": "",
+                "reissue_scope": "image_only",
+                "dry_run_no_send": "1",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        self.assertIn("reissue_dry_run=1", resp.headers.get("location", ""))
+        self.assertEqual(mock_image_only.call_args.kwargs["send_owner_email"], False)
+        mock_exec.assert_not_called()
+        child = load_run_artifact(child_id) or {}
+        self.assertTrue(child.get("admin_reissue_dry_run"))
+        self.assertEqual(child.get("send_owner_email"), False)
+        self.assertEqual(child.get("customer_delivery_status"), "not_sent")
+
+    @patch("admin_routes.execute_orchestrator_run")
+    @patch("admin_routes.run_today_image_only_reissue")
+    def test_today_image_only_blocked_without_image_prompt_snapshot(
+        self, mock_image_only, mock_exec
+    ) -> None:
+        # A Today run recorded before image-prompt capture cannot regenerate images
+        # without a text regeneration, so image_only is refused up front.
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120217_today_genie_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "today_genie",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+            },
+            email_html="<html><body><p>parent today body</p></body></html>",
         )
         resp = self.client.post(
             f"/admin/runs/{parent_id}/reissue",
@@ -644,11 +842,92 @@ class AdminRoutesTests(unittest.TestCase):
             follow_redirects=True,
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("invalid_reissue_scope", str(resp.url))
-        self.assertIn("재발행 범위가 올바르지 않습니다", resp.text)
+        self.assertIn("today_image_prompt_snapshot_missing", str(resp.url))
+        self.assertIn("이미지 prompt 기록이 없어", resp.text)
+        mock_image_only.assert_not_called()
         mock_exec.assert_not_called()
-        parent = load_run_artifact(parent_id) or {}
-        self.assertEqual(parent.get("reissue_count", 0), 0)
+
+    @patch("admin_routes.execute_orchestrator_run")
+    @patch("admin_routes.run_today_image_only_reissue")
+    def test_today_image_only_runner_error_renders_safe_panel(
+        self, mock_image_only, mock_exec
+    ) -> None:
+        mock_image_only.return_value = {
+            "ok": False,
+            "error": "today_image_only_reissue_image_generation_failed",
+        }
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120219_today_genie_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "today_genie",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+                "today_image_regen_inputs": {
+                    "image_prompt_studio": "studio",
+                    "image_prompt_outdoor": "outdoor",
+                },
+            },
+            email_html="<html><body><p>parent today body</p></body></html>",
+        )
+        resp = self.client.post(
+            f"/admin/runs/{parent_id}/reissue",
+            data={
+                "reason_option": "이미지 품질 이슈",
+                "reason_note": "",
+                "reissue_scope": "image_only",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(
+            "safe_error_code=today_image_only_reissue_image_generation_failed",
+            resp.text,
+        )
+        self.assertNotIn("Traceback", resp.text)
+        mock_exec.assert_not_called()
+
+    def test_reissue_form_disables_image_only_without_prompt_snapshot(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120220_today_genie_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "today_genie",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+            }
+        )
+        resp = self.client.get(f"/admin/runs/{parent_id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("이미지 prompt 기록이 없어", resp.text)
+
+    def test_reissue_form_enables_image_only_with_prompt_snapshot(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120221_today_genie_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "today_genie",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+                "today_image_regen_inputs": {
+                    "image_prompt_studio": "studio",
+                    "image_prompt_outdoor": "outdoor",
+                },
+            }
+        )
+        resp = self.client.get(f"/admin/runs/{parent_id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("이미지 prompt 기록이 없어", resp.text)
+        self.assertIn("이미지 prompt와 이미지 산출물만 다시 생성합니다", resp.text)
 
     @patch("admin_routes.execute_orchestrator_run")
     @patch("admin_routes.run_keysuri_image_only_reissue")
@@ -929,13 +1208,33 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("owner-review", resp.text)
         self.assertIn("발송하지 않습니다", resp.text)
 
-    def test_reissue_form_hides_dry_run_checkbox_for_today_genie(self) -> None:
+    def test_reissue_form_shows_dry_run_checkbox_for_today_genie(self) -> None:
+        # today_genie reissue paths accept send_owner_email=False, so the QA
+        # dry-run toggle is offered for Today as well.
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
         parent_id = "20260530_120211_today_genie_aabbccdd"
         save_run_artifact(
             {
                 "run_id": parent_id,
                 "mode": "today_genie",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "email_sent": True,
+                "response_status": 200,
+                "reason_summary": "ok",
+            }
+        )
+        resp = self.client.get(f"/admin/runs/{parent_id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('name="dry_run_no_send"', resp.text)
+
+    def test_reissue_form_hides_dry_run_checkbox_for_tomorrow_genie(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        parent_id = "20260530_120218_tomorrow_genie_aabbccdd"
+        save_run_artifact(
+            {
+                "run_id": parent_id,
+                "mode": "tomorrow_genie",
                 "validation_result": "pass",
                 "workflow_status": "validated",
                 "email_sent": True,

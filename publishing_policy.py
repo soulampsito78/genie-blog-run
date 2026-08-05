@@ -99,6 +99,16 @@ def _today_owner_review_send_allowed(
     return True
 
 
+def today_owner_review_reissue_send_allowed() -> bool:
+    """Owner-review send gate for a scoped today_genie reissue (never customer).
+
+    A scoped reissue carries the parent's already-validated content, so the
+    payload-derived checks do not apply; the environment gate and the owner-only
+    recipient restriction still must hold exactly as for a scheduled run.
+    """
+    return _owner_review_send_gate_active() and _owner_recipients_only()
+
+
 def _has_finance_safety_issue(issues: List[Dict[str, Any]]) -> bool:
     if not issues:
         return False

@@ -194,6 +194,20 @@ def _resolve_today_genie_customer_image_result(
     )
 
 
+def resolve_today_genie_reusable_images(
+    meta: Dict[str, Any],
+    *,
+    download_fn: Optional[Callable[[str, str, Path], None]] = None,
+) -> TodayGenieCustomerImageResolution:
+    """Resolve a stored run's images for reuse (body_only reissue keeps parent images).
+
+    Same resolution contract as the approved customer send: generated run images
+    first (restoring from GCS when the local file is gone), static latest only
+    when the run never had run-specific images.
+    """
+    return _resolve_today_genie_customer_image_result(meta, download_fn=download_fn)
+
+
 def _resolve_today_genie_inline_jpeg_parts_from_meta(
     meta: Dict[str, Any],
 ) -> Optional[List[Tuple[str, str, str]]]:
@@ -220,7 +234,15 @@ def build_customer_final_subject(meta: Dict[str, Any], saved_html: str) -> str:
             drafts_subj = m.group(1).strip()
     if not drafts_subj:
         drafts_subj = "오늘의 지니 장전 브리핑"
-    for prefix in ("[GENIE owner reissue]", "[GENIE render test]", "[운영자 검토]"):
+    # Reissue markers are stripped before the owner-review marker so a scoped
+    # reissue subject ("[이미지 재발행][운영자 검토] …") never reaches a customer.
+    for prefix in (
+        "[본문 재발행]",
+        "[이미지 재발행]",
+        "[GENIE owner reissue]",
+        "[GENIE render test]",
+        "[운영자 검토]",
+    ):
         if drafts_subj.startswith(prefix):
             drafts_subj = drafts_subj.split("]", 1)[-1].strip(" -")
     return drafts_subj

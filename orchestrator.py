@@ -25,6 +25,12 @@ _APPROVED_CONTROLLED_IMAGE_REVIEW_EMAILS = frozenset(
     {"soulampsito@gmail.com", "ey2133@naver.com"}
 )
 
+# Owner-review subject markers so a scoped reissue is distinguishable in the inbox.
+_REISSUE_SCOPE_SUBJECT_PREFIXES = {
+    "body_only": "[본문 재발행]",
+    "image_only": "[이미지 재발행]",
+}
+
 GENIE_API_URL = os.getenv("GENIE_API_URL", "http://localhost:8080")
 GENIE_REQUEST_TIMEOUT = int(os.getenv("GENIE_REQUEST_TIMEOUT", "120"))
 GENIE_API_RETRIES = int(os.getenv("GENIE_API_RETRIES", "2"))
@@ -312,6 +318,7 @@ def build_run_artifact_metadata(
     trigger_source: str | None = None,
     today_image_result: Any = None,
     send_owner_email: bool = True,
+    reissue_scope: str | None = None,
 ) -> Dict[str, Any]:
     payload = result.response_data if isinstance(result.response_data, dict) else {}
     runtime_check = _runtime_check_from_api_payload(payload, reason_summary=result.reason_summary)
@@ -345,6 +352,23 @@ def build_run_artifact_metadata(
     }
     if not send_owner_email:
         meta["verification_mode"] = "no_send_verification"
+    scope = str(reissue_scope or "").strip()
+    if scope:
+        meta["reissue_scope"] = scope
+        meta["reissue_scope_supported"] = True
+        meta["reissue_scope_status"] = "executed"
+    if str(result.mode or "").strip() == "today_genie":
+        from today_genie_orchestrator_images import (
+            TODAY_IMAGE_REGEN_INPUTS_KEY,
+            today_image_regen_inputs,
+        )
+
+        regen_inputs = today_image_regen_inputs(
+            payload.get("data"),
+            payload.get("runtime_input"),
+        )
+        if regen_inputs:
+            meta[TODAY_IMAGE_REGEN_INPUTS_KEY] = regen_inputs
     dedup_fields = _dedup_fields_from_api_payload(payload)
     if dedup_fields:
         meta.update(dedup_fields)
@@ -388,6 +412,7 @@ def persist_orchestrator_run_artifact(
     run_id: str | None = None,
     today_image_result: Any = None,
     send_owner_email: bool = True,
+    reissue_scope: str | None = None,
 ) -> str:
     from admin_store import generate_run_id, save_run_artifact
     from datetime import datetime
@@ -404,6 +429,7 @@ def persist_orchestrator_run_artifact(
         trigger_source=trigger_source,
         today_image_result=today_image_result,
         send_owner_email=send_owner_email,
+        reissue_scope=reissue_scope,
     )
     meta["created_at"] = datetime.now(ZoneInfo("Asia/Seoul")).isoformat()
     if mode == "today_genie" and today_image_result is not None:
@@ -420,11 +446,13 @@ def send_email_if_allowed(
     run_id: str | None = None,
     today_image_result: Any = None,
     send_owner_email: bool = True,
+    subject_prefix: str = "",
 ) -> bool:
     """
     If policy allows sending email and we have payload, send via email_sender.
     No send on suppress_external or when response_data is missing.
     Pass send_owner_email=False to suppress unconditionally (no-send verification mode).
+    Pass subject_prefix to mark a scoped reissue send (e.g. body_only).
     """
     if not send_owner_email:
         logger.info("send_email_if_allowed: skipped (send_owner_email=False, no_send_verification)")
@@ -493,6 +521,10 @@ def send_email_if_allowed(
         drafts = data.get("channel_drafts") or {}
         base_subj = drafts.get("email_subject") or "(Genie briefing)"
         subject = f"[운영자 검토] {base_subj}"
+
+    prefix = str(subject_prefix or "").strip()
+    if prefix and not subject.startswith(prefix):
+        subject = f"{prefix}{subject}"
 
     # Canonical today_genie handoff send path: owner-review rich MIME + CID inline only.
     if mode == "today_genie":
@@ -626,12 +658,17 @@ def execute_orchestrator_run(
     trigger_source: str | None = None,
     send_owner_email: bool = True,
     schedule_now: datetime | None = None,
+    reissue_scope: str | None = None,
+    today_image_result_override: Any = None,
 ) -> tuple[str, OrchestrationResult, bool]:
     """
     Run Genie job, attempt owner-review email, persist admin artifact.
     Returns (run_id, result, email_sent).
     Pass send_owner_email=False for no-send artifact verification (suppresses email
     unconditionally; artifact still written with verification_mode=no_send_verification).
+    Pass reissue_scope to stamp the executed scope on the child artifact, and
+    today_image_result_override to reuse already-resolved images instead of
+    generating new ones (today_genie body_only reissue: image generation count 0).
     """
     if str(mode or "").strip() == "today_genie":
         skip_payload = today_genie_weekend_skip_payload(
@@ -660,7 +697,9 @@ def execute_orchestrator_run(
             payload = result.response_data
             validation_result = str(payload.get("validation_result") or "pass")
             run_id = generate_run_id("today_genie")
-            if validation_result == "pass":
+            if today_image_result_override is not None:
+                today_image_result = today_image_result_override
+            elif validation_result == "pass":
                 data = payload.get("data") or {}
                 runtime_input = payload.get("runtime_input") or {}
                 if isinstance(data, dict) and isinstance(runtime_input, dict):
@@ -677,6 +716,9 @@ def execute_orchestrator_run(
             run_id=run_id,
             today_image_result=today_image_result,
             send_owner_email=send_owner_email,
+            subject_prefix=_REISSUE_SCOPE_SUBJECT_PREFIXES.get(
+                str(reissue_scope or "").strip(), ""
+            ),
         )
         resolved_trigger = trigger_source
         if not resolved_trigger:
@@ -693,6 +735,7 @@ def execute_orchestrator_run(
             run_id=run_id,
             today_image_result=today_image_result,
             send_owner_email=send_owner_email,
+            reissue_scope=reissue_scope,
         )
         logger.info(
             "execute_orchestrator_run: mode=%s run_id=%s email_sent=%s parent_run_id=%s",

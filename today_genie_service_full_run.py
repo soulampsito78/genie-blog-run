@@ -410,6 +410,16 @@ def run_today_genie_service_full_run(
         workflow_status=workflow_status,
     )
     meta.update(_dedup_artifact_fields_from_payload(payload))
+    # Persist the model-authored image prompts so a later image_only reissue can
+    # regenerate images without a second text generation.
+    from today_genie_orchestrator_images import (
+        TODAY_IMAGE_REGEN_INPUTS_KEY,
+        today_image_regen_inputs,
+    )
+
+    regen_inputs = today_image_regen_inputs(data, runtime_input)
+    if regen_inputs:
+        meta[TODAY_IMAGE_REGEN_INPUTS_KEY] = regen_inputs
     if image_bundle.ok:
         meta["generated_image_paths"] = {
             "top": image_bundle.top.generated_image_path,

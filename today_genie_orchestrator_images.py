@@ -22,6 +22,8 @@ IMAGE_SOURCE_STATIC_FALLBACK = "static_fallback"
 STATIC_FALLBACK_ISSUE_CODE = "TODAY_GENIE_STATIC_IMAGE_FALLBACK"
 CUSTOMER_IMAGE_PERSISTENCE_FAILED = "today_generated_image_persistence_failed"
 
+TODAY_IMAGE_REGEN_INPUTS_KEY = "today_image_regen_inputs"
+
 
 @dataclass
 class TodayGenieOrchestratorImageResult:
@@ -50,6 +52,67 @@ def _static_latest_inline_parts() -> Optional[List[Tuple[str, str, str]]]:
         (str(top_latest.resolve()), cid_top, "GENIE_EMAIL_today_genie_top.jpg"),
         (str(bottom_latest.resolve()), cid_bottom, "GENIE_EMAIL_today_genie_bottom.jpg"),
     ]
+
+
+def today_image_regen_inputs(
+    data: Optional[Dict[str, Any]],
+    runtime_input: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Snapshot the inputs needed to regenerate today images without text regeneration.
+
+    The top/bottom prompts are authored by the text model, so an image_only reissue
+    can only avoid a second text generation if they were persisted with the run.
+    Returns {} when the prompts are absent (image_only then stays unavailable).
+    """
+    payload = data if isinstance(data, dict) else {}
+    runtime = runtime_input if isinstance(runtime_input, dict) else {}
+    studio = str(payload.get("image_prompt_studio") or "").strip()
+    outdoor = str(payload.get("image_prompt_outdoor") or "").strip()
+    if not studio or not outdoor:
+        return {}
+    snapshot: Dict[str, Any] = {
+        "image_prompt_studio": studio,
+        "image_prompt_outdoor": outdoor,
+    }
+    for key in ("image_briefing_mood_state", "image_mood_basis"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            snapshot[key] = value
+    target_date = str(runtime.get("target_date") or "").strip()
+    if target_date:
+        snapshot["target_date"] = target_date
+    weather = runtime.get("image_weather_context")
+    if isinstance(weather, dict) and weather:
+        snapshot["image_weather_context"] = weather
+    return snapshot
+
+
+def today_image_regen_payload_from_snapshot(
+    snapshot: Optional[Dict[str, Any]],
+) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    """Rebuild the (data, runtime_input) pair that image generation consumes."""
+    if not isinstance(snapshot, dict):
+        return None
+    studio = str(snapshot.get("image_prompt_studio") or "").strip()
+    outdoor = str(snapshot.get("image_prompt_outdoor") or "").strip()
+    if not studio or not outdoor:
+        return None
+    data: Dict[str, Any] = {
+        "image_prompt_studio": studio,
+        "image_prompt_outdoor": outdoor,
+    }
+    for key in ("image_briefing_mood_state", "image_mood_basis"):
+        value = str(snapshot.get(key) or "").strip()
+        if value:
+            data[key] = value
+    runtime_input: Dict[str, Any] = {}
+    target_date = str(snapshot.get("target_date") or "").strip()
+    if target_date:
+        runtime_input["target_date"] = target_date
+    weather = snapshot.get("image_weather_context")
+    if isinstance(weather, dict) and weather:
+        runtime_input["image_weather_context"] = weather
+    return data, runtime_input
 
 
 def generate_today_genie_orchestrator_images(

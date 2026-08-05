@@ -50,6 +50,7 @@ from admin_cost_ledger import (
     month_from_run_meta,
 )
 from genie_cost_estimate import standard_text_pricing_for_model
+from today_genie_orchestrator_images import TODAY_IMAGE_REGEN_INPUTS_KEY
 from genie_billing_export import load_billing_summary
 from genie_cost_allocation import allocation_metrics, modeled_service_cost
 from keysuri_service_full_run import (
@@ -58,6 +59,10 @@ from keysuri_service_full_run import (
     run_keysuri_text_only_reissue,
 )
 from orchestrator import execute_orchestrator_run
+from today_genie_reissue import (
+    run_today_body_only_reissue,
+    run_today_image_only_reissue,
+)
 
 from admin_notice_store import (
     NOTICE_STATUSES,
@@ -145,6 +150,10 @@ _REISSUE_ERROR_MESSAGES = {
         "선택한 재발행 범위는 아직 실행할 수 없습니다. "
         "화면에 표시된 실행 가능 범위를 확인하세요."
     ),
+    "today_image_prompt_snapshot_missing": (
+        "이 실행에는 이미지 prompt 기록이 없어 이미지만 재발행할 수 없습니다. "
+        "본문·이미지 모두 재발행을 사용하세요."
+    ),
 }
 
 _REISSUE_MODE_LABELS = {
@@ -160,9 +169,12 @@ def _reissue_mode_label(mode: str) -> str:
     return _REISSUE_MODE_LABELS.get(mode, f"알 수 없는 mode({mode or '없음'})")
 
 
-# keysuri reissue runners support send_owner_email=False; other modes do not, so
-# the QA dry-run (no owner-review send) option is only offered for these modes.
-_KEYSURI_DRY_RUN_MODES = frozenset({"keysuri_global_tech", "keysuri_korea_tech"})
+# Modes whose reissue paths support send_owner_email=False, so the QA dry-run
+# (no owner-review send) option can be offered. tomorrow_genie is excluded: it is
+# not activated for reissue execution.
+_DRY_RUN_REISSUE_MODES = frozenset(
+    {"keysuri_global_tech", "keysuri_korea_tech", "today_genie"}
+)
 
 # Markers recorded on a dry-run child artifact so operators (and tests) can see
 # the reissue pipeline ran without dispatching the owner-review email.
@@ -189,7 +201,7 @@ def _apply_dry_run_reissue_metadata(child_run_id: str) -> None:
 
 def _render_reissue_dry_run_field(mode: str) -> str:
     """QA dry-run toggle: runs the real reissue pipeline but skips owner-review send."""
-    if mode not in _KEYSURI_DRY_RUN_MODES:
+    if mode not in _DRY_RUN_REISSUE_MODES:
         return ""
     return (
         '<label style="display:block;margin:8px 0;">'
@@ -528,11 +540,31 @@ def _mode_supports_body_and_image_reissue(mode: str) -> bool:
     )
 
 
-def _render_reissue_scope_field(mode: str) -> str:
+def _today_run_supports_image_only_reissue(meta: Optional[Dict[str, Any]]) -> bool:
+    """Today image_only needs the run's stored image prompts (no text regeneration)."""
+    if not isinstance(meta, dict):
+        return True
+    return isinstance(meta.get(TODAY_IMAGE_REGEN_INPUTS_KEY), dict) and bool(
+        meta.get(TODAY_IMAGE_REGEN_INPUTS_KEY)
+    )
+
+
+def _render_reissue_scope_field(mode: str, meta: Optional[Dict[str, Any]] = None) -> str:
     mode = str(mode or "").strip()
     body_only_enabled = _mode_supports_body_only_reissue(mode)
     image_only_enabled = _mode_supports_image_only_reissue(mode)
     body_and_image_enabled = _mode_supports_body_and_image_reissue(mode)
+    image_only_unavailable_helper = "이 실행 mode에서는 아직 지원하지 않습니다."
+    if (
+        image_only_enabled
+        and mode == "today_genie"
+        and not _today_run_supports_image_only_reissue(meta)
+    ):
+        image_only_enabled = False
+        image_only_unavailable_helper = (
+            "이 실행에는 이미지 prompt 기록이 없어 본문 재생성 없이 이미지만 다시 만들 수 없습니다. "
+            "본문·이미지 모두 재발행을 사용하세요."
+        )
     # No image_only fallback: always default to the full (body_and_image)
     # scope regardless of which partial scopes are available, so a partial
     # reissue is always an explicit operator choice, never a pre-selected default.
@@ -550,7 +582,7 @@ def _render_reissue_scope_field(mode: str) -> str:
             scope_helper = "이 실행 mode에서는 아직 지원하지 않습니다."
         elif scope == "image_only" and not image_only_enabled:
             disabled = True
-            scope_helper = "이 실행 mode에서는 아직 지원하지 않습니다."
+            scope_helper = image_only_unavailable_helper
         elif scope == "body_and_image" and not body_and_image_enabled:
             disabled = True
             scope_helper = "이 실행 mode에서는 아직 지원하지 않습니다."
@@ -1041,7 +1073,7 @@ def admin_run_detail(request: Request, run_id: str):
         for k, v in sorted(meta.items())
         if k not in ("issue_details", "customer_delivery_events")
     )
-    scope_field = _render_reissue_scope_field(mode)
+    scope_field = _render_reissue_scope_field(mode, meta)
     inner = f"""
 <div class="page-head">
 <h1>실행 상세</h1>
@@ -1263,7 +1295,8 @@ def admin_run_reissue(
         )
     reason_code = reason_option.strip()
     note = reason_note.strip()
-    dry_run = _is_dry_run_no_send(dry_run_no_send)
+    # Only honor the QA dry-run for modes whose reissue path supports a no-send run.
+    dry_run = _is_dry_run_no_send(dry_run_no_send) and mode in _DRY_RUN_REISSUE_MODES
 
     if mode in ("keysuri_global_tech", "keysuri_korea_tech"):
         if scope == "body_only" and not _mode_supports_body_only_reissue(mode):
@@ -1351,6 +1384,92 @@ def admin_run_reissue(
             )
         return RedirectResponse(url=f"/admin/runs/{new_run_id}", status_code=303)
 
+    if mode == "today_genie" and scope in ("body_only", "image_only"):
+        if scope == "body_only" and not _mode_supports_body_only_reissue(mode):
+            return RedirectResponse(
+                url=f"/admin/runs/{run_id}?reissue_error=unsupported_reissue_scope",
+                status_code=303,
+            )
+        if scope == "image_only" and not _mode_supports_image_only_reissue(mode):
+            return RedirectResponse(
+                url=f"/admin/runs/{run_id}?reissue_error=unsupported_reissue_scope",
+                status_code=303,
+            )
+        # image_only regenerates images from the run's stored image prompts; runs
+        # recorded before prompt capture can only be reissued in full.
+        if scope == "image_only" and not _today_run_supports_image_only_reissue(parent):
+            return RedirectResponse(
+                url=f"/admin/runs/{run_id}?reissue_error=today_image_prompt_snapshot_missing",
+                status_code=303,
+            )
+        today_runner = {
+            "body_only": run_today_body_only_reissue,
+            "image_only": run_today_image_only_reissue,
+        }[scope]
+        try:
+            result = today_runner(
+                run_id,
+                parent_meta=parent,
+                reissue_reason_code=reason_code,
+                reissue_reason_note=note,
+                send_owner_email=not dry_run,
+            )
+        except Exception:  # noqa: BLE001
+            # Log the full traceback server-side; never surface raw exception text.
+            logger.exception(
+                "today scoped reissue execution failed: run_id=%s scope=%s dry_run=%s",
+                run_id,
+                scope,
+                dry_run,
+            )
+            return _render_reissue_failure_page(
+                title="Reissue error",
+                run_id=run_id,
+                mode=mode,
+                failed_step="today_scoped_reissue_execution",
+                safe_message=(
+                    "재발행 실행 중 오류가 발생했습니다. "
+                    "safe_error_code=today_scoped_reissue_execution_error"
+                ),
+                status_code=200,
+                dry_run=dry_run,
+            )
+        new_run_id = str(result.get("run_id") or "").strip()
+        if new_run_id and not result.get("error"):
+            record_parent_reissue_audit(
+                run_id,
+                child_run_id=new_run_id,
+                reissue_scope=scope,
+            )
+        if dry_run and new_run_id and not result.get("error"):
+            _apply_dry_run_reissue_metadata(new_run_id)
+            return RedirectResponse(
+                url=f"/admin/runs/{new_run_id}?reissue_dry_run=1",
+                status_code=303,
+            )
+        if new_run_id and not result.get("email_sent") and not result.get("error"):
+            return RedirectResponse(
+                url=f"/admin/runs/{new_run_id}?reissue_warn=email_not_sent",
+                status_code=303,
+            )
+        if not result.get("ok") or not new_run_id:
+            safe_code = _safe_reissue_result_error_code(
+                str(result.get("error") or "today_reissue_failed")
+            )
+            return _render_reissue_failure_page(
+                title="Reissue failed",
+                run_id=run_id,
+                mode=mode,
+                failed_step="today_scoped_reissue_result_validation",
+                safe_message=(
+                    "재발행 결과 검증 실패로 발송하지 않았습니다. "
+                    f"safe_error_code={safe_code}"
+                ),
+                status_code=200,
+                dry_run=dry_run,
+            )
+        return RedirectResponse(url=f"/admin/runs/{new_run_id}", status_code=303)
+
     if scope != EXECUTABLE_REISSUE_SCOPE:
         return RedirectResponse(
             url=f"/admin/runs/{run_id}?reissue_error=invalid_reissue_scope",
@@ -1367,6 +1486,7 @@ def admin_run_reissue(
             parent_run_id=run_id,
             reissue_reason=reason,
             admin_reissue=True,
+            send_owner_email=not dry_run,
         )
     except Exception as exc:  # noqa: BLE001
         return _render_reissue_failure_page(
@@ -1400,6 +1520,13 @@ def admin_run_reissue(
         child_run_id=new_run_id,
         reissue_scope=scope,
     )
+
+    if dry_run:
+        _apply_dry_run_reissue_metadata(new_run_id)
+        return RedirectResponse(
+            url=f"/admin/runs/{new_run_id}?reissue_dry_run=1",
+            status_code=303,
+        )
 
     if not email_sent:
         return RedirectResponse(
