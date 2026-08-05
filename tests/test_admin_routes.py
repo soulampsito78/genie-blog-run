@@ -153,7 +153,8 @@ class AdminRoutesTests(unittest.TestCase):
         from admin_cost_ledger import save_cost_record_best_effort
 
         save_cost_record_best_effort(load_run_artifact(run_id) or {})
-        page = self.client.get("/admin/costs")
+        # Costs page defaults to current KST month; pin July to match the fixture run.
+        page = self.client.get("/admin/costs?month=2026-07")
         self.assertEqual(page.status_code, 200)
         self.assertIn(run_id, page.text)
         self.assertIn("Text input cost", page.text)

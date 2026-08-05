@@ -131,6 +131,15 @@ class KeysuriManualOptInRunnerBlockTests(unittest.TestCase):
 
 
 class KeysuriManualOptInRunnerSuccessTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Canary client reads GENIE_VERTEX_PROJECT_ID from real os.environ, not the
+        # runner's environ dict (which only covers approval/override parsing).
+        self._env_patch = mock.patch.dict(
+            os.environ, {"GENIE_VERTEX_PROJECT_ID": "test-project"}, clear=False
+        )
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
+
     def test_check_preflight_only_success_without_canary_client(self) -> None:
         env = _valid_env()
         with mock.patch.object(runner, "run_keysuri_image_api_canary") as canary_mock:
@@ -335,6 +344,13 @@ def _r5d_env(**overrides: str) -> dict[str, str]:
 
 
 class KeysuriR5DManualCanaryFailureHistoryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._env_patch = mock.patch.dict(
+            os.environ, {"GENIE_VERTEX_PROJECT_ID": "test-project"}, clear=False
+        )
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
+
     def test_v2_profile_without_r5d_flag_blocks(self) -> None:
         env = _r5d_env()
         env.pop("GENIE_KEYSURI_R5D_CREATIVE_VARIATION")
@@ -450,6 +466,13 @@ def _r5e_env(**overrides: str) -> dict[str, str]:
 
 
 class KeysuriR5EManualCanaryFailureHistoryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._env_patch = mock.patch.dict(
+            os.environ, {"GENIE_VERTEX_PROJECT_ID": "test-project"}, clear=False
+        )
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
+
     def test_v3_profile_without_r5e_flag_blocks(self) -> None:
         env = _r5e_env()
         env.pop("GENIE_KEYSURI_R5E_STRUCTURE_VARIATION")
@@ -558,6 +581,13 @@ def _r5f_env(**overrides: str) -> dict[str, str]:
 
 
 class KeysuriR5FManualCanaryAcceptedDirectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._env_patch = mock.patch.dict(
+            os.environ, {"GENIE_VERTEX_PROJECT_ID": "test-project"}, clear=False
+        )
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
+
     def test_v4_profile_without_r5f_flag_blocks(self) -> None:
         env = _r5f_env()
         env.pop("GENIE_KEYSURI_R5F_STRUCTURE_VARIATION")

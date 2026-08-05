@@ -236,14 +236,14 @@
         },
         {
           "rank": 5,
-          "news_id": "korea-claim-startup-partnership",
-          "headline": "Domestic AI startups expand platform deals",
-          "category": "startup",
-          "summary": "Staged wire example on startup-platform partnerships.",
-          "why_it_matters": "Partnership density signals ecosystem maturation.",
-          "business_implication": "Platform-native AI vendors may accelerate domestic GTM.",
+          "news_id": "korea-claim-enterprise-adoption",
+          "headline": "Enterprise AI adoption pilots expand",
+          "category": "enterprise_adoption",
+          "summary": "Staged press example on enterprise pilot programs.",
+          "why_it_matters": "Pilot expansion signals enterprise readiness for production rollouts.",
+          "business_implication": "B2B sellers should target pilot-to-production conversion plays.",
           "source_ids": [
-            "korea-t2-startup-wire"
+            "korea-t3-enterprise-press"
           ],
           "confidence_label": "reported"
         }
@@ -367,14 +367,14 @@
       },
       {
         "rank": 5,
-        "news_id": "korea-claim-startup-partnership",
-        "headline": "Domestic AI startups expand platform deals",
-        "category": "startup",
-        "summary": "Staged wire example on startup-platform partnerships.",
-        "why_it_matters": "Partnership density signals ecosystem maturation.",
-        "business_implication": "Platform-native AI vendors may accelerate domestic GTM.",
+        "news_id": "korea-claim-enterprise-adoption",
+        "headline": "Enterprise AI adoption pilots expand",
+        "category": "enterprise_adoption",
+        "summary": "Staged press example on enterprise pilot programs.",
+        "why_it_matters": "Pilot expansion signals enterprise readiness for production rollouts.",
+        "business_implication": "B2B sellers should target pilot-to-production conversion plays.",
         "source_ids": [
-          "korea-t2-startup-wire"
+          "korea-t3-enterprise-press"
         ],
         "confidence_label": "reported"
       }

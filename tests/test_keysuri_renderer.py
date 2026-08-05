@@ -101,7 +101,7 @@ class KeysuriRendererTests(unittest.TestCase):
     def test_generation_pending_placeholders(self) -> None:
         self.assertIn("generation_pending", self.global_html)
         self.assertIn("Gemini 호출 전", self.global_html)
-        self.assertIn("최종 문안 아님", self.global_html)
+        self.assertIn("최종 문안이 아님", self.global_html)
         self.assertIn("키수리의 딥-다이브", self.global_html)
 
     def test_escapes_unsafe_html(self) -> None:
@@ -169,7 +169,7 @@ class KeysuriRendererGeneratedModeTests(unittest.TestCase):
             r'<section class="card placeholder-section"',
         )
         self.assertNotIn(GENERATION_PENDING_LABEL, self.global_html)
-        self.assertNotIn("Gemini 호출 전 · 최종 문안 아님", self.global_html)
+        self.assertNotIn("Gemini 호출 전 · 최종 문안이 아님", self.global_html)
 
     def test_generated_mode_renders_deep_dive_body(self) -> None:
         body = self.global_gen["deep_dive"]["body"]

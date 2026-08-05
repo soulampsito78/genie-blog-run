@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -24,6 +25,11 @@ _FEEDS_DIR = _REPO_ROOT / "ops" / "feeds"
 
 PROMPT_TEXT_PREVIEW_MAX = 600
 IMAGE_PROMPT_TEXT_PREVIEW_MAX = 800
+
+# Staged fixture packs carry fixed fetched_at timestamps, so the bundled
+# dry-runs pin the gate clock to each program's KST slot on that day.
+GLOBAL_FIXTURE_NOW = datetime.fromisoformat("2026-06-04T12:00:00+09:00")
+KOREA_FIXTURE_NOW = datetime.fromisoformat("2026-06-04T18:00:00+09:00")
 
 RUNTIME_SIDE_EFFECTS: Dict[str, bool] = {
     "called_gemini": False,
@@ -227,8 +233,13 @@ def run_keysuri_offline_dry_run(
     source_pack: dict,
     raw_response_text: str,
     weather_context: dict | None = None,
+    now: datetime | None = None,
 ) -> dict:
-    """Run the full staged Kee-Suri pipeline offline using a fixture raw model response."""
+    """Run the full staged Kee-Suri pipeline offline using a fixture raw model response.
+
+    ``now`` pins the source-gate freshness clock so staged fixtures stay
+    deterministic instead of ageing out against wall-clock time.
+    """
     issues: List[Dict[str, str]] = []
     pid = (program_id or "").strip()
 
@@ -272,7 +283,7 @@ def run_keysuri_offline_dry_run(
         issues.append(_issue("source_pack_invalid", "source_pack must be a dict", "source_pack"))
         return _finish(_base_result(dry_run_status="block", program_id=pid, issues=issues))
 
-    gate_result = run_keysuri_source_gate(source_pack)
+    gate_result = run_keysuri_source_gate(source_pack, now=now)
     source_gate_result = gate_result.verdict
     issues.extend(_gate_issues_to_dicts(gate_result))
 
@@ -470,14 +481,18 @@ def run_keysuri_global_offline_dry_run() -> dict:
     """Run offline dry-run for Kee-Suri Global Tech using staged fixtures."""
     pack = load_json_file(str(_FEEDS_DIR / "keysuri_global_sources.sample.json"))
     raw = load_text_file(str(_FEEDS_DIR / "keysuri_global_raw_response.valid.sample.txt"))
-    return run_keysuri_offline_dry_run("keysuri_global_tech", pack, raw)
+    return run_keysuri_offline_dry_run(
+        "keysuri_global_tech", pack, raw, now=GLOBAL_FIXTURE_NOW
+    )
 
 
 def run_keysuri_korea_offline_dry_run() -> dict:
     """Run offline dry-run for Kee-Suri Korea Tech using staged fixtures."""
     pack = load_json_file(str(_FEEDS_DIR / "keysuri_korea_sources.sample.json"))
     raw = load_text_file(str(_FEEDS_DIR / "keysuri_korea_raw_response.valid.sample.txt"))
-    return run_keysuri_offline_dry_run("keysuri_korea_tech", pack, raw)
+    return run_keysuri_offline_dry_run(
+        "keysuri_korea_tech", pack, raw, now=KOREA_FIXTURE_NOW
+    )
 
 
 def dry_run_report_for_json(result: dict) -> dict:

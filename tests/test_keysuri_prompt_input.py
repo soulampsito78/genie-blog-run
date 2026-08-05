@@ -12,6 +12,7 @@ from keysuri_news_contract import NEWS_SCOPE_GLOBAL, NEWS_SCOPE_KOREA, SECTION_T
 from keysuri_prompt_input import OUTPUT_CONTRACT, build_keysuri_prompt_input
 from keysuri_source_gate import GateResult, GateIssue
 from owner_review_exposure_log_store import append_owner_review_exposure
+from sent_news_log_store import append_or_upsert_sent_news
 
 _REPO = Path(__file__).resolve().parent.parent
 
@@ -286,7 +287,8 @@ class KeysuriPromptInputExposureLogMergeTests(unittest.TestCase):
         self.assertEqual(result["combined_recent_log_count"], 0)
         self.assertNotIn("exposure_log_read_error_code", result)
 
-    def test_exposure_log_only_entry_excludes_matching_candidate(self) -> None:
+    def test_exposure_log_only_entry_does_not_exclude_matching_candidate(self) -> None:
+        """Owner-review exposure is admin-trace only; it must not feed production dedupe."""
         pack = _load_pack("keysuri_global_sources.sample.json")
         baseline = build_keysuri_prompt_input("keysuri_global_tech", pack)
         first_item = baseline["top_5_news"]["items"][0]
@@ -302,7 +304,11 @@ class KeysuriPromptInputExposureLogMergeTests(unittest.TestCase):
         selected_urls = {
             it.get("canonical_url") or it.get("url") for it in result["top_5_news"]["items"]
         }
-        self.assertNotIn(first_item.get("canonical_url") or first_item.get("url"), selected_urls)
+        # Exposure-only entries are still counted for admin observability but must
+        # not remove the matching candidate from the production TOP 5.
+        self.assertIn(first_item.get("canonical_url") or first_item.get("url"), selected_urls)
+        funnel = result["candidate_funnel_summary"]
+        self.assertEqual(funnel.get("cross_day_dedup_removed_count", 0), 0)
 
     def test_combined_count_sums_both_logs(self) -> None:
         pack = _load_pack("keysuri_global_sources.sample.json")
@@ -344,21 +350,20 @@ class KeysuriPromptInputExposureLogMergeTests(unittest.TestCase):
         korea_result = build_keysuri_prompt_input("keysuri_korea_tech", korea_pack)
         self.assertEqual(korea_result["exposure_log_read_count"], 0)
 
-    def test_top_ranked_dup_in_log_is_replaced_and_top5_stays_exactly_five(self) -> None:
-        """A top-ranked selected candidate that matches the recent log is removed
-        from the FULL pool before selection and backfilled from candidate #6, so
-        the TOP5 stays exactly 5 (regression for top_5_news_items_too_few=4)."""
+    def test_top_ranked_dup_in_sent_log_is_replaced_and_top5_stays_exactly_five(self) -> None:
+        """A top-ranked selected candidate that matches the customer-sent log is
+        removed from the FULL pool before selection and backfilled from candidate
+        #6, so the TOP5 stays exactly 5 (regression for top_5_news_items_too_few=4)."""
         gate = GateResult(verdict="pass", issues=())
         pack = _distinct_global_pack(7)
         baseline = build_keysuri_prompt_input("keysuri_global_tech", pack, gate_result=gate)
         items = baseline["top_5_news"]["items"]
         self.assertEqual([it["news_id"] for it in items], ["c1", "c2", "c3", "c4", "c5"])
 
-        append_owner_review_exposure(
-            run_id="prior-run-1",
-            program_id="keysuri_global_tech",
-            exposure_kind="owner_review_email",
-            selected_items=[items[0]],  # c1 is now a recent-log duplicate
+        append_or_upsert_sent_news(
+            run_id="prior-sent-1",
+            briefing_type="keysuri_global_tech",
+            selected_items=[items[0]],  # c1 is now a customer-sent duplicate
         )
         result = build_keysuri_prompt_input("keysuri_global_tech", pack, gate_result=gate)
 
@@ -374,22 +379,20 @@ class KeysuriPromptInputExposureLogMergeTests(unittest.TestCase):
         self.assertEqual(funnel["candidate_count_after_dedup"], 6)
         self.assertEqual(funnel["post_diversity_selected_count"], 5)
 
-    def test_two_top_dups_in_log_replaced_from_candidate_six_and_seven(self) -> None:
+    def test_two_top_dups_in_sent_log_replaced_from_candidate_six_and_seven(self) -> None:
         gate = GateResult(verdict="pass", issues=())
         pack = _distinct_global_pack(7)
         baseline = build_keysuri_prompt_input("keysuri_global_tech", pack, gate_result=gate)
         items = baseline["top_5_news"]["items"]
 
-        append_owner_review_exposure(
-            run_id="prior-run-2a",
-            program_id="keysuri_global_tech",
-            exposure_kind="owner_review_email",
+        append_or_upsert_sent_news(
+            run_id="prior-sent-2a",
+            briefing_type="keysuri_global_tech",
             selected_items=[items[0]],  # c1
         )
-        append_owner_review_exposure(
-            run_id="prior-run-2b",
-            program_id="keysuri_global_tech",
-            exposure_kind="owner_review_email",
+        append_or_upsert_sent_news(
+            run_id="prior-sent-2b",
+            briefing_type="keysuri_global_tech",
             selected_items=[items[1]],  # c2
         )
         result = build_keysuri_prompt_input("keysuri_global_tech", pack, gate_result=gate)
@@ -404,25 +407,23 @@ class KeysuriPromptInputExposureLogMergeTests(unittest.TestCase):
         self.assertIn("c7", ids)
         self.assertEqual(result["candidate_funnel_summary"]["cross_day_dedup_removed_count"], 2)
 
-    def test_insufficient_fresh_pool_after_dedup_holds_without_prompting(self) -> None:
-        """When hard dedup leaves fewer than 5 fresh candidates, the composer must
-        hold (top_5_news=None, ready_for_generation NOT set) so the caller safe-fails
-        before prompting Gemini — never emitting an under-count TOP5."""
+    def test_insufficient_fresh_pool_after_sent_dedup_holds_without_prompting(self) -> None:
+        """When hard sent-log dedup leaves fewer than 5 fresh candidates, the composer
+        must hold (top_5_news=None, ready_for_generation NOT set) so the caller
+        safe-fails before prompting Gemini — never emitting an under-count TOP5."""
         gate = GateResult(verdict="pass", issues=())
         pack = _distinct_global_pack(6)
         baseline = build_keysuri_prompt_input("keysuri_global_tech", pack, gate_result=gate)
         items = baseline["top_5_news"]["items"]
 
-        append_owner_review_exposure(
-            run_id="prior-run-3a",
-            program_id="keysuri_global_tech",
-            exposure_kind="owner_review_email",
+        append_or_upsert_sent_news(
+            run_id="prior-sent-3a",
+            briefing_type="keysuri_global_tech",
             selected_items=[items[0]],  # c1
         )
-        append_owner_review_exposure(
-            run_id="prior-run-3b",
-            program_id="keysuri_global_tech",
-            exposure_kind="owner_review_email",
+        append_or_upsert_sent_news(
+            run_id="prior-sent-3b",
+            briefing_type="keysuri_global_tech",
             selected_items=[items[1]],  # c2
         )
         result = build_keysuri_prompt_input("keysuri_global_tech", pack, gate_result=gate)
@@ -437,10 +438,9 @@ class KeysuriPromptInputExposureLogMergeTests(unittest.TestCase):
 
 
 class KeysuriKoreaScheduledExposureBackfillTests(unittest.TestCase):
-    """End-to-end (composer-level) proof that a scheduled Korea run does NOT
-    collapse into hold_review_required just because an earlier same-day
-    owner-review exposed the same items — while manual runs still hold, and
-    customer-sent stays a hard block."""
+    """Composer-level contract: owner-review exposure is NOT a production dedupe
+    source. Customer-sent remains a hard block. Contract-layer exposure soft-dedup
+    / backfill remains covered by tests/test_keysuri_news_contract.py."""
 
     _SCHEDULED = "scheduled_service_full_run"
 
@@ -506,7 +506,7 @@ class KeysuriKoreaScheduledExposureBackfillTests(unittest.TestCase):
             selected_items=items,
         )
 
-    def test_scheduled_run_recovers_via_fresh_backfill(self) -> None:
+    def test_scheduled_run_keeps_exposed_items_without_exposure_backfill(self) -> None:
         gate = GateResult(verdict="pass", issues=())
         pack = self._pack(["a1", "a2", "a3", "a4", "a5"], backfill=["b1", "b2", "b3", "b4", "b5"])
         baseline = build_keysuri_prompt_input("keysuri_korea_tech", pack, gate_result=gate)
@@ -519,9 +519,13 @@ class KeysuriKoreaScheduledExposureBackfillTests(unittest.TestCase):
         self.assertIsNotNone(result["top_5_news"])
         self.assertEqual(len(result["top_5_news"]["items"]), 5)
         self.assertFalse(result.get("exposure_dedup_backfill_used"))
-        self.assertEqual(result["candidate_funnel_summary"]["fresh_backfill_used_count"], 5)
+        self.assertEqual(result["candidate_funnel_summary"]["fresh_backfill_used_count"], 0)
+        self.assertEqual(
+            [it["news_id"] for it in result["top_5_news"]["items"]],
+            [it["news_id"] for it in baseline["top_5_news"]["items"]],
+        )
 
-    def test_manual_run_holds_on_same_day_exposure(self) -> None:
+    def test_manual_run_also_ignores_exposure_as_dedupe_source(self) -> None:
         gate = GateResult(verdict="pass", issues=())
         pack = self._pack(["a1", "a2", "a3", "a4", "a5"], backfill=["b1", "b2", "b3", "b4", "b5"])
         baseline = build_keysuri_prompt_input("keysuri_korea_tech", pack, gate_result=gate)
@@ -530,14 +534,12 @@ class KeysuriKoreaScheduledExposureBackfillTests(unittest.TestCase):
         result = build_keysuri_prompt_input(
             "keysuri_korea_tech", pack, gate_result=gate, trigger_source="manual_admin_review"
         )
-        # Manual run keeps exposure items as a hard block -> would hold, but the
-        # fresh watchlist still backfills because those items are genuinely new.
-        # The distinguishing behaviour is that no exposure *re-injection* happens.
+        self.assertEqual(result["prompt_status"], "ready_for_generation")
         self.assertFalse(result.get("exposure_dedup_backfill_used"))
+        self.assertEqual(result["candidate_funnel_summary"]["fresh_backfill_used_count"], 0)
 
-    def test_scheduled_reinjection_marks_internal_issue_code(self) -> None:
+    def test_composer_does_not_reinject_via_exposure_when_pool_exhausted(self) -> None:
         gate = GateResult(verdict="pass", issues=())
-        # No fresh backfill pool -> scheduled run must re-inject exposure dupes.
         pack = self._pack(["a1", "a2", "a3", "a4", "a5"])
         baseline = build_keysuri_prompt_input("keysuri_korea_tech", pack, gate_result=gate)
         self._expose(baseline["top_5_news"]["items"])
@@ -546,19 +548,17 @@ class KeysuriKoreaScheduledExposureBackfillTests(unittest.TestCase):
             "keysuri_korea_tech", pack, gate_result=gate, trigger_source=self._SCHEDULED
         )
         self.assertEqual(result["prompt_status"], "ready_for_generation")
-        self.assertTrue(result.get("exposure_dedup_backfill_used"))
-        self.assertIn(
+        self.assertFalse(result.get("exposure_dedup_backfill_used"))
+        self.assertNotIn(
             "keysuri_korea_exposure_dedup_backfill_used",
             result.get("internal_issue_codes", []),
         )
 
-    def test_scheduled_reinjection_holds_when_customer_sent(self) -> None:
+    def test_scheduled_run_holds_when_customer_sent(self) -> None:
         gate = GateResult(verdict="pass", issues=())
         pack = self._pack(["a1", "a2", "a3", "a4", "a5"])
         baseline = build_keysuri_prompt_input("keysuri_korea_tech", pack, gate_result=gate)
         items = baseline["top_5_news"]["items"]
-        # Customer-sent hard block: append to sent_news_log, not exposure log.
-        from sent_news_log_store import append_or_upsert_sent_news
         append_or_upsert_sent_news(
             run_id="prior-customer-send",
             briefing_type="keysuri_korea_tech",

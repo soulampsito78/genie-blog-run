@@ -23,20 +23,6 @@
       },
       {
         "rank": 2,
-        "news_id": "global-claim-business-opportunity",
-        "headline": "Enterprise procurement windows may widen",
-        "category": "business_opportunity",
-        "summary": "Staged example interpretation across official and wire sources.",
-        "why_it_matters": "Timing shifts in enterprise evaluation affect Q3-Q4 conversion.",
-        "business_implication": "Solution sellers should prepare ROI narratives around latency gains.",
-        "source_ids": [
-          "global-t0-ai-official",
-          "global-t2-market-wire"
-        ],
-        "confidence_label": "reported"
-      },
-      {
-        "rank": 3,
         "news_id": "global-claim-bigtech-capex",
         "headline": "Big-tech capex signals remain AI-weighted",
         "category": "bigtech",
@@ -49,20 +35,7 @@
         "confidence_label": "reported"
       },
       {
-        "rank": 4,
-        "news_id": "global-claim-market-signal",
-        "headline": "Enterprise AI adoption survey themes recap",
-        "category": "market_signal",
-        "summary": "Staged wire example on enterprise adoption sentiment (sample only).",
-        "why_it_matters": "Adoption sentiment influences hiring and tooling budget allocation.",
-        "business_implication": "Enterprise SaaS teams may adjust GTM toward proven ROI narratives.",
-        "source_ids": [
-          "global-t2-market-wire"
-        ],
-        "confidence_label": "reported"
-      },
-      {
-        "rank": 5,
+        "rank": 3,
         "news_id": "global-claim-semi-demand",
         "headline": "Advanced packaging demand stays firm for AI accelerators",
         "category": "semiconductor",
@@ -71,6 +44,32 @@
         "business_implication": "Packaging and equipment suppliers may see extended order visibility.",
         "source_ids": [
           "global-t2-semi-wire"
+        ],
+        "confidence_label": "reported"
+      },
+      {
+        "rank": 4,
+        "news_id": "global-claim-ai-policy",
+        "headline": "AI governance coordination themes in focus",
+        "category": "policy",
+        "summary": "Staged quality press example on AI policy coordination (not live verified).",
+        "why_it_matters": "Policy coordination can affect compliance cost curves for global AI vendors.",
+        "business_implication": "Operators should map policy timelines to product launch dependencies.",
+        "source_ids": [
+          "global-t3-policy-press"
+        ],
+        "confidence_label": "reported"
+      },
+      {
+        "rank": 5,
+        "news_id": "global-claim-platform-policy",
+        "headline": "Platform policy shift may alter developer monetization",
+        "category": "platform",
+        "summary": "Staged press example on app store policy and developer economics.",
+        "why_it_matters": "Platform fee changes can reshape indie and mid-size AI app economics.",
+        "business_implication": "Developers may need alternate distribution or pricing models.",
+        "source_ids": [
+          "global-t3-platform-press"
         ],
         "confidence_label": "reported"
       }
