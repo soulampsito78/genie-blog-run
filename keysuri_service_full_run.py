@@ -7,6 +7,7 @@ import logging
 import os
 import hashlib
 import re
+import tempfile
 import time
 from datetime import datetime
 from difflib import SequenceMatcher
@@ -407,6 +408,27 @@ def _split_gcs_uri(uri: Any) -> Optional[Tuple[str, str]]:
     if not bucket or not obj:
         return None
     return bucket, obj
+
+
+def _writable_keysuri_service_assets_dir() -> Path:
+    """Return a writable directory for restored KeeSuri service assets.
+
+    Cloud Run's container filesystem is read-only outside ``/tmp``. Prefer the
+    repo ``output/admin_runs/keysuri_service_assets`` tree when writable (local
+    dev / tests); otherwise fall back to a tempdir subdirectory so body_only
+    reissue can restore the parent top image before owner-review send.
+    """
+    preferred = _REPO / "output" / "admin_runs" / "keysuri_service_assets"
+    try:
+        preferred.mkdir(parents=True, exist_ok=True)
+        probe = preferred / ".write_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return preferred
+    except OSError:
+        fallback = Path(tempfile.gettempdir()) / "genie_keysuri_service_assets"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
 
 
 def _download_keysuri_top_image_from_gcs(
@@ -2758,7 +2780,7 @@ def _saved_top_image_reference(parent: Dict[str, Any]) -> Tuple[Optional[Path], 
         token = re.sub(r"[^A-Za-z0-9_]", "", str(parent.get("run_id") or "")) or hashlib.sha256(
             f"{gcs_refs[0][0]}/{gcs_refs[0][1]}".encode("utf-8")
         ).hexdigest()[:16]
-        dest = _REPO / "output" / "admin_runs" / "keysuri_service_assets" / f"{token}_restored_top.jpg"
+        dest = _writable_keysuri_service_assets_dir() / f"{token}_restored_top.jpg"
         last_issue = ""
         for bucket, obj, label in gcs_refs:
             issue = _download_keysuri_top_image_from_gcs(dest, bucket_name=bucket, object_name=obj)
