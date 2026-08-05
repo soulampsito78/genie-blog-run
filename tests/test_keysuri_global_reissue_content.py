@@ -76,6 +76,17 @@ class GlobalTitlePreservationTests(unittest.TestCase):
         for value in templates.values():
             self.assertNotIn("기반 AI·테크 신호", value)
 
+    def test_fallback_templates_individualise_with_real_title_hook(self) -> None:
+        templates = _reissue_clean_fallback_templates(
+            item=_live_item(1, title="How GPT-5.6 fuses frontier intelligence", source="OpenAI News"),
+            rank=1,
+        )
+        for value in templates.values():
+            self.assertIn("「How GPT-5.6 fuses frontier intelligence」", value)
+            self.assertNotIn("기반 AI·테크 신호", value)
+            self.assertNotIn("최신 발표를 바탕으로 AI·테크 업계에 영향을 줄 수 있는 변화로 선별했습니다", value)
+            self.assertNotIn("플랫폼, 인프라, AI 활용 흐름에 영향을 줄 수 있어", value)
+
     def test_13_real_original_title_survives_when_no_korean_headline(self) -> None:
         from keysuri_service_full_run import _normalize_reissue_visible_top5_item
 
@@ -275,6 +286,9 @@ class HoldAndSmtpTests(unittest.TestCase):
     def test_20_21_hold_produces_no_publishable_payload(self) -> None:
         """No briefing means no owner-review artifact and no SMTP of any kind."""
         live = _english_live_items()
+        for item in live:
+            for key in ("title", "headline", "korean_title", "original_title", "normalized_title"):
+                item[key] = ""
         repaired_prompt, repaired_briefing, fields, err = _repair_reissue_top5_from_live_selection(
             generated_briefing={"program_id": PROGRAM_GLOBAL, "top_5_news": {"items": _korean_model_items(live)[:1]}},
             prompt_input={"program_id": PROGRAM_GLOBAL, "top_5_news": {"items": live}},

@@ -1371,12 +1371,13 @@ def admin_run_reissue(
             error_code = str(result.get("error") or "keysuri_reissue_failed")
             safe_code = _safe_reissue_result_error_code(error_code)
             logger.warning(
-                "keysuri reissue result validation failed: run_id=%s scope=%s dry_run=%s error=%s safe_error_code=%s",
+                "keysuri reissue result validation failed: run_id=%s scope=%s dry_run=%s error=%s safe_error_code=%s content_codes=%s",
                 run_id,
                 scope,
                 dry_run,
                 error_code,
                 safe_code,
+                result.get("reissue_top5_content_issue_codes"),
             )
             return _render_reissue_failure_page(
                 title="Reissue failed",

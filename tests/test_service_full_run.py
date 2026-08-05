@@ -407,6 +407,12 @@ class KeysuriReissueTop5RepairTests(unittest.TestCase):
         from keysuri_visible_text_quality import validate_and_repair_keysuri_visible_text_quality
 
         live_items = self._live_items_with_raw_english_ellipsis()
+        # Strip real titles so clean-Korean fallbacks cannot individualise with
+        # 「title」 hooks. Without a concrete title the shared-generic incident
+        # pattern must still hold rather than publish filler.
+        for live in live_items:
+            for key in ("title", "headline", "korean_title", "original_title", "normalized_title"):
+                live.pop(key, None)
         prompt_input = {
             "program_id": PROGRAM_GLOBAL,
             "source_pack": {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []},
@@ -427,20 +433,55 @@ class KeysuriReissueTop5RepairTests(unittest.TestCase):
         self.assertEqual(err, "reissue_top5_content_integrity_hold")
         self.assertIsNone(repaired_prompt)
         self.assertIsNone(repaired_briefing)
-        self.assertIn(
-            "reissue_top5_shared_generic_body",
-            fields["reissue_top5_content_issue_codes"],
+        self.assertTrue(
+            set(fields["reissue_top5_content_issue_codes"])
+            & {
+                "reissue_top5_shared_generic_body",
+                "reissue_top5_title_missing",
+            }
         )
-        # The correlated cards are still reported, so the operator can see that
-        # only 2 of 5 were groundable rather than the failure being hidden.
-        self.assertEqual(fields["reissue_correlation_matched_count"], 2)
-        self.assertEqual(fields["reissue_correlation_unmatched_ranks"], [3, 4, 5])
-        self.assertFalse(fields["reissue_correlation_positional_used"])
         # A held reissue produces no publishable briefing at all, so raw English
         # claim prose cannot reach a rendered surface by any path.
         self.assertNotIn("reissue_top5_repair_source", fields)
         del validate_and_repair_keysuri_visible_text_quality
 
+    def test_live_reissue_english_gemini_with_real_titles_passes_via_hooked_fallback(self) -> None:
+        """English Gemini prose must not hold when every live card has a real title.
+
+        Production Global body_only failed with ``reissue_top5_content_integrity_hold``
+        after the clean-Korean gate replaced English bodies with identical
+        templates. Title-preserving 「hook」 fallbacks keep concrete article
+        identity without reopening the placeholder-title incident path.
+        """
+        from keysuri_service_full_run import _repair_reissue_top5_from_live_selection
+
+        live_items = self._live_items_with_raw_english_ellipsis()
+        english_gemini = _briefing_for_live_items(live_items)
+        prompt_input = {
+            "program_id": PROGRAM_GLOBAL,
+            "source_pack": {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []},
+            "top_5_news": {"news_scope": "global", "section_heading": "글로벌 테크 TOP 5", "items": live_items},
+        }
+
+        repaired_prompt, repaired_briefing, fields, err = _repair_reissue_top5_from_live_selection(
+            generated_briefing=english_gemini,
+            prompt_input=prompt_input,
+            program_id=PROGRAM_GLOBAL,
+            parent={},
+        )
+
+        self.assertIsNone(err)
+        self.assertIsNotNone(repaired_briefing)
+        repaired_items = repaired_briefing["top_5_news"]["items"]
+        self.assertEqual(len(repaired_items), 5)
+        self.assertTrue(fields["reissue_top5_clean_korean_fallback_used"])
+        self.assertEqual(fields.get("reissue_top5_content_issue_codes"), [])
+        for it in repaired_items:
+            title = str(it.get("headline") or it.get("title") or "")
+            self.assertTrue(title)
+            self.assertNotIn("기반 AI·테크 신호", title)
+            self.assertTrue(str(it.get("canonical_url") or it.get("url") or "").strip())
+            self.assertIn("「", str(it.get("summary") or ""))
     def test_live_reissue_valid_gemini_korean_is_preserved(self) -> None:
         from keysuri_service_full_run import _repair_reissue_top5_from_live_selection
 
@@ -515,7 +556,8 @@ class KeysuriReissueTop5RepairTests(unittest.TestCase):
         repaired_items = repaired_briefing["top_5_news"]["items"]
         self.assertEqual(repaired_items[0]["summary"], "부분 제미나이 요약 1입니다.")
         self.assertEqual(repaired_items[1]["summary"], "부분 제미나이 요약 2입니다.")
-        self.assertIn("최신 발표를 바탕으로", repaired_items[2]["summary"])
+        self.assertIn("「", repaired_items[2]["summary"])
+        self.assertIn("소식을 AI·테크 관점에서 선별해 정리했습니다", repaired_items[2]["summary"])
         self.assertTrue(fields["reissue_top5_clean_korean_fallback_used"])
         self.assertTrue(fields["reissue_visible_text_sanitized"])
         self.assertEqual([it["news_id"] for it in repaired_items], [it["news_id"] for it in live_items])

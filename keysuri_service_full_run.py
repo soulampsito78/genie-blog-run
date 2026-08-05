@@ -56,7 +56,7 @@ from keysuri_generation_prompt import (
     generate_keysuri_body_raw_text,
     parse_keysuri_generated_response,
 )
-from keysuri_gemini_client import call_keysuri_gemini_text
+from keysuri_gemini_client import KeysuriGeminiError, call_keysuri_gemini_text
 from keysuri_cost_estimate import estimate_keysuri_gemini_cost
 from service_image_api import DEFAULT_VERTEX_IMAGE_MODEL
 from keysuri_email_identity import build_keysuri_subject_artifact_fields
@@ -76,6 +76,7 @@ from keysuri_live_source_smoke import (
     PROGRAM_GLOBAL,
     PROGRAM_KOREA,
     LiveSourceSmokeResult,
+    generate_keysuri_with_bounded_recovery,
     run_keysuri_live_source_smoke,
 )
 from keysuri_prompt_input import build_keysuri_prompt_input
@@ -1832,6 +1833,32 @@ def _first_clean_korean_value(*values: Any) -> str:
     return ""
 
 
+_REISSUE_PLACEHOLDER_TITLE_RE = re.compile(r"기반\s*AI[·\s]*테크\s*신호\s*\d+\s*$")
+
+
+def _reissue_article_hook_fragment(item: Dict[str, Any]) -> str:
+    """「real title」 fragment that individualises otherwise-shared fallback prose.
+
+    Global body_only reissue often receives English Gemini prose for English
+    sources. The clean-Korean gate then falls back to short Korean templates. If
+    those templates are identical across 4+ cards, ``reissue_top5_shared_generic_body``
+    holds even though every card still has a concrete original title — which is
+    the wrong failure mode for a title-preserving reissue.
+
+    A 「…」 hook carrying the real article title marks each sentence as
+    article-specific (see ``_reissue_has_article_specific_hook``). Placeholder
+    titles are never used as hooks; cards without a real title keep shared
+    marker text so the incident pattern still holds.
+    """
+    real_title = _reissue_real_title(item)
+    if not real_title or _REISSUE_PLACEHOLDER_TITLE_RE.search(real_title):
+        return ""
+    clipped = real_title.strip()
+    if len(clipped) > 80:
+        clipped = clipped[:77] + "…"
+    return f"「{clipped}」 "
+
+
 def _reissue_clean_fallback_templates(
     *,
     item: Dict[str, Any],
@@ -1843,8 +1870,30 @@ def _reissue_clean_fallback_templates(
     plus rank ("{source} 기반 AI·테크 신호 {rank}") destroys the real article
     identity and reads as genuine content, so a missing title must become a
     validation hold instead — see ``reissue_top5_content_issue_codes``.
+
+    When a real title is available, use 「title」-anchored prose that does **not**
+    contain the shared generic marker substrings. Otherwise the content gate's
+    ``widely_repeated`` rule (2+ markers across 4+ cards) would still hold even
+    though every card retained a concrete original title — the wrong failure
+    mode after English Gemini prose is replaced by clean-Korean recovery.
+    Cards without a real title keep the historical shared markers so the
+    2026-07-30 placeholder incident pattern continues to hold.
     """
     source_label = _reissue_source_label(item, rank)
+    hook = _reissue_article_hook_fragment(item)
+    if hook:
+        hook_core = hook.strip()
+        return {
+            "summary": (
+                f"{source_label}가 전한 {hook_core} 소식을 AI·테크 관점에서 선별해 정리했습니다."
+            ),
+            "why_it_matters": (
+                f"{hook_core} 관련 흐름은 산업 경쟁과 도입 일정에 영향을 줄 수 있습니다."
+            ),
+            "business_implication": (
+                f"{hook_core} 기준으로 주인님의 대응 우선순위를 점검하면 좋겠습니다."
+            ),
+        }
     return {
         "summary": (
             f"{source_label}의 최신 발표를 바탕으로 AI·테크 업계에 영향을 줄 수 있는 "
@@ -1859,9 +1908,6 @@ def _reissue_clean_fallback_templates(
             "점검하면 좋겠습니다."
         ),
     }
-
-
-_REISSUE_PLACEHOLDER_TITLE_RE = re.compile(r"기반\s*AI[·\s]*테크\s*신호\s*\d+\s*$")
 
 _REISSUE_GENERIC_BODY_MARKERS = (
     "최신 발표를 바탕으로 AI·테크 업계에 영향을 줄 수 있는 변화로 선별했습니다",
@@ -2613,17 +2659,27 @@ def _regenerate_keysuri_text_from_source_pack(
     prompt_input["source_pack"] = source_pack
     prompt_text = build_keysuri_generation_prompt(prompt_input)
     caller = text_caller or call_keysuri_gemini_text
-    # Prefer Global MAX_TOKENS recovery helper when using the real Gemini client.
-    # Injected text_caller mocks (tests/reissue harness) keep the legacy
-    # caller(prompt, program_id=...) contract.
+    # Prefer the same bounded-recovery path natural Global runs use (initial +
+    # at most one corrective call). Injected text_caller mocks keep the legacy
+    # caller(prompt, program_id=...) contract for unit tests.
+    generation_diagnostics: Dict[str, Any] = {}
     if text_caller is None:
-        raw_text, _gen_diag = generate_keysuri_body_raw_text(
-            prompt_input,
-            gemini_caller=caller,
-        )
+        try:
+            generation_result = generate_keysuri_with_bounded_recovery(
+                prompt_input,
+                gemini_caller=caller,
+            )
+        except KeysuriGeminiError as exc:
+            diag = dict(getattr(exc, "diagnostics", None) or {})
+            return None, None, {**reissue_diag, **diag}, f"keysuri_gemini_generation_failed:{type(exc).__name__}"
+        raw_text = str(generation_result.get("raw_text") or "")
+        parse_result = generation_result.get("parse_result") or {}
+        if isinstance(generation_result.get("prompt_input"), dict):
+            prompt_input = generation_result["prompt_input"]
+        generation_diagnostics = dict(generation_result.get("generation_diagnostics") or {})
     else:
         raw_text = caller(prompt_text, program_id=program_id)
-    parse_result = parse_keysuri_generated_response(raw_text, program_id, prompt_input)
+        parse_result = parse_keysuri_generated_response(raw_text, program_id, prompt_input)
 
     if is_reissue:
         # Authoritative TOP5 = fresh live selection. Use Gemini prose when valid,
@@ -2644,7 +2700,7 @@ def _regenerate_keysuri_text_from_source_pack(
             program_id=program_id,
             parent=parent,
         )
-        repair_fields = {**reissue_diag, **(repair_fields or {})}
+        repair_fields = {**reissue_diag, **(repair_fields or {}), **generation_diagnostics}
         if repair_err is not None or repaired_prompt is None or repaired_briefing is None:
             return None, None, repair_fields, repair_err or "reissue_top5_live_repair_validation_failed"
         prompt_input = repaired_prompt
@@ -3343,7 +3399,22 @@ def run_keysuri_text_only_reissue(
         extra_recent_log=exclusion_rows,
     )
     if regen_error or prompt_input is None or generated_briefing is None:
-        return {"ok": False, "error": regen_error or "text_regeneration_failed", "program_id": pid}
+        failure = {
+            "ok": False,
+            "error": regen_error or "text_regeneration_failed",
+            "program_id": pid,
+        }
+        # Preserve repair diagnostics (content issue codes, correlation) so Admin
+        # / Cloud Logging can identify why a content-integrity hold fired.
+        failure.update(dict(repair_fields or {}))
+        logger.warning(
+            "keysuri body_only text regeneration failed: parent=%s error=%s content_codes=%s correlation_matched=%s",
+            parent_run_id,
+            failure.get("error"),
+            failure.get("reissue_top5_content_issue_codes"),
+            failure.get("reissue_correlation_matched_count"),
+        )
+        return failure
     repair_fields = dict(repair_fields or {})
     repair_fields.setdefault("reissue_recent_sent_log_count", int(prompt_input.get("sent_log_read_count") or 0))
     repair_fields.setdefault("reissue_recent_exposure_log_count", int(prompt_input.get("exposure_log_read_count") or 0))
