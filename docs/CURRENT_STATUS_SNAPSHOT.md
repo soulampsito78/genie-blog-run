@@ -3,6 +3,7 @@
 **As of: 2026-06-23 (KST) — full GCP audit**
 **Cloud Run / commit / health + Kee-Suri recovery: re-verified 2026-06-26 (KST)**
 **Kee-Suri Global 재발방지: 재검증 2026-07-31 (KST) — §1, §9**
+**Sandbox harness giant step: local-only 2026-08-06 (KST) — §9 / closeout pointer**
 **Basis: GCP audit — Cloud Scheduler, Cloud Run, GCS artifact inspection**
 **Service: `genie-blog-run`, region `asia-northeast3`**
 
@@ -14,6 +15,14 @@ This document is the authoritative operational snapshot. Update it after each au
 > The Scheduler (§2), Program Run (§3), PASS Criteria (§4), Key Config (§5), and
 > Secrets (§6) tables retain their **2026-06-23 audit basis** and were not
 > re-audited on 2026-06-26.
+
+> **Sandbox harness giant step (2026-08-06, LOCAL ONLY):**
+> `GENIE_KEESURI_SANDBOX_HARNESS_GIANT_STEP_COMPLETE` — baseline-failure
+> classification/remediation, Admin reissue + Today/Global/Korea natural-run
+> harnesses, failure-event/metrics harness + local inspect script. Full suite
+> **2570 passed** locally. **No push / no deploy / no live operational QA.**
+> Gmail/SMTP/Scheduler proof is a separate future batch.
+> [docs/keysuri/KEYSURI_SANDBOX_HARNESS_GIANT_STEP_CLOSEOUT_2026_08_06.md](keysuri/KEYSURI_SANDBOX_HARNESS_GIANT_STEP_CLOSEOUT_2026_08_06.md).
 
 > **Kee-Suri Global 재발방지 클로즈아웃 (2026-07-31):**
 > `KEESURI_GLOBAL_RECURRENCE_PREVENTION_COMPLETE` — 2026-07-30 Global 장애 2건
@@ -205,15 +214,24 @@ owner-review 성공은 **endpoint HTTP 200 / `email_sent=true` / SMTP accepted
 
 ### 테스트 기준선
 
-recovery+recurrence harness `88 passed` · targeted `136 passed` ·
-full suite `2436 passed, 21 failed, 1 skipped, 1 xfailed` ·
-baseline 실패 목록 byte-identical · **신규 실패 0**.
-21건은 기존 baseline 실패이며 본 작업과 무관하다.
+**Sandbox giant step (2026-08-06, local only):** full suite **2570 passed**,
+0 failed, 0 new xfail. Baseline classification:
+[KEYSURI_SANDBOX_BASELINE_FAILURE_CLASSIFICATION_2026_08_06.md](keysuri/KEYSURI_SANDBOX_BASELINE_FAILURE_CLASSIFICATION_2026_08_06.md).
+Closeout:
+[KEYSURI_SANDBOX_HARNESS_GIANT_STEP_CLOSEOUT_2026_08_06.md](keysuri/KEYSURI_SANDBOX_HARNESS_GIANT_STEP_CLOSEOUT_2026_08_06.md).
+Local inspect: `scripts/inspect_owner_review_ops_local.py`.
+
+**Prior closeout baseline (2026-07-31, historical):** recovery+recurrence
+harness `88 passed` · targeted `136 passed` · full suite
+`2436 passed, 21 failed, 1 skipped, 1 xfailed`. Those 21 failures are now
+classified as already-fixed / environment-dependent at HEAD `7d19869`+sandbox
+commits; they are not an active failure list.
 
 ### 향후 자연실행 관찰 사항
 
 식별된 재발 경로는 통제되었다. 이후 자연실행은 통상적인 운영 모니터링 대상으로
-남으며, 위 카운터 추세를 관찰한다.
+남으며, 위 카운터 추세를 관찰한다. **Gmail/SMTP/Scheduler 실증명 배치는
+별도 배치**이며 본 sandbox 작업에 포함되지 않는다.
 
 ---
 
