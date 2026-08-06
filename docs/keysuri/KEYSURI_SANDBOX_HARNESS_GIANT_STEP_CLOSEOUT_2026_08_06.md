@@ -1,7 +1,7 @@
 # GENIE / KeeSuri Sandbox Harness Giant Step — Closeout
 
-**Date:** 2026-08-06 (KST)  
-**Scope:** SANDBOX / LOCAL ONLY  
+**Date:** 2026-08-06 (KST)
+**Scope:** SANDBOX / LOCAL ONLY
 **Label:** `GENIE_KEESURI_SANDBOX_HARNESS_GIANT_STEP_COMPLETE`
 
 ## What this batch did
