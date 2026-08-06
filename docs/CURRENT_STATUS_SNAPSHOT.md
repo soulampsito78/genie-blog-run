@@ -5,10 +5,20 @@
 **Kee-Suri Global 재발방지: 재검증 2026-07-31 (KST) — §1, §9**
 **Sandbox harness giant step: local-only 2026-08-06 (KST) — §9 / closeout pointer**
 **Sandbox repository closeout: local-only 2026-08-07 (KST) — §9 / closeout pointer**
+**Today natural-slot incident: 2026-08-07 (KST) — see incident closeout pointer below**
 **Basis: GCP audit — Cloud Scheduler, Cloud Run, GCS artifact inspection**
 **Service: `genie-blog-run`, region `asia-northeast3`**
 
 This document is the authoritative operational snapshot. Update it after each audit.
+
+> **Today_Geenee post-migration first natural-run incident (2026-08-07):**
+> Scheduler fired at 06:30 KST; Cloud Run returned HTTP 200 in ~4.8s without a
+> new natural artifact because same-KST-date QA
+> `20260807_003207_today_genie_255d3454` falsely satisfied the legacy dedupe.
+> Correction: execution-class + natural-slot identity gate; Scheduler body must
+> include `execution_class=natural_scheduled` and `scheduled_slot=06:30`.
+> Early QA mail is not natural-run success. Full record:
+> [docs/TODAY_GENIE_POST_MIGRATION_FIRST_NATURAL_RUN_INCIDENT_2026_08_07.md](TODAY_GENIE_POST_MIGRATION_FIRST_NATURAL_RUN_INCIDENT_2026_08_07.md).
 
 > Scope of the 2026-06-26 re-verification: Cloud Run revision / commit / traffic /
 > health and the Kee-Suri owner-review exposure log runtime (Sections 1, 7, 8 and
