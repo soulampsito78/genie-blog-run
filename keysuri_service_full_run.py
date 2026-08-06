@@ -4299,6 +4299,11 @@ def _run_keysuri_service_full_run_impl(
                 for k, v in safe_gen.items():
                     if k != "issue_codes" and k not in meta:
                         meta[k] = v
+        from keysuri_generation_prompt import sanitize_generation_contract_record
+
+        smoke_contract = getattr(smoke, "generation_contract", None)
+        if isinstance(smoke_contract, dict) and smoke_contract:
+            meta["generation_contract"] = sanitize_generation_contract_record(smoke_contract)
         smoke_internal_codes = [
             str(code) for code in (getattr(smoke, "internal_issue_codes", []) or []) if code
         ]
@@ -4811,6 +4816,25 @@ def _run_keysuri_service_full_run_impl(
         if safe_recovery_diagnostics:
             meta["generation_diagnostics"] = safe_recovery_diagnostics
             meta.update(safe_recovery_diagnostics)
+    from keysuri_generation_prompt import (
+        generation_contract_record,
+        sanitize_generation_contract_record,
+    )
+
+    smoke_contract = getattr(smoke, "generation_contract", None)
+    if isinstance(smoke_contract, dict) and smoke_contract:
+        meta["generation_contract"] = sanitize_generation_contract_record(smoke_contract)
+    elif isinstance(getattr(smoke, "parse_meta", None), dict) or smoke.called_gemini:
+        # Successful generation path must persist a bounded contract fingerprint.
+        meta["generation_contract"] = generation_contract_record(
+            pid,
+            attempt=int(getattr(smoke, "generation_attempt_count", 1) or 1),
+            actual_attempt_count=int(getattr(smoke, "generation_attempt_count", 1) or 1),
+            retry_reason_family=getattr(smoke, "generation_recovery_family", None),
+            recovery_result=str(
+                getattr(smoke, "generation_recovery_result", None) or "not_needed"
+            ),
+        )
     meta.update(visible_text_quality_fields)
     meta["owner_email_subject"] = subject
     _log_owner_email_delivery_event(program_id=pid, run_id=run_id, fields=owner_email_fields)

@@ -40,7 +40,9 @@ from keysuri_contract_preview_renderer import (
 from keysuri_generation_prompt import (
     extract_json_object_from_model_text,
     generate_keysuri_body_raw_text,
+    generation_contract_record,
     parse_keysuri_generated_response,
+    sanitize_generation_contract_record,
 )
 from keysuri_gemini_client import KeysuriGeminiError, call_keysuri_gemini_text
 from keysuri_html_preview_validation import validate_keysuri_html_preview
@@ -358,6 +360,7 @@ class LiveSourceSmokeResult:
     parse_meta: Dict[str, Any] = field(default_factory=dict)
     parse_diagnostics: Dict[str, Any] = field(default_factory=dict)
     generation_diagnostics: Dict[str, Any] = field(default_factory=dict)
+    generation_contract: Dict[str, Any] = field(default_factory=dict)
     raw_response_path: Optional[str] = None
     generated_body: Dict[str, str] = field(default_factory=dict)
     generated_briefing: Optional[dict] = None
@@ -433,6 +436,7 @@ class LiveSourceSmokeResult:
             "parse_meta": self.parse_meta,
             "parse_diagnostics": self.parse_diagnostics,
             "generation_diagnostics": self.generation_diagnostics,
+            "generation_contract": self.generation_contract,
             "raw_response_path": self.raw_response_path,
             "generated_body": self.generated_body,
             "generated_briefing": self.generated_briefing,
@@ -2239,6 +2243,62 @@ def _run_global_bounded_contract_repair(
     }
 
 
+def _enrich_parse_generation_contract(
+    parse_result: Dict[str, Any],
+    *,
+    program_id: str,
+    diagnostics: Mapping[str, Any],
+    model: Optional[str] = None,
+    prompt_text: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Attach a bounded generation_contract onto parse_result (mutates and returns)."""
+    base = sanitize_generation_contract_record(parse_result.get("generation_contract"))
+    if not base:
+        base = generation_contract_record(
+            program_id,
+            model=model,
+            prompt_text=prompt_text,
+        )
+    attempt_count = int(
+        diagnostics.get("generation_attempt_count")
+        or diagnostics.get("global_generation_call_count")
+        or base.get("actual_attempt_count")
+        or 1
+    )
+    enriched = generation_contract_record(
+        program_id,
+        attempt=attempt_count,
+        actual_attempt_count=attempt_count,
+        retry_reason=str(
+            diagnostics.get("retry_reason")
+            or diagnostics.get("generation_recovery_family")
+            or diagnostics.get("global_recovery_reason")
+            or ""
+        )
+        or None,
+        retry_reason_family=str(
+            diagnostics.get("generation_recovery_family")
+            or diagnostics.get("global_recovery_reason")
+            or ""
+        )
+        or None,
+        recovery_result=str(
+            diagnostics.get("generation_recovery_result")
+            or diagnostics.get("global_recovery_result")
+            or "not_needed"
+        ),
+        model=model or base.get("model_identifier"),
+        prompt_text=prompt_text,
+    )
+    # Preserve fingerprints from the parse-time contract when prompt_text absent.
+    if not prompt_text and base.get("prompt_template_fingerprint"):
+        enriched["prompt_template_fingerprint"] = base["prompt_template_fingerprint"]
+    if base.get("schema_fingerprint"):
+        enriched["schema_fingerprint"] = base["schema_fingerprint"]
+    parse_result["generation_contract"] = sanitize_generation_contract_record(enriched)
+    return parse_result
+
+
 def generate_keysuri_with_bounded_recovery(
     prompt_input: dict,
     *,
@@ -2314,6 +2374,12 @@ def generate_keysuri_with_bounded_recovery(
             diagnostics,
             _merge_generation_usage(usage_sink, initial_usage, recovery_usage),
             overwrite_keys=_USAGE_DIAGNOSTIC_OVERWRITE_KEYS,
+        )
+        _enrich_parse_generation_contract(
+            parse_result,
+            program_id=program_id,
+            diagnostics=diagnostics,
+            model=model,
         )
         return {
             "raw_text": raw_text,
@@ -2879,6 +2945,7 @@ def run_keysuri_live_source_smoke(
     raw_response_path: Optional[str] = None
     generated_body: Dict[str, str] = {}
     generation_diagnostics: Dict[str, Any] = {}
+    generation_contract: Dict[str, Any] = {}
 
     if use_gemini:
         caller = gemini_caller or call_keysuri_gemini_text
@@ -2944,6 +3011,16 @@ def run_keysuri_live_source_smoke(
             if isinstance(parse_result.get("parse_meta"), dict)
             else {}
         )
+        if isinstance(parse_result, dict):
+            _enrich_parse_generation_contract(
+                parse_result,
+                program_id=program_id,
+                diagnostics=generation_diagnostics,
+                model=model,
+            )
+        generation_contract = sanitize_generation_contract_record(
+            parse_result.get("generation_contract") if isinstance(parse_result, dict) else {}
+        )
         parse_internal_codes = _parse_internal_issue_codes(parse_result)
         if parse_status != "parsed_valid":
             issues = parse_result.get("issues") or []
@@ -2977,6 +3054,7 @@ def run_keysuri_live_source_smoke(
                 parse_meta=parse_meta,
                 parse_diagnostics=_parse_failure_diagnostics(parse_result, prompt_input),
                 generation_diagnostics=generation_diagnostics,
+                generation_contract=generation_contract,
                 validation_issues=validation_issue_codes,
                 raw_response_path=raw_response_path,
                 side_effects=side_effects,
@@ -3250,6 +3328,11 @@ def run_keysuri_live_source_smoke(
         parse_status=parse_status,
         parse_meta=parse_meta,
         generation_diagnostics=generation_diagnostics if use_gemini else {},
+        generation_contract=(
+            generation_contract
+            if use_gemini
+            else sanitize_generation_contract_record({})
+        ),
         raw_response_path=raw_response_path,
         generated_body=generated_body,
         generated_briefing=generated_briefing if isinstance(generated_briefing, dict) else None,
