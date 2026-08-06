@@ -52,6 +52,69 @@ def normalize_reissue_scope(raw_scope: str) -> Optional[str]:
         return value
     return LEGACY_REISSUE_SCOPE_ALIASES.get(value)
 
+
+# A reissue copies the parent's grounding forward. Reissuing from a run that
+# never reached a publishable state carries that run's defect into a fresh
+# owner-review email, which is how the 2026-07-30 Global incident produced a
+# second batch of placeholder cards.
+REISSUE_PARENT_BLOCK_REASONS = frozenset(
+    {
+        "parent_validation_not_pass",
+        "parent_run_errored",
+        "parent_placeholder_content",
+        "parent_not_reissuable_dry_run",
+    }
+)
+
+# Fabricated "{source} 기반 AI·테크 신호 {rank}" cards — the incident signature.
+_REISSUE_PARENT_PLACEHOLDER_TITLE_RE = re.compile(r"기반\s*AI[·\s]*테크\s*신호\s*\d+\s*$")
+
+
+def _reissue_parent_top5_titles(parent: Dict[str, Any]) -> List[str]:
+    """Every visible TOP5 title the parent would hand to a child run."""
+    titles: List[str] = []
+    buckets: List[Any] = [parent.get("selected_items")]
+    snapshot = parent.get("regen_generated_briefing_snapshot")
+    if isinstance(snapshot, dict):
+        buckets.append((snapshot.get("top_5_news") or {}).get("items"))
+    for bucket in buckets:
+        if not isinstance(bucket, list):
+            continue
+        for item in bucket:
+            if not isinstance(item, dict):
+                continue
+            title = str(
+                item.get("headline") or item.get("korean_title") or item.get("title") or ""
+            ).strip()
+            if title:
+                titles.append(title)
+    return titles
+
+
+def reissue_parent_block_reason(parent: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Why this run must not be used as a reissue parent, or None if eligible.
+
+    Scope-independent: a defective parent is defective for body_only,
+    image_only and body_and_image alike, because every scope inherits the
+    parent's article selection.
+    """
+    if not isinstance(parent, dict):
+        return "parent_validation_not_pass"
+
+    if str(parent.get("validation_result") or "").strip().lower() != "pass":
+        return "parent_validation_not_pass"
+    if str(parent.get("error") or "").strip():
+        return "parent_run_errored"
+    if parent.get("admin_reissue_dry_run") or str(
+        parent.get("verification_mode") or ""
+    ).strip() == "no_send_verification":
+        return "parent_not_reissuable_dry_run"
+    for title in _reissue_parent_top5_titles(parent):
+        if _REISSUE_PARENT_PLACEHOLDER_TITLE_RE.search(title):
+            return "parent_placeholder_content"
+    return None
+
+
 CUSTOMER_DELIVERY_STATUSES = frozenset(
     {
         "not_sent",

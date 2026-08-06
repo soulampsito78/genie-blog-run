@@ -36,6 +36,7 @@ from admin_store import (
     list_run_artifacts,
     owner_review_email_label_ko,
     record_parent_reissue_audit,
+    reissue_parent_block_reason,
     remove_beta_recipient,
     resolve_customer_recipients,
     update_run_artifact,
@@ -175,6 +176,25 @@ def _reissue_mode_label(mode: str) -> str:
 _DRY_RUN_REISSUE_MODES = frozenset(
     {"keysuri_global_tech", "keysuri_korea_tech", "today_genie"}
 )
+
+# Operator-facing text for each parent-eligibility block. Keeps the reason
+# actionable without echoing artifact internals onto the page.
+_REISSUE_PARENT_BLOCK_MESSAGES = {
+    "parent_validation_not_pass": (
+        "검증을 통과하지 못한 실행은 재발행 원본으로 사용할 수 없습니다. "
+        "정상 발행된 실행을 선택해 주세요."
+    ),
+    "parent_run_errored": (
+        "오류로 종료된 실행은 재발행 원본으로 사용할 수 없습니다. "
+        "정상 발행된 실행을 선택해 주세요."
+    ),
+    "parent_placeholder_content": (
+        "원본 실행의 TOP5에 자동 생성된 임시 제목이 포함되어 있어 재발행을 차단했습니다."
+    ),
+    "parent_not_reissuable_dry_run": (
+        "무발송 검증(dry-run) 실행은 재발행 원본으로 사용할 수 없습니다."
+    ),
+}
 
 # Markers recorded on a dry-run child artifact so operators (and tests) can see
 # the reissue pipeline ran without dispatching the owner-review email.
@@ -1271,6 +1291,17 @@ def admin_run_reissue(
             mode=mode,
             failed_step="mode_validation",
             safe_message="알 수 없는 mode로는 재발행을 실행할 수 없습니다.",
+            status_code=400,
+        )
+
+    parent_block = reissue_parent_block_reason(parent)
+    if parent_block is not None:
+        return _render_reissue_failure_page(
+            title="Reissue blocked",
+            run_id=run_id,
+            mode=mode,
+            failed_step="parent_eligibility",
+            safe_message=_REISSUE_PARENT_BLOCK_MESSAGES[parent_block],
             status_code=400,
         )
 
