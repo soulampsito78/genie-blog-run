@@ -4,6 +4,7 @@
 **Cloud Run / commit / health + Kee-Suri recovery: re-verified 2026-06-26 (KST)**
 **Kee-Suri Global 재발방지: 재검증 2026-07-31 (KST) — §1, §9**
 **Sandbox harness giant step: local-only 2026-08-06 (KST) — §9 / closeout pointer**
+**Sandbox repository closeout: local-only 2026-08-07 (KST) — §9 / closeout pointer**
 **Basis: GCP audit — Cloud Scheduler, Cloud Run, GCS artifact inspection**
 **Service: `genie-blog-run`, region `asia-northeast3`**
 
@@ -15,6 +16,14 @@ This document is the authoritative operational snapshot. Update it after each au
 > The Scheduler (§2), Program Run (§3), PASS Criteria (§4), Key Config (§5), and
 > Secrets (§6) tables retain their **2026-06-23 audit basis** and were not
 > re-audited on 2026-06-26.
+
+> **Sandbox repository closeout (2026-08-07, LOCAL ONLY):**
+> `GENIE_KEESURI_SANDBOX_REPOSITORY_CLOSEOUT_COMPLETE` — independent harness
+> verification, self-review defect repair (falsifiable assertions), consistency
+> audit, full local regression. **No push / no deploy / no live operational QA.**
+> Production-proof batch (Gmail receipt required for operational PASS) remains
+> pending. Do not start another sandbox coding phase.
+> [docs/keysuri/KEYSURI_SANDBOX_REPOSITORY_CLOSEOUT_2026_08_07.md](keysuri/KEYSURI_SANDBOX_REPOSITORY_CLOSEOUT_2026_08_07.md).
 
 > **Sandbox harness giant step (2026-08-06, LOCAL ONLY):**
 > `GENIE_KEESURI_SANDBOX_HARNESS_GIANT_STEP_COMPLETE` — baseline-failure
@@ -213,6 +222,10 @@ owner-review 성공은 **endpoint HTTP 200 / `email_sent=true` / SMTP accepted
 `KEESURI_GLOBAL_PRODUCTION_OWNER_REVIEW_PASS`).
 
 ### 테스트 기준선
+
+**Sandbox repository closeout (2026-08-07, local only):** full suite re-proven
+green after harness self-review repairs; 0 failed, 0 new xfail. Closeout:
+[KEYSURI_SANDBOX_REPOSITORY_CLOSEOUT_2026_08_07.md](keysuri/KEYSURI_SANDBOX_REPOSITORY_CLOSEOUT_2026_08_07.md).
 
 **Sandbox giant step (2026-08-06, local only):** full suite **2570 passed**,
 0 failed, 0 new xfail. Baseline classification:
