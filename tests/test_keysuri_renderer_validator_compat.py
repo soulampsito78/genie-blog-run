@@ -18,15 +18,14 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from keysuri_contract_preview_fixture import build_contract_preview_fixture_from_generated
+from keysuri_contract_preview_renderer import render_keysuri_contract_preview_html
 from keysuri_generated_briefing import load_keysuri_generated_briefing_fixture
 from keysuri_html_preview_validation import validate_keysuri_html_preview
 from keysuri_private_briefing import SECTION_DEEP_DIVE
 from keysuri_renderer import load_keysuri_prompt_input_fixture, render_keysuri_owner_review_html
 
 _REPO = Path(__file__).resolve().parent.parent
-
-# Flip to True only after a contract-validation renderer path is implemented.
-CONTRACT_PREVIEW_RENDERER_AVAILABLE = False
 
 
 def _load_prompt(name: str) -> dict:
@@ -169,48 +168,83 @@ class KeysuriRendererValidatorCompatTests(unittest.TestCase):
             "Contract compliance checklist",
         )
 
-        for marker in owner_markers:
-            self.assertIn(marker, owner_html)
-        for marker in contract_markers:
-            self.assertNotIn(marker, owner_html)
-
-        self.assertTrue(
-            CONTRACT_PREVIEW_RENDERER_AVAILABLE is False,
-            "contract-validation renderer not implemented; use manual html_test previews or "
-            "add render_keysuri_contract_preview_html() later",
+        contract_html = render_keysuri_contract_preview_html(
+            build_contract_preview_fixture_from_generated(
+                program_id="keysuri_global_tech",
+                prompt_input=self.global_prompt,
+                generated_briefing=self.global_generated,
+                source_pack={},
+            ),
+            repo_root=_REPO,
         )
 
+        for marker in owner_markers:
+            self.assertIn(marker, owner_html)
+            self.assertNotIn(marker, contract_html)
+        for marker in contract_markers:
+            self.assertNotIn(marker, owner_html)
+            self.assertIn(marker, contract_html)
 
-class KeysuriRendererValidatorFutureDirectionTests(unittest.TestCase):
-    """Future direction: dedicated contract preview renderer or contract-validation mode."""
 
-    @unittest.expectedFailure
-    def test_owner_review_renderer_eventually_needs_contract_mode_or_separate_renderer(self) -> None:
-        """Documents intended future compatibility — fails until implemented.
+class KeysuriContractPreviewRendererGapTests(unittest.TestCase):
+    """Measure the remaining contract-validation gap, rather than declaring it.
 
-        When either:
-        - a dedicated contract preview renderer writes html_test previews, or
-        - owner-review renderer gains an explicit contract-validation mode,
+    This class used to hold a single ``@unittest.expectedFailure`` whose body
+    called ``self.fail()`` behind a hardcoded ``CONTRACT_PREVIEW_RENDERER_
+    AVAILABLE = False`` constant, so it asserted nothing and could never turn
+    green. The dedicated renderer it was waiting for now exists
+    (``keysuri_contract_preview_renderer``), so the direction is measured here:
+    the dedicated renderer must stay strictly closer to the html_test contract
+    than the owner-review renderer, and its residual gap is pinned so that
+    closing it — or regressing it — changes this test.
+    """
 
-        rendered output placed under output/keysuri_preview/html_test/ with a timestamped
-        filename should pass validate_keysuri_html_preview().
-        """
-        if not CONTRACT_PREVIEW_RENDERER_AVAILABLE:
-            self.fail(
-                "Gap documented: owner-review renderer != html_test contract-validation "
-                "preview. Implement a dedicated contract preview renderer or add "
-                "contract-validation mode before expecting PASS."
-            )
-
-        prompt = _load_prompt("keysuri_global_prompt_input.sample.json")
-        generated = _load_generated("keysuri_global_generated_briefing.sample.json")
-        html = render_keysuri_owner_review_html(prompt, generated)
-
+    @staticmethod
+    def _issue_codes(html: str) -> set:
         with TemporaryDirectory() as tmpdir:
             path = _write_html_test_preview(Path(tmpdir), "global", html)
-            result = validate_keysuri_html_preview(str(path))
+            return {issue.code for issue in validate_keysuri_html_preview(str(path)).issues}
 
-        self.assertTrue(result.is_pass())
+    @classmethod
+    def setUpClass(cls) -> None:
+        prompt = _load_prompt("keysuri_global_prompt_input.sample.json")
+        generated = _load_generated("keysuri_global_generated_briefing.sample.json")
+        cls.owner_codes = cls._issue_codes(
+            render_keysuri_owner_review_html(prompt, generated)
+        )
+        fixture = build_contract_preview_fixture_from_generated(
+            program_id="keysuri_global_tech",
+            prompt_input=prompt,
+            generated_briefing=generated,
+            source_pack={},
+        )
+        cls.contract_codes = cls._issue_codes(
+            render_keysuri_contract_preview_html(fixture, repo_root=_REPO)
+        )
+
+    def test_dedicated_contract_preview_renderer_exists(self) -> None:
+        self.assertTrue(callable(render_keysuri_contract_preview_html))
+
+    def test_dedicated_renderer_closes_the_structural_gaps(self) -> None:
+        """Every structural defect of the owner-review path is gone in the contract path."""
+        for code in (
+            "top5_item_count_invalid",
+            "rights_policy_missing",
+            "deep_dive_layer_structure_missing",
+        ):
+            self.assertIn(code, self.owner_codes)
+            self.assertNotIn(code, self.contract_codes)
+
+    def test_contract_renderer_gap_is_strictly_smaller(self) -> None:
+        self.assertLess(len(self.contract_codes), len(self.owner_codes))
+        self.assertTrue(self.contract_codes.isdisjoint(self.owner_codes))
+
+    def test_residual_contract_gap_is_pinned(self) -> None:
+        """Remaining gap without a source pack — update deliberately, never silently."""
+        self.assertEqual(
+            self.contract_codes,
+            {"claimed_pass_mismatch", "top5_item_missing_source_fields"},
+        )
 
 
 if __name__ == "__main__":

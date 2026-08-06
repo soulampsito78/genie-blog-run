@@ -20,9 +20,17 @@ from tests.test_keysuri_contract_preview_renderer import (
 
 _REPO = Path(__file__).resolve().parent.parent
 
+# Deterministic 1x1 PNG — avoids depending on untracked image_canary assets.
+_TINY_PNG_DATA_URI = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
 
 def _premium_fixture(**overrides):
     fixture = build_global_contract_fixture()
+    # Hero data-URI tests must not require local output/ canary JPEGs.
+    fixture.setdefault("top_shot_image_src", _TINY_PNG_DATA_URI)
     fixture.update(overrides)
     return fixture
 

@@ -12,11 +12,15 @@ Policy basis:
 """
 from __future__ import annotations
 
+import inspect
+import socket
+import types
 import unittest
 from functools import wraps
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Callable, Optional, TypeVar
+from unittest import mock
 
 from PIL import Image
 
@@ -108,13 +112,45 @@ class KeysuriImageOverlayPolicyTests(unittest.TestCase):
         for token in EXPECTED_FORBIDDEN_LEGACY_SUBSTRINGS:
             self.assertNotIn(token, EXPECTED_DEFAULT_WATERMARK_TEXT)
 
+    @_require_overlay_module
     def test_post_process_overlay_does_not_call_image_api(self) -> None:
-        """Overlay is post-generation only — no prompt or image API in this utility."""
-        self.assertTrue(True)
+        """Overlay must complete with every socket denied — so no image API, ever."""
+        mod = _OVERLAY_MOD
+        assert mod is not None
 
+        def _deny_socket(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("overlay opened a socket")
+
+        with TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.jpg"
+            output_path = Path(tmpdir) / "output.jpg"
+            _make_portrait_sample(input_path)
+            with mock.patch.object(socket, "socket", _deny_socket), mock.patch.object(
+                socket, "create_connection", _deny_socket
+            ):
+                _apply_overlay(mod, input_path, output_path)
+            self.assertTrue(output_path.exists())
+
+    @_require_overlay_module
     def test_post_process_overlay_does_not_modify_prompts(self) -> None:
-        """Utility overlays raster assets after generation; prompts stay unchanged."""
-        self.assertTrue(True)
+        """The utility takes raster paths only; no prompt builder is in its graph."""
+        mod = _OVERLAY_MOD
+        assert mod is not None
+        imported = {
+            getattr(value, "__name__", "")
+            for value in vars(mod).values()
+            if isinstance(value, types.ModuleType)
+        }
+        for forbidden in (
+            "keysuri_generation_prompt",
+            "keysuri_bottom_shot_prompt_builder",
+            "keysuri_prompt_input",
+            "prompts",
+        ):
+            self.assertNotIn(forbidden, imported)
+
+        params = set(inspect.signature(mod.apply_keysuri_mirai_on_watermark).parameters)
+        self.assertNotIn("prompt", params)
 
 
 class KeysuriImageOverlayImportTests(unittest.TestCase):
@@ -304,20 +340,69 @@ class KeysuriImageOverlayBehaviorTests(unittest.TestCase):
         self.assertGreater(y0, 600)
 
 
-class KeysuriImageOverlayFutureWorkTests(unittest.TestCase):
-    @unittest.skip("Duplicate overlay detection is future work — not required in v0")
-    def test_duplicate_overlay_detection_is_future_work(self) -> None:
-        """v0 may apply overlay twice if called twice; prevention is not required yet."""
-        if _OVERLAY_MOD is None:
-            self.skipTest(_SKIP_REASON)
+class KeysuriImageOverlayRepeatApplicationTests(unittest.TestCase):
+    """Pin the v0 repeat-application contract instead of skipping it.
+
+    v0 deliberately has no duplicate-overlay detection: calling the utility on
+    an already-watermarked file overlays again rather than raising. The former
+    version of this class asserted that gap with an unconditional
+    ``@unittest.skip`` around a ``self.fail()``, so nothing ran. These tests
+    assert the behaviour v0 actually guarantees, and will fail if a future
+    change silently starts rejecting or corrupting a repeat call.
+    """
+
+    @_require_overlay_module
+    def test_repeat_overlay_succeeds_and_preserves_geometry(self) -> None:
         mod = _OVERLAY_MOD
+        assert mod is not None
+        with TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.jpg"
+            once_path = Path(tmpdir) / "once.jpg"
+            twice_path = Path(tmpdir) / "twice.jpg"
+            _make_portrait_sample(input_path)
+            _apply_overlay(mod, input_path, once_path)
+            _apply_overlay(mod, once_path, twice_path)
+
+            self.assertTrue(twice_path.exists())
+            with Image.open(input_path) as original, Image.open(twice_path) as twice:
+                self.assertEqual(twice.size, original.size)
+                self.assertEqual(twice.mode, original.mode)
+
+    @_require_overlay_module
+    def test_repeat_overlay_leaves_the_face_safe_band_untouched(self) -> None:
+        """A second pass must not creep into the upper portrait band."""
+        mod = _OVERLAY_MOD
+        assert mod is not None
+        with TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.jpg"
+            once_path = Path(tmpdir) / "once.jpg"
+            twice_path = Path(tmpdir) / "twice.jpg"
+            _make_portrait_sample(input_path)
+            _apply_overlay(mod, input_path, once_path)
+            _apply_overlay(mod, once_path, twice_path)
+
+            with Image.open(once_path) as once, Image.open(twice_path) as twice:
+                width, height = once.size
+                face_safe = (
+                    int(width * 0.30),
+                    int(height * 0.22),
+                    int(width * 0.70),
+                    int(height * 0.50),
+                )
+                self.assertTrue(_region_unchanged(once, twice, face_safe))
+
+    @_require_overlay_module
+    def test_repeat_overlay_is_not_rejected_in_v0(self) -> None:
+        """Documented v0 gap: no duplicate detection, so no exception is raised."""
+        mod = _OVERLAY_MOD
+        assert mod is not None
         with TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / "input.jpg"
             output_path = Path(tmpdir) / "output.jpg"
             _make_portrait_sample(input_path)
             _apply_overlay(mod, input_path, output_path)
-            _apply_overlay(mod, output_path, output_path)
-            self.fail("Duplicate overlay prevention not implemented in v0")
+            returned = _apply_overlay(mod, output_path, output_path)
+            self.assertEqual(returned.resolve(), output_path.resolve())
 
 
 if __name__ == "__main__":

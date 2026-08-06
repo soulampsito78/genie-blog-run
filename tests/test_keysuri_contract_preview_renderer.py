@@ -1004,12 +1004,21 @@ class KeysuriThemeSeparationRendererTests(unittest.TestCase):
         self.assertIn("--k-gold:#cda85f", style.replace(" ", ""))
 
 
+# Deterministic 1x1 PNG — avoids depending on untracked image_canary assets.
+_TINY_PNG_DATA_URI = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
 class KeysuriPremiumHandoffRendererTests(unittest.TestCase):
     @_require_contract_renderer
     def test_hero_uses_data_uri_not_relative_path(self) -> None:
         mod = _CONTRACT_RENDERER
         assert mod is not None
-        html = _render_contract_html(mod, build_global_contract_fixture())
+        fixture = build_global_contract_fixture()
+        fixture["top_shot_image_src"] = _TINY_PNG_DATA_URI
+        html = _render_contract_html(mod, fixture)
         self.assertIn('id="top-shot-image"', html)
         self.assertIn('class="top-shot-hero"', html)
         self.assertNotIn("../image_canary", html)

@@ -6,9 +6,7 @@ generic bodies, while every gate reported pass and SMTP was accepted.
 """
 from __future__ import annotations
 
-import json
 import unittest
-from pathlib import Path
 
 from keysuri_briefing_content_enricher import near_duplicate_key
 from keysuri_service_full_run import (
@@ -20,7 +18,6 @@ from keysuri_service_full_run import (
 )
 
 PROGRAM_GLOBAL = "keysuri_global_tech"
-_ARTIFACTS = Path("/private/tmp/claude-501/-Volumes-DATA-MirAION-Young-SeoK-Park-git-Genie-Project/87c0b6e9-8949-4afb-a3da-b26bc376e7fd/scratchpad/global_incident")
 
 
 def _live_item(idx: int, *, title: str, source: str, news_id: str | None = None) -> dict:
@@ -63,6 +60,102 @@ def _korean_model_items(live_items: list[dict]) -> list[dict]:
         item["business_implication"] = f"주인님께서는 도입 비용을 {idx}순위로 점검하시면 됩니다."
         out.append(item)
     return out
+
+
+_INCIDENT_SOURCES = (
+    "IEEE Spectrum",
+    "Google AI Blog",
+    "NVIDIA Blog",
+    "OpenAI News",
+    "TechCrunch AI",
+)
+
+# The two template phrases the incident cards repeated verbatim across every
+# card, quoted from _REISSUE_GENERIC_BODY_MARKERS.
+_INCIDENT_GENERIC_SUMMARY = (
+    "최신 발표를 바탕으로 AI·테크 업계에 영향을 줄 수 있는 변화로 선별했습니다."
+)
+_INCIDENT_GENERIC_WHY = (
+    "플랫폼, 인프라, AI 활용 흐름에 영향을 줄 수 있어 주목할 필요가 있습니다."
+)
+
+
+def _snapshot_payload(items: list[dict]) -> dict:
+    """Wrap items the way the run artifact stores a reissue model snapshot."""
+    return {
+        "program_id": PROGRAM_GLOBAL,
+        "regen_generated_briefing_snapshot": {
+            "program_id": PROGRAM_GLOBAL,
+            "top_5_news": {"items": items},
+        },
+    }
+
+
+def _incident_card(idx: int, *, headline: str, summary: str, why: str) -> dict:
+    item = _live_item(idx, title=headline, source=_INCIDENT_SOURCES[idx - 1])
+    item["headline"] = headline
+    item["korean_title"] = headline
+    item["summary"] = summary
+    item["why_it_matters"] = why
+    item["business_implication"] = (
+        "주인님은 이 신호가 사업 운영, 파트너십, 기술 도입 우선순위에 주는 변화를 "
+        "점검하면 좋겠습니다."
+    )
+    return item
+
+
+def _incident_placeholder_and_generic_payload() -> dict:
+    """Run 20260730_123814 shape: fabricated titles + fanned-out template prose."""
+    items = [
+        _incident_card(
+            idx,
+            headline=f"{_INCIDENT_SOURCES[idx - 1]} 기반 AI·테크 신호 {idx}",
+            summary=_INCIDENT_GENERIC_SUMMARY,
+            why=_INCIDENT_GENERIC_WHY,
+        )
+        for idx in range(1, 6)
+    ]
+    return _snapshot_payload(items)
+
+
+def _incident_placeholder_only_payload() -> dict:
+    """Run 20260730_123602 shape: fabricated titles, prose still individualised."""
+    items = [
+        _incident_card(
+            idx,
+            headline=f"{_INCIDENT_SOURCES[idx - 1]} 기반 AI·테크 신호 {idx}",
+            summary=f"공식 발표가 {idx}건 확인되었고 세부 수치는 문서에 정리되어 있습니다.",
+            why=f"도입 검토 단계에서 {idx}분기 예산 배분을 다시 볼 근거가 됩니다.",
+        )
+        for idx in range(1, 6)
+    ]
+    return _snapshot_payload(items)
+
+
+def _last_known_good_payload() -> dict:
+    """Run 20260730_123001 shape: real titles with article-specific prose."""
+    specs = [
+        ("제미나이 API가 관리형 에이전트와 훅을 공개했습니다", "관리형 에이전트"),
+        ("엔비디아 젯슨이 소형 온디바이스 추론 보드를 확장했습니다", "젯슨 보드"),
+        ("오픈AI가 GPT-5.6 효율 개선 결과를 공개했습니다", "GPT-5.6"),
+        ("메타가 개인용 AI 에이전트 보급 전망을 제시했습니다", "개인용 에이전트"),
+        ("IEEE가 AI 리터러시 교육 확대 방안을 발표했습니다", "AI 리터러시"),
+    ]
+    items = []
+    for idx, (headline, hook) in enumerate(specs, start=1):
+        items.append(
+            _incident_card(
+                idx,
+                headline=headline,
+                summary=f"「{headline}」 발표에서 {hook} 적용 범위가 구체적으로 제시되었습니다.",
+                why=f"{hook} 도입 일정이 {idx}분기 기술 투자 판단을 직접 바꿉니다.",
+            )
+        )
+    for item in items:
+        item["business_implication"] = (
+            f"주인님께서는 {item['headline'][:12]} 관련 예산을 우선 점검하시면 됩니다."
+        )
+    return _snapshot_payload(items)
 
 
 class GlobalTitlePreservationTests(unittest.TestCase):
@@ -316,33 +409,54 @@ class HoldAndSmtpTests(unittest.TestCase):
         self.assertIsNone(_b)
 
 
-class CapturedArtifactReplayTests(unittest.TestCase):
-    """Replay of the real production artifacts recovered from GCS."""
+class IncidentShapeRegressionTests(unittest.TestCase):
+    """Regression on the 2026-07-30 incident *shape*, rebuilt in-repo.
 
-    def _items(self, run_id: str):
-        path = _ARTIFACTS / f"{run_id}.json"
-        if not path.is_file():
-            self.skipTest(f"captured artifact unavailable: {run_id}")
-        payload = json.loads(path.read_text(encoding="utf-8"))
+    The original assertions replayed artifacts from an agent scratch directory
+    outside the repository. That directory is gone, so the checks silently
+    skipped and the incident gate went unproven on every run. The shapes below
+    are rebuilt from the documented incident (module docstring) and from the
+    artifact field the reissue path actually reads,
+    ``regen_generated_briefing_snapshot.top_5_news.items``, so the same gate
+    runs deterministically on any machine.
+    """
+
+    @staticmethod
+    def _snapshot_items(payload: dict) -> list:
+        """Read items exactly where the reissue path reads them."""
         snap = payload.get("regen_generated_briefing_snapshot") or {}
         return ((snap.get("top_5_news") or {}).get("items")) or []
 
-    def test_22_incident_788b0bda_holds(self) -> None:
-        codes = reissue_top5_content_issue_codes(self._items("20260730_123814_keysuri_global_tech_788b0bda"))
+    def test_22_placeholder_titles_with_template_bodies_hold(self) -> None:
+        """Run 20260730_123814 shape: placeholder titles + fanned-out template prose."""
+        items = self._snapshot_items(_incident_placeholder_and_generic_payload())
+        codes = reissue_top5_content_issue_codes(items)
         self.assertIn("reissue_top5_placeholder_title", codes)
         self.assertIn("reissue_top5_shared_generic_body", codes)
 
-    def test_23_sibling_3bd04672_holds(self) -> None:
-        codes = reissue_top5_content_issue_codes(self._items("20260730_123602_keysuri_global_tech_3bd04672"))
+    def test_23_placeholder_titles_alone_hold(self) -> None:
+        """Run 20260730_123602 shape: placeholder titles, individualised prose."""
+        items = self._snapshot_items(_incident_placeholder_only_payload())
+        codes = reissue_top5_content_issue_codes(items)
         self.assertIn("reissue_top5_placeholder_title", codes)
 
-    def test_24_last_known_good_1743de72_passes(self) -> None:
-        items = self._items("20260730_123001_keysuri_global_tech_1743de72")
+    def test_24_last_known_good_shape_passes(self) -> None:
+        """Run 20260730_123001 shape: real titles, article-specific prose."""
+        items = self._snapshot_items(_last_known_good_payload())
         self.assertEqual(reissue_top5_content_issue_codes(items), [])
         for it in items:
             title = str(it.get("headline") or "")
             self.assertTrue(title)
             self.assertNotIn("기반 AI·테크 신호", title)
+
+    def test_placeholder_shape_differs_from_good_shape_only_by_content(self) -> None:
+        """Guard the fixtures themselves: same structure, opposite verdict."""
+        bad = self._snapshot_items(_incident_placeholder_and_generic_payload())
+        good = self._snapshot_items(_last_known_good_payload())
+        self.assertEqual(len(bad), len(good))
+        self.assertEqual(sorted(bad[0].keys()), sorted(good[0].keys()))
+        self.assertTrue(reissue_top5_content_issue_codes(bad))
+        self.assertFalse(reissue_top5_content_issue_codes(good))
 
 
 if __name__ == "__main__":
