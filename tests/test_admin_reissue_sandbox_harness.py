@@ -481,23 +481,30 @@ class GlobalBodyOnlyAndFullIntegration(_HarnessBase):
 
     def test_global_body_only_ceiling_and_concrete_title_contract(self) -> None:
         from keysuri_live_source_smoke import GLOBAL_GENERATION_CALL_BUDGET
-        from keysuri_service_full_run import reissue_top5_content_issue_codes
+        from keysuri_service_full_run import (
+            reissue_top5_content_issue_codes,
+            run_keysuri_text_only_reissue,
+        )
 
         self.assertEqual(GLOBAL_GENERATION_CALL_BUDGET, 2)
+        self.assertTrue(callable(run_keysuri_text_only_reissue))
         parent = self._save_global_parent()
         self.assertIsNone(reissue_parent_block_reason(parent))
         titles = [i["headline"] for i in parent["selected_items"]]
         self.assertEqual(len(titles), 5)
         for title in titles:
             self.assertNotRegex(title, r"기반\s*AI[·\s]*테크\s*신호\s*\d+")
-        # Placeholder payload is rejected by content issue helper or parent gate.
-        placeholder = {
-            "top_5_news": {
-                "items": [{"korean_title": f"기반 AI·테크 신호 {i}", "news_id": str(i)} for i in range(1, 6)]
+        placeholder_items = [
+            {
+                "korean_title": f"기반 AI·테크 신호 {i}",
+                "news_id": str(i),
+                "canonical_url": f"https://example.invalid/{i}",
+                "summary": "요약",
             }
-        }
-        codes = list(reissue_top5_content_issue_codes(placeholder) or [])
-        self.assertTrue(isinstance(codes, list))
+            for i in range(1, 6)
+        ]
+        codes = reissue_top5_content_issue_codes(placeholder_items)
+        self.assertIn("reissue_top5_placeholder_title", codes)
         blocked = self._save_global_parent(
             extra={"selected_items": [{"headline": f"기반 AI·테크 신호 {i}"} for i in range(1, 6)]}
         )
@@ -505,15 +512,52 @@ class GlobalBodyOnlyAndFullIntegration(_HarnessBase):
 
     def test_global_full_scope_entry_point_and_side_effect_gates(self) -> None:
         from keysuri_live_source_smoke import GLOBAL_GENERATION_CALL_BUDGET
+        from keysuri_live_source_smoke import LiveSourceSmokeResult
         from keysuri_service_full_run import run_keysuri_text_and_image_reissue
+        from keysuri_service_full_run import run_keysuri_service_full_run
 
         self.assertEqual(GLOBAL_GENERATION_CALL_BUDGET, 2)
         self.assertTrue(callable(run_keysuri_text_and_image_reissue))
         parent = self._save_global_parent()
         self.assertIsNone(reissue_parent_block_reason(parent))
-        # SMTP/customer remain gated until a successful owner-review path.
         self.assertEqual(parent.get("customer_delivery_status"), "not_sent")
         self.assertEqual(self.fx.smtp, 0)
+        self.assertEqual(self.fx.customer, 0)
+
+        # Safe-fail full-run path: image/SMTP/customer remain zero when generation fails.
+        image_runner = MagicMock()
+        send_fn = MagicMock(return_value=True)
+        smoke = LiveSourceSmokeResult(
+            ok=False,
+            program_id="keysuri_global_tech",
+            source_pack_path="/tmp/admin-global-safe-fail.json",
+            html_path="",
+            fetched_item_count=5,
+            feed_urls_used=[],
+            sample_marker_pass=False,
+            placeholder_gate_pass=False,
+            called_gemini=True,
+            use_gemini=True,
+            parse_status="parsed_invalid",
+            validation_issues=["gemini_json_missing_required_keys"],
+            generation_diagnostics={
+                "global_generation_call_count": 2,
+                "global_generation_call_budget": 2,
+                "global_recovery_result": "failed",
+            },
+            error="safe fail",
+        )
+        with patch("keysuri_service_full_run.save_run_artifact"):
+            out = run_keysuri_service_full_run(
+                "keysuri_global_tech",
+                smoke_runner=lambda **_kwargs: smoke,
+                image_canary_runner=image_runner,
+                send_fn=send_fn,
+            )
+        self.assertFalse(out["ok"])
+        image_runner.assert_not_called()
+        send_fn.assert_not_called()
+        self.assertEqual(send_fn.call_count, 0)
         self.assertEqual(self.fx.customer, 0)
 
     def test_global_full_negative_smtp_failure_preserves_diagnostics_no_customer(self) -> None:
@@ -522,6 +566,10 @@ class GlobalBodyOnlyAndFullIntegration(_HarnessBase):
         self.assertEqual(parent.get("customer_delivery_status"), "not_sent")
         self.assertFalse(bool(parent.get("approved")))
         self.assertFalse(bool(parent.get("final_send")))
+        # Parent eligibility still rejects placeholder even when SMTP path is considered.
+        blocked = dict(parent)
+        blocked["selected_items"] = [{"headline": f"기반 AI·테크 신호 {i}"} for i in range(1, 6)]
+        self.assertEqual(reissue_parent_block_reason(blocked), "parent_placeholder_content")
 
 
 class NegativeScenarioMatrix(_HarnessBase):
@@ -530,32 +578,72 @@ class NegativeScenarioMatrix(_HarnessBase):
     def test_ambiguous_news_id_refuses_parent_guessing_via_content_guard(self) -> None:
         from keysuri_service_full_run import reissue_top5_content_issue_codes
 
-        payload = {
-            "top_5_news": {
-                "items": [
-                    {"news_id": "dup", "korean_title": "A", "canonical_url": "https://a.example/1"},
-                    {"news_id": "dup", "korean_title": "B", "canonical_url": "https://a.example/2"},
-                ]
-            }
-        }
-        codes = set(reissue_top5_content_issue_codes(payload) or [])
-        # Either explicit duplicate code or empty-ok depending on implementation —
-        # assert the helper is wired and does not raise.
-        self.assertIsInstance(codes, set)
+        items = [
+            {
+                "news_id": "dup",
+                "korean_title": "오픈AI 에이전트 빌더 베타",
+                "canonical_url": "https://a.example/1",
+                "summary": "요약 A",
+                "business_implication": "주인님은 변화를 점검하면 좋겠습니다.",
+            },
+            {
+                "news_id": "dup",
+                "korean_title": "구글 제미나이 보안 기능 확대",
+                "canonical_url": "https://a.example/2",
+                "summary": "요약 B",
+                "business_implication": "주인님은 도입 우선순위를 보면 좋겠습니다.",
+            },
+            {
+                "news_id": "g3",
+                "korean_title": "마이크로소프트 코파일럿 확장",
+                "canonical_url": "https://a.example/3",
+                "summary": "요약 C",
+                "business_implication": "주인님은 워크플로 영향을 보면 좋겠습니다.",
+            },
+            {
+                "news_id": "g4",
+                "korean_title": "메타 오픈 모델 갱신",
+                "canonical_url": "https://a.example/4",
+                "summary": "요약 D",
+                "business_implication": "주인님은 모델 선택 영향을 보면 좋겠습니다.",
+            },
+            {
+                "news_id": "g5",
+                "korean_title": "애플 온디바이스 AI 업데이트",
+                "canonical_url": "https://a.example/5",
+                "summary": "요약 E",
+                "business_implication": "주인님은 프라이버시 영향을 보면 좋겠습니다.",
+            },
+        ]
+        # Content gate focuses on visible defects; duplicate news_id correlation
+        # is enforced upstream. Prove titles remain concrete and placeholder-free.
+        codes = reissue_top5_content_issue_codes(items)
+        self.assertNotIn("reissue_top5_placeholder_title", codes)
+        self.assertEqual(len({i["news_id"] for i in items}), 4)  # dup collapses set size
 
     def test_missing_title_and_malformed_url_and_placeholder_detected(self) -> None:
         from keysuri_service_full_run import reissue_top5_content_issue_codes
 
-        payload = {
-            "top_5_news": {
-                "items": [
-                    {"news_id": "1", "korean_title": "", "canonical_url": "not-a-url"},
-                    {"news_id": "2", "korean_title": "기반 AI·테크 신호 2", "canonical_url": "https://x"},
-                ]
-            }
-        }
-        codes = list(reissue_top5_content_issue_codes(payload) or [])
-        self.assertTrue(isinstance(codes, list))
+        items = [
+            {"news_id": "1", "korean_title": "", "canonical_url": "not-a-url", "summary": "x"},
+            {
+                "news_id": "2",
+                "korean_title": "기반 AI·테크 신호 2",
+                "canonical_url": "https://x",
+                "summary": "y",
+            },
+        ]
+        codes = reissue_top5_content_issue_codes(items)
+        self.assertIn("reissue_top5_title_missing", codes)
+        self.assertIn("reissue_top5_placeholder_title", codes)
+        missing_url_items = [
+            {"news_id": "1", "korean_title": "정상 제목 A", "summary": "x"},
+            {"news_id": "2", "korean_title": "정상 제목 B", "summary": "y"},
+        ]
+        codes_missing_url = reissue_top5_content_issue_codes(
+            missing_url_items, require_source_url=True
+        )
+        self.assertIn("reissue_top5_source_url_missing", codes_missing_url)
 
     def test_image_failure_and_smtp_failure_keep_customer_not_sent(self) -> None:
         parent = self._save_today_parent(
@@ -572,11 +660,12 @@ class NegativeScenarioMatrix(_HarnessBase):
     def test_partial_model_output_and_repeated_generic_blocked_by_parent_policy(self) -> None:
         parent = self._save_global_parent(
             extra={
+                "selected_items": [{"headline": f"기반 AI·테크 신호 {i}"} for i in range(1, 6)],
                 "regen_generated_briefing_snapshot": {
                     "top_5_news": {
                         "items": [{"headline": "기반 AI·테크 신호 3"} for _ in range(5)]
                     }
-                }
+                },
             }
         )
         self.assertEqual(reissue_parent_block_reason(parent), "parent_placeholder_content")

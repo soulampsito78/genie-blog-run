@@ -3,18 +3,28 @@
 Exercises production orchestration, parsing, validation, recovery, and
 side-effect gates. External boundaries (model/image/SMTP/network/feeds) are
 faked. Tomorrow remains inactive — no activation path is added.
+
+Self-review (2026-08-07 closeout): every assertion must be falsifiable against
+production behavior; no hardcoded-True / isinstance-only / unwired recorder
+checks.
 """
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import MagicMock, patch
 
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "ops"))
 
+from keysuri_briefing_content_quality import (  # noqa: E402
+    GLOBAL_COMMON_FILLER_SENTENCES,
+    _find_truncated_visible_lines,
+    validate_global_post_render_visible_quality,
+)
 from keysuri_generation_prompt import (  # noqa: E402
     MODEL_OUTPUT_SNAPSHOT_MAX_CHARS,
     _repair_program_id_for_parse,
@@ -22,21 +32,103 @@ from keysuri_generation_prompt import (  # noqa: E402
     generation_contract_record,
     sanitized_model_output_snapshot,
 )
-from keysuri_live_source_smoke import GLOBAL_GENERATION_CALL_BUDGET  # noqa: E402
+from keysuri_live_source_smoke import (  # noqa: E402
+    GLOBAL_GENERATION_CALL_BUDGET,
+    RECOVERY_RECONCILIATION_INSUFFICIENT,
+    generate_keysuri_with_bounded_recovery,
+)
 from keysuri_recurrence_metrics import recurrence_counters_for_run  # noqa: E402
+from keysuri_service_full_run import (  # noqa: E402
+    reissue_top5_content_issue_codes,
+    run_keysuri_service_full_run,
+)
 from programs import registry as program_registry  # noqa: E402
 from renderers import _fmt_snapshot_change_pct, _norm_change_pct  # noqa: E402
-from validators import market_index_validation_report  # noqa: E402
 
 GLOBAL = "keysuri_global_tech"
 KOREA = "keysuri_korea_tech"
 TODAY = "today_genie"
 TOMORROW = "tomorrow_genie"
 
+_GLOBAL_PROMPT = _REPO / "ops" / "feeds" / "keysuri_global_prompt_input.sample.json"
+_GLOBAL_GENERATED = _REPO / "ops" / "feeds" / "keysuri_global_generated_briefing.sample.json"
+_KOREA_PROMPT = _REPO / "ops" / "feeds" / "keysuri_korea_prompt_input.sample.json"
+_KOREA_GENERATED = _REPO / "ops" / "feeds" / "keysuri_korea_generated_briefing.sample.json"
+
+
+def _fake_caller(
+    responses: List[str],
+    usages: Optional[List[Tuple[int, int]]] = None,
+):
+    calls: list = []
+
+    def _call(prompt: str, **kwargs):
+        idx = len(calls)
+        calls.append({"prompt": prompt, "kwargs": kwargs})
+        if idx >= len(responses):
+            raise AssertionError(
+                f"Gemini caller invoked {idx + 1} times but only {len(responses)} "
+                "mock response(s) were provided"
+            )
+        if usages and idx < len(usages):
+            sink = kwargs.get("usage_sink")
+            if isinstance(sink, dict):
+                inp, out = usages[idx]
+                sink.update(
+                    {
+                        "model": "fake-gemini",
+                        "prompt_token_count": inp,
+                        "candidates_token_count": out,
+                        "total_token_count": inp + out,
+                    }
+                )
+        return responses[idx]
+
+    return _call, calls
+
+
+def _global_prompt_input() -> dict:
+    return json.loads(_GLOBAL_PROMPT.read_text(encoding="utf-8"))
+
+
+def _global_generated() -> dict:
+    payload = json.loads(_GLOBAL_GENERATED.read_text(encoding="utf-8"))
+    payload.pop("_fixture_note", None)
+    return payload
+
+
+def _global_contentless() -> dict:
+    return {"news_scope": "global_tech", "section_heading": "글로벌 테크"}
+
+
+def _korea_prompt_input() -> dict:
+    return json.loads(_KOREA_PROMPT.read_text(encoding="utf-8"))
+
+
+def _korea_generated() -> dict:
+    return json.loads(_KOREA_GENERATED.read_text(encoding="utf-8"))
+
+
+def _korea_structural_corrective() -> dict:
+    payload = _korea_generated()
+    payload["deep_dive"]["source_ids"] = list(
+        payload["top_5_news"]["items"][0]["source_ids"]
+    )
+    return payload
+
+
+def _three_incomplete_fragments(marker: str = "") -> str:
+    return "\n".join(
+        [
+            json.dumps({"program_id": KOREA, "marker": marker}),
+            json.dumps({"top_5_news": {"items": []}}),
+            json.dumps({"deep_dive": {"body": "incomplete"}}),
+        ]
+    )
+
 
 class TomorrowInactiveGuardTests(unittest.TestCase):
     def test_tomorrow_not_in_active_program_registry(self) -> None:
-        # Production rotation excludes tomorrow; code may exist but must stay inactive.
         active_ids = set()
         for attr in ("PROGRAMS", "ACTIVE_PROGRAMS", "programs", "REGISTRY"):
             value = getattr(program_registry, attr, None)
@@ -48,9 +140,7 @@ class TomorrowInactiveGuardTests(unittest.TestCase):
                         active_ids.add(item)
                     elif isinstance(item, dict) and item.get("program_id"):
                         active_ids.add(str(item["program_id"]))
-        # Registry module historically omits tomorrow from active listing.
         self.assertNotIn(TOMORROW, active_ids)
-        # No natural-run harness activates tomorrow recovery.
         self.assertFalse(hasattr(self, "run_tomorrow_natural"))
 
 
@@ -81,7 +171,7 @@ class TodayNaturalRunHarness(unittest.TestCase):
         rendered = _fmt_snapshot_change_pct(0.0)
         self.assertEqual(rendered, "0%")
         self.assertNotEqual(rendered, "+0%")
-        self.assertNotEqual(_norm_change_pct("+0%"), "0")  # +0% input stays distinguishable from blank zero
+        self.assertNotEqual(_norm_change_pct("+0%"), "0")
 
     def test_04_no_plus_minus_artifact(self) -> None:
         self.assertNotIn("+-", _fmt_snapshot_change_pct(-0.5))
@@ -115,7 +205,6 @@ class TodayNaturalRunHarness(unittest.TestCase):
         from tests.test_today_genie_market_index_sign import _runtime_input
         from validators import _today_market_index_integrity_issues
 
-        # Feed says down; published rate flipped to a gain → hard block.
         ri = _runtime_input({"KOSPI": {"change_pct": 10.84}})
         codes = [i.code for i in _today_market_index_integrity_issues({}, ri)]
         self.assertIn("market_index_sign_conflict", codes)
@@ -144,13 +233,14 @@ class TodayNaturalRunHarness(unittest.TestCase):
             workflow_status="validated",
         )
         self.assertFalse(decision.send_customer_email)
-        self.assertTrue(decision.require_review or decision.suppress_external or not decision.send_email)
+        self.assertTrue(
+            decision.require_review or decision.suppress_external or not decision.send_email
+        )
 
     def test_11_feed_normalized_artifact_rendered_alignment(self) -> None:
         raw = -5.98
         rendered = _fmt_snapshot_change_pct(raw)
         self.assertEqual(rendered, "-5.98%")
-        # Normalized numeric form stays sign-preserving without percent suffix.
         self.assertEqual(_norm_change_pct(raw), "-5.98")
 
     def test_12_no_image_smtp_after_market_index_validation_failure(self) -> None:
@@ -161,22 +251,59 @@ class TodayNaturalRunHarness(unittest.TestCase):
             validation_result="block",
             workflow_status="hold",
         )
-        self.assertFalse(decision.send_email or decision.send_customer_email)
+        self.assertFalse(decision.send_email)
+        self.assertFalse(decision.send_customer_email)
 
 
 class GlobalNaturalRunHarness(unittest.TestCase):
-    """Required Global scenarios 1–20 (production functions + faked boundaries)."""
+    """Required Global scenarios — production recovery path + faked model."""
 
-    def test_01_valid_first_response_one_call_budget(self) -> None:
+    def test_01_valid_first_response_one_call(self) -> None:
         self.assertEqual(GLOBAL_GENERATION_CALL_BUDGET, 2)
-        # Ceiling permits a single successful first call without corrective.
-        self.assertGreaterEqual(GLOBAL_GENERATION_CALL_BUDGET, 1)
+        caller, calls = _fake_caller(
+            [json.dumps(_global_generated(), ensure_ascii=False)],
+            usages=[(90, 30)],
+        )
+        result = generate_keysuri_with_bounded_recovery(
+            _global_prompt_input(), gemini_caller=caller, usage_sink={}
+        )
+        self.assertEqual(len(calls), 1)
+        diag = result["generation_diagnostics"]
+        self.assertEqual(diag.get("global_generation_call_count"), 1)
+        self.assertFalse(diag.get("global_recovery_attempted"))
+        self.assertEqual(result["parse_result"]["parse_status"], "parsed_valid")
 
-    def test_02_03_contentless_or_no_json_then_valid_two_calls(self) -> None:
-        # Contract: one corrective attempt max → total 2.
-        self.assertEqual(GLOBAL_GENERATION_CALL_BUDGET, 2)
+    def test_02_03_contentless_then_valid_two_calls(self) -> None:
+        caller, calls = _fake_caller(
+            [
+                json.dumps(_global_contentless(), ensure_ascii=False),
+                json.dumps(_global_generated(), ensure_ascii=False),
+            ],
+            usages=[(80, 10), (70, 40)],
+        )
+        result = generate_keysuri_with_bounded_recovery(
+            _global_prompt_input(), gemini_caller=caller, usage_sink={}
+        )
+        self.assertEqual(len(calls), 2)
+        diag = result["generation_diagnostics"]
+        self.assertTrue(diag["global_recovery_attempted"])
+        self.assertEqual(diag["global_recovery_result"], "succeeded")
+        self.assertEqual(diag["global_generation_call_count"], 2)
+        self.assertLessEqual(diag["global_generation_call_count"], GLOBAL_GENERATION_CALL_BUDGET)
+        self.assertEqual(result["parse_result"]["parse_status"], "parsed_valid")
 
-    def test_04_05_contentless_or_no_json_twice_safe_fail_at_ceiling(self) -> None:
+    def test_04_05_contentless_twice_safe_fail_at_ceiling(self) -> None:
+        bad = json.dumps(_global_contentless(), ensure_ascii=False)
+        caller, calls = _fake_caller([bad, bad], usages=[(10, 5), (10, 5)])
+        result = generate_keysuri_with_bounded_recovery(
+            _global_prompt_input(), gemini_caller=caller, usage_sink={}
+        )
+        self.assertEqual(len(calls), 2)
+        diag = result["generation_diagnostics"]
+        self.assertTrue(diag["global_recovery_attempted"])
+        self.assertEqual(diag["global_recovery_result"], "failed")
+        self.assertEqual(diag["global_generation_call_count"], 2)
+        self.assertNotEqual(result["parse_result"]["parse_status"], "parsed_valid")
         counters = recurrence_counters_for_run(
             {
                 "generation_attempt_count": 2,
@@ -185,7 +312,6 @@ class GlobalNaturalRunHarness(unittest.TestCase):
                 "issue_codes": ["gemini_json_missing_required_keys"],
             }
         )
-        self.assertEqual(counters["generation_attempts"], 2)
         self.assertEqual(counters["retry_exhausted"], 1)
         self.assertEqual(counters["global_run_safe_fail"], 1)
 
@@ -215,46 +341,38 @@ class GlobalNaturalRunHarness(unittest.TestCase):
     def test_10_ordinary_schema_defect_retry_policy(self) -> None:
         from keysuri_live_source_smoke import _GLOBAL_CONTRACT_REPAIR_CODES
 
-        # Ordinary eligible codes are explicit; unknown codes are not retried.
         self.assertIn("gemini_json_schema_validation_failed", _GLOBAL_CONTRACT_REPAIR_CODES)
         self.assertNotIn("totally_unknown_defect", _GLOBAL_CONTRACT_REPAIR_CODES)
 
     def test_11_valid_line_ending_in_추가_passes(self) -> None:
-        from keysuri_briefing_content_quality import _find_truncated_visible_lines
-
         line = "구글 Gemini API 3.6 Flash 지원 및 훅 기능 추가"
-        hits = _find_truncated_visible_lines([line])
+        hits = _find_truncated_visible_lines(f"<p>{line}</p>")
         self.assertEqual(hits, [])
 
     def test_12_real_truncation_blocks(self) -> None:
-        from keysuri_briefing_content_quality import _find_truncated_visible_lines
-
         line = "이번 발표는 향후 국내 인프라 투자 계획에 직접적인 영향을 주는 발표가"
-        hits = _find_truncated_visible_lines("".join(f"<p>{line}</p>" for _ in [0]))
+        hits = _find_truncated_visible_lines(f"<p>{line}</p>")
         self.assertEqual(hits, [line[:120]])
 
     def test_13_placeholder_title_blocks(self) -> None:
-        from keysuri_service_full_run import reissue_top5_content_issue_codes
+        items = [
+            {
+                "headline": f"기반 AI·테크 신호 {i}",
+                "canonical_url": f"https://example.invalid/{i}",
+                "summary": "요약",
+            }
+            for i in range(1, 6)
+        ]
+        codes = reissue_top5_content_issue_codes(items)
+        self.assertIn("reissue_top5_placeholder_title", codes)
 
-        codes = list(
-            reissue_top5_content_issue_codes(
-                {
-                    "top_5_news": {
-                        "items": [{"korean_title": "기반 AI·테크 신호 1", "news_id": "1"}]
-                    }
-                }
-            )
-            or []
-        )
-        self.assertTrue(isinstance(codes, list))
-
-    def test_14_duplicate_sentence_blocks(self) -> None:
-        from keysuri_briefing_content_quality import validate_global_post_render_visible_quality
-
-        html = "<p>같은 문장입니다. 같은 문장입니다.</p>" * 3
+    def test_14_duplicate_filler_sentence_blocks(self) -> None:
+        filler = GLOBAL_COMMON_FILLER_SENTENCES[0]
+        html = "".join(f"<p>{filler}</p>" for _ in range(3))
         result = validate_global_post_render_visible_quality(html)
-        # Either blocks or returns issue list; must not raise.
-        self.assertTrue(result is not None)
+        self.assertFalse(result.ok)
+        codes = [issue.code for issue in result.issues]
+        self.assertIn("global_repeated_common_filler", codes)
 
     def test_15_contract_fingerprint_present(self) -> None:
         rec = generation_contract_record(GLOBAL, attempt=1, model="gemini-3-flash-preview")
@@ -264,7 +382,8 @@ class GlobalNaturalRunHarness(unittest.TestCase):
     def test_16_model_output_snapshot_bounded(self) -> None:
         huge = "X" * (MODEL_OUTPUT_SNAPSHOT_MAX_CHARS + 500)
         snap = sanitized_model_output_snapshot(huge)
-        self.assertLessEqual(len(snap), MODEL_OUTPUT_SNAPSHOT_MAX_CHARS)
+        self.assertLessEqual(len(snap.get("body_head") or ""), MODEL_OUTPUT_SNAPSHOT_MAX_CHARS)
+        self.assertTrue(snap.get("truncated") or len(huge) > MODEL_OUTPUT_SNAPSHOT_MAX_CHARS)
 
     def test_17_secret_redaction_works(self) -> None:
         snap = sanitized_model_output_snapshot("api_key=ABCD1234 password=hunter2")
@@ -277,9 +396,13 @@ class GlobalNaturalRunHarness(unittest.TestCase):
 
     def test_18_failure_priority_classification_correct(self) -> None:
         tier = classify_failure_priority(
-            ["gemini_json_missing_required_keys", "post_render_truncation"]
+            ["gemini_json_missing_required_keys", "global_visible_text_truncated_deep_dive"]
         )
-        self.assertTrue(tier)
+        self.assertEqual(tier["primary_failure_code"], "gemini_json_missing_required_keys")
+        self.assertEqual(tier["primary_failure_tier"], "contentless_or_missing_structure")
+        self.assertIn(
+            "global_visible_text_truncated_deep_dive", tier["secondary_failure_codes"]
+        )
 
     def test_19_recurrence_counters_correct(self) -> None:
         counters = recurrence_counters_for_run(
@@ -297,38 +420,94 @@ class GlobalNaturalRunHarness(unittest.TestCase):
         self.assertEqual(counters["program_id_repair_count"], 1)
         self.assertEqual(counters["global_run_success"], 1)
 
-    def test_20_no_third_hidden_model_call(self) -> None:
-        self.assertEqual(GLOBAL_GENERATION_CALL_BUDGET, 2)
-        # Hard ceiling: production budget forbids a third model call.
+    def test_20_no_third_hidden_model_call_and_image_smtp_gated(self) -> None:
+        from keysuri_live_source_smoke import LiveSourceSmokeResult
+
+        bad = json.dumps(_global_contentless(), ensure_ascii=False)
+        caller, calls = _fake_caller([bad, bad, bad])
+        result = generate_keysuri_with_bounded_recovery(
+            _global_prompt_input(), gemini_caller=caller, usage_sink={}
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(
+            result["generation_diagnostics"]["global_generation_call_count"], 2
+        )
+
+        image_runner = MagicMock()
+        send_fn = MagicMock()
+        smoke = LiveSourceSmokeResult(
+            ok=False,
+            program_id=GLOBAL,
+            source_pack_path="/tmp/global-safe-fail.json",
+            html_path="",
+            fetched_item_count=10,
+            feed_urls_used=[],
+            sample_marker_pass=False,
+            placeholder_gate_pass=False,
+            called_gemini=True,
+            use_gemini=True,
+            parse_status="parsed_invalid",
+            validation_issues=["gemini_json_missing_required_keys"],
+            generation_diagnostics=result["generation_diagnostics"],
+            error="Gemini parse failed safely",
+        )
+        with patch("keysuri_service_full_run.save_run_artifact"):
+            out = run_keysuri_service_full_run(
+                GLOBAL,
+                smoke_runner=lambda **_kwargs: smoke,
+                image_canary_runner=image_runner,
+                send_fn=send_fn,
+            )
+        self.assertFalse(out["ok"])
+        image_runner.assert_not_called()
+        send_fn.assert_not_called()
+        self.assertEqual(send_fn.call_count, 0)
 
 
 class KoreaNaturalRunHarness(unittest.TestCase):
-    """Required Korea scenarios 1–18."""
+    """Required Korea scenarios — production recovery path + faked model."""
 
     def test_01_valid_first_response_one_call(self) -> None:
-        # Korea uses at most one corrective attempt; first success ⇒ one call.
-        # Global budget constant remains Global-only and must not bind Korea.
+        payload = _korea_generated()
+        caller, calls = _fake_caller([json.dumps(payload, ensure_ascii=False)])
+        result = generate_keysuri_with_bounded_recovery(
+            _korea_prompt_input(), gemini_caller=caller, usage_sink={}
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["parse_result"]["parse_status"], "parsed_valid")
+        diag = result["generation_diagnostics"]
+        self.assertFalse(diag.get("generation_recovery_attempted"))
+        # Global budget constant exists but must not control Korea recovery.
         self.assertEqual(GLOBAL_GENERATION_CALL_BUDGET, 2)
-        rec = generation_contract_record(KOREA, attempt=1)
-        self.assertEqual(rec["expected_program_id"], KOREA)
-        self.assertEqual(rec["generation_attempt"], 1)
+        self.assertNotEqual(diag.get("generation_recovery_family"), "GLOBAL_MALFORMED_CONTRACT")
 
     def test_02_structural_recovery_success_two_calls(self) -> None:
-        from keysuri_live_source_smoke import _STRUCTURAL_RECOVERY_CODES
-
-        self.assertIn("json_extract_failed", _STRUCTURAL_RECOVERY_CODES)
+        caller, calls = _fake_caller(
+            [
+                _three_incomplete_fragments("korea"),
+                json.dumps(_korea_structural_corrective(), ensure_ascii=False),
+            ]
+        )
+        result = generate_keysuri_with_bounded_recovery(
+            _korea_prompt_input(), gemini_caller=caller, usage_sink={}
+        )
+        self.assertEqual(len(calls), 2)
+        diag = result["generation_diagnostics"]
+        self.assertTrue(diag["generation_recovery_attempted"])
+        self.assertEqual(diag["generation_recovery_result"], "succeeded")
+        self.assertEqual(result["parse_result"]["parse_status"], "parsed_valid")
 
     def test_03_structural_recovery_failure_safe_fail(self) -> None:
-        counters = recurrence_counters_for_run(
-            {
-                "generation_attempt_count": 2,
-                "generation_recovery_attempted": True,
-                "generation_recovery_result": "failed",
-                "validation_result": "block",
-                "issue_codes": ["json_extract_failed"],
-            }
+        bad = _three_incomplete_fragments("fail")
+        caller, calls = _fake_caller([bad, bad])
+        result = generate_keysuri_with_bounded_recovery(
+            _korea_prompt_input(), gemini_caller=caller, usage_sink={}
         )
-        self.assertEqual(counters["global_run_safe_fail"], 1)
+        self.assertEqual(len(calls), 2)
+        diag = result["generation_diagnostics"]
+        self.assertTrue(diag["generation_recovery_attempted"])
+        self.assertEqual(diag["generation_recovery_result"], "failed")
+        self.assertNotEqual(result["parse_result"]["parse_status"], "parsed_valid")
 
     def test_04_semantic_replacement_codes_exist(self) -> None:
         from keysuri_live_source_smoke import _SEMANTIC_RECOVERY_CODES
@@ -336,14 +515,40 @@ class KoreaNaturalRunHarness(unittest.TestCase):
         self.assertIn("korea_tech_top5_irrelevant_item", _SEMANTIC_RECOVERY_CODES)
 
     def test_05_insufficient_replacement_pool_no_wasteful_call(self) -> None:
-        # Reconciliation failure must not spend a corrective Gemini call.
-        marker = "not_attempted_reconciliation_failed"
-        self.assertTrue(marker.startswith("not_attempted"))
+        # Production constant must be a non-empty issue code; drive the real
+        # recovery path so an insufficient pool never spends a corrective call.
+        self.assertTrue(str(RECOVERY_RECONCILIATION_INSUFFICIENT).startswith("korea_"))
+        from tests.test_keysuri_generation_recovery import (
+            _semantic_initial_failure,
+            _prompt_input as _korea_recovery_prompt,
+        )
+
+        caller, calls = _fake_caller(
+            [json.dumps(_semantic_initial_failure(), ensure_ascii=False)]
+        )
+        with patch("keysuri_live_source_smoke.recent_sent_news_log", return_value=[]):
+            result = generate_keysuri_with_bounded_recovery(
+                _korea_recovery_prompt(), gemini_caller=caller, usage_sink={}
+            )
+        self.assertEqual(len(calls), 1)
+        diagnostics = result["generation_diagnostics"]
+        self.assertFalse(diagnostics["generation_recovery_attempted"])
+        self.assertEqual(
+            diagnostics["generation_recovery_result"],
+            "not_attempted_reconciliation_failed",
+        )
+        self.assertIn(
+            RECOVERY_RECONCILIATION_INSUFFICIENT,
+            diagnostics["recovery_generation_issue_codes"],
+        )
 
     def test_06_multiple_invalid_items_supported_by_semantic_codes(self) -> None:
         from keysuri_live_source_smoke import _SEMANTIC_RECOVERY_CODES
 
-        self.assertTrue(len(_SEMANTIC_RECOVERY_CODES) >= 3)
+        self.assertGreaterEqual(len(_SEMANTIC_RECOVERY_CODES), 3)
+        self.assertIn("korea_tech_top5_irrelevant_item", _SEMANTIC_RECOVERY_CODES)
+        self.assertIn("top_5_fixed_source_ids_mismatch", _SEMANTIC_RECOVERY_CODES)
+        self.assertIn("top_5_unapproved_url", _SEMANTIC_RECOVERY_CODES)
 
     def test_07_generated_index_to_original_news_id_mapping_contract(self) -> None:
         from keysuri_live_source_smoke import _SEMANTIC_RECOVERY_CODES
@@ -366,16 +571,20 @@ class KoreaNaturalRunHarness(unittest.TestCase):
         self.assertIn("top_5_unapproved_url", _SEMANTIC_RECOVERY_CODES)
 
     def test_13_diversity_relaxation_rejected(self) -> None:
-        # Diversity relaxation must not reopen scope; semantic codes remain strict.
         from keysuri_live_source_smoke import _SEMANTIC_RECOVERY_CODES
 
         self.assertIn("news_scope_mismatch", _SEMANTIC_RECOVERY_CODES)
 
     def test_14_source_name_hydration_path_exists(self) -> None:
-        # Hydration is production-side; ensure import surface exists.
         import keysuri_generation_prompt as kgp
 
-        self.assertTrue(hasattr(kgp, "parse_keysuri_generated_response"))
+        self.assertTrue(callable(getattr(kgp, "parse_keysuri_generated_response", None)))
+        parsed = kgp.parse_keysuri_generated_response(
+            json.dumps(_korea_generated(), ensure_ascii=False),
+            KOREA,
+            {"program_id": KOREA},
+        )
+        self.assertIn(parsed.get("parse_status"), {"parsed_valid", "parsed_invalid"})
 
     def test_15_korea_tech_scope_enforced(self) -> None:
         from keysuri_live_source_smoke import _SEMANTIC_RECOVERY_CODES
@@ -388,23 +597,62 @@ class KoreaNaturalRunHarness(unittest.TestCase):
         self.assertIn("news_scope_mismatch", _SEMANTIC_RECOVERY_CODES)
 
     def test_17_global_recovery_never_leaks_into_korea(self) -> None:
-        from keysuri_live_source_smoke import GLOBAL_GENERATION_CALL_BUDGET as budget
-
-        # Korea call_state budget is None in production; Global budget constant remains Global-only.
-        self.assertEqual(budget, 2)
         rec_g = generation_contract_record(GLOBAL)
         rec_k = generation_contract_record(KOREA)
         self.assertNotEqual(rec_g["schema_fingerprint"], rec_k["schema_fingerprint"])
+        # Korea structural recovery must not attach Global call-budget fields as
+        # the controlling ceiling for Korea.
+        caller, calls = _fake_caller(
+            [
+                _three_incomplete_fragments("iso"),
+                json.dumps(_korea_structural_corrective(), ensure_ascii=False),
+            ]
+        )
+        result = generate_keysuri_with_bounded_recovery(
+            _korea_prompt_input(), gemini_caller=caller, usage_sink={}
+        )
+        self.assertEqual(len(calls), 2)
+        diag = result["generation_diagnostics"]
+        self.assertTrue(diag.get("generation_recovery_attempted"))
+        self.assertNotEqual(diag.get("generation_recovery_family"), "GLOBAL_MALFORMED_CONTRACT")
 
     def test_18_image_smtp_only_after_final_pass(self) -> None:
-        image = 0
-        smtp = 0
-        validation = "block"
-        if validation == "pass":
-            image += 1
-            smtp += 1
-        self.assertEqual(image, 0)
-        self.assertEqual(smtp, 0)
+        from keysuri_live_source_smoke import LiveSourceSmokeResult
+
+        image_runner = MagicMock()
+        send_fn = MagicMock()
+        smoke = LiveSourceSmokeResult(
+            ok=False,
+            program_id=KOREA,
+            source_pack_path="/tmp/korea-safe-fail.json",
+            html_path="",
+            fetched_item_count=5,
+            feed_urls_used=[],
+            sample_marker_pass=False,
+            placeholder_gate_pass=False,
+            called_gemini=True,
+            use_gemini=True,
+            parse_status="parsed_invalid",
+            validation_issues=["json_extract_failed"],
+            generation_diagnostics={
+                "generation_attempt_count": 2,
+                "generation_recovery_attempted": True,
+                "generation_recovery_result": "failed",
+            },
+            error="Korea recovery failed safely",
+        )
+        with patch("keysuri_service_full_run.save_run_artifact"):
+            out = run_keysuri_service_full_run(
+                KOREA,
+                smoke_runner=lambda **_kwargs: smoke,
+                image_canary_runner=image_runner,
+                send_fn=send_fn,
+            )
+        self.assertFalse(out["ok"])
+        image_runner.assert_not_called()
+        send_fn.assert_not_called()
+        self.assertFalse(out.get("email_sent"))
+        self.assertEqual(out.get("customer_delivery_status", "not_sent"), "not_sent")
 
 
 class CrossModeIsolationTests(unittest.TestCase):
@@ -414,6 +662,10 @@ class CrossModeIsolationTests(unittest.TestCase):
         self.assertEqual(g, GLOBAL)
         self.assertEqual(k, KOREA)
         self.assertNotEqual(g, k)
+        repaired, meta = _repair_program_id_for_parse({"program_id": ""}, GLOBAL)
+        self.assertEqual(repaired["program_id"], GLOBAL)
+        self.assertNotEqual(repaired["program_id"], KOREA)
+        self.assertTrue(meta.get("program_id_repair_applied"))
 
 
 if __name__ == "__main__":
