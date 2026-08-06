@@ -68,6 +68,18 @@ Read-only. No secrets. No network. Non-zero on malformed input.
 
 No TRUE_CONFLICT required rewriting historical records.
 
+## Final local commit stack (this closeout)
+
+Parent before closeout work: `98e4098`.
+Branch unchanged: `deploy-global-repeated-filler-reduction-only`.
+
+| Role | Message |
+|------|---------|
+| Harness corrections | `test(harness): harden sandbox natural-run and admin assertions` (`6f4e9f6`) |
+| Documentation closeout | `docs(keysuri): close sandbox repository phase locally` (+ tip commit for SHA table) |
+
+Exact tip SHA: `git rev-parse HEAD` after staging. No push.
+
 ## Explicit non-claims / next batch
 
 - No push. No deploy. No Scheduler run/modification.
