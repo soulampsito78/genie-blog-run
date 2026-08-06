@@ -1,7 +1,7 @@
 # TODAY_GENIE Post-Migration First Natural-Run Incident Closeout
 
 **Incident date:** 2026-08-07 (KST)  
-**Final label:** set after deploy + verification (see bottom)  
+**Final label:** `TODAY_GENIE_POST_MIGRATION_FIRST_NATURAL_RUN_INCIDENT_CLOSED`  
 **Evidence root (immutable, outside repo):**  
 `/Volumes/DATA_MirAION/Young SeoK Park/git_Genie_Project/_incident_evidence_20260807_today_natural`
 
@@ -28,15 +28,18 @@ The early QA owner-review mail does **not** constitute natural-run success.
 | 2026-08-07 06:30:02 | 2026-08-06 21:30:02Z | Cloud Run `POST .../create-owner-review` → **200** latency **4.77s** on `00274-j2h` | Cloud Run request log |
 | 2026-08-07 06:30:13 | 2026-08-06 21:30:13Z | Scheduler attempt finished status 200 | Cloud Scheduler log |
 | 2026-08-07 06:32–06:33 | 2026-08-06 21:32–21:33Z | Owner opens/approves QA run; customer final send | Cloud Run request log + artifact |
+| 2026-08-07 07:27+ | 2026-08-06 22:27+Z | Fix commits pushed; build `ed444e9b` SUCCESS; revision `00275-nhv` (`c32486a`) | Cloud Build / Cloud Run |
+| 2026-08-07 07:33 | 2026-08-06 22:33Z | Deployed dry-run natural probe admitted; empty-body fail-closed 422 + failure event | Production verification |
 
-**GCS inventory for 20260807 today_genie:** only `20260807_003207_today_genie_255d3454` (no 06:30 natural child).
+**GCS inventory for 20260807 today_genie:** only `20260807_003207_today_genie_255d3454` (no 06:30 natural child; unchanged after no-send probe).
 
 ## Scheduler evidence
 
 - Fired: **yes**
 - URI: `/internal/jobs/create-owner-review`
 - Body at incident: `{}` (no execution_class / scheduled_slot)
-- Revision: `genie-blog-run-00274-j2h`
+- Body after fix: `{"execution_class":"natural_scheduled","scheduled_slot":"06:30","trigger_source":"scheduled_owner_review"}`
+- Revision at incident: `genie-blog-run-00274-j2h`
 - HTTP: 200 / ~4.77s
 - Scheduler result: success (silent skip looked like OK)
 - Classification: **CLOUD_RUN_REQUEST_CONFIRMED**
@@ -63,11 +66,28 @@ The early QA owner-review mail does **not** constitute natural-run success.
 5. Legitimate duplicate returns diagnostics (`matched_run_id`, class, slot, status) without failure alert
 6. Invalid match → HTTP 409 + exactly one structured failure event
 7. Missing `execution_class` / `trigger_source` → fail closed (422), never guessed natural
-8. Scheduler body must supply identity fields (updated with deploy)
+8. Scheduler body supplies identity fields (updated with deploy)
 
 ## Harness
 
 `tests/test_today_natural_slot_incident_harness.py` — scenarios 1–25 + adversarial mutations; production entry `/internal/jobs/create-owner-review`.
+
+## Deployment / verification
+
+| Item | Value |
+|------|-------|
+| Push range | `50da284..da45f93` on `main` (functional close at `c32486a`) |
+| Commits | `568dedb` fix / `2560e98` harness / `c32486a` docs / `da45f93` status snapshot |
+| Cloud Build (fix) | `ed444e9b-b2a4-4a5e-947d-edc5eac49c0d` SUCCESS |
+| Source SHA (fix revision) | `c32486a3ee693023f06e76c3001a2c849b57fa97` |
+| Image digest | `sha256:9b97c6296ab054522cc77752f125738a576e51b07122d36eb8f7a370979e11ac` |
+| Revision | `genie-blog-run-00275-nhv` Ready=True traffic 100% |
+| Health | `/health` 200 |
+| No-send probe | dry-run natural admitted (`would_run=true`) despite QA artifact |
+| Detection probe | empty body → 422 + `owner_review_run_failed` / `execution_class_required` |
+| Extra owner-review mails | **0** |
+| Customer sends from verification | **0** |
+| Scheduler manual run | **0** |
 
 ## Why early QA mail ≠ natural success
 
@@ -75,7 +95,7 @@ QA run was an early validation of migrated content, not the canonical 06:30 natu
 
 ## Next natural-run monitoring
 
-Monitor Monday 06:30 KST `Today_Geenee` for:
+Monitor Monday 2026-08-10 06:30 KST `Today_Geenee` for:
 
 - request admitted (not silent same-date skip)
 - new `execution_class=natural_scheduled` / `scheduled_slot=06:30` artifact
