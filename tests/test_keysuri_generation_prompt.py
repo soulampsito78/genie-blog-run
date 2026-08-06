@@ -122,7 +122,7 @@ class KeysuriGenerationPromptContractTests(unittest.TestCase):
                      "C) 아직 단정하지 말 것", "D) 바로 볼 것"):
             with self.subTest(step=step):
                 self.assertIn(step, prompt)
-        self.assertIn("'오늘 신호가 내려오는 곳'은 고정 교훈문이 아니다", prompt)
+        self.assertIn("'내일 실제로 확인할 전달 경로'는 고정 교훈문이 아니다", prompt)
 
     def test_global_prompt_not_affected_by_korea_voice_block(self) -> None:
         prompt = build_keysuri_generation_prompt(_global_prompt())

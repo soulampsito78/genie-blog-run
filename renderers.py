@@ -664,14 +664,26 @@ def render_email_operational_box(meta: Dict[str, Any]) -> str:
         f'<option value="{_safe(l)}">{_safe(l)}</option>' for l in _REVISION_REQUEST_REASONS
     )
     revision_live = bool(post_raw) and "placeholder.genie-revision.bind-later.invalid" not in post_raw
-    revision_status = "운영 준비 중" if not revision_live else "운영 검토 접수 가능"
-    revision_detail = (
-        "수정 요청 기능은 현재 운영 준비 중입니다. 필요한 경우 운영자 검토 후 별도 안내됩니다."
-        if not revision_live
-        else "수정 요청은 운영자 검토 후 별도 안내됩니다."
-    )
     admin_url = str(meta.get("admin_review_url") or "").strip()
     run_id = str(meta.get("run_id") or "").strip()
+    # Admin three-scope Today reissue (body_only / image_only / full) is available
+    # when an owner-review Admin URL is present for the run.
+    admin_reissue_available = bool(admin_url) and bool(run_id) and mode_code == "today_genie"
+    if admin_reissue_available:
+        revision_status = "Admin 재발행 가능"
+        revision_detail = (
+            "Admin에서 body_only / image_only / full 범위로 Today 재발행을 요청할 수 있습니다. "
+            "고객 최종 발송은 운영자 승인 전까지 차단됩니다."
+        )
+    elif revision_live:
+        revision_status = "운영 검토 접수 가능"
+        revision_detail = "수정 요청은 운영자 검토 후 별도 안내됩니다."
+    else:
+        revision_status = "운영 준비 중"
+        revision_detail = (
+            "인라인 수정 요청 POST는 현재 운영 준비 중입니다. "
+            "Admin 링크가 있으면 해당 화면의 재발행을 이용하세요."
+        )
     admin_link = render_owner_review_admin_link_block(admin_url, run_id)
     return f"""
 <section id="genie-operational-handoff" aria-label="운영자 검수 상태" style="margin-top:32px;padding:20px 20px 22px 20px;border:1px solid #cbd5e1;border-radius:10px;background:#f1f5f9;">

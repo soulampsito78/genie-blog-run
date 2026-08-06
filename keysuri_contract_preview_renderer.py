@@ -610,10 +610,9 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
             f'<span class="tomorrow-label">{_esc(KOREA_TOMORROW_HOLD_LABEL)}:</span> {_esc(hold)}</p>'
         )
 
-    rank_html = "" if _is_korea_program(program_id) else f'<div class="card-rank">{rank}</div>'
+    # Ordinal lives only in the h3 ("N. title") — never a standalone numeric line.
     return f"""
     <article class="briefing-card top-item" data-top-item="{rank}">
-      {rank_html}
       <span class="angle-chip">{_esc(angle_chip)}</span>
       {market_lens_html}
       <h3 class="card-headline">{rank}. {_esc(headline)}</h3>
@@ -1573,7 +1572,6 @@ def _gmail_render_global_top_item(item: Mapping[str, Any], rank: int) -> str:
         f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
         f'style="background:{c["surface"]};border:1px solid {c["line"]};border-left:4px solid {c["accent"]};border-radius:12px;">'
         f'<tr><td style="padding:18px 18px 16px 18px;">'
-        f'<p style="margin:0 0 8px 0;font-size:11px;font-weight:700;color:{c["mute"]};">{rank}</p>'
         f'<span style="display:inline-block;margin:0 0 10px 0;padding:4px 10px;font-size:11px;font-weight:700;'
         f'color:{c["accent"]};background:#eef4fb;border:1px solid #d4e3f5;border-radius:999px;">'
         f'{_esc(GLOBAL_ANGLE_CHIP)}</span>'
@@ -1901,7 +1899,6 @@ def _gmail_render_korea_top_item(item: Mapping[str, Any], rank: int) -> str:
         f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
         f'style="background:{c["surface"]};border:1px solid {c["line"]};border-left:4px solid {c["accent"]};border-radius:12px;">'
         f'<tr><td style="padding:18px 18px 16px 18px;">'
-        f'<p style="margin:0 0 8px 0;font-size:11px;font-weight:700;color:{c["mute"]};">{rank}</p>'
         f'<span style="display:inline-block;margin:0 0 10px 0;padding:4px 10px;font-size:11px;font-weight:700;'
         f'color:{c["accent"]};background:{c["gold_soft"]};border:1px solid rgba(205,168,95,0.30);border-radius:999px;">'
         f'{_esc(KOREA_ANGLE_CHIP)}</span>'

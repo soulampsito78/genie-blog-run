@@ -222,6 +222,78 @@ _HEADLINE_TOPIC_STOPWORDS: FrozenSet[str] = frozenset(
         "tech",
         "isn",
         "t",
+        "could",
+        "face",
+        "further",
+        "stock",
+        "stocks",
+        "shares",
+        "share",
+        "would",
+        "might",
+        "may",
+        "will",
+        "can",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "this",
+        "that",
+        "these",
+        "those",
+        "their",
+        "about",
+        "into",
+        "than",
+        "then",
+        "when",
+        "what",
+        "which",
+        "while",
+        "where",
+        "after",
+        "before",
+        "under",
+        "over",
+        "more",
+        "less",
+        "also",
+        "just",
+        "only",
+        "very",
+        "such",
+        "other",
+        "some",
+        "any",
+        "all",
+        "new",
+        "old",
+        "first",
+        "last",
+        "next",
+        "year",
+        "years",
+        "day",
+        "days",
+        "week",
+        "weeks",
+        "month",
+        "months",
+        "report",
+        "reports",
+        "says",
+        "said",
+        "tell",
+        "tells",
+        "near",
+        "high",
+        "low",
+        "close",
+        "closes",
+        "open",
+        "opens",
     }
 )
 
@@ -249,7 +321,21 @@ def headline_topic_tokens(headline: str, *, max_tokens: int = 6) -> List[str]:
         clean = str(label or "").strip()
         if not clean:
             return
-        key = clean.lower()
+        parts = [p for p in re.split(r"[\s/]+", clean) if p]
+        # Split Title-Case runs that still embed English stopwords.
+        if len(parts) > 1 and any(
+            p.lower().strip(".,;:") in _HEADLINE_TOPIC_STOPWORDS for p in parts
+        ):
+            for p in parts:
+                key = p.lower().strip(".,;:")
+                if key in _HEADLINE_TOPIC_STOPWORDS or key in seen:
+                    continue
+                if len(key) < 2:
+                    continue
+                seen.add(key)
+                tokens.append(p.strip(".,;:"))
+            return
+        key = clean.lower().strip(".,;:")
         if key in _HEADLINE_TOPIC_STOPWORDS or key in seen:
             return
         seen.add(key)
@@ -320,8 +406,13 @@ def headline_grounding_anchors(headline: str) -> List[str]:
     return anchors[:10]
 
 
+def diagnostic_headline_topic_tokens(headline: str, *, max_tokens: int = 6) -> List[str]:
+    """Bounded topic tokens for diagnostics only — never inject into visible copy."""
+    return headline_topic_tokens(headline, max_tokens=max_tokens)
+
+
 def inject_headline_grounding_into_detail(detail: str, headline: str) -> str:
-    """Append deterministic Korean lead-in and English topic tokens for validator grounding."""
+    """Append a bounded Korean lead-in for validator grounding — never raw keyword dumps."""
     nh = str(headline or "").strip()
     body = str(detail or "").strip()
     if not nh:
@@ -333,20 +424,34 @@ def inject_headline_grounding_into_detail(detail: str, headline: str) -> str:
         body = f"{anchor} {body}".strip()
     if text_covers_headline_entities(body, nh):
         return body
-    topics = headline_topic_tokens(nh)
-    if topics:
-        tail = "원문 키워드: " + ", ".join(topics) + "."
-        if tail not in body:
-            body = f"{body} {tail}".strip()
+    # Proper-noun lead only (no "원문 키워드" / "원문 헤드라인 기준" dumps).
+    topics = [
+        t
+        for t in headline_topic_tokens(nh, max_tokens=4)
+        if t.lower() not in _HEADLINE_TOPIC_STOPWORDS and len(t) >= 2
+    ]
+    # Prefer tokens that retain uppercase (proper nouns / acronyms).
+    proper = [t for t in topics if any(c.isupper() for c in t)]
+    use = proper[:2] or topics[:2]
+    banned = {"could", "face", "further", "stock", "stocks"}
+    if use and not any(tok.lower() in banned for tok in use):
+        lead = "·".join(use) + " 관련."
+        if lead not in body:
+            body = f"{lead} {body}".strip()
     return body
 
 
 def anchor_phrase_for_headline(headline: str) -> str:
     found = extract_market_entities(headline)
     if not found:
-        topics = headline_topic_tokens(headline)
+        # No market entities: do not dump raw English headline tokens into visible copy.
+        topics = [
+            t
+            for t in headline_topic_tokens(headline, max_tokens=3)
+            if t[:1].isupper() or t.isupper()
+        ]
         if topics:
-            return f"원문 헤드라인 기준: {', '.join(topics)}."
+            return "·".join(topics[:2]) + " 관련."
         return ""
 
     index_parts: List[str] = []

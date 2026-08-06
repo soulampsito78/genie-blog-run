@@ -8,6 +8,7 @@ from keysuri_visible_text import (
     coerce_visible_lines,
     dedupe_sentences_in_paragraph,
     normalize_visible_text,
+    repair_korea_adjacent_token_duplication,
     repair_obvious_korean_quality_artifacts,
     sanitize_visible_impact_line,
     strip_watch_arrow_prefixes,
@@ -91,7 +92,7 @@ KOREA_MARKET_LENS_LABEL = "시장 렌즈"
 KOREA_MARKET_LENS_FALLBACK = "시장 신호"
 KOREA_MARKET_IMPACT_LABEL = "시장 영향"
 KOREA_MARKET_FRAME_HEADING = "오늘의 시장 구조"
-KOREA_MARKET_SUMMARY_HEADING = "오늘 신호가 내려오는 곳"
+KOREA_MARKET_SUMMARY_HEADING = "내일 실제로 확인할 전달 경로"
 KOREA_FOLLOW_BLOCK_HEADING = "바로 볼 것"
 KOREA_HOLD_BLOCK_HEADING = "보류할 것"
 KOREA_TOMORROW_CONFIRM_LABEL = "내일 먼저 볼 것"
@@ -784,14 +785,14 @@ def soften_weak_startup_support_prose(text: str, *, force: bool = False) -> str:
     if not out:
         return out
     if not force and not is_weak_startup_support_item(out):
-        return out
+        return repair_korea_adjacent_token_duplication(out)
     replacements = (
-        ("활용 후보", "참고 신호"),
+        ("활용 후보", "참고 일정"),
         ("좋은 기회", "참고할 지원사업 일정"),
-        ("사업 신호", "참고 신호"),
-        ("강한 신호", "참고 신호"),
-        ("핵심 신호", "참고 신호"),
-        ("핵심 사업 신호", "참고 신호"),
+        ("사업 신호", "참고 일정"),
+        ("강한 신호", "참고 일정"),
+        ("핵심 신호", "참고 일정"),
+        ("핵심 사업 신호", "참고 일정"),
         ("실질적인 사업 기회", "모집 요건 확인 포인트"),
         ("투자 심리 자극", "지원사업 일정 확인"),
         ("국내 경제 성장 동력 확보에 중요합니다", "모집 요건과 선정 분야만 확인하면 됩니다"),
@@ -800,20 +801,23 @@ def soften_weak_startup_support_prose(text: str, *, force: bool = False) -> str:
         ("중요한 기회가 됩니다", "모집 요건과 선정 분야만 확인하면 됩니다"),
         (
             "유망 기술 및 사업 모델을 가진 스타트업과의 협력 기회를 모색할 수 있습니다",
-            "AI·딥테크 기업이 실제 선정되는지 확인되기 전까지는 참고 신호로 보는 편이 안전합니다",
+            "AI·딥테크 기업이 실제 선정되는지 확인되기 전까지는 참고 일정으로 보는 편이 안전합니다",
         ),
         ("협력 기회를 모색할 수 있습니다", "모집 요건과 선정 분야만 확인하면 됩니다"),
-        ("긍정적인 신호입니다", "지원사업 일정 확인용 참고 신호입니다"),
+        ("긍정적인 신호입니다", "지원사업 일정 확인이 우선입니다"),
         ("좋은 기회이나", "참고할 지원사업이나"),
         (
             "적극적으로 참여하여 투자 유치 기회를 확보해야 합니다",
             "참가 자격과 선정 분야만 확인하면 됩니다",
         ),
+        ("참고할 수 있는 참고", "참고할"),
+        ("새로운 사업 기회를 제공하는 기회", "확인할 지원사업"),
+        ("기회를 제공하는 기회", "확인할"),
     )
     for src, dst in replacements:
         if src in out:
             out = out.replace(src, dst)
-    return out
+    return repair_korea_adjacent_token_duplication(out)
 
 
 def _scrub_awkward_korea_memo_phrases(text: str) -> str:
@@ -904,6 +908,7 @@ def sanitize_korea_customer_prose(text: str) -> str:
     out = _apply_inline_slash_prose(out)
     out = re.sub(r"·+", "·", out)
     out = soften_weak_startup_support_prose(out)
+    out = repair_korea_adjacent_token_duplication(out)
     out = _scrub_awkward_korea_memo_phrases(out)
     out = _soften_korea_imperative_prose(out)
     return re.sub(r"\s+", " ", out).strip()
@@ -1409,47 +1414,177 @@ def build_korea_tomorrow_checkpoint_parts(item: Mapping[str, Any]) -> tuple[str,
     return confirm, hold
 
 
-def build_korea_market_impact_summary(items: Sequence[Mapping[str, Any]]) -> List[Dict[str, str]]:
-    """Bottom-of-briefing market-impact summary rows (Korea only, ≥3 axes, no directives).
+_KOREA_PROPAGATION_GENERIC_AXES: frozenset[str] = frozenset(
+    {
+        "관련 업종",
+        "소부장 협력사",
+        "개인 투자자",
+        "시장 참여자",
+        "국내 기업",
+        "관련 기업",
+    }
+)
 
-    Anchored to TODAY's actual TOP5 theme/industries — the section must not read
-    as a fixed daily lesson board that repeats the same five sentences every day.
+_KOREA_PROPAGATION_ENTITY_RE = re.compile(
+    r"("
+    r"[가-힣A-Za-z0-9&]{2,}(?:전자|바이오|화학|에너지|모터스|중공업|건설|증권|은행|통신|소프트|하이닉스)?"
+    r"|삼성(?:전자)?|SK(?:하이닉스|온|이노베이션)?|LG(?:에너지솔루션|전자)?|현대(?:차|자동차)?"
+    r"|포스코(?:퓨처엠|홀딩스)?|네이버|카카오|한화(?:에어로스페이스|시스템)?"
+    r"|한국은행|산업통상자원부|과기정통부|공정위|금감원|기재부"
+    r"|NVIDIA|OpenAI|TSMC|ASML|Intel|AMD|Google|Microsoft|Apple|Tesla"
+    r")"
+)
+
+_LAST_KOREA_MARKET_IMPACT_DIAGNOSTICS: Dict[str, Any] = {
+    "section_included": False,
+    "grounding_article_ranks": [],
+    "grounding_news_ids": [],
+    "concrete_entities": [],
+    "omission_reason": "not_evaluated",
+    "generic_template_rejection_count": 0,
+    "item_count": 0,
+}
+
+
+def last_korea_market_impact_diagnostics() -> Dict[str, Any]:
+    """Diagnostics from the most recent build_korea_market_impact_summary call."""
+    return dict(_LAST_KOREA_MARKET_IMPACT_DIAGNOSTICS)
+
+
+def _korea_propagation_concrete_entity(item: Mapping[str, Any]) -> str:
+    """Pull a concrete entity/event token from an article — never a generic audience bucket."""
+    blobs = (
+        _text(item.get("korean_title") or item.get("headline")),
+        _text(item.get("what_happened") or item.get("summary")),
+        _text(item.get("owner_angle") or item.get("business_implication")),
+        _text(item.get("market_impact")),
+        _text(item.get("selection_reason")),
+    )
+    for blob in blobs:
+        if not blob:
+            continue
+        # Prefer a quoted proper name or leading company phrase before a comma.
+        quoted = re.search(r"[『「\"']([^』」\"']{2,40})[』」\"']", blob)
+        if quoted:
+            cand = quoted.group(1).strip()
+            if cand and cand not in _KOREA_PROPAGATION_GENERIC_AXES:
+                return cand
+        head = blob.split(",")[0].split("，")[0].strip()
+        match = _KOREA_PROPAGATION_ENTITY_RE.search(head) or _KOREA_PROPAGATION_ENTITY_RE.search(blob)
+        if match:
+            return match.group(1).strip()
+        # Numeric/schedule hooks count as concrete grounding.
+        amount = re.search(r"\d+(?:\.\d+)?\s*(?:조|억|만|달러|원|%|건)", blob)
+        if amount and head:
+            short = _short_title(head, max_len=28)
+            if short:
+                return short
+    title = _short_title(_text(item.get("korean_title") or item.get("headline")), max_len=28)
+    if title and title not in _KOREA_PROPAGATION_GENERIC_AXES:
+        # Reject titles that are only thematic without a concrete noun.
+        if re.search(r"[가-힣A-Za-z0-9]{2,}", title):
+            return title
+    return ""
+
+
+def _korea_propagation_check_hook(item: Mapping[str, Any], entity: str) -> str:
+    """Concrete observation hook grounded in the article fields."""
+    for key in ("next_day_impact_line", "owner_action_line", "market_impact", "next_watch"):
+        raw = _text(item.get(key))
+        if not raw:
+            continue
+        # Prefer a clause that mentions a decision number/schedule/contract.
+        if any(tok in raw for tok in ("계약", "일정", "수주", "발주", "도입", "규제", "금액", "물량", "공급")):
+            return clamp_action_line(raw, max_chars=90)
+    what = _text(item.get("what_happened") or item.get("summary"))
+    if any(tok in what for tok in ("계약", "투자", "정책", "규제", "공급", "IPO", "수주")):
+        return f"{entity} 관련 계약·일정·금액이 숫자로 따라오는지"
+    return f"{entity} 후속 공식 발표·도입 일정"
+
+
+def build_korea_market_impact_summary(items: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    """Article-grounded propagation paths (0–3). Omit when fewer than two concrete paths.
+
+    Generic audience-bucket axes are rejected. Each retained row must name a
+    concrete entity derived from a TOP5 article and map back to rank/news_id.
     """
+    global _LAST_KOREA_MARKET_IMPACT_DIAGNOSTICS
     items = [i for i in items if isinstance(i, dict)]
-    theme = _theme_phrase(items)
-    industries: List[str] = []
-    for item in items:
-        cat = _korea_industry_label(_text(item.get("category_label_ko") or item.get("primary_category")))
-        if cat and cat not in industries:
-            industries.append(cat)
-    industry_phrase = _join_korea_industry_phrase(industries[:3], sep="·") or "반도체·AI·정책"
-    # Observation-point tone, not a daily lesson board: each row states where
-    # TODAY's signals would land and what number/schedule decides it — no
-    # "확인하겠습니다/보겠습니다" recitation, no fixed sentences.
-    rows: List[Dict[str, str]] = [
-        {
-            "axis": "관련 업종",
-            "body": (
-                f"오늘 신호는 {industry_phrase} 축에 몰렸습니다. "
-                "기술 발표 자체보다 발주·일정이 주변 장비·부품·서비스 업종으로 이어지는지가 핵심입니다."
-            ),
-        },
-        {
-            "axis": "소부장 협력사",
-            "body": (
-                f"{industry_phrase} 쪽 신호가 소부장 협력사 물량으로 번지는지가 "
-                "체감 영향의 기준입니다."
-            ),
-        },
-        {
-            "axis": "개인 투자자",
-            "body": (
-                f"{theme} 관련 종목은 수혜주 이름보다 계약·비용 구조·도입 일정이 "
-                "숫자로 따라오는지가 판단 기준입니다."
-            ),
-        },
-    ]
-    return rows
+    generic_rejects = 0
+    grounded: List[Dict[str, Any]] = []
+    seen_entities: set[str] = set()
+
+    for idx, item in enumerate(items[:5], start=1):
+        rank = int(item.get("rank") or idx)
+        news_id = str(
+            item.get("news_id")
+            or item.get("source_id")
+            or item.get("id")
+            or ""
+        ).strip()
+        entity = _korea_propagation_concrete_entity(item)
+        if not entity:
+            generic_rejects += 1
+            continue
+        entity_key = entity.lower()
+        if entity_key in seen_entities:
+            continue
+        if entity in _KOREA_PROPAGATION_GENERIC_AXES:
+            generic_rejects += 1
+            continue
+        axis = entity if len(entity) <= 24 else _short_title(entity, max_len=24)
+        if axis in _KOREA_PROPAGATION_GENERIC_AXES:
+            generic_rejects += 1
+            continue
+        check = _korea_propagation_check_hook(item, entity)
+        body = (
+            f"{entity} 신호가 실제 계약·발주·도입 일정으로 이어지는 경로를 보면 됩니다. "
+            f"확인 기준: {check}."
+        )
+        # Avoid duplicating evening-memo / 바로 볼 것 tone.
+        if any(tok in body for tok in ("바로 볼 것", "기회 요인", "위험 요인", "퇴근 전 메모")):
+            generic_rejects += 1
+            continue
+        seen_entities.add(entity_key)
+        grounded.append(
+            {
+                "axis": axis,
+                "body": body,
+                "rank": rank,
+                "news_id": news_id,
+                "entities": [entity],
+            }
+        )
+        if len(grounded) >= 3:
+            break
+
+    if len(grounded) < 2:
+        reason = "fewer_than_two_grounded_paths"
+        if not items:
+            reason = "no_top5_items"
+        elif not grounded:
+            reason = "no_concrete_entities"
+        _LAST_KOREA_MARKET_IMPACT_DIAGNOSTICS = {
+            "section_included": False,
+            "grounding_article_ranks": [r["rank"] for r in grounded],
+            "grounding_news_ids": [r["news_id"] for r in grounded if r.get("news_id")],
+            "concrete_entities": [e for r in grounded for e in (r.get("entities") or [])],
+            "omission_reason": reason,
+            "generic_template_rejection_count": generic_rejects,
+            "item_count": len(grounded),
+        }
+        return []
+
+    _LAST_KOREA_MARKET_IMPACT_DIAGNOSTICS = {
+        "section_included": True,
+        "grounding_article_ranks": [r["rank"] for r in grounded],
+        "grounding_news_ids": [r["news_id"] for r in grounded if r.get("news_id")],
+        "concrete_entities": [e for r in grounded for e in (r.get("entities") or [])],
+        "omission_reason": "",
+        "generic_template_rejection_count": generic_rejects,
+        "item_count": len(grounded),
+    }
+    return grounded
 
 
 # Note: "여부를" is NOT in the particle group — "…공개 여부를 확인하세요" must

@@ -39,6 +39,7 @@ _ALLOWED_FUTURE_DELIVERY_LABELS = frozenset(
         "운영자 검수 메일 발송 전",
         "운영자 검수 메일 상태 미확인",
         "운영자 검수 메일 미발송",
+        "운영자 검수 메일 발송(검수 전달) · 고객 발송 대기(미승인)",
     }
 )
 
@@ -180,6 +181,19 @@ class GenieEmailOperationalMetaSemanticsTests(unittest.TestCase):
         blob = " ".join(str(v) for v in meta.values())
         for forbidden in _FORBIDDEN_OWNER_REVIEW_COMPLETE:
             self.assertNotIn(forbidden, blob)
+
+    def test_owner_review_send_path_never_claims_owner_mail_unsent(self) -> None:
+        meta = email_operational_handoff_meta(
+            "today_genie", "pass", owner_review_email_being_sent=True
+        )
+        delivery = meta.get("email_delivery_label", "")
+        self.assertNotIn("운영자 검수 메일 발송 전", delivery)
+        self.assertIn("고객 발송 대기", delivery)
+        self.assertIn("운영자 검수 메일 발송", delivery)
+        for fragment in _FORBIDDEN_SEND_COMPLETE_FRAGMENTS:
+            # "발송 완료" remains forbidden for customer-complete implication;
+            # owner-review "발송(검수 전달)" is allowed and does not use that fragment.
+            self.assertNotIn(fragment, delivery)
 
 
 class GenieEmailOperationalBoxRenderSemanticsTests(unittest.TestCase):

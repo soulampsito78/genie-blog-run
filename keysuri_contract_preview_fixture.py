@@ -14,9 +14,11 @@ from keysuri_news_contract import expected_top5_heading_for_program
 from keysuri_korea_longform_ux import (
     KOREA_EVENING_MEMO_HEADING,
     build_korea_evening_memo,
+    build_korea_market_impact_summary,
     korea_closing_internal_label_leak,
     korea_closing_structure_incomplete,
     korea_evening_memo_too_thin,
+    last_korea_market_impact_diagnostics,
     memo_plain_text,
     structure_korea_deep_dive,
 )
@@ -258,7 +260,22 @@ def _map_top_item(
         if market_impact:
             korea_market_fields["market_impact"] = _sanitize_owner_visible_text(market_impact)
 
-    return {
+    news_id = str(
+        item.get("news_id")
+        or item.get("source_id")
+        or extra.get("news_id")
+        or extra.get("source_id")
+        or src.get("news_id")
+        or src.get("id")
+        or ""
+    ).strip()
+    category_label_ko = str(
+        item.get("category_label_ko")
+        or extra.get("category_label_ko")
+        or ""
+    ).strip()
+
+    mapped: Dict[str, Any] = {
         **korea_market_fields,
         "rank": rank,
         "korean_title": _sanitize_owner_visible_text(korean_title),
@@ -283,6 +300,14 @@ def _map_top_item(
         "checked_at": str(src.get("fetched_at") or source_pack.get("generated_at") or "").strip(),
         "verification_status": LIVE_VERIFICATION_STATUS,
     }
+    if category_key:
+        mapped["primary_category"] = category_key
+    if category_label_ko:
+        mapped["category_label_ko"] = category_label_ko
+    if news_id:
+        mapped["news_id"] = news_id
+        mapped["source_id"] = news_id
+    return mapped
 
 
 def build_contract_preview_fixture_from_generated(
@@ -414,6 +439,8 @@ def build_contract_preview_fixture_from_generated(
                 closing_message=closing_message,
             )
         evening_memo_body = memo_plain_text(korea_evening_memo)
+        # Populate diagnostics for the grounded propagation section (0–3 rows).
+        build_korea_market_impact_summary(top_items)
 
     fixture: Dict[str, Any] = {
         "program_id": program_id,
@@ -455,5 +482,7 @@ def build_contract_preview_fixture_from_generated(
         fixture["top_shot_image_path"] = str(top_shot_image_path)
     if top_shot_image_src:
         fixture["top_shot_image_src"] = top_shot_image_src
+    if program_id == PROGRAM_KOREA:
+        fixture["korea_propagation_diagnostics"] = last_korea_market_impact_diagnostics()
 
     return fixture

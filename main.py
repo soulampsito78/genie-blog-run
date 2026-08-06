@@ -2020,11 +2020,17 @@ def stabilize_today_genie_validation_fields(
 def email_operational_handoff_meta(
     mode: str,
     validation_result: str,
+    *,
+    owner_review_email_being_sent: bool = False,
 ) -> Dict[str, Any]:
     """
     Server-owned labels for the owner/admin 운영자 검수 상태 block only.
     No raw internal state strings (e.g. draft_only, validated) are exposed here.
     Labels must not imply customer send completion or human 검수완료 from validation pass alone.
+
+    When ``owner_review_email_being_sent`` is True (MIME HTML for the owner-review
+    SMTP path), never claim the owner-review mail is unsent — this message *is*
+    that delivery. Customer delivery stays pending / hard-blocked.
     """
     kst_now = datetime.now(ZoneInfo("Asia/Seoul"))
     exec_ts = kst_now.strftime("%Y-%m-%d %H:%M:%S KST")
@@ -2041,16 +2047,29 @@ def email_operational_handoff_meta(
         result_summary = (
             "초안 생성과 자동 검증을 통과했습니다. 운영자 검수 후 전달 여부를 확정합니다."
         )
-        email_delivery_label = "운영자 검수 메일 발송 전"
+        if owner_review_email_being_sent:
+            owner_review_delivery_label = "운영자 검수 메일 발송(검수 전달)"
+            customer_delivery_label = "고객 발송 대기(미승인)"
+            email_delivery_label = (
+                "운영자 검수 메일 발송(검수 전달) · 고객 발송 대기(미승인)"
+            )
+        else:
+            owner_review_delivery_label = "운영자 검수 메일 발송 전"
+            customer_delivery_label = "고객 발송 대기(미승인)"
+            email_delivery_label = "운영자 검수 메일 발송 전"
     elif validation_result == "draft_only":
         status_label = "운영 검토 필요"
         result_summary = (
             "초안은 생성되었지만, 운영 검토 후 전달하는 편이 안전합니다."
         )
+        owner_review_delivery_label = "이메일 미발송"
+        customer_delivery_label = "고객 발송 대기(미승인)"
         email_delivery_label = "이메일 미발송"
     else:
         status_label = "자동 진행 불가"
         result_summary = "이번 실행은 자동 진행보다 확인이 우선입니다."
+        owner_review_delivery_label = "이메일 미발송"
+        customer_delivery_label = "고객 발송 대기(미승인)"
         email_delivery_label = "이메일 미발송"
 
     raw_href = os.getenv("GENIE_REREQUEST_URL", "").strip()
@@ -2068,9 +2087,12 @@ def email_operational_handoff_meta(
         "execution_time_kst": exec_ts,
         "result_summary": result_summary,
         "email_delivery_label": email_delivery_label,
+        "owner_review_delivery_label": owner_review_delivery_label,
+        "customer_delivery_label": customer_delivery_label,
         "rerequest_url": rerequest_url,
         "mode_code": mode,
         "revision_request_post_url": revision_post,
+        "owner_review_email_being_sent": bool(owner_review_email_being_sent),
     }
 
 
@@ -2086,7 +2108,11 @@ def build_today_genie_email_html_for_cid_mime_send(
     """
     from admin_urls import build_owner_review_admin_url
 
-    op_meta = email_operational_handoff_meta("today_genie", validation_result)
+    op_meta = email_operational_handoff_meta(
+        "today_genie",
+        validation_result,
+        owner_review_email_being_sent=True,
+    )
     rid = str(run_id or "").strip()
     if rid:
         admin_url = build_owner_review_admin_url(rid)

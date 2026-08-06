@@ -787,7 +787,8 @@ class KeysuriContractPreviewRendererTests(unittest.TestCase):
         self.assertNotIn('class="card-rank"', html)
         self.assertRegex(html, r'class="card-headline">1\.\s')
         global_html = _render_contract_html(mod, build_global_contract_fixture())
-        self.assertIn('class="card-rank"', global_html)
+        self.assertNotIn('class="card-rank"', global_html)
+        self.assertRegex(global_html, r'class="card-headline">1\.\s')
 
     @_require_contract_renderer
     def test_korea_top5_repairs_double_periods_and_ellipsis(self) -> None:
@@ -1081,7 +1082,7 @@ _KOREA_MARKET_MARKERS: tuple[str, ...] = (
     "시장 영향",
     "내일 먼저 볼 것",
     "아직 단정하지 말 것",
-    "오늘 신호가 내려오는 곳",
+    "내일 실제로 확인할 전달 경로",
     "바로 볼 것",
     "보류할 것",
     "오늘의 시장 구조",
@@ -1113,24 +1114,23 @@ class KeysuriKoreaMarketBriefingRenderTests(unittest.TestCase):
         self.assertGreaterEqual(html.count("아직 단정하지 말 것"), 5)
 
     @_require_contract_renderer
-    def test_korea_market_summary_has_at_least_three_axes(self) -> None:
+    def test_korea_market_summary_grounded_heading_no_generic_buckets(self) -> None:
         html = _render_contract_html(_CONTRACT_RENDERER, build_korea_contract_fixture())
-        self.assertIn('id="market-impact-summary"', html)
-        axes = sum(
-            1
-            for axis in (
-                "관련 업종",
-                "소부장 협력사",
-                "개인 투자자",
-            )
-            if axis in html
-        )
-        self.assertEqual(axes, 3)
+        self.assertIn("내일 실제로 확인할 전달 경로", html)
+        self.assertNotIn("오늘 신호가 내려오는 곳", html)
+        for axis in (
+            "관련 업종",
+            "소부장 협력사",
+            "개인 투자자",
+            "시장 참여자",
+            "국내 기업",
+            "관련 기업",
+        ):
+            self.assertNotIn(f">{axis}</strong>", html)
+            self.assertNotIn(f">{axis} —", html)
         self.assertNotIn("협력사/소부장", html)
         self.assertNotIn("로봇/에이전트", html)
         self.assertNotIn("시장 영향 요약", html)
-        # The section must be anchored to today's items, never the legacy
-        # fixed daily lesson sentences.
         from keysuri_briefing_content_quality import KOREA_STATIC_LESSON_LEGACY_SENTENCES
 
         for legacy in KOREA_STATIC_LESSON_LEGACY_SENTENCES:

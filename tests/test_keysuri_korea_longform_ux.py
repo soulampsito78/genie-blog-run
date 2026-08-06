@@ -451,26 +451,42 @@ class KeysuriKoreaMarketRendererHelpersTests(unittest.TestCase):
         self.assertTrue(confirm_empty)
         self.assertTrue(hold_empty)
 
-    def test_market_impact_summary_min_three_axes(self) -> None:
+    def test_market_impact_summary_grounded_or_omitted(self) -> None:
         from keysuri_korea_longform_ux import (
             KOREA_MARKET_SUMMARY_HEADING,
             build_korea_market_impact_summary,
+            last_korea_market_impact_diagnostics,
         )
 
         rows = build_korea_market_impact_summary(_top_items())
-        self.assertGreaterEqual(len(rows), 3)
-        axes = {row["axis"] for row in rows}
-        self.assertEqual(KOREA_MARKET_SUMMARY_HEADING, "오늘 신호가 내려오는 곳")
-        for axis in ("관련 업종", "소부장 협력사", "개인 투자자"):
-            with self.subTest(axis=axis):
-                self.assertIn(axis, axes)
+        self.assertEqual(KOREA_MARKET_SUMMARY_HEADING, "내일 실제로 확인할 전달 경로")
+        self.assertLessEqual(len(rows), 3)
+        # Two concrete TOP items → section included with grounded axes.
+        self.assertGreaterEqual(len(rows), 2)
+        diag = last_korea_market_impact_diagnostics()
+        self.assertTrue(diag.get("section_included"))
+        for axis in ("관련 업종", "소부장 협력사", "개인 투자자", "시장 참여자", "국내 기업", "관련 기업"):
+            self.assertNotIn(axis, {row["axis"] for row in rows})
         for row in rows:
             self.assertTrue(row["body"])
+            self.assertTrue(row.get("entities"))
             self.assertNotIn("협력사/소부장", row["axis"])
-            self.assertNotIn("협력사/소부장", row["body"])
             self.assertNotIn("매수", row["body"])
             self.assertNotIn("매도", row["body"])
-            self.assertNotIn("직접 영향은 제한적", row["body"])
+
+    def test_market_impact_summary_omits_when_fewer_than_two_paths(self) -> None:
+        from keysuri_korea_longform_ux import (
+            build_korea_market_impact_summary,
+            last_korea_market_impact_diagnostics,
+        )
+
+        rows = build_korea_market_impact_summary(
+            [{"korean_title": "SK하이닉스 HBM 공급 계약", "rank": 1, "news_id": "n1"}]
+        )
+        self.assertEqual(rows, [])
+        diag = last_korea_market_impact_diagnostics()
+        self.assertFalse(diag.get("section_included"))
+        self.assertEqual(diag.get("omission_reason"), "fewer_than_two_grounded_paths")
 
     def test_market_impact_summary_is_day_specific_not_static_lesson(self) -> None:
         """Rows must be anchored to today's actual items, and the legacy fixed
@@ -484,11 +500,39 @@ class KeysuriKoreaMarketRendererHelpersTests(unittest.TestCase):
             self.assertNotIn(legacy, bodies)
 
         semis = build_korea_market_impact_summary(
-            [{"korean_title": "SK하이닉스 HBM 공급 계약", "primary_category": "domestic_semiconductor"}]
+            [
+                {
+                    "korean_title": "SK하이닉스 HBM 공급 계약",
+                    "what_happened": "SK하이닉스가 HBM 공급 계약을 확대했습니다.",
+                    "rank": 1,
+                    "news_id": "s1",
+                },
+                {
+                    "korean_title": "삼성전자 파운드리 투자",
+                    "what_happened": "삼성전자가 파운드리 설비 투자를 발표했습니다.",
+                    "rank": 2,
+                    "news_id": "s2",
+                },
+            ]
         )
         startups = build_korea_market_impact_summary(
-            [{"korean_title": "스타트업 투자 유치", "primary_category": "domestic_startup_investment"}]
+            [
+                {
+                    "korean_title": "네이버 AI 스타트업 투자",
+                    "what_happened": "네이버가 딥테크 스타트업 투자 라운드를 열었습니다.",
+                    "rank": 1,
+                    "news_id": "t1",
+                },
+                {
+                    "korean_title": "카카오 클라우드 도입 일정",
+                    "what_happened": "카카오가 기업 클라우드 도입 일정을 공개했습니다.",
+                    "rank": 2,
+                    "news_id": "t2",
+                },
+            ]
         )
+        self.assertGreaterEqual(len(semis), 2)
+        self.assertGreaterEqual(len(startups), 2)
         self.assertNotEqual(
             [r["body"] for r in semis],
             [r["body"] for r in startups],

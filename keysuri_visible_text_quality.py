@@ -7,11 +7,21 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Tuple
 
-from keysuri_visible_text import repair_obvious_korean_quality_artifacts
+from keysuri_numeric_span_consistency import repair_year_span_duration
+from keysuri_visible_text import (
+    contains_dangling_quoted_title_fragment,
+    contains_korea_impact_phrase_issues,
+    repair_korea_adjacent_token_duplication,
+    repair_obvious_korean_quality_artifacts,
+)
 
 KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED = "keysuri_korean_connector_ellipsis_blocked"
 KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_REPAIRED = "keysuri_korean_connector_ellipsis_repaired"
 KEYSURI_KOREAN_REPEATED_TOKEN_REPAIRED = "keysuri_korean_repeated_token_repaired"
+KEYSURI_DANGLING_QUOTED_TITLE_BLOCKED = "keysuri_dangling_quoted_title_fragment_blocked"
+KEYSURI_YEAR_SPAN_DURATION_REPAIRED = "keysuri_year_span_duration_repaired"
+KEYSURI_YEAR_SPAN_DURATION_BLOCKED = "keysuri_year_span_duration_blocked"
+KEYSURI_KOREA_TOKEN_DUPLICATION_BLOCKED = "keysuri_korea_token_duplication_blocked"
 
 _ELLIPSIS_RE = re.compile(r"…|\.{2,}")
 _SPACE_RE = re.compile(r"\s+")
@@ -46,6 +56,11 @@ _QUALITY_FIELD_TEMPLATE: Dict[str, Any] = {
     "visible_text_ellipsis_blocked": False,
     "visible_text_repeated_token_found": False,
     "visible_text_repeated_token_repaired": False,
+    "visible_text_dangling_quoted_title_blocked": False,
+    "visible_text_year_span_repaired": False,
+    "visible_text_year_span_blocked": False,
+    "visible_text_korea_token_duplication_blocked": False,
+    "year_span_diagnostics": [],
     "visible_text_quality_issue_codes": [],
     "visible_text_quality_samples": [],
 }
@@ -191,6 +206,28 @@ def _walk_and_repair(node: Any, *, path: str, fields: Dict[str, Any]) -> Any:
                     fields["visible_text_repeated_token_repaired"] = True
                     _append_sample(fields, path=child_path, before=next_value, after=repeated.text)
                     next_value = repeated.text
+                deduped = repair_korea_adjacent_token_duplication(next_value)
+                if deduped != next_value:
+                    fields["visible_text_repeated_token_found"] = True
+                    fields["visible_text_repeated_token_repaired"] = True
+                    _append_sample(fields, path=child_path, before=next_value, after=deduped)
+                    next_value = deduped
+                if contains_korea_impact_phrase_issues(next_value):
+                    fields["visible_text_korea_token_duplication_blocked"] = True
+                    _append_sample(fields, path=child_path, before=next_value)
+                if contains_dangling_quoted_title_fragment(next_value):
+                    fields["visible_text_dangling_quoted_title_blocked"] = True
+                    _append_sample(fields, path=child_path, before=next_value)
+                span_repaired, span_diag = repair_year_span_duration(next_value)
+                if span_diag.get("resolution") == "removed_derived_duration":
+                    fields["visible_text_year_span_repaired"] = True
+                    fields.setdefault("year_span_diagnostics", []).append(span_diag)
+                    _append_sample(fields, path=child_path, before=next_value, after=span_repaired)
+                    next_value = span_repaired
+                elif span_diag.get("resolution") == "blocked":
+                    fields["visible_text_year_span_blocked"] = True
+                    fields.setdefault("year_span_diagnostics", []).append(span_diag)
+                    _append_sample(fields, path=child_path, before=next_value)
                 out[key] = next_value
             else:
                 out[key] = _walk_and_repair(value, path=child_path, fields=fields)
@@ -210,18 +247,33 @@ def _walk_and_repair(node: Any, *, path: str, fields: Dict[str, Any]) -> Any:
 
 def _finalize_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
     issue_codes = fields.setdefault("visible_text_quality_issue_codes", [])
+    blocked = bool(
+        fields.get("visible_text_ellipsis_blocked")
+        or fields.get("visible_text_dangling_quoted_title_blocked")
+        or fields.get("visible_text_year_span_blocked")
+        or fields.get("visible_text_korea_token_duplication_blocked")
+    )
     if fields.get("visible_text_ellipsis_blocked"):
-        fields["visible_text_quality_status"] = "block"
         if KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED not in issue_codes:
             issue_codes.append(KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED)
     elif fields.get("visible_text_ellipsis_repaired"):
-        fields["visible_text_quality_status"] = "pass"
         if KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_REPAIRED not in issue_codes:
             issue_codes.append(KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_REPAIRED)
-    else:
-        fields["visible_text_quality_status"] = "pass"
+    if fields.get("visible_text_dangling_quoted_title_blocked"):
+        if KEYSURI_DANGLING_QUOTED_TITLE_BLOCKED not in issue_codes:
+            issue_codes.append(KEYSURI_DANGLING_QUOTED_TITLE_BLOCKED)
+    if fields.get("visible_text_year_span_blocked"):
+        if KEYSURI_YEAR_SPAN_DURATION_BLOCKED not in issue_codes:
+            issue_codes.append(KEYSURI_YEAR_SPAN_DURATION_BLOCKED)
+    elif fields.get("visible_text_year_span_repaired"):
+        if KEYSURI_YEAR_SPAN_DURATION_REPAIRED not in issue_codes:
+            issue_codes.append(KEYSURI_YEAR_SPAN_DURATION_REPAIRED)
+    if fields.get("visible_text_korea_token_duplication_blocked"):
+        if KEYSURI_KOREA_TOKEN_DUPLICATION_BLOCKED not in issue_codes:
+            issue_codes.append(KEYSURI_KOREA_TOKEN_DUPLICATION_BLOCKED)
     if fields.get("visible_text_repeated_token_repaired") and KEYSURI_KOREAN_REPEATED_TOKEN_REPAIRED not in issue_codes:
         issue_codes.append(KEYSURI_KOREAN_REPEATED_TOKEN_REPAIRED)
+    fields["visible_text_quality_status"] = "block" if blocked else "pass"
     return fields
 
 

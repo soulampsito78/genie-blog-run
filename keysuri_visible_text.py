@@ -704,9 +704,63 @@ def contains_visible_snake_case_token(text: str) -> bool:
     return False
 
 
+def repair_korea_adjacent_token_duplication(text: str) -> str:
+    """Collapse unambiguous adjacent/stem label duplication in Korea prose."""
+    out = _normalize_sentence_ws(str(text or ""))
+    if not out:
+        return out
+    # Adjacent identical tokens, including "신호 신호입니다".
+    out = re.sub(r"(?<![가-힣])([가-힣]{1,6})\s+\1(?![가-힣])", r"\1", out)
+    out = re.sub(
+        r"(?<![가-힣])([가-힣]{1,6})\s+\1(?=(?:입니다|이에요|이다|다[.!]|$))",
+        r"\1",
+        out,
+    )
+    out = re.sub(r"참고할\s*수\s*있는\s*참고(?:\s*신호)?", "참고할", out)
+    out = re.sub(r"새로운\s*사업\s*기회를\s*제공하는\s*기회(?:\s*신호)?", "확인할 지원사업", out)
+    out = re.sub(r"기회를\s*제공하는\s*기회(?:\s*신호)?", "확인할", out)
+    out = re.sub(r"(관찰\S{0,12}?)\s*관찰\s*신호", r"\1 신호", out)
+    out = re.sub(r"(리스크\S{0,12}?)\s*리스크\s*신호", r"\1 신호", out)
+    out = re.sub(r"(기회\S{0,12}?)\s*기회\s*신호", r"\1", out)
+    return re.sub(r"\s+", " ", out).strip()
+
+
+def contains_dangling_quoted_title_fragment(text: str) -> bool:
+    """True when visible prose wraps an incomplete title in 「」 quotes."""
+    blob = str(text or "")
+    if not blob:
+        return False
+    if "「" in blob and "」" not in blob:
+        return True
+    for match in re.finditer(r"「([^」]{1,80})」", blob):
+        inner = match.group(1).strip()
+        if not inner:
+            return True
+        if re.search(r"(?:와|과|의|를|을|이|가|은|는|로|으로|및)\s*$", inner):
+            return True
+        if inner.endswith(("‘", "“", "'", '"', "·", ",")):
+            return True
+    return False
+
+
 def contains_korea_impact_phrase_issues(text: str) -> bool:
     blob = str(text or "")
     if "신호 신호" in blob:
+        return True
+    if re.search(r"참고할\s*수\s*있는\s*참고", blob):
+        return True
+    if re.search(r"기회를\s*제공하는\s*기회", blob):
+        return True
+    if re.search(r"새로운\s*사업\s*기회를\s*제공하는\s*기회", blob):
+        return True
+    # Stem/label duplication: "기회 … 기회 신호" within a short window
+    if re.search(r"기회.{0,24}기회\s*신호", blob):
+        return True
+    if re.search(r"관찰.{0,24}관찰\s*신호", blob):
+        return True
+    if re.search(r"리스크.{0,24}리스크\s*신호", blob):
+        return True
+    if re.search(r"참고.{0,16}참고\s*신호\s*신호", blob):
         return True
     if "내일 영향: 내일 영향:" in blob.replace(" ", ""):
         return True

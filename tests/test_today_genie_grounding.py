@@ -73,12 +73,25 @@ class TodayGenieGroundingHelperTests(unittest.TestCase):
         self.assertIn("Trump", tokens)
         self.assertIn("Todd Blanche", tokens)
 
-    def test_inject_detail_adds_english_keywords_for_korean_body(self) -> None:
+    def test_inject_detail_grounds_proper_nouns_without_keyword_dump(self) -> None:
         headline = "Trump nominates Todd Blanche for attorney general amid controversy over DOJ fund"
         detail = "트럼프 행정부가 법무장관 후보를 지명하며 정치적 논란이 이어지고 있습니다."
         out = inject_headline_grounding_into_detail(detail, headline)
         self.assertIn("Trump", out)
-        self.assertIn("원문", out)
+        self.assertNotIn("원문 키워드", out)
+        self.assertNotIn("원문 헤드라인 기준", out)
+        for banned in ("Could", "Face", "Further", "Stock"):
+            self.assertNotIn(banned, out)
+
+    def test_spacex_ipo_headline_does_not_dump_stopwords(self) -> None:
+        headline = "SpaceX IPO Stock Could Face Further Delays"
+        detail = "스페이스X 상장 관련 관측이 이어지고 있습니다."
+        out = inject_headline_grounding_into_detail(detail, headline)
+        self.assertNotIn("원문 키워드", out)
+        self.assertNotIn("원문 헤드라인 기준", out)
+        for banned in ("Could", "Face", "Further", "Stock"):
+            self.assertNotIn(banned, out)
+        self.assertIn("SpaceX", out)
 
 
 if __name__ == "__main__":

@@ -608,6 +608,14 @@ def _fingerprint(*parts: Any) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+_CONTRACT_SECRET_KEY_RE = re.compile(
+    r"(?i)(prompt|system_prompt|api[_-]?key|token|password|secret|cookie|authorization|header)"
+)
+_CONTRACT_SECRET_VALUE_RE = re.compile(
+    r"(?i)\b(AIza[0-9A-Za-z._\-]{10,}|ya29\.[0-9A-Za-z._\-]{10,}|sk-[A-Za-z0-9]{16,})\b"
+)
+
+
 def generation_contract_record(
     program_id: str,
     *,
@@ -615,6 +623,9 @@ def generation_contract_record(
     retry_reason: Optional[str] = None,
     model: Optional[str] = None,
     prompt_text: Optional[str] = None,
+    actual_attempt_count: Optional[int] = None,
+    retry_reason_family: Optional[str] = None,
+    recovery_result: Optional[str] = None,
 ) -> Dict[str, Any]:
     """CONTROL B — machine-verifiable record of the contract each attempt used.
 
@@ -622,18 +633,69 @@ def generation_contract_record(
     """
     pid = (program_id or "").strip()
     required_keys = list(KEYSURI_EXPECTED_TOP_LEVEL_KEYS)
-    return {
-        "generation_contract_version": GENERATION_CONTRACT_VERSION,
-        "expected_program_id": pid,
-        "expected_news_scope": expected_news_scope_for_program(pid) if pid in KEYSURI_PROGRAM_IDS else None,
-        "required_top_level_keys": required_keys,
-        "required_item_count": KEYSURI_TOP_NEWS_COUNT,
-        "schema_fingerprint": _fingerprint(GENERATION_CONTRACT_VERSION, pid, tuple(required_keys), KEYSURI_TOP_NEWS_COUNT),
-        "prompt_template_fingerprint": _fingerprint(prompt_text) if prompt_text else None,
-        "model_identifier": model,
-        "generation_attempt": int(attempt),
-        "retry_reason": retry_reason,
+    attempts = int(actual_attempt_count if actual_attempt_count is not None else attempt)
+    return sanitize_generation_contract_record(
+        {
+            "generation_contract_version": GENERATION_CONTRACT_VERSION,
+            "expected_program_id": pid,
+            "expected_news_scope": expected_news_scope_for_program(pid)
+            if pid in KEYSURI_PROGRAM_IDS
+            else None,
+            "required_top_level_keys": required_keys,
+            "required_item_count": KEYSURI_TOP_NEWS_COUNT,
+            "required_article_count": KEYSURI_TOP_NEWS_COUNT,
+            "schema_fingerprint": _fingerprint(
+                GENERATION_CONTRACT_VERSION, pid, tuple(required_keys), KEYSURI_TOP_NEWS_COUNT
+            ),
+            "prompt_template_fingerprint": _fingerprint(prompt_text) if prompt_text else None,
+            "model_identifier": model,
+            "generation_attempt": int(attempt),
+            "actual_attempt_count": attempts,
+            "retry_reason": retry_reason,
+            "retry_reason_family": retry_reason_family,
+            "recovery_result": recovery_result,
+        }
+    )
+
+
+def sanitize_generation_contract_record(record: Any) -> Dict[str, Any]:
+    """Keep a bounded non-secret contract record for success/failure artifacts."""
+    if not isinstance(record, dict):
+        return {}
+    allowed = {
+        "generation_contract_version",
+        "expected_program_id",
+        "expected_news_scope",
+        "required_top_level_keys",
+        "required_item_count",
+        "required_article_count",
+        "schema_fingerprint",
+        "prompt_template_fingerprint",
+        "model_identifier",
+        "generation_attempt",
+        "actual_attempt_count",
+        "retry_reason",
+        "retry_reason_family",
+        "recovery_result",
     }
+    out: Dict[str, Any] = {}
+    for key, value in record.items():
+        key_s = str(key)
+        if key_s not in allowed:
+            continue
+        if _CONTRACT_SECRET_KEY_RE.search(key_s) and key_s not in {
+            "prompt_template_fingerprint",
+        }:
+            continue
+        if isinstance(value, str) and _CONTRACT_SECRET_VALUE_RE.search(value):
+            out[key_s] = "[REDACTED]"
+        elif isinstance(value, (str, int, float, bool)) or value is None:
+            out[key_s] = value
+        elif isinstance(value, (list, tuple)):
+            out[key_s] = [str(v) for v in value[:32]]
+        else:
+            out[key_s] = str(value)[:120]
+    return out
 
 
 MODEL_OUTPUT_SNAPSHOT_MAX_CHARS = 2000
@@ -1206,7 +1268,8 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
                 "정책만 있고 예산/시행 없음. 판단문 복붙이 아니라 아직 확인되지 않은 것을 말한다.",
                 "  D) 바로 볼 것 — 다음 공시, 계약/납품 여부, 예산안/시행일, 고객사/협력사 언급, 실적 숫자, "
                 "후속 발표 일정. 명령형이 아니라 관찰 포인트로 표현한다.",
-                "- '오늘 신호가 내려오는 곳'은 고정 교훈문이 아니다: 오늘 TOP5에서 자연스럽게 나온 2~3개 경로만 말한다.",
+                "- '내일 실제로 확인할 전달 경로'는 고정 교훈문이 아니다: 오늘 TOP5에서 자연스럽게 나온 2~3개 경로만 말한다. "
+                "관련 업종/소부장 협력사/개인 투자자 같은 일반 버킷 문장은 금지한다. 경로가 2개 미만이면 섹션을 생략한다.",
             ]
         )
     if program_id == PROGRAM_GLOBAL:
@@ -2008,6 +2071,7 @@ def parse_keysuri_generated_response(
             "program_id": pid,
             "issues": [],
             "generated_briefing": repaired_candidates[valid_index],
+            "generation_contract": generation_contract_record(pid),
             "parse_meta": _parse_meta(
                 candidate_count=candidate_count,
                 selected_index=valid_index,

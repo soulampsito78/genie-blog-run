@@ -17,6 +17,7 @@ from keysuri_visible_text import (
     KEYSURI_THIN_SOURCE_WHAT_HAPPENED_SUFFIX,
     build_visible_selection_reason,
     coerce_visible_lines,
+    contains_dangling_quoted_title_fragment,
     dedupe_repeated_paragraph,
     dedupe_sentences_in_paragraph,
     looks_like_internal_owner_copy,
@@ -353,20 +354,60 @@ def _build_hype_caution(meta: dict) -> str:
     return ""
 
 
-def _item_title_hook(item: dict, meta: dict, *, max_len: int = 30) -> str:
-    """Short title fragment used to anchor padding sentences to THIS item.
-
-    Identical category-level padding across TOP5 items produced the 2026-07-10
-    repeated-filler Gmail; a title anchor keeps each padded sentence distinct
-    without inventing facts."""
-    title = _get_field(item, "korean_title", "headline") or _text(meta.get("statement"))
+def _natural_korean_subject_phrase(title: str, *, max_len: int = 36) -> str:
+    """Cut at a Korean syntactic boundary — never blind fixed-character slicing."""
     title = _text(title).rstrip(".")
+    if not title:
+        return ""
     if len(title) <= max_len:
         return title
-    cut = title[:max_len].rstrip()
-    if " " in cut:
-        cut = cut.rsplit(" ", 1)[0]
-    return cut.rstrip(" ,·.")
+    # Prefer the leading entity/clause before the first comma or middot.
+    for sep in ("，", ",", "·"):
+        if sep in title:
+            head = title.split(sep, 1)[0].strip()
+            if 2 <= len(head) <= max_len and not re.search(
+                r"(?:을|를|이|가|은|는|와|과|의|로|으로|및)\s*$", head
+            ):
+                return head
+    window = title[:max_len]
+    # Last safe boundary inside the window (particle/punctuation), then strip
+    # trailing connectives so we never keep an incomplete 「…와」 fragment.
+    best = ""
+    for match in re.finditer(
+        r"^[\s\S]{4," + str(max_len) + r"}?(?:을|를|이|가|은|는|와|과|의|에|에서|로|으로|및|·|,|，)",
+        window,
+    ):
+        cand = match.group(0)
+        cand = re.sub(
+            r"(?:을|를|이|가|은|는|와|과|의|에|에서|로|으로|및)\s*$",
+            "",
+            cand,
+        ).rstrip(" ,·，")
+        if 4 <= len(cand) <= max_len and not cand.startswith(("통한", "위한", "대한")):
+            best = cand
+    if best:
+        return best
+    return ""
+
+
+def _item_title_hook(item: dict, meta: dict, *, max_len: int = 36) -> str:
+    """Subject phrase used to anchor padding sentences to THIS item.
+
+    Prefer structured entity/topic fields. Never blind-slice mid-phrase into
+    a quoted fragment that renders as dangling Korean.
+    """
+    for key in (
+        "subject_phrase",
+        "topic_label",
+        "entity_label",
+        "primary_entity",
+        "company_name",
+    ):
+        structured = _text(item.get(key) or meta.get(key))
+        if structured and len(structured) <= max_len:
+            return structured.rstrip(".")
+    title = _get_field(item, "korean_title", "headline") or _text(meta.get("statement"))
+    return _natural_korean_subject_phrase(title, max_len=max_len)
 
 
 def _looks_startup_founder_item(item: dict, meta: dict) -> bool:
@@ -413,24 +454,35 @@ def _repair_startup_founder_category(item: dict, meta: dict) -> Tuple[dict, dict
 
 
 def _item_specific_checkpoint(item: dict, meta: dict, *, style: str) -> str:
-    """Padding sentence anchored on this item's title + category checkpoints.
+    """Padding sentence anchored on this item's subject phrase + category checkpoints.
 
     Replaces the shared per-category constants (_WHY_NOW_CONCRETE_BY_CAT /
     _OWNER_CONTEXT / category follow sentences) as default padding — those
-    repeated verbatim across same-category items."""
+    repeated verbatim across same-category items. Never wraps an incomplete
+    truncated title in 「」.
+    """
     hook = _item_title_hook(item, meta)
     checkpoint_a, checkpoint_b = _concrete_next_watch_pair(meta, item)
-    if not hook:
-        hook = _category_label(meta, item)
+    full_title = _text(
+        _get_field(item, "korean_title", "headline") or meta.get("statement")
+    ).rstrip(".")
+    # Prefer a clean subject phrase; otherwise use the complete title unquoted,
+    # or omit the title wrapper entirely.
+    if hook and not contains_dangling_quoted_title_fragment(f"「{hook}」"):
+        subject = f"「{hook}」"
+    elif full_title and len(full_title) <= 48:
+        subject = full_title
+    else:
+        subject = _category_label(meta, item) or "이번 이슈"
     if style == "why_now":
-        return f"「{hook}」 확인 포인트는 {checkpoint_a}, 그리고 {checkpoint_b}입니다."
+        return f"{subject} 확인 포인트는 {checkpoint_a}, 그리고 {checkpoint_b}입니다."
     if style == "owner":
-        return f"「{hook}」 후속은 {checkpoint_a} 중심으로 보면 됩니다."
+        return f"{subject} 후속은 {checkpoint_a} 중심으로 보면 됩니다."
     if style == "what":
-        return f"「{hook}」 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다."
+        return f"{subject} 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다."
     if style == "decision":
-        return f"「{hook}」가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다."
-    return f"「{hook}」 후속 일정과 공식 발표부터 보면 됩니다."
+        return f"{subject}가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다."
+    return f"{subject} 후속 일정과 공식 발표부터 보면 됩니다."
 
 
 def _build_selection_reason(item: dict, meta: dict) -> str:
