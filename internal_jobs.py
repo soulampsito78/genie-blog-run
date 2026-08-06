@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from admin_store import (
     check_artifact_store_ready,
     derive_artifact_status,
-    find_scheduled_owner_review_for_kst_date,
+    list_run_artifacts,
     load_run_artifact,
     normalize_artifact_view,
     process_approval_timeouts,
@@ -31,6 +31,19 @@ from genie_schedule_policy import (
     today_genie_weekend_skip_payload,
 )
 from orchestrator import execute_orchestrator_run
+from today_genie_execution_identity import (
+    EXECUTION_CLASS_NATURAL_SCHEDULED,
+    FIRST_FAILED_STAGE_EXECUTION_CLASSIFICATION,
+    FIRST_FAILED_STAGE_NATURAL_SLOT_GATE,
+    GATE_ACTION_ADMIT,
+    GATE_ACTION_FAIL_CLOSED,
+    GATE_ACTION_REJECT_INVALID_MATCH,
+    GATE_ACTION_SKIP_LEGITIMATE_DUPLICATE,
+    TODAY_NATURAL_SCHEDULED_SLOT,
+    evaluate_today_natural_slot_gate,
+    identity_fields_for_artifact,
+    resolve_today_execution_identity,
+)
 
 router = APIRouter(tags=["internal"])
 logger = logging.getLogger(__name__)
@@ -82,7 +95,10 @@ class OwnerReviewJobRequest(BaseModel):
     service_full_run: bool = False
     send_owner_email: bool = True
     dry_run: bool = False
-    trigger_source: str = DEFAULT_TRIGGER_SOURCE
+    # No silent defaults for identity: missing values fail closed at the gate.
+    trigger_source: Optional[str] = None
+    execution_class: Optional[str] = None
+    scheduled_slot: Optional[str] = None
 
 
 class KeysuriOwnerReviewJobRequest(BaseModel):
@@ -213,6 +229,7 @@ def _safe_owner_review_summary(
     *,
     skipped_duplicate: bool,
     message: Optional[str] = None,
+    gate_diagnostics: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     meta = load_run_artifact(run_id, normalize=False)
     if not meta:
@@ -224,6 +241,8 @@ def _safe_owner_review_summary(
         }
         if message:
             payload["message"] = message
+        if gate_diagnostics:
+            payload.update(gate_diagnostics)
         return payload
 
     view = normalize_artifact_view(meta, run_id)
@@ -240,6 +259,8 @@ def _safe_owner_review_summary(
         "owner_review_status": view.get("owner_review_status"),
         "email_sent": bool(view.get("email_sent")),
         "customer_delivery_status": view.get("customer_delivery_status") or "not_sent",
+        "execution_class": view.get("execution_class"),
+        "scheduled_slot": view.get("scheduled_slot"),
     }
     for image_key in (
         "called_image_api",
@@ -256,9 +277,141 @@ def _safe_owner_review_summary(
             payload[image_key] = view.get(image_key)
     if message:
         payload["message"] = message
+    if gate_diagnostics:
+        for key, value in gate_diagnostics.items():
+            if key not in payload and value is not None:
+                payload[key] = value
     for key in _FORBIDDEN_RESPONSE_KEYS:
         payload.pop(key, None)
     return payload
+
+
+def _emit_today_natural_gate_failure(
+    *,
+    decision_diagnostics: Dict[str, Any],
+    trigger_source: str,
+    error_code: str,
+    issue_codes: list,
+    first_failed_stage: str,
+    dry_run: bool = False,
+) -> bool:
+    from owner_review_failure_events import emit_owner_review_run_failed_once
+
+    kst = str(decision_diagnostics.get("kst_schedule_date") or get_kst_now().date().isoformat())
+    slot = str(decision_diagnostics.get("scheduled_slot") or decision_diagnostics.get("current_requested_slot") or "unknown")
+    synthetic_run_id = (
+        f"gate_{kst.replace('-', '')}_{slot.replace(':', '')}_"
+        f"{str(error_code or 'gate')[:48]}"
+    )
+    return emit_owner_review_run_failed_once(
+        program_id="today_genie",
+        run_id=synthetic_run_id,
+        trigger_source=trigger_source or "unknown",
+        first_failed_stage=first_failed_stage,
+        error_code=error_code,
+        issue_codes=issue_codes,
+        email_sent=False,
+        artifact_saved=False,
+        dry_run=dry_run,
+        force_emit=True,
+        extra_fields={
+            k: decision_diagnostics.get(k)
+            for k in (
+                "execution_class",
+                "scheduled_slot",
+                "matched_run_id",
+                "matched_execution_class",
+                "matched_terminal_status",
+                "matched_slot",
+                "duplicate_reason",
+                "gate_action",
+                "kst_schedule_date",
+            )
+            if decision_diagnostics.get(k) is not None
+        },
+    )
+
+
+def _today_natural_gate_response(
+    decision,
+    *,
+    dry_run: bool = False,
+) -> Optional[JSONResponse]:
+    """Return an HTTP response when the gate blocks admission; else None."""
+    diagnostics = decision.diagnostic_payload()
+    trigger = ""
+    if decision.identity is not None:
+        trigger = decision.identity.trigger_source
+
+    if decision.action == GATE_ACTION_FAIL_CLOSED:
+        _emit_today_natural_gate_failure(
+            decision_diagnostics=diagnostics,
+            trigger_source=trigger,
+            error_code=decision.error_code or "execution_identity_invalid",
+            issue_codes=list(decision.issue_codes),
+            first_failed_stage=FIRST_FAILED_STAGE_EXECUTION_CLASSIFICATION,
+            dry_run=dry_run,
+        )
+        logger.error(
+            "create_owner_review: natural gate fail-closed diagnostics=%s",
+            json.dumps(diagnostics, ensure_ascii=False, sort_keys=True),
+        )
+        return JSONResponse(
+            status_code=422,
+            content={
+                "ok": False,
+                "error": decision.error_code or "execution_identity_invalid",
+                "message": decision.message,
+                "issue_codes": list(decision.issue_codes),
+                **{k: v for k, v in diagnostics.items() if k not in {"error_code", "issue_codes", "message"}},
+            },
+        )
+
+    if decision.action == GATE_ACTION_REJECT_INVALID_MATCH:
+        emitted = _emit_today_natural_gate_failure(
+            decision_diagnostics=diagnostics,
+            trigger_source=trigger or DEFAULT_TRIGGER_SOURCE,
+            error_code=decision.error_code or "invalid_natural_slot_duplicate_match",
+            issue_codes=list(decision.issue_codes),
+            first_failed_stage=FIRST_FAILED_STAGE_NATURAL_SLOT_GATE,
+            dry_run=dry_run,
+        )
+        logger.error(
+            "create_owner_review: invalid natural-slot match diagnostics=%s emitted=%s",
+            json.dumps(diagnostics, ensure_ascii=False, sort_keys=True),
+            emitted,
+        )
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "error": decision.error_code or "invalid_natural_slot_duplicate_match",
+                "message": decision.message,
+                "skipped_duplicate": False,
+                "duplicate": True,
+                "failure_event_emitted": emitted,
+                **diagnostics,
+            },
+        )
+
+    if decision.action == GATE_ACTION_SKIP_LEGITIMATE_DUPLICATE:
+        matched_run_id = decision.match.run_id if decision.match else ""
+        logger.info(
+            "create_owner_review: legitimate natural-slot duplicate diagnostics=%s",
+            json.dumps(diagnostics, ensure_ascii=False, sort_keys=True),
+        )
+        summary = _safe_owner_review_summary(
+            matched_run_id,
+            skipped_duplicate=True,
+            message=decision.message or "natural_slot_already_completed",
+            gate_diagnostics=diagnostics,
+        )
+        # Legitimate duplicate is operator-visible success for Scheduler retries.
+        summary["ok"] = True
+        summary["duplicate"] = True
+        return JSONResponse(status_code=200, content=summary)
+
+    return None
 
 
 def validate_keysuri_owner_review_program_id(
@@ -371,7 +524,26 @@ def create_owner_review_endpoint(
     if auth_fail is not None:
         return auth_fail
 
-    trigger = (body.trigger_source or DEFAULT_TRIGGER_SOURCE).strip() or DEFAULT_TRIGGER_SOURCE
+    identity, identity_error, identity_issues = resolve_today_execution_identity(
+        execution_class=body.execution_class,
+        scheduled_slot=body.scheduled_slot,
+        trigger_source=body.trigger_source,
+        now=get_kst_now(),
+    )
+    artifacts = list_run_artifacts(limit=100)
+    decision = evaluate_today_natural_slot_gate(
+        identity=identity,
+        identity_error=identity_error,
+        identity_issues=identity_issues,
+        artifacts=artifacts,
+    )
+    gate_block = _today_natural_gate_response(decision, dry_run=body.dry_run)
+    if gate_block is not None:
+        return gate_block
+
+    assert identity is not None  # admit path always has identity
+    trigger = identity.trigger_source
+
     skip_payload = today_genie_weekend_skip_payload(
         trigger_source=trigger,
         now=get_kst_now(),
@@ -393,6 +565,14 @@ def create_owner_review_endpoint(
                 send_owner_email=body.send_owner_email,
                 dry_run=body.dry_run,
             )
+            if isinstance(payload, dict):
+                payload.update(
+                    {
+                        k: v
+                        for k, v in identity_fields_for_artifact(identity).items()
+                        if v is not None
+                    }
+                )
         except Exception as exc:
             logger.exception(
                 "create_owner_review service_full_run failed error_type=%s",
@@ -410,22 +590,13 @@ def create_owner_review_endpoint(
         status_code = 200 if payload.get("ok") else 500
         return JSONResponse(status_code=status_code, content=payload)
 
-    existing = find_scheduled_owner_review_for_kst_date("today_genie")
-    if existing:
-        return JSONResponse(
-            status_code=200,
-            content=_safe_owner_review_summary(
-                existing,
-                skipped_duplicate=True,
-                message="owner_review_already_exists_for_kst_date",
-            ),
-        )
-
     try:
         run_id, result, email_sent = execute_orchestrator_run(
             "today_genie",
             trigger_source=trigger,
             send_owner_email=body.send_owner_email,
+            execution_class=identity.execution_class,
+            scheduled_slot=identity.scheduled_slot,
         )
     except ScheduledWeekendSkip as exc:
         logger.info("create_owner_review: orchestrator weekend guard payload=%s", exc.payload)
@@ -461,11 +632,16 @@ def create_owner_review_endpoint(
     summary = _safe_owner_review_summary(run_id, skipped_duplicate=False)
     if not summary.get("email_sent") and email_sent:
         summary["email_sent"] = True
+    summary.update(
+        {k: v for k, v in identity_fields_for_artifact(identity).items() if v is not None}
+    )
     logger.info(
-        "create_owner_review: run_id=%s email_sent=%s response_status=%s",
+        "create_owner_review: run_id=%s email_sent=%s response_status=%s execution_class=%s scheduled_slot=%s",
         run_id,
         summary.get("email_sent"),
         summary.get("response_status"),
+        identity.execution_class,
+        identity.scheduled_slot,
     )
     return JSONResponse(status_code=200, content=summary)
 

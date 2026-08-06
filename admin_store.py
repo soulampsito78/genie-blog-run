@@ -1161,10 +1161,11 @@ def find_scheduled_owner_review_for_kst_date(
     kst_date: Optional[datetime] = None,
     limit: int = 100,
 ) -> Optional[str]:
-    """
-    Find an existing same-KST-calendar-day owner-review run for scheduler dedupe.
-    Reissue children (parent_run_id set) are ignored. validation_result=block with
-    email_sent=false does not count (scheduler may retry).
+    """Legacy same-KST-date lookup.
+
+    Retained for older tests/callers. Production Today natural admission must use
+    ``find_today_natural_slot_completer`` / execution-class gate instead — a
+    same-date QA/manual emailed artifact must not satisfy the natural slot.
     """
     if mode != "today_genie":
         return None
@@ -1192,6 +1193,51 @@ def find_scheduled_owner_review_for_kst_date(
         if email_sent or owner_status in _SCHEDULER_OWNER_REVIEW_STATUSES:
             return run_id
     return None
+
+
+def find_today_natural_slot_completer(
+    *,
+    kst_date: Optional[datetime] = None,
+    scheduled_slot: str = "06:30",
+    limit: int = 100,
+) -> Optional[Dict[str, Any]]:
+    """Return metadata for a run that legitimately completes Today's natural slot.
+
+    Only ``execution_class=natural_scheduled`` terminal successes for the same
+    KST date + canonical slot qualify. Legacy artifacts without execution_class,
+    QA/manual, reissue, preview, failed, and no-send verification runs do not.
+    """
+    from today_genie_execution_identity import (
+        PROGRAM_TODAY,
+        find_natural_slot_completer,
+        kst_date_str,
+        normalize_scheduled_slot,
+    )
+
+    date_text = kst_date_str(kst_date)
+    slot = normalize_scheduled_slot(scheduled_slot) or "06:30"
+    artifacts = list_run_artifacts(limit=limit)
+    match = find_natural_slot_completer(
+        artifacts,
+        program_id=PROGRAM_TODAY,
+        kst_date=date_text,
+        scheduled_slot=slot,
+    )
+    if match is None:
+        return None
+    for raw in artifacts:
+        if str(raw.get("run_id") or "").strip() == match.run_id:
+            return dict(raw)
+    return {
+        "run_id": match.run_id,
+        "execution_class": match.execution_class,
+        "scheduled_slot": match.scheduled_slot,
+        "email_sent": match.email_sent,
+        "artifact_status": match.artifact_status,
+        "owner_review_status": match.terminal_status,
+        "trigger_source": match.trigger_source,
+        "mode": PROGRAM_TODAY,
+    }
 
 
 def _parse_iso_datetime(value: Any) -> Optional[datetime]:

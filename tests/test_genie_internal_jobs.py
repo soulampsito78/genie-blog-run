@@ -20,6 +20,12 @@ _GENIE_OWNER_REVIEW = "/internal/jobs/create-owner-review"
 _GENIE_TIMEOUT = "/internal/jobs/process-approval-timeouts"
 _KEYSURI = "/internal/jobs/create-keysuri-owner-review"
 
+_NATURAL_BODY = {
+    "execution_class": "natural_scheduled",
+    "scheduled_slot": "06:30",
+    "trigger_source": "scheduled_owner_review",
+}
+
 
 def _auth_headers() -> Dict[str, str]:
     return {"X-Genie-Internal-Job-Token": _TOKEN}
@@ -27,7 +33,7 @@ def _auth_headers() -> Dict[str, str]:
 
 class InternalJobsSharedAuthTests(unittest.TestCase):
     ROUTES = (
-        (_GENIE_OWNER_REVIEW, {}),
+        (_GENIE_OWNER_REVIEW, dict(_NATURAL_BODY)),
         (_GENIE_TIMEOUT, {}),
         (_KEYSURI, {"program_id": PROGRAM_KOREA, "dry_run": True}),
     )
@@ -68,8 +74,10 @@ class InternalJobsSharedAuthTests(unittest.TestCase):
     def test_correct_token_accepted(self) -> None:
         with mock.patch("internal_jobs.execute_orchestrator_run") as mock_exec:
             mock_exec.return_value = ("run-id", mock.Mock(), False)
-            with mock.patch("internal_jobs.find_scheduled_owner_review_for_kst_date", return_value=None):
-                resp = self.client.post(_GENIE_OWNER_REVIEW, json={}, headers=_auth_headers())
+            with mock.patch("internal_jobs.list_run_artifacts", return_value=[]):
+                resp = self.client.post(
+                    _GENIE_OWNER_REVIEW, json=dict(_NATURAL_BODY), headers=_auth_headers()
+                )
         self.assertEqual(resp.status_code, 200)
 
 
@@ -104,18 +112,19 @@ class GenieCreateOwnerReviewTests(unittest.TestCase):
             response_status=200,
             mode="today_genie",
         )
-        with mock.patch(
-            "internal_jobs.find_scheduled_owner_review_for_kst_date",
-            return_value=None,
-        ):
+        with mock.patch("internal_jobs.list_run_artifacts", return_value=[]):
             with mock.patch("internal_jobs.execute_orchestrator_run") as mock_exec:
                 mock_exec.return_value = (run_id, result, True)
-                resp = self.client.post(_GENIE_OWNER_REVIEW, json={}, headers=_auth_headers())
+                resp = self.client.post(
+                    _GENIE_OWNER_REVIEW, json=dict(_NATURAL_BODY), headers=_auth_headers()
+                )
         self.assertEqual(resp.status_code, 200)
         mock_exec.assert_called_once_with(
             "today_genie",
             trigger_source="scheduled_owner_review",
             send_owner_email=True,
+            execution_class="natural_scheduled",
+            scheduled_slot="06:30",
         )
         body = resp.json()
         self.assertTrue(body["ok"])
@@ -125,14 +134,13 @@ class GenieCreateOwnerReviewTests(unittest.TestCase):
     def test_does_not_route_keysuri_program_id(self) -> None:
         run_id = "20260609_120000_today_genie_aabbccdd"
         with mock.patch("internal_jobs.execute_orchestrator_run") as mock_exec:
-            with mock.patch(
-                "internal_jobs.find_scheduled_owner_review_for_kst_date",
-                return_value=None,
-            ):
+            with mock.patch("internal_jobs.list_run_artifacts", return_value=[]):
                 mock_exec.return_value = (run_id, mock.Mock(), False)
+                body = dict(_NATURAL_BODY)
+                body["program_id"] = PROGRAM_KOREA
                 resp = self.client.post(
                     _GENIE_OWNER_REVIEW,
-                    json={"program_id": PROGRAM_KOREA},
+                    json=body,
                     headers=_auth_headers(),
                 )
         self.assertEqual(resp.status_code, 200)
@@ -140,29 +148,29 @@ class GenieCreateOwnerReviewTests(unittest.TestCase):
             "today_genie",
             trigger_source="scheduled_owner_review",
             send_owner_email=True,
+            execution_class="natural_scheduled",
+            scheduled_slot="06:30",
         )
 
     def test_does_not_call_keysuri_runner(self) -> None:
         with mock.patch("internal_jobs.create_keysuri_owner_review_job") as mock_keysuri:
             with mock.patch("internal_jobs.execute_orchestrator_run") as mock_exec:
-                with mock.patch(
-                    "internal_jobs.find_scheduled_owner_review_for_kst_date",
-                    return_value=None,
-                ):
+                with mock.patch("internal_jobs.list_run_artifacts", return_value=[]):
                     mock_exec.return_value = ("run-id", mock.Mock(), False)
-                    self.client.post(_GENIE_OWNER_REVIEW, json={}, headers=_auth_headers())
+                    self.client.post(
+                        _GENIE_OWNER_REVIEW, json=dict(_NATURAL_BODY), headers=_auth_headers()
+                    )
         mock_keysuri.assert_not_called()
 
     def test_orchestrator_exception_returns_500(self) -> None:
-        with mock.patch(
-            "internal_jobs.find_scheduled_owner_review_for_kst_date",
-            return_value=None,
-        ):
+        with mock.patch("internal_jobs.list_run_artifacts", return_value=[]):
             with mock.patch(
                 "internal_jobs.execute_orchestrator_run",
                 side_effect=RuntimeError("boom"),
             ):
-                resp = self.client.post(_GENIE_OWNER_REVIEW, json={}, headers=_auth_headers())
+                resp = self.client.post(
+                    _GENIE_OWNER_REVIEW, json=dict(_NATURAL_BODY), headers=_auth_headers()
+                )
         self.assertEqual(resp.status_code, 500)
         body = resp.json()
         self.assertFalse(body["ok"])
@@ -171,15 +179,14 @@ class GenieCreateOwnerReviewTests(unittest.TestCase):
     def test_no_send_verification_passes_send_owner_email_false_to_orchestrator(self) -> None:
         """Body send_owner_email=false must flow through to execute_orchestrator_run."""
         run_id = "20260616_130000_today_genie_nosend01"
-        with mock.patch(
-            "internal_jobs.find_scheduled_owner_review_for_kst_date",
-            return_value=None,
-        ):
+        body = dict(_NATURAL_BODY)
+        body["send_owner_email"] = False
+        with mock.patch("internal_jobs.list_run_artifacts", return_value=[]):
             with mock.patch("internal_jobs.execute_orchestrator_run") as mock_exec:
                 mock_exec.return_value = (run_id, mock.Mock(), False)
                 resp = self.client.post(
                     _GENIE_OWNER_REVIEW,
-                    json={"send_owner_email": False},
+                    json=body,
                     headers=_auth_headers(),
                 )
         self.assertEqual(resp.status_code, 200)
@@ -187,20 +194,55 @@ class GenieCreateOwnerReviewTests(unittest.TestCase):
             "today_genie",
             trigger_source="scheduled_owner_review",
             send_owner_email=False,
+            execution_class="natural_scheduled",
+            scheduled_slot="06:30",
         )
 
-    def test_scheduler_empty_body_defaults_to_send_owner_email_true(self) -> None:
-        """Scheduler natural body {} must default to send_owner_email=True (unchanged behavior)."""
+    def test_scheduler_natural_body_defaults_to_send_owner_email_true(self) -> None:
+        """Natural Scheduler body must default to send_owner_email=True."""
         run_id = "20260616_063000_today_genie_sched01"
-        with mock.patch(
-            "internal_jobs.find_scheduled_owner_review_for_kst_date",
-            return_value=None,
-        ):
+        with mock.patch("internal_jobs.list_run_artifacts", return_value=[]):
             with mock.patch("internal_jobs.execute_orchestrator_run") as mock_exec:
                 mock_exec.return_value = (run_id, mock.Mock(), True)
-                self.client.post(_GENIE_OWNER_REVIEW, json={}, headers=_auth_headers())
+                self.client.post(
+                    _GENIE_OWNER_REVIEW, json=dict(_NATURAL_BODY), headers=_auth_headers()
+                )
         _call = mock_exec.call_args
         self.assertTrue(_call.kwargs.get("send_owner_email", True))
+
+    def test_empty_body_fails_closed_without_guessing_natural(self) -> None:
+        with mock.patch("internal_jobs.list_run_artifacts", return_value=[]):
+            with mock.patch("internal_jobs.execute_orchestrator_run") as mock_exec:
+                resp = self.client.post(_GENIE_OWNER_REVIEW, json={}, headers=_auth_headers())
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["error"], "execution_class_required")
+        mock_exec.assert_not_called()
+
+    def test_qa_same_date_does_not_block_natural(self) -> None:
+        qa = {
+            "run_id": "20260622_003207_today_genie_255d3454",
+            "mode": "today_genie",
+            "execution_class": "qa_manual",
+            "email_sent": True,
+            "artifact_status": "emailed",
+            "owner_review_status": "pending_review",
+            "validation_result": "pass",
+            "trigger_source": "scheduled_owner_review",
+            "parent_run_id": None,
+        }
+        with mock.patch("internal_jobs.list_run_artifacts", return_value=[qa]):
+            with mock.patch("internal_jobs.execute_orchestrator_run") as mock_exec:
+                mock_exec.return_value = ("20260622_063000_today_genie_nat01", mock.Mock(), True)
+                with mock.patch(
+                    "internal_jobs.get_kst_now",
+                    return_value=datetime(2026, 6, 22, 6, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+                ):
+                    resp = self.client.post(
+                        _GENIE_OWNER_REVIEW, json=dict(_NATURAL_BODY), headers=_auth_headers()
+                    )
+        self.assertEqual(resp.status_code, 200)
+        mock_exec.assert_called_once()
+        self.assertFalse(resp.json().get("skipped_duplicate"))
 
 
 class GenieTimeoutProcessorTests(unittest.TestCase):

@@ -5149,11 +5149,18 @@ class ServiceFullRunInternalEndpointTests(unittest.TestCase):
             "image_source": "generated",
             "email_sent": True,
         }
-        resp = self.client.post(
-            "/internal/jobs/create-owner-review",
-            headers={"X-Genie-Internal-Job-Token": _TOKEN},
-            json={"service_full_run": True, "send_owner_email": True},
-        )
+        with patch("internal_jobs.list_run_artifacts", return_value=[]):
+            resp = self.client.post(
+                "/internal/jobs/create-owner-review",
+                headers={"X-Genie-Internal-Job-Token": _TOKEN},
+                json={
+                    "service_full_run": True,
+                    "send_owner_email": True,
+                    "execution_class": "natural_scheduled",
+                    "scheduled_slot": "06:30",
+                    "trigger_source": "scheduled_owner_review",
+                },
+            )
         self.assertEqual(resp.status_code, 200)
         mock_run.assert_called_once()
 

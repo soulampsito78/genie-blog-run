@@ -17,6 +17,11 @@ from main import app
 from orchestrator import OrchestrationResult, execute_orchestrator_run
 from publishing_policy import PublishingDecision
 
+from tests.today_natural_request_bodies import (
+    NATURAL_OWNER_REVIEW_BODY,
+    QA_MANUAL_OWNER_REVIEW_BODY,
+)
+
 KST = ZoneInfo("Asia/Seoul")
 TOKEN = "weekend-guard-test-token"
 ENDPOINT = "/internal/jobs/create-owner-review"
@@ -71,18 +76,21 @@ class TodayScheduledEndpointWeekendGuardTests(unittest.TestCase):
         self.env.stop()
 
     def _post(self, now: datetime, body: dict | None = None):
+        payload = dict(NATURAL_OWNER_REVIEW_BODY)
+        if body:
+            payload.update(body)
         with patch("internal_jobs.get_kst_now", return_value=now):
-            return self.client.post(
-                ENDPOINT,
-                json=body or {},
-                headers={"X-Genie-Internal-Job-Token": TOKEN},
-            )
+            with patch("internal_jobs.list_run_artifacts", return_value=[]):
+                return self.client.post(
+                    ENDPOINT,
+                    json=payload,
+                    headers={"X-Genie-Internal-Job-Token": TOKEN},
+                )
 
     def test_saturday_skip_response_blocks_all_runtime_work(self) -> None:
         with patch("internal_jobs.check_artifact_store_ready") as store:
-            with patch("internal_jobs.find_scheduled_owner_review_for_kst_date") as dedupe:
-                with patch("internal_jobs.execute_orchestrator_run") as execute:
-                    response = self._post(_kst(2026, 6, 20))
+            with patch("internal_jobs.execute_orchestrator_run") as execute:
+                response = self._post(_kst(2026, 6, 20))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.json(),
@@ -100,7 +108,6 @@ class TodayScheduledEndpointWeekendGuardTests(unittest.TestCase):
             },
         )
         store.assert_not_called()
-        dedupe.assert_not_called()
         execute.assert_not_called()
 
     def test_sunday_service_full_run_is_skipped_before_dispatch(self) -> None:
@@ -115,25 +122,43 @@ class TodayScheduledEndpointWeekendGuardTests(unittest.TestCase):
         full_run.assert_not_called()
         execute.assert_not_called()
 
-    def test_weekday_keeps_existing_duplicate_guard(self) -> None:
-        with patch(
-            "internal_jobs.find_scheduled_owner_review_for_kst_date",
-            return_value="20260622_063000_today_genie_aabbccdd",
-        ) as dedupe:
+    def test_weekday_keeps_natural_slot_duplicate_guard(self) -> None:
+        natural_run = {
+            "run_id": "20260622_063000_today_genie_aabbccdd",
+            "mode": "today_genie",
+            "execution_class": "natural_scheduled",
+            "scheduled_slot": "06:30",
+            "email_sent": True,
+            "artifact_status": "emailed",
+            "owner_review_status": "pending_review",
+            "validation_result": "pass",
+            "trigger_source": "scheduled_owner_review",
+            "parent_run_id": None,
+        }
+        with patch("internal_jobs.list_run_artifacts", return_value=[natural_run]):
             with patch(
                 "internal_jobs._safe_owner_review_summary",
-                return_value={"ok": True, "skipped_duplicate": True},
+                return_value={
+                    "ok": True,
+                    "skipped_duplicate": True,
+                    "run_id": natural_run["run_id"],
+                    "duplicate": True,
+                },
             ):
                 with patch("internal_jobs.execute_orchestrator_run") as execute:
-                    response = self._post(_kst(2026, 6, 22))
+                    with patch("internal_jobs.get_kst_now", return_value=_kst(2026, 6, 22)):
+                        response = self.client.post(
+                            ENDPOINT,
+                            json=dict(NATURAL_OWNER_REVIEW_BODY),
+                            headers={"X-Genie-Internal-Job-Token": TOKEN},
+                        )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["skipped_duplicate"])
-        dedupe.assert_called_once_with("today_genie")
         execute.assert_not_called()
 
     def test_manual_trigger_is_allowed_on_weekend(self) -> None:
         run_id = "20260620_120000_today_genie_aabbccdd"
-        with patch("internal_jobs.find_scheduled_owner_review_for_kst_date", return_value=None):
+        with patch("internal_jobs.list_run_artifacts", return_value=[]):
             with patch(
                 "internal_jobs.execute_orchestrator_run",
                 return_value=(run_id, _result(), False),
@@ -142,15 +167,19 @@ class TodayScheduledEndpointWeekendGuardTests(unittest.TestCase):
                     "internal_jobs._safe_owner_review_summary",
                     return_value={"ok": True, "run_id": run_id, "mode": "today_genie"},
                 ):
-                    response = self._post(
-                        _kst(2026, 6, 20),
-                        {"trigger_source": "manual_admin", "send_owner_email": False},
-                    )
+                    with patch("internal_jobs.get_kst_now", return_value=_kst(2026, 6, 20)):
+                        response = self.client.post(
+                            ENDPOINT,
+                            json=dict(QA_MANUAL_OWNER_REVIEW_BODY),
+                            headers={"X-Genie-Internal-Job-Token": TOKEN},
+                        )
         self.assertEqual(response.status_code, 200)
         execute.assert_called_once_with(
             "today_genie",
             trigger_source="manual_admin",
             send_owner_email=False,
+            execution_class="qa_manual",
+            scheduled_slot="",
         )
 
 

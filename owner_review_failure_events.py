@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import threading
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence  # Mapping used by extra_fields
 
 from genie_schedule_policy import is_scheduled_trigger_source
 
@@ -176,6 +176,7 @@ def build_owner_review_run_failed_payload(
     artifact_url: Optional[str] = None,
     revision: Optional[str] = None,
     artifact_saved: bool = True,
+    extra_fields: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "event": OWNER_REVIEW_RUN_FAILED_EVENT,
@@ -193,6 +194,19 @@ def build_owner_review_run_failed_payload(
         "artifact_saved": bool(artifact_saved),
         "artifact_url": str(artifact_url or "") if artifact_saved else "",
     }
+    if extra_fields:
+        for key, value in extra_fields.items():
+            key_text = str(key or "").strip()
+            if not key_text or key_text in _BANNED_PAYLOAD_KEYS or key_text in payload:
+                continue
+            if key_text.lower() in _BANNED_PAYLOAD_KEYS:
+                continue
+            if value is None:
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                payload[key_text] = value
+            elif isinstance(value, list):
+                payload[key_text] = _sanitize_issue_codes(value)
     for banned in _BANNED_PAYLOAD_KEYS:
         payload.pop(banned, None)
     return payload
@@ -213,14 +227,21 @@ def emit_owner_review_run_failed_once(
     dry_run: bool = False,
     revision: Optional[str] = None,
     artifact_saved: bool = True,
+    extra_fields: Optional[Mapping[str, Any]] = None,
+    force_emit: bool = False,
 ) -> bool:
     """Emit one structured ERROR event for a scheduled final failure.
 
     Returns True when an event was emitted in this process for this
     ``(program_id, run_id)`` pair.
+
+    ``force_emit=True`` bypasses the scheduled-trigger allow-list for gate
+    failures that must remain observable even when identity fields are missing.
     """
-    if not should_emit_owner_review_failure_event(
-        trigger_source=trigger_source, dry_run=dry_run
+    if dry_run:
+        return False
+    if not force_emit and not should_emit_owner_review_failure_event(
+        trigger_source=trigger_source, dry_run=False
     ):
         return False
     rid = str(run_id or "").strip()
@@ -250,6 +271,7 @@ def emit_owner_review_run_failed_once(
         artifact_url=artifact_url,
         revision=revision,
         artifact_saved=artifact_saved,
+        extra_fields=extra_fields,
     )
     # One bare JSON object per line, on a logger whose formatter adds nothing,
     # so Cloud Logging can parse the entry into jsonPayload.

@@ -319,12 +319,18 @@ def build_run_artifact_metadata(
     today_image_result: Any = None,
     send_owner_email: bool = True,
     reissue_scope: str | None = None,
+    execution_class: str | None = None,
+    scheduled_slot: str | None = None,
 ) -> Dict[str, Any]:
     payload = result.response_data if isinstance(result.response_data, dict) else {}
     runtime_check = _runtime_check_from_api_payload(payload, reason_summary=result.reason_summary)
     resolved_trigger = trigger_source
     if not resolved_trigger and parent_run_id:
         resolved_trigger = "reissue"
+    resolved_class = str(execution_class or "").strip()
+    if not resolved_class:
+        if parent_run_id or str(reissue_scope or "").strip():
+            resolved_class = "admin_reissue"
     meta: Dict[str, Any] = {
         "run_id": run_id,
         "mode": result.mode,
@@ -350,6 +356,22 @@ def build_run_artifact_metadata(
         "customer_delivery_status": "not_sent",
         "admin_reissue": bool(parent_run_id),
     }
+    if resolved_class:
+        meta["execution_class"] = resolved_class
+    slot = str(scheduled_slot or "").strip()
+    if slot:
+        meta["scheduled_slot"] = slot
+    if resolved_class == "natural_scheduled" and slot:
+        from today_genie_execution_identity import kst_date_str, natural_slot_key
+
+        kst_date = kst_date_str()
+        meta["kst_schedule_date"] = kst_date
+        meta["natural_slot_key"] = natural_slot_key(
+            program_id=str(result.mode or "today_genie"),
+            kst_date=kst_date,
+            scheduled_slot=slot,
+            execution_class=resolved_class,
+        )
     if not send_owner_email:
         meta["verification_mode"] = "no_send_verification"
     scope = str(reissue_scope or "").strip()
@@ -413,6 +435,8 @@ def persist_orchestrator_run_artifact(
     today_image_result: Any = None,
     send_owner_email: bool = True,
     reissue_scope: str | None = None,
+    execution_class: str | None = None,
+    scheduled_slot: str | None = None,
 ) -> str:
     from admin_store import generate_run_id, save_run_artifact
     from datetime import datetime
@@ -430,6 +454,8 @@ def persist_orchestrator_run_artifact(
         today_image_result=today_image_result,
         send_owner_email=send_owner_email,
         reissue_scope=reissue_scope,
+        execution_class=execution_class,
+        scheduled_slot=scheduled_slot,
     )
     meta["created_at"] = datetime.now(ZoneInfo("Asia/Seoul")).isoformat()
     if mode == "today_genie" and today_image_result is not None:
@@ -660,6 +686,8 @@ def execute_orchestrator_run(
     schedule_now: datetime | None = None,
     reissue_scope: str | None = None,
     today_image_result_override: Any = None,
+    execution_class: str | None = None,
+    scheduled_slot: str | None = None,
 ) -> tuple[str, OrchestrationResult, bool]:
     """
     Run Genie job, attempt owner-review email, persist admin artifact.
@@ -726,6 +754,9 @@ def execute_orchestrator_run(
                 resolved_trigger = "reissue"
             elif admin_reissue:
                 resolved_trigger = "reissue"
+        resolved_class = execution_class
+        if not resolved_class and (parent_run_id or admin_reissue or reissue_scope):
+            resolved_class = "admin_reissue"
         run_id = persist_orchestrator_run_artifact(
             result,
             email_sent,
@@ -736,13 +767,16 @@ def execute_orchestrator_run(
             today_image_result=today_image_result,
             send_owner_email=send_owner_email,
             reissue_scope=reissue_scope,
+            execution_class=resolved_class,
+            scheduled_slot=scheduled_slot,
         )
         logger.info(
-            "execute_orchestrator_run: mode=%s run_id=%s email_sent=%s parent_run_id=%s",
+            "execute_orchestrator_run: mode=%s run_id=%s email_sent=%s parent_run_id=%s execution_class=%s",
             mode,
             run_id,
             email_sent,
             parent_run_id or "",
+            resolved_class or "",
         )
         return run_id, result, email_sent
     finally:
