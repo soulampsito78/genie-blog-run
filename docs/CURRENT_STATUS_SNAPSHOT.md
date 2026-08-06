@@ -63,13 +63,13 @@ This document is the authoritative operational snapshot. Update it after each au
 |------|-------|
 | Service name | `genie-blog-run` |
 | Region | `asia-northeast3` |
-| Active revision | `genie-blog-run-00268-fxh` (100% traffic, `latestRevision: true`) — re-verified 2026-07-31 |
-| Commit SHA | `f846f1b` (`f846f1bfc7cf14c238a0b41e12a293666d3d4e67`) — revision `commit-sha` label match |
-| Commit message | `fix(keysuri): complete global generation recurrence controls` |
-| Cloud Build | `f837c5f4-9e9f-4822-8a63-4d6b77b6a08c` (SUCCESS) |
-| Image digest | `sha256:a72ecb79f84c2eb813a8fa8ac72353e357f3cae7ce305c0693f466672365221f` (build = deployed) |
-| Ready condition | `True` — re-verified 2026-07-31 |
-| Health | `/health` → HTTP 200 ✅ (re-verified 2026-07-31; HTTP 200 alone is **not** deployment success — see §9) |
+| Active revision | `genie-blog-run-00275-nhv` (100% traffic, `latestRevision: true`) — 2026-08-07 natural-slot fix |
+| Commit SHA | `c32486a` (`c32486a3ee693023f06e76c3001a2c849b57fa97`) — revision `commit-sha` label match |
+| Commit message | `docs(today): close 2026-08-07 first natural-run incident record` (stack includes gate fix + harness) |
+| Cloud Build | `ed444e9b-b2a4-4a5e-947d-edc5eac49c0d` (SUCCESS) |
+| Image digest | `sha256:9b97c6296ab054522cc77752f125738a576e51b07122d36eb8f7a370979e11ac` (build = deployed) |
+| Ready condition | `True` — re-verified 2026-08-07 |
+| Health | `/health` → HTTP 200 ✅ (re-verified 2026-08-07; HTTP 200 alone is **not** deployment success — see §9) |
 | Prior revision (2026-06-26) | `genie-blog-run-00201-447`, commit `0ef8fb9` |
 | Public URL | `https://genie-blog-run-2sftivmzga-du.a.run.app` |
 | Scheduler URL | `https://genie-blog-run-1055014091206.asia-northeast3.run.app` |
@@ -83,7 +83,7 @@ This document is the authoritative operational snapshot. Update it after each au
 
 | GCP Job | Program | Schedule (KST) | State | Last run result |
 |---------|---------|---------------|-------|-----------------|
-| `Today_Geenee` | `today_genie` | 06:30 Mon–Fri | **ENABLED** | 2026-06-22 06:30 → 200 OK |
+| `Today_Geenee` | `today_genie` | 06:30 Mon–Fri | **ENABLED** | Body requires `execution_class`+`scheduled_slot`; lastAttempt 2026-08-07 06:30 → 200 (incident silent skip; fixed in `c32486a`) |
 | `KeeSuri_Global_Tech` | `keysuri_global_tech` | 12:30 Mon–Fri | **ENABLED** | 2026-06-23 12:30 → 200 OK |
 | `KeeSuri_Korea_Tech` | `keysuri_korea_tech` | 18:30 Mon–Fri | **ENABLED** | 2026-06-22 18:30 → 200 OK |
 | `Tomorrow_Geenee` | `tomorrow_genie` | 18:00 daily | **PAUSED** | No successful run on record |
