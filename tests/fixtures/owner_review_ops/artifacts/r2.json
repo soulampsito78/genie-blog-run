@@ -1,0 +1,11 @@
+{
+  "run_id": "r2",
+  "program_id": "keysuri_korea_tech",
+  "generation_attempt_count": 1,
+  "validation_result": "pass",
+  "email_sent": false,
+  "issue_codes": [
+    "smtp_send_failed"
+  ],
+  "revision": "abc123"
+}

@@ -1,0 +1,13 @@
+{
+  "run_id": "r1",
+  "program_id": "keysuri_global_tech",
+  "generation_attempt_count": 2,
+  "global_recovery_attempted": true,
+  "global_recovery_result": "not_attempted_budget",
+  "validation_result": "block",
+  "issue_codes": [
+    "gemini_json_missing_required_keys"
+  ],
+  "called_gemini": true,
+  "revision": "abc123"
+}
