@@ -3739,20 +3739,41 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
             "program_id": PROGRAM_GLOBAL,
             "prompt_status": "ready_for_generation",
             "source_pack": {"sources": []},
+            "top_5_news": {
+                "items": [
+                    {"news_id": "news_block_001", "headline": "Blocked item"},
+                ]
+            },
         }
         smoke = self._global_smoke(pack_path, raw_path)
+        smoke.generation_diagnostics = {
+            "program_id": PROGRAM_GLOBAL,
+            "finish_reason": "STOP",
+            "generation_attempt_count": 1,
+            "global_generation_call_budget": 2,
+        }
         smoke.generated_briefing = {
             "top_5_news": {"items": [{"headline": "확인 불가 (…)"}]},
             "title": "글로벌 브리핑",
         }
         mock_send = MagicMock(return_value=True)
 
-        payload = run_keysuri_service_full_run(
-            PROGRAM_GLOBAL,
-            trigger_source="manual_service_full_run",
-            smoke_runner=lambda **_kw: smoke,
-            send_fn=mock_send,
-        )
+        with patch.dict(
+            os.environ,
+            {
+                "K_REVISION": "genie-blog-run-test-rev",
+                "COMMIT_SHA": "abc123deadbeef",
+                "GENIE_ADMIN_ARTIFACT_BUCKET": "",
+                "GENIE_ARTIFACT_BUCKET": "",
+            },
+            clear=False,
+        ):
+            payload = run_keysuri_service_full_run(
+                PROGRAM_GLOBAL,
+                trigger_source="manual_service_full_run",
+                smoke_runner=lambda **_kw: smoke,
+                send_fn=mock_send,
+            )
 
         self.assertFalse(payload.get("ok"))
         self.assertEqual(payload.get("error"), KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED)
@@ -3762,6 +3783,14 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         self.assertTrue(saved_meta.get("visible_text_ellipsis_blocked"))
         self.assertIn(KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED, saved_meta.get("visible_text_quality_issue_codes"))
         self.assertFalse(saved_meta.get("email_sent"))
+        self.assertEqual(saved_meta.get("deployed_revision"), "genie-blog-run-test-rev")
+        self.assertEqual(saved_meta.get("deployed_commit_sha"), "abc123deadbeef")
+        self.assertEqual(saved_meta.get("selected_news_ids"), ["news_block_001"])
+        self.assertTrue(isinstance(saved_meta.get("generation_diagnostics"), dict))
+        self.assertEqual(saved_meta.get("customer_send"), 0)
+        self.assertFalse(saved_meta.get("smtp_attempted"))
+        self.assertEqual(saved_meta.get("first_failed_stage"), "generation_validation")
+        self.assertIn(KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED, saved_meta.get("issue_codes") or [])
 
     @patch("keysuri_service_full_run.validate_global_post_render_visible_quality")
     @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
