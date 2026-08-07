@@ -28,7 +28,6 @@ from admin_store import (
 )
 from admin_cost_ledger import save_cost_record_best_effort
 from admin_urls import build_owner_review_admin_url
-from owner_review_failure_events import emit_owner_review_failure_from_artifact_meta
 import email_sender
 from email_sender import send_genie_email
 from keysuri_approved_image_assets import KOREA_BOTTOM_ROLE, list_approved_assets
@@ -76,6 +75,7 @@ from keysuri_live_source_smoke import (
     PROGRAM_GLOBAL,
     PROGRAM_KOREA,
     LiveSourceSmokeResult,
+    _prompt_input_diagnostic_snapshot,
     generate_keysuri_with_bounded_recovery,
     run_keysuri_live_source_smoke,
 )
@@ -90,6 +90,10 @@ from keysuri_news_contract import (
     get_news_categories_for_program,
 )
 from keysuri_renderer import PROGRAM_DISPLAY
+from owner_review_failure_events import (
+    emit_owner_review_failure_from_artifact_meta,
+    infer_first_failed_stage,
+)
 from service_full_run_contract import (
     ERROR_IMAGE_GENERATION_FAILED,
     IMAGE_GEN_GENERATED,
@@ -129,6 +133,237 @@ _GENERATION_RECOVERY_DIAGNOSTIC_KEYS = (
     "global_generation_budget_exhausted",
     "global_usage_by_attempt",
 )
+
+_SAFE_GENERATION_DIAGNOSTIC_KEYS = (
+    "program_id",
+    "finish_reason",
+    "text_length",
+    "candidate_count",
+    "max_output_tokens",
+    "retry_applied",
+    "retry_reason",
+    "retry_result",
+    "compact_prompt_used",
+    "issue_codes",
+    *_GENERATION_RECOVERY_DIAGNOSTIC_KEYS,
+)
+
+
+def _runtime_deployed_revision() -> str:
+    return (
+        os.getenv("K_REVISION", "").strip()
+        or os.getenv("CLOUD_RUN_REVISION", "").strip()
+        or os.getenv("GENIE_REVISION", "").strip()
+        or ""
+    )
+
+
+def _runtime_deployed_commit_sha() -> str:
+    return (
+        os.getenv("COMMIT_SHA", "").strip()
+        or os.getenv("SOURCE_COMMIT", "").strip()
+        or os.getenv("GIT_COMMIT", "").strip()
+        or ""
+    )
+
+
+def _bounded_generation_diagnostics(
+    generation_diagnostics: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Allowlisted generation diagnostics — never raw model body/prompt."""
+    return {
+        key: copy.deepcopy(generation_diagnostics[key])
+        for key in _SAFE_GENERATION_DIAGNOSTIC_KEYS
+        if key in generation_diagnostics
+    }
+
+
+def _scaffold_status_from_parse_meta(parse_meta: Mapping[str, Any]) -> Dict[str, Any]:
+    attempted = bool(parse_meta.get("global_contract_scaffold_attempted"))
+    applied = bool(parse_meta.get("global_contract_scaffold_applied"))
+    rejection = None
+    if attempted and not applied:
+        rejection = "scaffold_not_applied"
+    elif not attempted:
+        rejection = "not_attempted"
+    return {
+        "eligible": attempted or applied,
+        "applied": applied,
+        "attempted": attempted,
+        "rejection_reason": rejection,
+    }
+
+
+def _resolve_prompt_input_for_failure_evidence(
+    smoke: Any,
+    prompt_input: Optional[Mapping[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    if isinstance(prompt_input, Mapping) and prompt_input:
+        return dict(prompt_input)
+    pack_path = str(getattr(smoke, "source_pack_path", "") or "").strip()
+    if not pack_path:
+        return None
+    try:
+        source_pack = json.loads(Path(pack_path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(source_pack, dict):
+        return None
+    try:
+        built = build_keysuri_prompt_input(
+            str(getattr(smoke, "program_id", "") or source_pack.get("program_id") or ""),
+            source_pack,
+        )
+    except Exception:
+        return None
+    if isinstance(built, dict):
+        built = dict(built)
+        built["source_pack"] = source_pack
+        return built
+    return None
+
+
+def attach_bounded_post_generation_failure_evidence(
+    meta: Dict[str, Any],
+    *,
+    smoke: Any,
+    prompt_input: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Attach bounded post-generation failure diagnostics onto admin_run meta.
+
+    Idempotent: does not overwrite already-present richer fields. Never stores
+    raw prompts, unrestricted model responses, secrets, or recipient lists.
+    """
+    if not isinstance(meta, dict):
+        return meta
+
+    revision = _runtime_deployed_revision()
+    commit_sha = _runtime_deployed_commit_sha()
+    if revision and not str(meta.get("deployed_revision") or "").strip():
+        meta["deployed_revision"] = revision
+    if commit_sha and not str(meta.get("deployed_commit_sha") or "").strip():
+        meta["deployed_commit_sha"] = commit_sha
+    # Alias keys used by cost ledger / operators.
+    if revision and not str(meta.get("revision") or "").strip():
+        meta["revision"] = revision
+    if commit_sha and not str(meta.get("commit_sha") or "").strip():
+        meta["commit_sha"] = commit_sha
+
+    generation_diagnostics = getattr(smoke, "generation_diagnostics", None)
+    if isinstance(generation_diagnostics, dict) and generation_diagnostics:
+        safe_gen = _bounded_generation_diagnostics(generation_diagnostics)
+        if safe_gen and not isinstance(meta.get("generation_diagnostics"), dict):
+            meta["generation_diagnostics"] = safe_gen
+        for key, value in safe_gen.items():
+            if key != "issue_codes" and key not in meta:
+                meta[key] = copy.deepcopy(value)
+
+    from keysuri_generation_prompt import sanitize_generation_contract_record
+
+    smoke_contract = getattr(smoke, "generation_contract", None)
+    if isinstance(smoke_contract, dict) and smoke_contract:
+        if not isinstance(meta.get("generation_contract"), dict):
+            meta["generation_contract"] = sanitize_generation_contract_record(smoke_contract)
+    contract = meta.get("generation_contract")
+    if isinstance(contract, dict):
+        model_id = (
+            str(contract.get("model_identifier") or contract.get("model") or "").strip()
+        )
+        if model_id and not str(meta.get("model_identifier") or "").strip():
+            meta["model_identifier"] = model_id
+        fingerprint = str(
+            contract.get("schema_fingerprint")
+            or contract.get("contract_fingerprint")
+            or contract.get("fingerprint")
+            or ""
+        ).strip()
+        if fingerprint and not str(meta.get("generation_contract_fingerprint") or "").strip():
+            meta["generation_contract_fingerprint"] = fingerprint
+
+    # Bound visible-text quality samples already attached by callers.
+    samples = meta.get("visible_text_quality_samples")
+    if isinstance(samples, list) and len(samples) > 8:
+        meta["visible_text_quality_samples"] = samples[:8]
+    elif not samples:
+        sample = meta.get("visible_text_quality_sample") or meta.get(
+            "visible_text_ellipsis_sample"
+        )
+        if isinstance(sample, str) and sample.strip():
+            meta["visible_text_quality_samples"] = [
+                {"path": "generated_briefing", "before": sample.strip()[:240]}
+            ]
+        elif isinstance(sample, list):
+            meta["visible_text_quality_samples"] = [
+                item if isinstance(item, dict) else {"before": str(item)[:240]}
+                for item in sample[:8]
+            ]
+
+    parse_meta = getattr(smoke, "parse_meta", None)
+    if isinstance(parse_meta, dict) and parse_meta:
+        if not isinstance(meta.get("parse_meta"), dict):
+            meta["parse_meta"] = copy.deepcopy(parse_meta)
+        if "scaffold_status" not in meta:
+            meta["scaffold_status"] = _scaffold_status_from_parse_meta(parse_meta)
+
+    parse_diagnostics = getattr(smoke, "parse_diagnostics", None)
+    if isinstance(parse_diagnostics, dict) and parse_diagnostics:
+        # Prefer existing snapshot; fill gaps only.
+        for key, value in parse_diagnostics.items():
+            if key not in meta or meta.get(key) in (None, "", [], {}):
+                meta[key] = copy.deepcopy(value)
+
+    resolved_prompt = _resolve_prompt_input_for_failure_evidence(smoke, prompt_input)
+    if resolved_prompt is not None:
+        snapshot = meta.get("prompt_input_diagnostic_snapshot")
+        if not isinstance(snapshot, dict) or not snapshot:
+            meta["prompt_input_diagnostic_snapshot"] = _prompt_input_diagnostic_snapshot(
+                resolved_prompt
+            )
+        snap = meta.get("prompt_input_diagnostic_snapshot")
+        if isinstance(snap, dict):
+            if "selected_news_ids" not in meta and snap.get("selected_news_ids") is not None:
+                meta["selected_news_ids"] = list(snap.get("selected_news_ids") or [])[:8]
+            if "selected_headlines" not in meta and snap.get("selected_headlines") is not None:
+                meta["selected_headlines"] = list(snap.get("selected_headlines") or [])[:8]
+
+    if not str(meta.get("first_failed_stage") or "").strip():
+        meta["first_failed_stage"] = infer_first_failed_stage(
+            error_code=str(meta.get("error_code") or "") or None,
+            validation_result=str(meta.get("validation_result") or "") or None,
+            hold_reason=str(meta.get("hold_reason") or "") or None,
+        )
+
+    # Side-effect status defaults for operator triage (do not invent success).
+    if "smtp_attempted" not in meta:
+        meta["smtp_attempted"] = bool(meta.get("email_sent"))
+    if "customer_delivery_status" not in meta:
+        meta["customer_delivery_status"] = "not_sent"
+    if "customer_send" not in meta:
+        meta["customer_send"] = 0
+
+    failed_at = str(meta.get("failed_at") or "").strip()
+    if not failed_at:
+        meta["failed_at"] = now_kst_iso()
+
+    # Defensive strip: never persist unrestricted prompt/model bodies or secrets.
+    for forbidden in (
+        "raw_prompt",
+        "prompt_text",
+        "full_prompt",
+        "raw_model_response",
+        "model_response_raw",
+        "raw_response_text",
+        "hidden_reasoning",
+        "smtp_password",
+        "smtp_credentials",
+        "api_key",
+        "authorization",
+        "access_token",
+        "secret",
+    ):
+        meta.pop(forbidden, None)
+    return meta
+
 
 _REPO = Path(__file__).resolve().parent
 _KEYSURI_PROGRAMS = frozenset({PROGRAM_GLOBAL, PROGRAM_KOREA})
@@ -4224,6 +4459,11 @@ def _run_keysuri_service_full_run_impl(
         Persistence and notification are independent: a storage fault must not
         swallow the operator event, and the event must not mask the run failure.
         """
+        attach_bounded_post_generation_failure_evidence(
+            meta,
+            smoke=smoke,
+            prompt_input=_failure_evidence_ctx.get("prompt_input"),
+        )
         artifact_saved = True
         try:
             save_run_artifact(meta, email_html=email_html)
@@ -4235,6 +4475,8 @@ def _run_keysuri_service_full_run_impl(
                 meta.get("run_id"),
             )
         _emit_failure_event(meta, artifact_saved=artifact_saved)
+
+    _failure_evidence_ctx: Dict[str, Any] = {"prompt_input": None}
 
     smoke: LiveSourceSmokeResult = runner(
         program_id=pid,
@@ -4378,6 +4620,7 @@ def _run_keysuri_service_full_run_impl(
     source_pack = json.loads(Path(smoke.source_pack_path).read_text(encoding="utf-8"))
     prompt_input = build_keysuri_prompt_input(pid, source_pack)
     prompt_input["source_pack"] = source_pack
+    _failure_evidence_ctx["prompt_input"] = prompt_input
     generated_briefing = smoke.generated_briefing if isinstance(smoke.generated_briefing, dict) else None
     if not generated_briefing:
         generated_briefing = _reload_generated_briefing(smoke, pid, prompt_input)
