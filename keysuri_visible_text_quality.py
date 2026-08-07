@@ -133,8 +133,16 @@ def repair_korean_connector_ellipsis_text(value: Any) -> EllipsisRepairResult:
 
     # Mid-text ellipsis between alphanumeric/Korean characters
     repaired = re.sub(r"(?<=[A-Za-z0-9가-힣])\s*…\s*(?=[A-Za-z0-9가-힣])", " ", repaired)
-    # Mid-text ellipsis before quotes, brackets, or other delimiters
-    repaired = re.sub(r"(?<=[A-Za-z0-9가-힣])\s*…\s*(?=['\u2018\u2019'\"「『\(\[\u3008\u300A])", " ", repaired)
+    # Mid-text ellipsis before quotes, brackets, or other delimiters.
+    # Include curly double quotes (U+201C/U+201D): recovery
+    # 20260807_131133_keysuri_global_tech_96d921fa left a residual
+    # `Leadership… ”` block because only straight/"smart-single" quotes
+    # were recognized as delimiters.
+    repaired = re.sub(
+        r"(?<=[A-Za-z0-9가-힣])\s*…\s*(?=['\u2018\u2019'\"\u201c\u201d「『\(\[\u3008\u300A])",
+        " ",
+        repaired,
+    )
     # Terminal trailing ellipsis at end of text: strip to sentence period
     repaired = re.sub(r"\s*…\s*$", "", repaired)
     # Ellipsis immediately before sentence-ending punctuation
