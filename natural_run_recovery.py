@@ -45,6 +45,20 @@ def execute_approved_recovery(
             "recovery_count": 0,
         }
 
+    from natural_run_incident_store import is_smoke_incident_id
+
+    if incident.get("smoke_failure") or incident.get("smoke_only") or is_smoke_incident_id(
+        incident_id
+    ):
+        return {
+            "ok": False,
+            "error": "smoke_recovery_blocked",
+            "incident_id": incident_id,
+            "auto_retry": 0,
+            "customer_send": 0,
+            "recovery_count": 0,
+        }
+
     lease = acquire_recovery_lease(incident_id)
     if not lease:
         return {

@@ -20,14 +20,19 @@ from natural_run_incident_store import (
     acquire_report_lease,
     empty_stage_map,
     ensure_activation_watermark,
+    is_smoke_incident_id,
     kst_date_str,
     load_incident,
+    load_smoke_latest_incident_id,
     make_incident_id,
+    make_smoke_incident_id,
     make_verification_incident_id,
     mark_report_sent,
     new_incident,
     normalize_slot,
+    now_kst_iso,
     release_report_lease,
+    remember_smoke_latest,
     save_incident,
     upsert_incident,
 )
@@ -486,6 +491,9 @@ def run_watchdog_verification_probe(
         "scheduled_slot": "99:99",
         "status": "open",
         "verification_only": True,
+        "created_at": now_kst_iso(),
+        "updated_at": now_kst_iso(),
+        "detected_at": now.isoformat(),
         "facts": [
             "운영자 인증 내부 경로로 요청된 워치독 검증용 합성 장애입니다.",
             "실제 Today/Global/Korea 자연실행 슬롯 신원과 일치하지 않습니다.",
@@ -540,6 +548,197 @@ def run_watchdog_verification_probe(
         "gemini_calls": 0,
         "image_calls": 0,
         "owner_review_generations": 0,
+        "detected_at": incident.get("detected_at"),
+    }
+
+
+def run_watchdog_smoke_failure_probe(
+    *,
+    send_fn: Optional[Callable[..., bool]] = None,
+    now: Optional[datetime] = None,
+    incident_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Production smoke: intentional failure report without touching natural slots.
+
+    Walks a labeled orchestration stage map (request→…→validation fail), stamps a
+    qa_manual smoke artifact when possible, and sends exactly one Korean report
+    with subject prefix [GENIE SMOKE 장애보고]. Never recovers / customer-sends.
+    """
+    if now is None:
+        now = datetime.now(KST)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=KST)
+    else:
+        now = now.astimezone(KST)
+    kst_date = kst_date_str(now)
+    detected = now.isoformat()
+
+    requested = str(incident_id or "").strip()
+    if requested:
+        if not is_smoke_incident_id(requested):
+            return {
+                "ok": False,
+                "error": "invalid_smoke_incident_id",
+                "auto_retry": 0,
+                "customer_send": 0,
+                "recovery_count": 0,
+            }
+        smoke_id = requested
+    else:
+        smoke_id = make_smoke_incident_id(kst_date, now)
+
+    existing = load_incident(smoke_id)
+    if existing and existing.get("report_sent_at"):
+        return {
+            "ok": True,
+            "smoke_failure": True,
+            "smoke_only": True,
+            "incident_id": smoke_id,
+            "smoke_run_id": existing.get("smoke_run_id"),
+            "report_sent": False,
+            "deduped": True,
+            "subject": None,
+            "auto_retry": 0,
+            "customer_send": 0,
+            "recovery_count": 0,
+            "gemini_calls": 0,
+            "image_calls": 0,
+            "owner_review_generations": 0,
+            "detected_at": existing.get("detected_at"),
+            "report_sent_at": existing.get("report_sent_at"),
+            "first_failed_stage": existing.get("first_failed_stage"),
+        }
+
+    # Stamp a non-natural smoke artifact (best-effort; never a natural completer).
+    import secrets
+
+    smoke_run_id = (
+        f"{kst_date.replace('-', '')}_{now.strftime('%H%M%S')}"
+        f"_today_genie_{secrets.token_hex(4)}"
+    )
+    artifact_saved = False
+    try:
+        from admin_store import save_run_artifact
+
+        save_run_artifact(
+            {
+                "run_id": smoke_run_id,
+                "mode": "today_genie",
+                "program_id": "today_genie",
+                "execution_class": "qa_manual",
+                "trigger_source": "watchdog_smoke_failure",
+                "scheduled_slot": "",
+                "email_sent": False,
+                "artifact_status": "smoke_failure_fixture",
+                "validation_result": "block",
+                "approve_customer_final_send": False,
+                "customer_delivery_status": "not_sent",
+                "smoke_only": True,
+                "smoke_failure": True,
+                "original_incident_id": smoke_id,
+                "issue_codes": ["watchdog_smoke_forced_validation_failure"],
+            }
+        )
+        artifact_saved = True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "smoke_artifact_stamp_failed error_type=%s", type(exc).__name__
+        )
+
+    stage = empty_stage_map()
+    stage["Scheduler"] = "정상(스모크 요청)"
+    stage["Cloud Run"] = "정상"
+    stage["실행 게이트"] = "정상(qa_manual/smoke)"
+    stage["데이터 수집"] = "정상(스모크 fixture)"
+    stage["콘텐츠 생성"] = "정상(스모크 fixture)"
+    stage["검증"] = "실패(의도된 스모크 강제 실패)"
+    stage["이미지"] = "미실행"
+    stage["Artifact"] = "생성됨(스모크)" if artifact_saved else "스탬프 실패(보고는 계속)"
+    stage["운영자 메일"] = "장애보고만 발송(브리핑 미생성)"
+
+    incident = {
+        "incident_id": smoke_id,
+        "program_id": "today_genie_smoke",
+        "program_display": "Today_Geenee_SMOKE",
+        "kst_date": kst_date,
+        "scheduled_slot": "99:99",
+        "status": "open",
+        "smoke_failure": True,
+        "smoke_only": True,
+        "verification_only": True,  # recovery hard-block shared path
+        "execution_class": "qa_manual",
+        "created_at": detected,
+        "updated_at": detected,
+        "detected_at": detected,
+        "smoke_run_id": smoke_run_id,
+        "original_run_id": smoke_run_id,
+        "facts": [
+            "인증된 내부 스모크 경로로 의도된 validation 실패를 주입했습니다.",
+            "execution_class=qa_manual — 자연실행 슬롯 완료로 인정되지 않습니다.",
+            f"smoke_run_id={smoke_run_id}",
+            "Today 06:30 / Global 12:30 / Korea 18:30 슬롯 신원과 무관합니다.",
+        ],
+        "confirmed_cause": (
+            "스모크 전용 강제 validation 실패"
+            " (watchdog_smoke_forced_validation_failure)"
+        ),
+        "hypotheses": [],
+        "unknowns": [],
+        "stage_map": stage,
+        "retry_verdict": RETRY_STATUS_UNKNOWN,
+        "retry_verdict_ko": "스모크 전용 — 실콘텐츠 재실행 대상이 아닙니다.",
+        "recommendation_ko": "승인하지 마세요. 메일 UX·dedup만 확인하세요.",
+        "summary_ko": (
+            "프로덕션 워치독 스모크입니다. 파이프라인 단계 표기까지 진행한 뒤 "
+            "검증 단계에서 의도적으로 실패했고, 한국어 장애보고 1통만 발송합니다. "
+            "자동 재실행·고객 발송·자연실행 슬롯 변경은 없습니다."
+        ),
+        "outcomes": {
+            "자연실행 artifact": "생성되지 않음(스모크 qa_manual)",
+            "운영자 검수 브리핑 메일": "생성되지 않음",
+            "이미지 생성": "수행하지 않음",
+            "SMTP 시도": "장애보고 메일 1회만",
+            "고객 메일": "발송되지 않음",
+            "데이터/Artifact 손상": "없음",
+            "중복 발송": "없음",
+        },
+        "system_status": {
+            "서비스 상태": "스모크 모드(실슬롯 비영향)",
+            "Cloud Run": "정상(요청 처리)",
+            "Scheduler": "자연 job 미호출",
+            "장애 실행": "스모크 종료(승인 대기 UX만)",
+            "다음 정규 실행": "영향 없음",
+        },
+        "first_failed_stage": "generation_validation",
+        "error_code": "watchdog_smoke_forced_validation_failure",
+        "issue_codes": ["watchdog_smoke_forced_validation_failure"],
+        "report_sent_at": None,
+        "report_send_count": 0,
+        "recovery_lease_token": None,
+        "recovery_customer_send_count": 0,
+        "watchdog_auto_retry_count": 0,
+    }
+    remember_smoke_latest(smoke_id, kst_date=kst_date)
+    report = report_incident_once(incident, send_fn=send_fn)
+    return {
+        "ok": bool(report.get("ok")),
+        "smoke_failure": True,
+        "smoke_only": True,
+        "incident_id": smoke_id,
+        "smoke_run_id": smoke_run_id,
+        "artifact_saved": artifact_saved,
+        "report_sent": bool(report.get("report_sent")),
+        "deduped": bool(report.get("deduped")),
+        "subject": report.get("subject"),
+        "auto_retry": 0,
+        "customer_send": 0,
+        "recovery_count": 0,
+        "gemini_calls": 0,
+        "image_calls": 0,
+        "owner_review_generations": 0,
+        "detected_at": detected,
+        "first_failed_stage": "generation_validation",
+        "report_sent_at": (load_incident(smoke_id) or {}).get("report_sent_at"),
     }
 
 

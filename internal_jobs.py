@@ -681,9 +681,11 @@ def process_approval_timeouts_endpoint(
 
 
 class NaturalRunWatchdogJobRequest(BaseModel):
-    """Empty body for SLA poll; verification_only for authenticated mail UX proof."""
+    """SLA poll; verification_only / smoke_failure for authenticated probes."""
 
     verification_only: bool = False
+    smoke_failure: bool = False
+    incident_id: Optional[str] = None
 
 
 @router.post("/internal/jobs/natural-run-watchdog")
@@ -695,6 +697,7 @@ def natural_run_watchdog_endpoint(
     """SLA poll: diagnose missed natural runs and email Korean reports.
 
     Never auto-retries, never customer-sends, never Scheduler-reruns.
+    Optional smoke_failure=true sends one [GENIE SMOKE 장애보고] (non-slot).
     Optional verification_only=true sends one [GENIE WATCHDOG TEST] report.
     """
     auth_fail = _verify_internal_job_token(request, x_genie_internal_job_token)
@@ -702,10 +705,19 @@ def natural_run_watchdog_endpoint(
         return auth_fail
 
     from admin_store import list_run_artifacts
-    from natural_run_watchdog import run_watchdog_poll, run_watchdog_verification_probe
+    from natural_run_watchdog import (
+        run_watchdog_poll,
+        run_watchdog_smoke_failure_probe,
+        run_watchdog_verification_probe,
+    )
 
     try:
-        if body.verification_only:
+        if body.smoke_failure:
+            summary = run_watchdog_smoke_failure_probe(
+                now=get_kst_now(),
+                incident_id=body.incident_id,
+            )
+        elif body.verification_only:
             summary = run_watchdog_verification_probe(now=get_kst_now())
         else:
             artifacts = list_run_artifacts(limit=100)

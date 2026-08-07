@@ -490,6 +490,29 @@ class NaturalRunFailureReportHarness(unittest.TestCase):
         self.assertEqual(blocked.get("error"), "verification_only_recovery_blocked")
         self.assertEqual(blocked.get("customer_send"), 0)
 
+    def test_23_smoke_failure_report_dedup_and_detected_at(self) -> None:
+        from natural_run_watchdog import run_watchdog_smoke_failure_probe
+        from natural_run_recovery import execute_approved_recovery
+
+        with mock.patch("admin_store.save_run_artifact", return_value="ok"):
+            first = run_watchdog_smoke_failure_probe(now=AFTER_TODAY_SLOT, send_fn=self.smtp)
+        self.assertTrue(first["report_sent"])
+        self.assertTrue(first["subject"].startswith("[GENIE SMOKE 장애보고]"))
+        self.assertTrue(str(first.get("detected_at") or "").startswith("2026-08-07T"))
+        self.assertIn(first["detected_at"], self.smtp.bodies[0])
+        self._assert_korean_report_shape(self.smtp.bodies[0])
+        with mock.patch("admin_store.save_run_artifact", return_value="ok"):
+            second = run_watchdog_smoke_failure_probe(
+                now=AFTER_TODAY_SLOT,
+                send_fn=self.smtp,
+                incident_id=first["incident_id"],
+            )
+        self.assertTrue(second["deduped"])
+        self.assertEqual(self.smtp.calls, 1)
+        blocked = execute_approved_recovery(first["incident_id"], send_fn=self.smtp)
+        self.assertIn(blocked.get("error"), {"smoke_recovery_blocked", "verification_only_recovery_blocked"})
+        self.assertEqual(blocked.get("customer_send"), 0)
+
 
 class AdminRecoveryRouteTests(unittest.TestCase):
     def setUp(self) -> None:

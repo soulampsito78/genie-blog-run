@@ -47,6 +47,8 @@ def failure_report_subject(incident: Mapping[str, Any]) -> str:
         str(incident.get("program_id") or "")
     )
     slot = str(incident.get("scheduled_slot") or "").strip()
+    if incident.get("smoke_failure") or incident.get("smoke_only"):
+        return f"[GENIE SMOKE 장애보고] {display} {slot} — 스모크 실패 (실슬롯 아님)"
     if incident.get("verification_only"):
         return f"[GENIE WATCHDOG TEST] {display} {slot} 검증용 장애보고 (실슬롯 아님)"
     return f"[GENIE 장애보고] {display} {slot} 자연실행 실패 — 재실행 승인 필요"

@@ -46,8 +46,10 @@ _INCIDENT_ID_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}_(today_genie|keysuri_global_tech|keysuri_korea_tech)_\d{2}-\d{2}$"
 )
 _VERIFICATION_ID_RE = re.compile(r"^verification_\d{4}-\d{2}-\d{2}_watchdog_test$")
+_SMOKE_ID_RE = re.compile(r"^smoke_\d{4}-\d{2}-\d{2}_\d{6}_watchdog$")
 
 ACTIVATION_META_ID = "_watchdog_activation"
+SMOKE_LATEST_META_ID = "_smoke_latest"
 ACTIVATION_ENV = "NATURAL_RUN_WATCHDOG_ACTIVATED_AT"
 
 _LOCK = threading.RLock()  # reentrant: lease helpers call save_incident under lock
@@ -88,15 +90,34 @@ def make_incident_id(program_id: str, kst_date: str, scheduled_slot: str) -> str
 
 def validate_incident_id(incident_id: str) -> bool:
     text = str(incident_id or "").strip()
-    return bool(_INCIDENT_ID_RE.match(text) or _VERIFICATION_ID_RE.match(text))
+    return bool(
+        _INCIDENT_ID_RE.match(text)
+        or _VERIFICATION_ID_RE.match(text)
+        or _SMOKE_ID_RE.match(text)
+    )
 
 
 def is_verification_incident_id(incident_id: str) -> bool:
     return bool(_VERIFICATION_ID_RE.match(str(incident_id or "").strip()))
 
 
+def is_smoke_incident_id(incident_id: str) -> bool:
+    return bool(_SMOKE_ID_RE.match(str(incident_id or "").strip()))
+
+
 def make_verification_incident_id(kst_date: str) -> str:
     return f"verification_{kst_date}_watchdog_test"
+
+
+def make_smoke_incident_id(kst_date: str, now: Optional[datetime] = None) -> str:
+    if now is None:
+        now = datetime.now(KST)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=KST)
+    else:
+        now = now.astimezone(KST)
+    stamp = now.strftime("%H%M%S")
+    return f"smoke_{kst_date}_{stamp}_watchdog"
 
 
 def program_display_name(program_id: str) -> str:
@@ -127,8 +148,8 @@ def _uses_gcs() -> bool:
 
 def _object_key(incident_id: str) -> str:
     text = str(incident_id or "").strip()
-    if text == ACTIVATION_META_ID:
-        return f"{INCIDENT_PREFIX}/{ACTIVATION_META_ID}.json"
+    if text in {ACTIVATION_META_ID, SMOKE_LATEST_META_ID}:
+        return f"{INCIDENT_PREFIX}/{text}.json"
     if not validate_incident_id(text):
         raise ValueError("invalid incident_id")
     return f"{INCIDENT_PREFIX}/{text}.json"
@@ -203,6 +224,32 @@ def ensure_activation_watermark(now: Optional[datetime] = None) -> datetime:
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
     )
     return now
+
+
+def remember_smoke_latest(incident_id: str, *, kst_date: str) -> None:
+    if not is_smoke_incident_id(incident_id):
+        raise ValueError("invalid smoke incident_id")
+    payload = {
+        "incident_id": incident_id,
+        "kst_date": kst_date,
+        "updated_at": now_kst_iso(),
+    }
+    _write_raw_object(
+        _object_key(SMOKE_LATEST_META_ID),
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+    )
+
+
+def load_smoke_latest_incident_id() -> Optional[str]:
+    raw = _read_raw_object(_object_key(SMOKE_LATEST_META_ID))
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        iid = str(data.get("incident_id") or "").strip()
+        return iid if is_smoke_incident_id(iid) else None
+    except Exception:
+        return None
 
 
 def _gcs_upload(key: str, text: str) -> None:
