@@ -6,10 +6,18 @@
 **Sandbox harness giant step: local-only 2026-08-06 (KST) — §9 / closeout pointer**
 **Sandbox repository closeout: local-only 2026-08-07 (KST) — §9 / closeout pointer**
 **Today natural-slot incident: 2026-08-07 (KST) — see incident closeout pointer below**
+**Korean failure report + human recovery: 2026-08-07 (KST) — applied locally; Scheduler poll is ops wiring**
 **Basis: GCP audit — Cloud Scheduler, Cloud Run, GCS artifact inspection**
 **Service: `genie-blog-run`, region `asia-northeast3`**
 
 This document is the authoritative operational snapshot. Update it after each audit.
+
+> **Korean natural-run failure report + human-approved recovery (2026-08-07):**
+> SLA failures diagnose → Korean report to `EMAIL_TO` → wait. Admin may approve
+> exactly one recovery (`execution_class=recovery`); no auto-retry, no customer
+> send, no Scheduler rerun from watchdog. Endpoint:
+> `POST /internal/jobs/natural-run-watchdog`. Admin UI: `/admin/incidents`.
+> Runbook: [docs/ops/OWNER_REVIEW_FAILURE_ALERTING.md](ops/OWNER_REVIEW_FAILURE_ALERTING.md).
 
 > **Today_Geenee post-migration first natural-run incident (2026-08-07):**
 > Scheduler fired at 06:30 KST; Cloud Run returned HTTP 200 in ~4.8s without a

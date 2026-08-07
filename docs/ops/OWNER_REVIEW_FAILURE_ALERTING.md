@@ -1,15 +1,74 @@
-# Owner-review failure alerting (design only — not applied)
+# Owner-review failure alerting + Korean natural-run failure report
 
-Status: **designed / not applied**. This document describes the structured
-log event and the Cloud Monitoring log-based alert that operators may create
-later. No notification channel or alert policy is created by this change.
+Status: **applied** — structured failure events still emit to Cloud Logging, and
+natural-run SLA misses now also produce a **Korean failure-report email** to
+`EMAIL_TO` plus an Admin human-approved recovery path. Auto-retry is forbidden.
+
+## Operator path (invariant)
+
+```
+SLA failure → diagnose → Korean report email → wait for owner
+  → Admin approve → exactly one recovery → recovery result email
+  → (no approve) → nothing executes
+```
+
+Forbidden on every path: watchdog Scheduler rerun, production POST recovery,
+Admin reissue-as-natural, customer send, reply-to-email as command.
+
+| Piece | Location |
+|---|---|
+| Incident store | `natural_run_incident_store.py` (`admin_incidents/`) |
+| Korean report builder | `natural_run_incident_report.py` |
+| Watchdog (diagnose + report only) | `natural_run_watchdog.py` |
+| Emit-time notify hook | `owner_review_failure_events.py` → `notify_natural_run_incident_from_failure` |
+| Periodic SLA poll | `POST /internal/jobs/natural-run-watchdog` (token-gated) |
+| Human recovery | Admin `POST /admin/incidents/{incident_id}/approve-recovery` via `natural_run_recovery.py` |
+| Quality harness | `tests/test_natural_run_failure_report_harness.py` (20 scenarios) |
+
+### Watched programs / slots
+
+| Program | Slot | Display |
+|---|---|---|
+| `today_genie` | 06:30 | Today_Geenee |
+| `keysuri_global_tech` | 12:30 | KeeSuri_Global_Tech |
+| `keysuri_korea_tech` | 18:30 | KeeSuri_Korea_Tech |
+
+`tomorrow_genie` is paused — watchdog skips it (0 failure reports).
+
+### Cloud Scheduler wiring (ops step — not auto-created by code)
+
+Create a Scheduler job that POSTs to the Cloud Run service:
+
+- Path: `/internal/jobs/natural-run-watchdog`
+- Header: `X-Genie-Internal-Job-Token: <GENIE_INTERNAL_JOB_TOKEN>`
+- Suggested cadence: every 15–30 minutes during operating hours (KST)
+- Body: empty JSON `{}`
+- Expectation: HTTP 200 with `auto_retry: 0`, `customer_send: 0`; at most one
+  failure-report email per `incident_id`
+
+### Admin recovery
+
+1. Open `/admin/incidents` (or the incident link on a related run detail).
+2. Confirm program / date / cause / retry verdict.
+3. Choose **재실행 안 함** (dismiss) or **재실행 승인**.
+4. Approval runs exactly one recovery with `execution_class=recovery`,
+   `trigger_source=admin_recovery_approved`, owner-review email only.
+5. Recovery success/failure report is emailed; no second auto retry.
+
+---
+
+## Structured log event (still applied)
+
+The remainder of this document describes the structured Cloud Logging event
+(`owner_review_run_failed`). Log-based Cloud Monitoring alert policies remain
+**optional / not auto-created** by this repo.
 
 ## Scope
 
 | Item | Value |
 |---|---|
 | Service | Cloud Run KeeSuri owner-review service (`genie-blog-run`) |
-| Programs | `keysuri_global_tech`, `keysuri_korea_tech` |
+| Programs | `keysuri_global_tech`, `keysuri_korea_tech` (event); Today_Genie also covered by Korean report/watchdog |
 | Trigger | Any trigger accepted by `genie_schedule_policy.is_scheduled_trigger_source` |
 | Excluded | `manual_*`, admin reissue, `dry_run=True`, unit/integration tests |
 | Emit timing | Final safe-fail of a scheduled service full run only |
@@ -18,6 +77,8 @@ later. No notification channel or alert policy is created by this change.
 Runtime emitter: `owner_review_failure_events.py`
 Hook: `keysuri_service_full_run.run_keysuri_service_full_run` failure finalizers
 plus the terminal-path and exception-boundary emitters in the same function.
+After a successful emit, `notify_natural_run_incident_from_failure` creates/updates
+an incident and sends the Korean report once.
 
 ## Trigger eligibility
 
