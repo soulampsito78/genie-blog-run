@@ -2000,7 +2000,7 @@ def stabilize_today_genie_validation_fields(
         risk_rows = _today_genie_risk_fallbacks_from_feeds(runtime_input)
     normalized["risk_check"] = risk_rows
 
-    closing = str(data.get("closing_message") or "").strip()
+    closing = str(normalized.get("closing_message") or data.get("closing_message") or "").strip()
     lecture_tails = (
         "신중한 접근",
         "민감한 대응",
@@ -2013,6 +2013,51 @@ def stabilize_today_genie_validation_fields(
         normalized["closing_message"] = (
             "오늘은 CPI 이후 금리·환율 반응과 외국인 수급이 같은 방향인지 먼저 확인하겠습니다."
         )
+
+    # Deterministic strip of forbidden customer-surface cliche closers
+    # (validators._forbidden_surface_cliche_issues). Keep validators strict;
+    # repair before the hard gate so stochastic model tails do not terminal-fail.
+    _CLICHE = (
+        "신중한 접근이 필요합니다",
+        "신중한 접근이 필요하다",
+        "신중한 접근이 필요해",
+    )
+    _REPLACEMENT = "금리·환율·수급이 같은 방향인지 확인 순서로 보겠습니다"
+
+    def _scrub(text: str) -> str:
+        out = str(text or "")
+        for bad in _CLICHE:
+            if bad in out:
+                out = out.replace(bad, _REPLACEMENT)
+        return out
+
+    for key in ("summary", "market_setup"):
+        if isinstance(normalized.get(key), str):
+            normalized[key] = _scrub(normalized[key])
+    wps = normalized.get("key_watchpoints")
+    if isinstance(wps, list):
+        scrubbed_wp = []
+        for wp in wps:
+            if isinstance(wp, dict):
+                wp2 = dict(wp)
+                if isinstance(wp2.get("detail"), str):
+                    wp2["detail"] = _scrub(wp2["detail"])
+                scrubbed_wp.append(wp2)
+            else:
+                scrubbed_wp.append(wp)
+        normalized["key_watchpoints"] = scrubbed_wp
+    risks = normalized.get("risk_check")
+    if isinstance(risks, list):
+        scrubbed_risk = []
+        for row in risks:
+            if isinstance(row, dict):
+                row2 = dict(row)
+                if isinstance(row2.get("detail"), str):
+                    row2["detail"] = _scrub(row2["detail"])
+                scrubbed_risk.append(row2)
+            else:
+                scrubbed_risk.append(row)
+        normalized["risk_check"] = scrubbed_risk
 
     return normalized
 
