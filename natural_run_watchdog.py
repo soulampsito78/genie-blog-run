@@ -50,6 +50,124 @@ PAUSED_PROGRAMS = frozenset({"tomorrow_genie"})
 # Minutes after scheduled slot before SLA miss is confirmable.
 SLA_GRACE_MINUTES = 15
 
+# Ordered pipeline stages used for operator reports (Korean labels).
+_STAGE_ORDER: tuple[str, ...] = (
+    "Scheduler",
+    "Cloud Run",
+    "실행 게이트",
+    "데이터 수집",
+    "콘텐츠 생성",
+    "검증",
+    "이미지",
+    "Artifact",
+    "운영자 메일",
+)
+
+
+def apply_proven_stage_map(
+    stage: Dict[str, str],
+    *,
+    first_failed_stage: str,
+    artifact_saved: bool = False,
+    email_sent: bool = False,
+    called_gemini: Optional[bool] = None,
+    data_collected: Optional[bool] = None,
+) -> Dict[str, str]:
+    """Derive stage_map from the deepest DIRECTLY PROVEN failure stage.
+
+    Never marks an earlier stage as 실패 when a later stage is proven.
+    Unknown stages stay 확인불가 rather than invented failures.
+    """
+    out = dict(stage or empty_stage_map())
+    failed = str(first_failed_stage or "").strip()
+
+    def _mark_ok_through(last_ok: str) -> None:
+        for name in _STAGE_ORDER:
+            if name == last_ok:
+                if out.get(name) in (None, "", "확인불가"):
+                    out[name] = "정상"
+                break
+            if out.get(name) in (None, "", "확인불가", "실패"):
+                # Do not overwrite an already-proven 정상/미실행 with 실패.
+                if out.get(name) == "실패":
+                    out[name] = "정상"
+                elif out.get(name) in (None, "", "확인불가"):
+                    out[name] = "정상"
+
+    if failed in {"scheduler", "scheduler_not_triggered"}:
+        out["Scheduler"] = "실패"
+        return out
+
+    if failed in {"cloud_run", "service_exception"} or failed.startswith("cloud_run"):
+        if out.get("Scheduler") == "확인불가":
+            out["Scheduler"] = "정상"
+        out["Cloud Run"] = "실패"
+        return out
+
+    if failed in {
+        "natural_slot_duplicate_gate",
+        "execution_classification",
+        "execution_class_required",
+        "gate",
+    }:
+        _mark_ok_through("Cloud Run")
+        out["실행 게이트"] = "실패"
+        for key in ("데이터 수집", "콘텐츠 생성", "검증", "이미지", "Artifact", "운영자 메일"):
+            if out.get(key) == "확인불가":
+                out[key] = "미실행"
+        return out
+
+    if failed in {"generation_validation", "validation_hold", "validation"}:
+        _mark_ok_through("실행 게이트")
+        if data_collected is True or called_gemini is True:
+            out["데이터 수집"] = "정상"
+        elif out.get("데이터 수집") == "확인불가":
+            out["데이터 수집"] = "증거기반 판정"
+        if called_gemini is False:
+            out["콘텐츠 생성"] = "미실행"
+        else:
+            out["콘텐츠 생성"] = "정상" if called_gemini is True else "시도됨"
+        out["검증"] = "실패"
+        out["이미지"] = "미실행"
+        out["Artifact"] = "정상" if artifact_saved else "확인불가"
+        out["운영자 메일"] = "미발송" if not email_sent else "확인불가"
+        # Explicitly clear any prior false gate failure.
+        if out.get("실행 게이트") == "실패":
+            out["실행 게이트"] = "정상"
+        return out
+
+    if failed in {"image_generation", "image"}:
+        _mark_ok_through("검증")
+        out["이미지"] = "실패"
+        out["운영자 메일"] = "미발송" if not email_sent else out.get("운영자 메일", "확인불가")
+        if out.get("실행 게이트") == "실패":
+            out["실행 게이트"] = "정상"
+        return out
+
+    if failed in {"email_delivery", "smtp", "owner_review_email"}:
+        _mark_ok_through("이미지")
+        out["운영자 메일"] = "실패"
+        out["Artifact"] = "정상" if artifact_saved else out.get("Artifact", "확인불가")
+        if out.get("콘텐츠 생성") in (None, "", "확인불가", "실패"):
+            out["콘텐츠 생성"] = "정상"
+        if out.get("검증") in (None, "", "확인불가", "실패"):
+            out["검증"] = "정상"
+        if out.get("실행 게이트") == "실패":
+            out["실행 게이트"] = "정상"
+        return out
+
+    if failed in {"generation", "content_generation"}:
+        _mark_ok_through("데이터 수집")
+        out["콘텐츠 생성"] = "실패"
+        out["이미지"] = "미실행"
+        out["운영자 메일"] = "미발송"
+        if out.get("실행 게이트") == "실패":
+            out["실행 게이트"] = "정상"
+        return out
+
+    # Unknown: do not invent a gate failure.
+    return out
+
 
 def _slot_hour_minute(slot: str) -> tuple[int, int]:
     norm = normalize_slot(slot)
@@ -318,7 +436,7 @@ def diagnose_program_sla(
     else:
         stage["Cloud Run"] = "확인불가"
 
-    # Failure events enrichment
+    # Failure events enrichment — deepest proven stage wins; never invent gate failure.
     for fe in failure_events or []:
         if str(fe.get("program_id") or "") != program_id:
             continue
@@ -326,17 +444,18 @@ def diagnose_program_sla(
             f"구조화 실패 이벤트: error_code={fe.get('error_code')} "
             f"stage={fe.get('first_failed_stage')}"
         )
-        stage["실행 게이트"] = stage.get("실행 게이트") if stage.get("실행 게이트") != "확인불가" else "실패"
-        if confirmed_cause is None and fe.get("error_code"):
-            # Do not promote event code to confirmed cause without mapping.
-            hypotheses.append(f"실패 이벤트 코드 {fe.get('error_code')}와 관련됐을 수 있습니다.")
         first_failed = str(fe.get("first_failed_stage") or first_failed)
         error_code = str(fe.get("error_code") or error_code)
         code = str(fe.get("error_code") or "")
+        stage = apply_proven_stage_map(
+            stage,
+            first_failed_stage=first_failed,
+            artifact_saved=bool(fe.get("artifact_saved")),
+            email_sent=bool(fe.get("email_sent")),
+            called_gemini=fe.get("called_gemini"),
+            data_collected=fe.get("data_collected"),
+        )
         if "smtp" in code or fe.get("first_failed_stage") == "email_delivery":
-            stage["운영자 메일"] = "실패"
-            stage["콘텐츠 생성"] = "정상"
-            stage["Artifact"] = "정상" if fe.get("artifact_saved") else "실패"
             outcomes["SMTP 시도"] = "실패"
             outcomes["자연실행 artifact"] = (
                 "생성됨" if fe.get("artifact_saved") else "생성 실패"
@@ -350,20 +469,18 @@ def diagnose_program_sla(
             "generation_validation",
             "validation_hold",
         }:
-            stage["검증"] = "실패"
-            stage["콘텐츠 생성"] = "정상"
             if confirmed_cause is None:
                 confirmed_cause = "생성 결과 검증에서 차단되었습니다."
             retry_verdict = RETRY_REQUIRES_PATCH
             recommendation = "수정 후 재실행 권고"
         elif fe.get("first_failed_stage") in {"image_generation", "service_full_run"}:
-            stage["이미지"] = "실패"
             if confirmed_cause is None and "image" in code:
                 confirmed_cause = "이미지 생성 단계에서 실패했습니다."
-        elif "generation" in code or fe.get("first_failed_stage") == "generation_validation":
-            stage["콘텐츠 생성"] = "실패"
+        elif "generation" in code or fe.get("first_failed_stage") == "generation":
             if confirmed_cause is None:
                 confirmed_cause = "모델 콘텐츠 생성에 실패했습니다."
+            retry_verdict = RETRY_REQUIRES_PATCH
+            recommendation = "수정 후 재실행 권고"
 
     if same_day and not completer:
         facts.append(f"동일 KST 날짜 관련 artifact {len(same_day)}건이 있으나 자연실행 완료로 인정되지 않습니다.")
@@ -847,7 +964,26 @@ def notify_natural_run_incident_from_failure(
         stage = empty_stage_map()
         stage["Scheduler"] = "정상"
         stage["Cloud Run"] = "정상"
-        stage["실행 게이트"] = "실패"
+        called_gemini = None
+        data_collected = None
+        if isinstance(extra_fields, Mapping):
+            if "called_gemini" in extra_fields:
+                called_gemini = bool(extra_fields.get("called_gemini"))
+            if "data_collected" in extra_fields:
+                data_collected = bool(extra_fields.get("data_collected"))
+            elif "final_selected_count" in extra_fields:
+                try:
+                    data_collected = int(extra_fields.get("final_selected_count") or 0) > 0
+                except (TypeError, ValueError):
+                    data_collected = None
+        stage = apply_proven_stage_map(
+            stage,
+            first_failed_stage=first_failed_stage or "unknown",
+            artifact_saved=artifact_saved,
+            email_sent=email_sent,
+            called_gemini=called_gemini,
+            data_collected=data_collected,
+        )
         incident["stage_map"] = stage
 
     incident["original_run_id"] = run_id or incident.get("original_run_id")
