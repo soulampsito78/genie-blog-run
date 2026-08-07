@@ -1772,8 +1772,15 @@ class GlobalBoundedContractRepairTests(unittest.TestCase):
         diag = result["generation_diagnostics"]
         self.assertTrue(diag["global_recovery_attempted"])
         self.assertEqual(diag["global_recovery_result"], "succeeded")
-        self.assertIn(
-            "gemini_json_missing_required_keys", diag["global_recovery_error_codes"]
+        # Pre-scaffold era expected missing_required_keys; scaffold may clear those
+        # keys and leave schema mismatches (wrong news_scope/heading) as the
+        # repair trigger — both remain valid GLOBAL_MALFORMED_CONTRACT paths.
+        self.assertTrue(
+            set(diag["global_recovery_error_codes"])
+            & {
+                "gemini_json_missing_required_keys",
+                "gemini_json_schema_validation_failed",
+            }
         )
         self.assertEqual(diag["global_recovery_call_count"], 1)
         self.assertEqual(diag["global_generation_call_count"], 2)

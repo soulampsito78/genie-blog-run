@@ -1,0 +1,52 @@
+{
+  "_fixture_note": "Redacted production-faithful fixture for 20260807_123001_keysuri_global_tech_a349afa9 / incident 2026-08-07_keysuri_global_tech_12-30. Model returned a display-only shell missing required contract keys. TOP5 selection succeeded (5 items); image/SMTP not attempted. No secrets / raw prompts / recipient addresses.",
+  "incident_id": "2026-08-07_keysuri_global_tech_12-30",
+  "run_id": "20260807_123001_keysuri_global_tech_a349afa9",
+  "program_id": "keysuri_global_tech",
+  "revision_at_failure": "genie-blog-run-00281-4gw",
+  "commit_sha_at_failure": "7f98e77e8c2c7f7e277902a66fb1cf2fa9e9e11d",
+  "error_code": "validation_blocked",
+  "first_failed_stage": "generation_validation",
+  "issue_codes_observed": [
+    "generated_status_invalid",
+    "operational_status_invalid",
+    "top_5_news_missing",
+    "deep_dive_missing",
+    "one_line_checkpoint_missing",
+    "closing_sources_missing",
+    "gemini_json_missing_required_keys",
+    "gemini_json_schema_validation_failed"
+  ],
+  "generation_attempt_count": 2,
+  "generation_call_budget": 2,
+  "candidate_top_level_keys": [
+    "closing_message",
+    "news_scope",
+    "opening_lead",
+    "program_id",
+    "section_heading",
+    "selected_title",
+    "title_candidates"
+  ],
+  "missing_required_keys": [
+    "operational_status",
+    "generated_status",
+    "top_5_news",
+    "deep_dive",
+    "one_line_checkpoint",
+    "closing_sources"
+  ],
+  "model_display_shell": {
+    "closing_message": "주인님, 오늘의 글로벌 테크 신호들이 주인님의 사업적 판단에 날카로운 통찰이 되었기를 바랍니다. 저는 언제나 이곳에서 다음 변화를 먼저 읽고 보고드리겠습니다.",
+    "news_scope": "global",
+    "opening_lead": "주인님, 오늘은 지구 궤도를 넘어선 반도체 제조 가능성부터 AI 에이전트의 실무 배치 가속화까지, 기술의 물리적 한계와 지능적 확장이 동시에 일어나는 신호를 포착했습니다. 하드웨어 인프라의 새로운 지평과 소프트웨어 자동화의 고도화가 맞물리는 흐름입니다. 거시적인 인프라 변화와 즉각적인 도구 업데이트를 함께 챙기셔야 할 시점입니다.",
+    "program_id": "keysuri_global_tech",
+    "section_heading": "글로벌 테크 TOP 5",
+    "selected_title": "[키수리 브리핑] 우주 반도체와 AI 에이전트의 실전 배치",
+    "title_candidates": [
+      "[키수리 브리핑] 우주 반도체와 AI 에이전트의 실전 배치",
+      "[글로벌 테크] 인프라의 확장과 지능형 자동화의 진화"
+    ]
+  },
+  "prompt_input_ref": "ops/feeds/keysuri_global_prompt_input.sample.json"
+}
