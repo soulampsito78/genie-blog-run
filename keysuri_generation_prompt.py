@@ -894,6 +894,226 @@ def _merge_parse_repair_diagnostics(
     return merged
 
 
+def _is_global_program_id(program_id: str) -> bool:
+    pid = str(program_id or "").strip()
+    return pid == PROGRAM_GLOBAL or pid.startswith("keysuri_global")
+
+
+def _top5_items_from_prompt(prompt_input: dict) -> List[dict]:
+    top = prompt_input.get("top_5_news") if isinstance(prompt_input, dict) else None
+    if not isinstance(top, dict):
+        return []
+    items = top.get("items")
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _closing_source_list_from_prompt(prompt_input: dict) -> List[Dict[str, str]]:
+    """Build closing source_list rows from the trusted source pack (ids + labels only)."""
+    pack = prompt_input.get("source_pack") if isinstance(prompt_input, dict) else None
+    if not isinstance(pack, dict):
+        return []
+    sources = pack.get("sources") if isinstance(pack.get("sources"), list) else []
+    rows: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        sid = str(src.get("source_id") or "").strip()
+        if not sid or sid in seen:
+            continue
+        label = str(
+            src.get("source_name") or src.get("label") or src.get("title") or sid
+        ).strip()
+        if not label:
+            continue
+        seen.add(sid)
+        row: Dict[str, str] = {"source_id": sid, "label": label}
+        url = str(src.get("source_url") or src.get("url") or "").strip()
+        if url:
+            row["url"] = url
+        tier = str(src.get("source_tier") or src.get("tier") or "").strip()
+        if tier:
+            row["tier"] = tier
+        rows.append(row)
+    if rows:
+        return rows
+    # Fallback: TOP5 source_ids alone (label = source_id) when pack sources absent.
+    for item in _top5_items_from_prompt(prompt_input):
+        for sid_raw in item.get("source_ids") or []:
+            sid = str(sid_raw or "").strip()
+            if not sid or sid in seen:
+                continue
+            seen.add(sid)
+            rows.append({"source_id": sid, "label": sid})
+    return rows
+
+
+def _scaffold_missing_global_contract_keys_for_parse(
+    obj: Dict[str, Any],
+    prompt_input: dict,
+    program_id: str,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Deterministically graft missing Global contract keys from trusted selection.
+
+    Production incident 20260807_123001_keysuri_global_tech_a349afa9: the model
+    returned a display-only shell (opening_lead / selected_title / closing_message)
+    twice. Status constants and TOP5 are already known from the run context;
+    deep-dive / one-line / closing can be completed from that shell prose plus
+    the frozen TOP5 pack without inventing articles or a third model call.
+
+    Never invents news items, source_ids, or URLs outside prompt_input.
+    """
+    diagnostics: Dict[str, Any] = {
+        "global_contract_scaffold_attempted": False,
+        "global_contract_scaffold_applied": False,
+        "repair_applied": False,
+        "repaired_fields": [],
+        "internal_issue_codes": [],
+    }
+    if not isinstance(obj, dict):
+        return obj, diagnostics
+    if not _is_global_program_id(program_id):
+        return obj, diagnostics
+    if not isinstance(prompt_input, dict):
+        return obj, diagnostics
+
+    diagnostics["global_contract_scaffold_attempted"] = True
+    out = obj
+    repaired_fields: List[str] = []
+
+    def _ensure_out() -> Dict[str, Any]:
+        nonlocal out
+        if out is obj:
+            out = copy.deepcopy(obj)
+        return out
+
+    # Status constants are program-deterministic (same as scope/heading).
+    # Only graft when missing/blank; wrong non-empty values stay for the validator.
+    if _is_missing_or_blank(out.get("generated_status")):
+        _ensure_out()["generated_status"] = GENERATED_STATUS_REQUIRED
+        repaired_fields.append("generated_status")
+    if _is_missing_or_blank(out.get("operational_status")):
+        _ensure_out()["operational_status"] = REQUIRED_OPERATIONAL_STATUS
+        repaired_fields.append("operational_status")
+
+    # Heavy structural salvage only for display-shell / partial KeeSuri outputs.
+    # Bare junk JSON (e.g. {"invalid": "..."}) must remain schema-invalid.
+    display_shell_signal = any(
+        not _is_missing_or_blank(out.get(key))
+        for key in (
+            "opening_lead",
+            "selected_title",
+            "closing_message",
+            "title_candidates",
+        )
+    )
+    partial_contract_signal = any(
+        isinstance(out.get(key), dict) and out.get(key)
+        for key in ("top_5_news", "deep_dive", "one_line_checkpoint", "closing_sources")
+    )
+    if not (display_shell_signal or partial_contract_signal):
+        if repaired_fields:
+            diagnostics["global_contract_scaffold_applied"] = True
+            diagnostics["repair_applied"] = True
+            diagnostics["repaired_fields"] = repaired_fields
+            diagnostics["internal_issue_codes"] = [
+                "keysuri_global_contract_scaffold_applied"
+            ]
+        return out, diagnostics
+
+    prompt_top = prompt_input.get("top_5_news")
+    if out.get("top_5_news") in (None, "", [], {}) and isinstance(prompt_top, dict):
+        items = prompt_top.get("items")
+        if isinstance(items, list) and len(items) == KEYSURI_TOP_NEWS_COUNT:
+            grafted = copy.deepcopy(prompt_top)
+            if _is_missing_or_blank(grafted.get("news_scope")):
+                grafted["news_scope"] = expected_news_scope_for_program(program_id)
+            if _is_missing_or_blank(grafted.get("section_heading")):
+                grafted["section_heading"] = expected_top5_heading_for_program(program_id)
+            _ensure_out()["top_5_news"] = grafted
+            repaired_fields.append("top_5_news")
+
+    top_items = []
+    top_block = out.get("top_5_news") if isinstance(out.get("top_5_news"), dict) else {}
+    if isinstance(top_block.get("items"), list):
+        top_items = [it for it in top_block["items"] if isinstance(it, dict)]
+    if not top_items:
+        top_items = _top5_items_from_prompt(prompt_input)
+
+    opening_lead = str(out.get("opening_lead") or "").strip()
+    selected_title = str(out.get("selected_title") or "").strip()
+    closing_message = str(out.get("closing_message") or "").strip()
+
+    if out.get("deep_dive") in (None, "", [], {}) and top_items:
+        rank1 = top_items[0]
+        body = opening_lead
+        if not body:
+            body = " ".join(
+                part
+                for part in (
+                    str(rank1.get("summary") or "").strip(),
+                    str(rank1.get("why_it_matters") or "").strip(),
+                    str(rank1.get("business_implication") or "").strip(),
+                )
+                if part
+            ).strip()
+        implications: List[str] = []
+        for item in top_items[:3]:
+            for key in ("why_it_matters", "business_implication", "headline", "summary"):
+                text = str(item.get(key) or "").strip()
+                if text and text not in implications:
+                    implications.append(text)
+                    break
+        source_ids = [
+            str(sid).strip()
+            for sid in (rank1.get("source_ids") or [])
+            if str(sid).strip()
+        ]
+        if body and implications and source_ids:
+            _ensure_out()["deep_dive"] = {
+                "section_heading": SECTION_DEEP_DIVE,
+                "body": body,
+                "key_implications": implications[:5],
+                "source_ids": source_ids,
+                "confidence_label": str(rank1.get("confidence_label") or "reported"),
+            }
+            repaired_fields.append("deep_dive")
+
+    if out.get("one_line_checkpoint") in (None, "", [], {}):
+        one_body = selected_title or opening_lead
+        if not one_body and top_items:
+            one_body = str(top_items[0].get("headline") or "").strip()
+        if one_body:
+            # Keep one-line checkpoint bounded.
+            if len(one_body) > 220:
+                one_body = one_body[:217].rstrip() + "…"
+            _ensure_out()["one_line_checkpoint"] = {
+                "section_heading": SECTION_ONE_LINE,
+                "body": one_body,
+            }
+            repaired_fields.append("one_line_checkpoint")
+
+    if out.get("closing_sources") in (None, "", [], {}):
+        source_list = _closing_source_list_from_prompt(prompt_input)
+        message = closing_message or SAFE_CLOSING_MESSAGE
+        if source_list and message:
+            _ensure_out()["closing_sources"] = {
+                "section_heading": SECTION_CLOSING,
+                "closing_message": message,
+                "source_list": source_list,
+            }
+            repaired_fields.append("closing_sources")
+
+    if repaired_fields:
+        diagnostics["global_contract_scaffold_applied"] = True
+        diagnostics["repair_applied"] = True
+        diagnostics["repaired_fields"] = repaired_fields
+        diagnostics["internal_issue_codes"] = ["keysuri_global_contract_scaffold_applied"]
+    return out, diagnostics
+
+
 def _repair_parsed_candidate_for_parse(
     obj: Dict[str, Any],
     prompt_input: dict,
@@ -903,9 +1123,12 @@ def _repair_parsed_candidate_for_parse(
     repaired, lens_diag = _repair_korea_market_lens_for_parse(repaired, program_id)
     repaired, scope_diag = _repair_top_level_scope_heading_for_parse(repaired, program_id)
     repaired, pid_diag = _repair_program_id_for_parse(repaired, program_id)
+    repaired, scaffold_diag = _scaffold_missing_global_contract_keys_for_parse(
+        repaired, prompt_input, program_id
+    )
     repaired, closing_diag = _repair_closing_message_for_parse(repaired, program_id)
     return repaired, _merge_parse_repair_diagnostics(
-        deep_diag, lens_diag, scope_diag, pid_diag, closing_diag
+        deep_diag, lens_diag, scope_diag, pid_diag, scaffold_diag, closing_diag
     )
 
 
@@ -1555,10 +1778,16 @@ def build_keysuri_corrective_generation_prompt(
     program_id = str(prompt_input.get("program_id") or "")
     if program_id == PROGRAM_GLOBAL or program_id.startswith("keysuri_global"):
         suffix[4:4] = [
-            "This is a Global full-contract repair. Restore every required top-level key.",
+            "This is a Global full-contract repair. Emit one COMPLETE contract object.",
+            "Required top-level keys (all must be present and non-empty): "
+            "program_id, operational_status, generated_status, news_scope, "
+            "section_heading, top_5_news, deep_dive, one_line_checkpoint, closing_sources.",
+            "FORBIDDEN: display-only shells that only include opening_lead, "
+            "selected_title, title_candidates, and/or closing_message without "
+            "top_5_news, deep_dive, one_line_checkpoint, and closing_sources.",
             "Do not invent articles, URLs, news_ids, or source_ids outside the source pack.",
-            "Preserve any already-valid fields from the prior attempt when listed in "
-            "preservable_fields; fill only missing or invalid required fields.",
+            "When preservable_fields lists a key, keep its meaning if still valid; "
+            "still emit every required key in the same single JSON object.",
             "Output exactly one JSON object. No markdown fences, no commentary.",
         ]
     return build_keysuri_generation_prompt(prompt_input) + "\n" + "\n".join(suffix)

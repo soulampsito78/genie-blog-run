@@ -490,12 +490,25 @@ def _prompt_input_diagnostic_snapshot(prompt_input: dict) -> Dict[str, Any]:
         if isinstance(prompt_input.get("selected_items"), list)
         else []
     )
+    selected_news_ids: List[str] = []
+    selected_headlines: List[str] = []
+    for item in top_items:
+        if not isinstance(item, dict):
+            continue
+        nid = str(item.get("news_id") or "").strip()
+        if nid:
+            selected_news_ids.append(nid)
+        headline = str(item.get("headline") or "").strip()
+        if headline:
+            selected_headlines.append(headline[:120])
     snapshot: Dict[str, Any] = {
         "program_id": prompt_input.get("program_id"),
         "news_scope": prompt_input.get("news_scope"),
         "prompt_status": prompt_input.get("prompt_status"),
         "top_5_news_item_count": len(top_items),
         "selected_items_count": len(selected_items),
+        "selected_news_ids": selected_news_ids[:8],
+        "selected_headlines": selected_headlines[:8],
         "hold_reason": prompt_input.get("hold_reason"),
         "exposure_dedup_backfill_used": bool(
             prompt_input.get("exposure_dedup_backfill_used")
