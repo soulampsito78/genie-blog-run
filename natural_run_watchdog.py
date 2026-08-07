@@ -13,11 +13,19 @@ from natural_run_incident_report import send_failure_report
 from natural_run_incident_store import (
     NATURAL_SLOTS,
     PROGRAM_DISPLAY,
+    RETRY_ALLOWED_WITH_WARNING,
+    RETRY_BLOCKED,
     RETRY_REQUIRES_PATCH,
+    RETRY_SAFE,
     RETRY_SAFE_TO_RETRY,
     RETRY_STATUS_UNKNOWN,
+    ROOT_CAUSE_CONFIRMED,
+    ROOT_CAUSE_PARTIAL,
+    ROOT_CAUSE_UNKNOWN,
     STATUS_REPORTED,
     acquire_report_lease,
+    classify_retry_actionability,
+    classify_root_cause_verdict,
     empty_stage_map,
     ensure_activation_watermark,
     is_smoke_incident_id,
@@ -28,6 +36,8 @@ from natural_run_incident_store import (
     make_smoke_incident_id,
     make_verification_incident_id,
     mark_report_sent,
+    normalize_retry_actionability,
+    retry_verdict_ko_for,
     new_incident,
     normalize_slot,
     now_kst_iso,
@@ -338,6 +348,7 @@ def diagnose_program_sla(
     )
     retry_verdict = RETRY_STATUS_UNKNOWN
     retry_ko = "재실행 가능 여부를 확정하지 못했습니다. 추가 조사가 필요합니다."
+    root_cause_verdict = ROOT_CAUSE_UNKNOWN
     recommendation = "추가 조사 필요"
     first_failed = "unknown"
     error_code = "natural_sla_miss"
@@ -379,11 +390,9 @@ def diagnose_program_sla(
         confirmed_cause = "Scheduler가 예정 시각에 실행되지 않았습니다."
         first_failed = "scheduler"
         error_code = "scheduler_not_triggered"
-        retry_verdict = RETRY_SAFE_TO_RETRY
-        retry_ko = (
-            "현재 장애는 종료됐으며 동일 실행을 다시 시도해도 "
-            "고객에게 중복 메일이 발송될 위험은 확인되지 않았습니다."
-        )
+        retry_verdict = RETRY_SAFE
+        retry_ko = retry_verdict_ko_for(retry_verdict, root_cause_verdict=ROOT_CAUSE_CONFIRMED)
+        root_cause_verdict = ROOT_CAUSE_CONFIRMED
         recommendation = "즉시 재실행 가능"
         summary = (
             f"오늘 {slot} {PROGRAM_DISPLAY.get(program_id, program_id)} 자연실행이 "
@@ -463,24 +472,58 @@ def diagnose_program_sla(
             outcomes["운영자 검수 메일"] = "발송 실패"
             if confirmed_cause is None:
                 confirmed_cause = "운영자 검수 메일 SMTP 전송에 실패했습니다."
-            retry_verdict = RETRY_SAFE_TO_RETRY
-            recommendation = "즉시 재실행 가능"
+            root_cause_verdict = ROOT_CAUSE_PARTIAL
+            retry_verdict = classify_retry_actionability(
+                email_sent=bool(fe.get("email_sent")),
+                customer_send=0,
+                smtp_attempted=True,
+                execution_terminated=True,
+                root_cause_verdict=root_cause_verdict,
+            )
+            retry_ko = retry_verdict_ko_for(retry_verdict, root_cause_verdict=root_cause_verdict)
+            recommendation = "즉시 재실행 가능" if retry_verdict == RETRY_SAFE else "주의 후 재실행 가능"
         elif "validation" in code or fe.get("first_failed_stage") in {
             "generation_validation",
             "validation_hold",
         }:
             if confirmed_cause is None:
                 confirmed_cause = "생성 결과 검증에서 차단되었습니다."
-            retry_verdict = RETRY_REQUIRES_PATCH
-            recommendation = "수정 후 재실행 권고"
+            # Validator failure is NOT a side-effect hazard. Actionability follows
+            # customer/owner delivery state, not residual-text certainty.
+            root_cause_verdict = ROOT_CAUSE_PARTIAL
+            retry_verdict = classify_retry_actionability(
+                email_sent=bool(fe.get("email_sent")),
+                customer_send=0,
+                smtp_attempted=False,
+                execution_terminated=True,
+                root_cause_verdict=root_cause_verdict,
+            )
+            retry_ko = retry_verdict_ko_for(retry_verdict, root_cause_verdict=root_cause_verdict)
+            recommendation = "주의 후 재실행 가능"
         elif fe.get("first_failed_stage") in {"image_generation", "service_full_run"}:
             if confirmed_cause is None and "image" in code:
                 confirmed_cause = "이미지 생성 단계에서 실패했습니다."
+            root_cause_verdict = ROOT_CAUSE_PARTIAL
+            retry_verdict = classify_retry_actionability(
+                email_sent=bool(fe.get("email_sent")),
+                customer_send=0,
+                execution_terminated=True,
+                root_cause_verdict=root_cause_verdict,
+            )
+            retry_ko = retry_verdict_ko_for(retry_verdict, root_cause_verdict=root_cause_verdict)
+            recommendation = "주의 후 재실행 가능"
         elif "generation" in code or fe.get("first_failed_stage") == "generation":
             if confirmed_cause is None:
                 confirmed_cause = "모델 콘텐츠 생성에 실패했습니다."
-            retry_verdict = RETRY_REQUIRES_PATCH
-            recommendation = "수정 후 재실행 권고"
+            root_cause_verdict = ROOT_CAUSE_PARTIAL
+            retry_verdict = classify_retry_actionability(
+                email_sent=bool(fe.get("email_sent")),
+                customer_send=0,
+                execution_terminated=True,
+                root_cause_verdict=root_cause_verdict,
+            )
+            retry_ko = retry_verdict_ko_for(retry_verdict, root_cause_verdict=root_cause_verdict)
+            recommendation = "주의 후 재실행 가능"
 
     if same_day and not completer:
         facts.append(f"동일 KST 날짜 관련 artifact {len(same_day)}건이 있으나 자연실행 완료로 인정되지 않습니다.")
@@ -515,6 +558,7 @@ def diagnose_program_sla(
         outcomes=outcomes,
         summary_ko=summary,
     )
+    incident["root_cause_verdict"] = root_cause_verdict
     incident["detection_note_ko"] = detection_note
     return incident
 
@@ -939,12 +983,28 @@ def notify_natural_run_incident_from_failure(
         )
         # Map known codes to confirmed causes carefully.
         code = str(error_code or "")
+        email_sent_flag = bool(email_sent)
+        # Default: side-effect-isolated failures are actionable even when the
+        # exact residual/text pattern is not yet explained.
+        root = classify_root_cause_verdict(
+            confirmed_cause=None,
+            error_code=error_code,
+            residual_explained=False,
+            repair_proven=False,
+        )
         if code in {"qa_consumed_natural_slot", "invalid_natural_slot_duplicate_match"}:
             incident["confirmed_cause"] = (
                 "QA/수동 실행을 동일 날짜의 자연실행 완료로 잘못 판단했습니다."
             )
-            incident["retry_verdict"] = RETRY_REQUIRES_PATCH
-            incident["recommendation_ko"] = "수정 후 재실행 권고"
+            root = ROOT_CAUSE_PARTIAL
+            incident["retry_verdict"] = classify_retry_actionability(
+                email_sent=email_sent_flag,
+                customer_send=0,
+                natural_slot_conflict=True,
+                execution_terminated=True,
+                root_cause_verdict=root,
+            )
+            incident["recommendation_ko"] = "추가 조사 필요"
             incident["detection_note_ko"] = (
                 "기존에는 HTTP 200으로 처리돼 장애가 자동 보고되지 않았을 수 있습니다."
             )
@@ -952,13 +1012,60 @@ def notify_natural_run_incident_from_failure(
             incident["confirmed_cause"] = (
                 "자연실행 요청에 실행 분류(execution_class)가 없어 안전하게 거부되었습니다."
             )
-            incident["retry_verdict"] = RETRY_REQUIRES_PATCH
-            incident["recommendation_ko"] = "수정 후 재실행 권고"
+            root = ROOT_CAUSE_PARTIAL
+            incident["retry_verdict"] = classify_retry_actionability(
+                email_sent=False,
+                customer_send=0,
+                execution_terminated=True,
+                root_cause_verdict=root,
+            )
+            incident["recommendation_ko"] = "주의 후 재실행 가능"
         elif "smtp" in code:
             incident["confirmed_cause"] = "운영자 검수 메일 SMTP 전송에 실패했습니다."
-            incident["retry_verdict"] = RETRY_SAFE_TO_RETRY
+            root = ROOT_CAUSE_PARTIAL
+            incident["retry_verdict"] = classify_retry_actionability(
+                email_sent=email_sent_flag,
+                customer_send=0,
+                smtp_attempted=True,
+                execution_terminated=True,
+                root_cause_verdict=root,
+            )
             incident["recommendation_ko"] = "즉시 재실행 가능"
-        # else leave 원인 미확정
+        elif str(first_failed_stage or "") in {
+            "generation_validation",
+            "validation_hold",
+            "generation",
+            "image_generation",
+            "service_full_run",
+        } or "ellipsis" in code or "validation" in code or "image" in code:
+            if "ellipsis" in code:
+                incident["confirmed_cause"] = (
+                    "생성 결과 visible-text 검증에서 connector ellipsis가 차단되었습니다."
+                )
+            elif not incident.get("confirmed_cause"):
+                incident["confirmed_cause"] = "자연실행 경로에서 생성/검증 단계가 실패했습니다."
+            root = ROOT_CAUSE_PARTIAL
+            incident["retry_verdict"] = classify_retry_actionability(
+                email_sent=email_sent_flag,
+                customer_send=0,
+                smtp_attempted=False,
+                execution_terminated=True,
+                root_cause_verdict=root,
+            )
+            incident["recommendation_ko"] = "주의 후 재실행 가능"
+        else:
+            incident["retry_verdict"] = classify_retry_actionability(
+                email_sent=email_sent_flag,
+                customer_send=0,
+                execution_terminated=True,
+                root_cause_verdict=root,
+            )
+            incident["recommendation_ko"] = "주의 후 재실행 가능"
+        incident["root_cause_verdict"] = root
+        incident["retry_verdict_ko"] = retry_verdict_ko_for(
+            str(incident.get("retry_verdict") or ""),
+            root_cause_verdict=root,
+        )
         incident["incident_id"] = make_incident_id(program_id, kst_date, slot)
         incident["original_run_id"] = run_id or None
         stage = empty_stage_map()

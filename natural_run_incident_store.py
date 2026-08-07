@@ -25,10 +25,25 @@ STATUS_RECOVERY_SUCCEEDED = "recovery_succeeded"
 STATUS_RECOVERY_FAILED = "recovery_failed"
 STATUS_DISMISSED = "dismissed"
 
-RETRY_SAFE_TO_RETRY = "SAFE_TO_RETRY"
-RETRY_REQUIRES_PATCH = "RETRY_REQUIRES_PATCH"
+RETRY_SAFE_TO_RETRY = "SAFE_TO_RETRY"  # legacy synonym of RETRY_SAFE
+RETRY_SAFE = "RETRY_SAFE"
+RETRY_ALLOWED_WITH_WARNING = "RETRY_ALLOWED_WITH_WARNING"
+RETRY_REQUIRES_PATCH = "RETRY_REQUIRES_PATCH"  # legacy; prefer ALLOWED_WITH_WARNING / BLOCKED
 RETRY_BLOCKED = "RETRY_BLOCKED"
-RETRY_STATUS_UNKNOWN = "RETRY_STATUS_UNKNOWN"
+RETRY_STATUS_UNKNOWN = "RETRY_STATUS_UNKNOWN"  # only when side effects truly unknowable
+
+ROOT_CAUSE_CONFIRMED = "ROOT_CAUSE_CONFIRMED"
+ROOT_CAUSE_PARTIAL = "ROOT_CAUSE_PARTIAL"
+ROOT_CAUSE_UNKNOWN = "ROOT_CAUSE_UNKNOWN"
+
+# Actionability that enables an Admin recovery button (never auto-executes).
+RETRY_ACTIONABLE_VERDICTS = frozenset(
+    {
+        RETRY_SAFE,
+        RETRY_SAFE_TO_RETRY,
+        RETRY_ALLOWED_WITH_WARNING,
+    }
+)
 
 PROGRAM_DISPLAY = {
     "today_genie": "Today_Geenee",
@@ -292,6 +307,120 @@ def _gcs_list_ids(limit: int = 100) -> List[str]:
     return out
 
 
+def is_retry_actionable(verdict: Optional[str]) -> bool:
+    """True when Admin may show a recovery button (POST still required)."""
+    return str(verdict or "").strip() in RETRY_ACTIONABLE_VERDICTS
+
+
+def normalize_retry_actionability(verdict: Optional[str]) -> str:
+    text = str(verdict or "").strip()
+    if text == RETRY_SAFE_TO_RETRY:
+        return RETRY_SAFE
+    if text == RETRY_REQUIRES_PATCH:
+        # Legacy "needs patch" was over-used for validator failures. Treat as
+        # warning-level actionability unless a caller upgrades/blocks explicitly.
+        return RETRY_ALLOWED_WITH_WARNING
+    if text in {
+        RETRY_SAFE,
+        RETRY_ALLOWED_WITH_WARNING,
+        RETRY_BLOCKED,
+        RETRY_STATUS_UNKNOWN,
+    }:
+        return text
+    return RETRY_STATUS_UNKNOWN
+
+
+def classify_root_cause_verdict(
+    *,
+    confirmed_cause: Optional[str] = None,
+    error_code: Optional[str] = None,
+    residual_explained: bool = False,
+    repair_proven: bool = False,
+) -> str:
+    if repair_proven and residual_explained:
+        return ROOT_CAUSE_CONFIRMED
+    if confirmed_cause or residual_explained or str(error_code or "").strip():
+        return ROOT_CAUSE_PARTIAL
+    return ROOT_CAUSE_UNKNOWN
+
+
+def classify_retry_actionability(
+    *,
+    email_sent: bool = False,
+    customer_send: Any = 0,
+    customer_delivery_status: Optional[str] = None,
+    smtp_attempted: Optional[bool] = None,
+    smtp_outcome_ambiguous: bool = False,
+    state_corruption: bool = False,
+    natural_slot_conflict: bool = False,
+    lease_integrity_failure: bool = False,
+    execution_terminated: bool = True,
+    root_cause_verdict: Optional[str] = None,
+) -> str:
+    """Axis 2 — recovery side-effect safety (independent of root-cause certainty).
+
+    RETRY_STATUS_UNKNOWN is reserved for truly unknowable side effects, not for
+    unexplained validator residuals.
+    """
+    cust_status = str(customer_delivery_status or "").strip().lower()
+    try:
+        cust_count = int(customer_send or 0)
+    except (TypeError, ValueError):
+        cust_count = 1 if customer_send else 0
+
+    customer_may_have_sent = (
+        cust_count > 0
+        or cust_status in {"sent", "delivered", "accepted", "queued"}
+        or (cust_status not in {"", "not_sent", "blocked", "skipped", "n/a", "none"} and "sent" in cust_status)
+    )
+    if (
+        customer_may_have_sent
+        or state_corruption
+        or natural_slot_conflict
+        or lease_integrity_failure
+    ):
+        return RETRY_BLOCKED
+
+    if smtp_outcome_ambiguous:
+        # Owner-review duplicate risk cannot be ruled out.
+        return RETRY_BLOCKED
+
+    if not execution_terminated:
+        return RETRY_STATUS_UNKNOWN
+
+    # Isolated terminal failure: no customer send, no successful owner mail.
+    if email_sent:
+        # Owner-review already delivered — still recoverable but warn about dup risk.
+        return RETRY_ALLOWED_WITH_WARNING
+
+    if smtp_attempted is True and not email_sent:
+        # Attempted but not accepted — recoverable with warning.
+        return RETRY_ALLOWED_WITH_WARNING
+
+    root = str(root_cause_verdict or "").strip()
+    if root == ROOT_CAUSE_CONFIRMED:
+        return RETRY_SAFE
+    # Isolated terminal failure with partial/unknown root cause: still actionable.
+    return RETRY_ALLOWED_WITH_WARNING
+
+
+def retry_verdict_ko_for(actionability: str, *, root_cause_verdict: str = "") -> str:
+    act = normalize_retry_actionability(actionability)
+    if act == RETRY_SAFE:
+        return (
+            "현재 장애는 종료됐으며 동일 실행을 다시 시도해도 "
+            "고객에게 중복 메일이 발송될 위험은 확인되지 않았습니다."
+        )
+    if act == RETRY_ALLOWED_WITH_WARNING:
+        return (
+            "장애 원인이 완전히 제거되었는지는 확인되지 않을 수 있으나, "
+            "이번 복구 실행은 운영자 검수용으로 격리되며 고객 발송은 하지 않습니다."
+        )
+    if act == RETRY_BLOCKED:
+        return "현재 상태에서는 재실행이 안전하지 않습니다."
+    return "재실행 가능 여부를 확정하지 못했습니다. 추가 조사가 필요합니다."
+
+
 def empty_stage_map() -> Dict[str, str]:
     return {
         "Scheduler": "확인불가",
@@ -347,6 +476,7 @@ def new_incident(
         "stage_map": dict(stage_map or empty_stage_map()),
         "retry_verdict": retry_verdict,
         "retry_verdict_ko": retry_verdict_ko,
+        "root_cause_verdict": ROOT_CAUSE_UNKNOWN,
         "recommendation_ko": recommendation_ko,
         "original_run_id": original_run_id,
         "recovery_run_id": None,

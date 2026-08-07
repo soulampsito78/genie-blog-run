@@ -11,10 +11,14 @@ import re
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from natural_run_incident_store import (
+    RETRY_ALLOWED_WITH_WARNING,
     RETRY_BLOCKED,
     RETRY_REQUIRES_PATCH,
+    RETRY_SAFE,
     RETRY_SAFE_TO_RETRY,
     RETRY_STATUS_UNKNOWN,
+    is_retry_actionable,
+    normalize_retry_actionability,
     program_display_name,
 )
 
@@ -111,10 +115,24 @@ def _admin_cta_block(incident: Mapping[str, Any]) -> str:
 
     iid = str(incident.get("incident_id") or "").strip()
     smoke = bool(incident.get("smoke_failure") or incident.get("smoke_only"))
-    label = "검증 incident 보기" if smoke else "재실행 검토하기"
+    verdict = normalize_retry_actionability(incident.get("retry_verdict"))
     url = build_incident_admin_url(iid) if iid else None
+
+    if smoke:
+        label = "검증 incident 보기"
+        question = ""
+    elif is_retry_actionable(verdict):
+        label = "재실행 검토하기"
+        question = '<p style="font-size:18px;"><strong>이 실행을 다시 시도할까요?</strong></p>'
+    else:
+        label = "장애 상세 보기"
+        question = (
+            "<p><strong>현재는 안전한 재실행 조건이 확보되지 않았습니다.</strong></p>"
+        )
+
     if url:
         return f"""
+{question}
 <p style="margin:20px 0;">
 <a href="{_esc(url)}" style="display:inline-block;background:#b91c1c;color:#fff;padding:12px 18px;text-decoration:none;border-radius:4px;font-weight:700;">
 {_esc(label)}
@@ -122,10 +140,11 @@ def _admin_cta_block(incident: Mapping[str, Any]) -> str:
 </p>
 <p style="color:#555;font-size:12px;">이 링크는 승인 화면을 <strong>보기만</strong> 엽니다. 클릭만으로 재실행되지 않습니다.</p>
 """
-    return """
+    return f"""
+{question}
 <p style="color:#7f1d1d;"><strong>Admin 바로가기 URL을 생성하지 못했습니다.</strong></p>
 <p>운영 Admin에 로그인한 뒤 <code>/admin/incidents</code>에서 해당 incident_id를 열어
-재실행을 검토하세요. (URL에 비밀값/토큰은 포함되지 않습니다.)</p>
+{_esc(label)} 경로로 확인하세요. (URL에 비밀값/토큰은 포함되지 않습니다.)</p>
 """
 
 
@@ -148,14 +167,16 @@ def build_failure_report_html(incident: Mapping[str, Any]) -> str:
     stage_map = incident.get("stage_map") or {}
     outcomes = incident.get("outcomes") or {}
     system_status = incident.get("system_status") or {}
-    verdict = str(incident.get("retry_verdict") or RETRY_STATUS_UNKNOWN)
+    verdict = normalize_retry_actionability(incident.get("retry_verdict"))
     verdict_ko = _sanitize_text(
         incident.get("retry_verdict_ko")
         or {
+            RETRY_SAFE: "현재 장애는 종료됐으며 동일 실행을 다시 시도해도 고객 중복 발송 위험은 확인되지 않았습니다.",
             RETRY_SAFE_TO_RETRY: "현재 장애는 종료됐으며 동일 실행을 다시 시도해도 고객 중복 발송 위험은 확인되지 않았습니다.",
+            RETRY_ALLOWED_WITH_WARNING: "원인이 완전히 제거되었는지는 확인되지 않을 수 있으나, 복구 실행은 운영자 검수용으로 격리되며 고객 발송은 하지 않습니다.",
             RETRY_REQUIRES_PATCH: "동일 원인이 남아 있을 수 있어 수정 완료 전에는 재실행하지 않는 것이 안전합니다.",
             RETRY_BLOCKED: "현재 상태에서는 재실행이 안전하지 않습니다.",
-            RETRY_STATUS_UNKNOWN: "재실행 가능 여부를 확정하지 못했습니다. 추가 조사가 필요합니다.",
+            RETRY_STATUS_UNKNOWN: "재실행 부작용을 확정하지 못했습니다. 추가 조사가 필요합니다.",
         }.get(verdict, "재실행 가능 여부를 확정하지 못했습니다."),
         max_len=500,
     )
@@ -209,8 +230,7 @@ def build_failure_report_html(incident: Mapping[str, Any]) -> str:
 <p>{_esc(recommendation)}</p>
 <p>시스템이 실제 재실행을 수행하지 않습니다. Admin에서 명시적으로 승인해야 합니다.</p>
 <hr>
-<h2>8. 마지막 질문</h2>
-<p style="font-size:18px;"><strong>이 실행을 다시 시도할까요?</strong></p>
+<h2>8. 마지막 안내</h2>
 {_admin_cta_block(incident)}
 <p>승인 전에는 시스템이 자동 재실행하지 않습니다.</p>
 <p style="color:#666;font-size:12px;">incident_id: {_esc(incident.get("incident_id"))}</p>

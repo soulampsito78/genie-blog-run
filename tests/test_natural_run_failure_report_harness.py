@@ -61,7 +61,7 @@ class NaturalRunFailureReportHarness(unittest.TestCase):
             p.stop()
         self.tmp.cleanup()
 
-    def _assert_korean_report_shape(self, html: str) -> None:
+    def _assert_korean_report_shape(self, html: str, *, require_retry_question: bool = True) -> None:
         self.assertIn("GENIE 자연실행 장애 보고", html)
         self.assertIn("무슨 일이 발생했습니까?", html)
         self.assertIn("어디까지 정상적으로 진행됐습니까?", html)
@@ -70,7 +70,8 @@ class NaturalRunFailureReportHarness(unittest.TestCase):
         self.assertIn("현재 시스템 상태", html)
         self.assertIn("재실행 가능 여부", html)
         self.assertIn("시스템 권고", html)
-        self.assertIn("이 실행을 다시 시도할까요?", html)
+        if require_retry_question:
+            self.assertIn("이 실행을 다시 시도할까요?", html)
         self.assertIn("승인 전에는 시스템이 자동 재실행하지 않습니다.", html)
         self.assertNotIn("Traceback", html)
         self.assertNotIn("smtp_password", html.lower())
@@ -220,10 +221,14 @@ class NaturalRunFailureReportHarness(unittest.TestCase):
 
     def test_09_report_ends_with_retry_question(self) -> None:
         from natural_run_incident_report import build_failure_report_html
-        from natural_run_incident_store import new_incident
+        from natural_run_incident_store import RETRY_SAFE, new_incident
 
         html = build_failure_report_html(
-            new_incident(program_id="today_genie", kst_date="2026-08-07")
+            new_incident(
+                program_id="today_genie",
+                kst_date="2026-08-07",
+                retry_verdict=RETRY_SAFE,
+            )
         )
         self.assertIn("이 실행을 다시 시도할까요?", html)
 
@@ -390,7 +395,11 @@ class NaturalRunFailureReportHarness(unittest.TestCase):
 
     def test_18_retry_verdict_from_persisted_state(self) -> None:
         from natural_run_incident_report import build_failure_report_html
-        from natural_run_incident_store import RETRY_REQUIRES_PATCH, new_incident
+        from natural_run_incident_store import (
+            RETRY_ALLOWED_WITH_WARNING,
+            RETRY_REQUIRES_PATCH,
+            new_incident,
+        )
 
         incident = new_incident(
             program_id="today_genie",
@@ -399,7 +408,8 @@ class NaturalRunFailureReportHarness(unittest.TestCase):
             retry_verdict_ko="수정 완료 전에는 재실행하지 않는 것이 안전합니다.",
         )
         html = build_failure_report_html(incident)
-        self.assertIn(RETRY_REQUIRES_PATCH, html)
+        # Legacy REQUIRES_PATCH normalizes to ALLOWED_WITH_WARNING for actionability.
+        self.assertIn(RETRY_ALLOWED_WITH_WARNING, html)
         self.assertIn("수정 완료 전에는 재실행하지 않는 것이 안전합니다.", html)
 
     def test_19_qa_reissue_not_mistaken_as_natural_recovery_target(self) -> None:
@@ -482,7 +492,7 @@ class NaturalRunFailureReportHarness(unittest.TestCase):
         first = run_watchdog_verification_probe(now=AFTER_TODAY_SLOT, send_fn=self.smtp)
         self.assertTrue(first["report_sent"])
         self.assertTrue(first["subject"].startswith("[GENIE WATCHDOG TEST]"))
-        self._assert_korean_report_shape(self.smtp.bodies[0])
+        self._assert_korean_report_shape(self.smtp.bodies[0], require_retry_question=False)
         second = run_watchdog_verification_probe(now=AFTER_TODAY_SLOT, send_fn=self.smtp)
         self.assertTrue(second["deduped"])
         self.assertEqual(self.smtp.calls, 1)
@@ -500,7 +510,7 @@ class NaturalRunFailureReportHarness(unittest.TestCase):
         self.assertTrue(first["subject"].startswith("[GENIE SMOKE 장애보고]"))
         self.assertTrue(str(first.get("detected_at") or "").startswith("2026-08-07T"))
         self.assertIn(first["detected_at"], self.smtp.bodies[0])
-        self._assert_korean_report_shape(self.smtp.bodies[0])
+        self._assert_korean_report_shape(self.smtp.bodies[0], require_retry_question=False)
         with mock.patch("admin_store.save_run_artifact", return_value="ok"):
             second = run_watchdog_smoke_failure_probe(
                 now=AFTER_TODAY_SLOT,
@@ -636,16 +646,15 @@ class AdminRecoveryRouteTests(unittest.TestCase):
         self._login()
         detail = self.client.get(f"/admin/incidents/{real['incident_id']}")
         self.assertEqual(detail.status_code, 200)
-        self.assertIn("재실행 승인 검토", detail.text)
+        self.assertIn("재실행 승인", detail.text)
         self.assertIn("만으로는 재실행되지 않습니다", detail.text)
         after = load_incident(real["incident_id"])
         self.assertIsNone(after.get("recovery_run_id"))
         self.assertEqual(after.get("status"), "reported")
 
         for verdict, needle in [
-            (RETRY_REQUIRES_PATCH, "수정 완료 전 재실행할 수 없습니다"),
-            (RETRY_BLOCKED, "현재 상태에서는 재실행할 수 없습니다"),
-            (RETRY_STATUS_UNKNOWN, "안전성이 확인되지 않아 재실행할 수 없습니다"),
+            (RETRY_BLOCKED, "안전한 재실행 조건이 확보되지 않았습니다"),
+            (RETRY_STATUS_UNKNOWN, "재실행 부작용을 확정하지 못해"),
         ]:
             meta = load_incident(real["incident_id"])
             meta["retry_verdict"] = verdict
@@ -653,6 +662,14 @@ class AdminRecoveryRouteTests(unittest.TestCase):
             page = self.client.get(f"/admin/incidents/{real['incident_id']}")
             self.assertIn(needle, page.text)
             self.assertNotIn(f"/admin/incidents/{real['incident_id']}/approve-confirm", page.text)
+
+        # Legacy REQUIRES_PATCH is normalized to ALLOWED_WITH_WARNING → button open.
+        meta = load_incident(real["incident_id"])
+        meta["retry_verdict"] = RETRY_REQUIRES_PATCH
+        save_incident(meta)
+        page = self.client.get(f"/admin/incidents/{real['incident_id']}")
+        self.assertIn("재실행 시도", page.text)
+        self.assertIn("/approve-confirm", page.text)
 
         meta = load_incident(real["incident_id"])
         meta["retry_verdict"] = RETRY_SAFE_TO_RETRY
@@ -662,8 +679,8 @@ class AdminRecoveryRouteTests(unittest.TestCase):
 
         conf = self.client.get(f"/admin/incidents/{real['incident_id']}/approve-confirm")
         self.assertEqual(conf.status_code, 200)
-        self.assertIn("정확히 1회 다시 실행합니다", conf.text)
-        self.assertIn("고객 발송은 수행하지 않습니다", conf.text)
+        self.assertIn("운영자 검수용 복구 실행을 정확히 1회 수행합니다", conf.text)
+        self.assertIn("고객 발송은 하지 않습니다", conf.text)
         self.assertEqual(load_incident(real["incident_id"]).get("status"), "reported")
 
         out1 = execute_approved_recovery(

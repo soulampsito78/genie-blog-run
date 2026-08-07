@@ -908,11 +908,18 @@ def admin_incident_detail(request: Request, incident_id: str):
     if need is not None:
         return need
     from natural_run_incident_store import (
+        RETRY_ALLOWED_WITH_WARNING,
         RETRY_BLOCKED,
         RETRY_REQUIRES_PATCH,
+        RETRY_SAFE,
         RETRY_SAFE_TO_RETRY,
         RETRY_STATUS_UNKNOWN,
+        ROOT_CAUSE_CONFIRMED,
+        ROOT_CAUSE_PARTIAL,
+        ROOT_CAUSE_UNKNOWN,
+        is_retry_actionable,
         load_incident,
+        normalize_retry_actionability,
         validate_incident_id,
     )
 
@@ -938,7 +945,8 @@ def admin_incident_detail(request: Request, incident_id: str):
         for k, v in (meta.get("stage_map") or {}).items()
     )
     status = str(meta.get("status") or "")
-    verdict = str(meta.get("retry_verdict") or RETRY_STATUS_UNKNOWN)
+    verdict = normalize_retry_actionability(meta.get("retry_verdict"))
+    root_cause = str(meta.get("root_cause_verdict") or ROOT_CAUSE_UNKNOWN)
     smoke = bool(meta.get("smoke_failure") or meta.get("smoke_only") or meta.get("verification_only"))
     outcomes = meta.get("outcomes") if isinstance(meta.get("outcomes"), dict) else {}
     customer_status = outcomes.get("고객 메일") or meta.get("recovery_customer_send_count") or "발송되지 않음"
@@ -979,45 +987,51 @@ def admin_incident_detail(request: Request, incident_id: str):
 """
     elif status not in {"reported", "open", "recovery_failed"}:
         actions = f'<p class="warn">현재 상태(<code>{_esc(status)}</code>)에서는 재실행 승인 버튼이 비활성입니다.</p>'
-    elif verdict == RETRY_SAFE_TO_RETRY:
-        # GET detail never recovers — explicit confirm page required before POST.
+    elif verdict == RETRY_SAFE or verdict == RETRY_SAFE_TO_RETRY:
         actions = f"""
 <div class="card">
-<p>재실행 판정: <strong>SAFE_TO_RETRY</strong></p>
-<p><a class="btn" style="background:#b91c1c;" href="/admin/incidents/{_esc(incident_id)}/approve-confirm">재실행 승인 검토</a>
+<p>원인 판정: <strong>{_esc(root_cause)}</strong> · 재실행 판정: <strong>RETRY_SAFE</strong></p>
+<p><a class="btn" style="background:#b91c1c;" href="/admin/incidents/{_esc(incident_id)}/approve-confirm">재실행 승인</a>
 <form method="post" action="/admin/incidents/{_esc(incident_id)}/dismiss" style="display:inline-block;margin-left:12px;">
 <button class="btn" type="submit" style="background:#475569;">재실행 안 함</button>
 </form></p>
 <p style="font-size:12px;color:#555;">이 페이지(GET)만으로는 재실행되지 않습니다. 확인 화면에서 POST해야 합니다.</p>
 </div>
 """
-    elif verdict == RETRY_REQUIRES_PATCH:
-        actions = """
+    elif verdict == RETRY_ALLOWED_WITH_WARNING:
+        actions = f"""
 <div class="card warn">
-<button class="btn" type="button" disabled style="background:#94a3b8;cursor:not-allowed;">재실행 승인</button>
-<p><strong>수정 완료 전 재실행할 수 없습니다.</strong> (RETRY_REQUIRES_PATCH)</p>
+<p>원인 판정: <strong>{_esc(root_cause)}</strong> · 재실행 판정: <strong>RETRY_ALLOWED_WITH_WARNING</strong></p>
+<p>장애 원인이 완전히 제거되었는지는 확인되지 않았을 수 있습니다. 재실행이 다시 실패할 수 있습니다.</p>
+<p>그러나 이번 복구 실행은 운영자 검수용으로 격리되며 고객에게 발송되지 않습니다.</p>
+<p><a class="btn" style="background:#b45309;" href="/admin/incidents/{_esc(incident_id)}/approve-confirm">재실행 시도</a>
+<form method="post" action="/admin/incidents/{_esc(incident_id)}/dismiss" style="display:inline-block;margin-left:12px;">
+<button class="btn" type="submit" style="background:#475569;">재실행 안 함</button>
+</form></p>
 </div>
 """
     elif verdict == RETRY_BLOCKED:
         actions = """
 <div class="card warn">
 <button class="btn" type="button" disabled style="background:#94a3b8;cursor:not-allowed;">재실행 승인</button>
-<p><strong>현재 상태에서는 재실행할 수 없습니다.</strong> (RETRY_BLOCKED)</p>
+<p><strong>현재는 안전한 재실행 조건이 확보되지 않았습니다.</strong> (RETRY_BLOCKED)</p>
 </div>
 """
     else:
         actions = """
 <div class="card warn">
 <button class="btn" type="button" disabled style="background:#94a3b8;cursor:not-allowed;">재실행 승인</button>
-<p><strong>안전성이 확인되지 않아 재실행할 수 없습니다.</strong> (RETRY_STATUS_UNKNOWN)</p>
+<p><strong>재실행 부작용을 확정하지 못해 버튼을 열 수 없습니다.</strong> (RETRY_STATUS_UNKNOWN)</p>
+<p>원인 미확정만으로는 버튼을 닫지 않습니다. 고객 발송·SMTP 모호성 등 부작용이 불명일 때만 이 상태가 됩니다.</p>
 </div>
 """
 
-    if status == "recovery_failed" and not smoke and verdict == RETRY_SAFE_TO_RETRY:
+    if status == "recovery_failed" and not smoke and is_retry_actionable(verdict):
+        label = "재실행 승인" if verdict in {RETRY_SAFE, RETRY_SAFE_TO_RETRY} else "재실행 시도"
         actions = f"""
 <div class="card warn">
-<strong>이전 재실행 실패</strong> — 자동 재시도는 없습니다. SAFE_TO_RETRY이므로 운영자가 명시적으로 다시 승인할 수 있습니다.
-<p><a class="btn" style="background:#b91c1c;" href="/admin/incidents/{_esc(incident_id)}/approve-confirm">재실행 승인 검토</a></p>
+<strong>이전 재실행 실패</strong> — 자동 재시도는 없습니다. 운영자가 명시적으로 다시 승인할 수 있습니다.
+<p><a class="btn" style="background:#b91c1c;" href="/admin/incidents/{_esc(incident_id)}/approve-confirm">{_esc(label)}</a></p>
 </div>
 """
 
@@ -1036,6 +1050,7 @@ incident_id: <code>{_esc(incident_id)}</code><br>
 원 run_id: <code>{_esc(meta.get('original_run_id') or meta.get('smoke_run_id') or '(없음)')}</code><br>
 실패 단계: {_esc(meta.get('first_failed_stage') or '-')}<br>
 상태: {_esc(status)}<br>
+원인 판정: {_esc(root_cause)}<br>
 재실행 판정: {_esc(verdict)}<br>
 고객 발송 상태: {_esc(customer_status)}<br>
 기존 recovery: {_esc(meta.get('recovery_run_id') or '없음')}<br>
@@ -1061,8 +1076,12 @@ def admin_incident_approve_confirm(request: Request, incident_id: str):
     if need is not None:
         return need
     from natural_run_incident_store import (
+        RETRY_ALLOWED_WITH_WARNING,
+        RETRY_SAFE,
         RETRY_SAFE_TO_RETRY,
+        is_retry_actionable,
         load_incident,
+        normalize_retry_actionability,
         validate_incident_id,
     )
 
@@ -1073,7 +1092,7 @@ def admin_incident_approve_confirm(request: Request, incident_id: str):
         return HTMLResponse(_layout("Not found", "<p>장애 기록을 찾을 수 없습니다.</p>"), status_code=404)
 
     status = str(meta.get("status") or "")
-    verdict = str(meta.get("retry_verdict") or "")
+    verdict = normalize_retry_actionability(meta.get("retry_verdict"))
     smoke = bool(meta.get("smoke_failure") or meta.get("smoke_only") or meta.get("verification_only"))
     if smoke:
         inner = (
@@ -1087,12 +1106,28 @@ def admin_incident_approve_confirm(request: Request, incident_id: str):
             f"<p><a href=\"/admin/incidents/{_esc(incident_id)}\">← 상세</a></p>"
         )
         return HTMLResponse(_layout("Approve blocked", inner), status_code=400)
-    if verdict != RETRY_SAFE_TO_RETRY:
+    if not is_retry_actionable(verdict):
         inner = (
             f"<p class=\"warn\">재실행 판정 <code>{_esc(verdict)}</code> — 승인할 수 없습니다.</p>"
             f"<p><a href=\"/admin/incidents/{_esc(incident_id)}\">← 상세</a></p>"
         )
         return HTMLResponse(_layout("Approve blocked", inner), status_code=400)
+
+    if verdict == RETRY_ALLOWED_WITH_WARNING:
+        warn_block = """
+<p><strong>장애 원인이 완전히 제거되었는지는 확인되지 않았습니다.</strong><br>
+재실행이 다시 실패할 수 있습니다.</p>
+<p>그러나 이번 복구 실행은 운영자 검수용으로 격리되며<br>
+고객에게 발송되지 않습니다.</p>
+<p><strong>정확히 1회 재실행하시겠습니까?</strong></p>
+"""
+        submit_label = "1회 재실행"
+    else:
+        warn_block = """
+<p><strong>운영자 검수용 복구 실행을 정확히 1회 수행합니다.</strong><br>
+고객 발송은 하지 않습니다.</p>
+"""
+        submit_label = "재실행 승인"
 
     inner = f"""
 <div class="page-head">
@@ -1100,20 +1135,20 @@ def admin_incident_approve_confirm(request: Request, incident_id: str):
 <a href="/admin/incidents/{_esc(incident_id)}" class="btn" style="background:#475569;">취소</a>
 </div>
 <div class="card warn">
-<p><strong>이 자연실행을 운영자 검수용으로 정확히 1회 다시 실행합니다.</strong></p>
+{warn_block}
 <ul>
 <li>프로그램: {_esc(meta.get('program_display') or meta.get('program_id'))}</li>
 <li>원 예정 실행: {_esc(meta.get('kst_date'))} {_esc(meta.get('scheduled_slot'))} KST</li>
 <li>incident_id: <code>{_esc(incident_id)}</code></li>
 <li>원 run_id: <code>{_esc(meta.get('original_run_id') or '(없음)')}</code></li>
+<li>재실행 판정: <code>{_esc(verdict)}</code></li>
 </ul>
-<p>고객 발송은 수행하지 않습니다.<br>
-이미 recovery가 실행되었다면 다시 실행되지 않습니다.</p>
+<p>이미 recovery가 실행되었다면 다시 실행되지 않습니다.</p>
 </div>
 <form method="post" action="/admin/incidents/{_esc(incident_id)}/approve-recovery">
 <div class="form-actions">
 <a class="btn" style="background:#475569;margin-right:12px;" href="/admin/incidents/{_esc(incident_id)}">취소</a>
-<button class="btn" type="submit" style="background:#b91c1c;" id="approve-recovery-btn">재실행 승인</button>
+<button class="btn" type="submit" style="background:#b91c1c;" id="approve-recovery-btn">{_esc(submit_label)}</button>
 </div>
 </form>
 <script>
@@ -1149,7 +1184,7 @@ def admin_incident_approve_recovery(request: Request, incident_id: str):
     if need is not None:
         return need
     from natural_run_incident_store import (
-        RETRY_SAFE_TO_RETRY,
+        is_retry_actionable,
         load_incident,
         validate_incident_id,
     )
@@ -1163,9 +1198,9 @@ def admin_incident_approve_recovery(request: Request, incident_id: str):
             url=f"/admin/incidents/{incident_id}?recovery_error=smoke_or_verification_blocked",
             status_code=303,
         )
-    if str(meta.get("retry_verdict") or "") != RETRY_SAFE_TO_RETRY:
+    if not is_retry_actionable(meta.get("retry_verdict")):
         return RedirectResponse(
-            url=f"/admin/incidents/{incident_id}?recovery_error=verdict_not_safe",
+            url=f"/admin/incidents/{incident_id}?recovery_error=verdict_not_actionable",
             status_code=303,
         )
     result = execute_approved_recovery(incident_id)
