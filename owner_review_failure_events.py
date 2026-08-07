@@ -276,6 +276,27 @@ def emit_owner_review_run_failed_once(
     # One bare JSON object per line, on a logger whose formatter adds nothing,
     # so Cloud Logging can parse the entry into jsonPayload.
     event_logger.error(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    # Korean operator report (diagnose → report → wait). Never auto-retries.
+    try:
+        from natural_run_watchdog import notify_natural_run_incident_from_failure
+
+        notify_natural_run_incident_from_failure(
+            program_id=str(program_id or ""),
+            run_id=rid,
+            trigger_source=str(trigger_source or ""),
+            first_failed_stage=stage,
+            error_code=str(error_code or "unknown"),
+            issue_codes=list(issue_codes or []),
+            email_sent=bool(email_sent),
+            artifact_saved=bool(artifact_saved),
+            extra_fields=extra_fields,
+            dry_run=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "owner_review_failure_report_hook_failed error_type=%s",
+            type(exc).__name__,
+        )
     return True
 
 
