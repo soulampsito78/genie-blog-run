@@ -1,0 +1,18 @@
+{
+  "_fixture_note": "Redacted residual pattern from recovery #1 20260807_131133_keysuri_global_tech_96d921fa. Failed with keysuri_korean_connector_ellipsis_blocked after image generation; schema/scaffold OK. Ellipsis before U+201D curly double quote was not stripped by pre-patch delimiter class. No secrets.",
+  "incident_id": "2026-08-07_keysuri_global_tech_12-30",
+  "run_id": "20260807_131133_keysuri_global_tech_96d921fa",
+  "execution_class": "recovery",
+  "revision_at_failure": "genie-blog-run-00282-mff",
+  "commit_sha_at_failure": "23fbee81c452db7fedb80dc18db0ef391ed84a6d",
+  "error_code": "keysuri_korean_connector_ellipsis_blocked",
+  "issue_codes_observed": [
+    "keysuri_korean_connector_ellipsis_blocked",
+    "keysuri_korean_repeated_token_repaired"
+  ],
+  "visible_text_ellipsis_blocked": true,
+  "blocking_field_path": "generated_briefing.top_5_news.items[2].what_happened",
+  "blocking_pattern_example": "In July.. NVIDIA joined more than 200 companies and organizations in signing “Open Weights and American AI Leadership..” as an initiative.",
+  "not_display_shell": true,
+  "scaffold_relevant": false
+}

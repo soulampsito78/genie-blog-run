@@ -114,6 +114,57 @@ class KeysuriVisibleTextQualityTests(unittest.TestCase):
         self.assertIn("메가딜", result.text)
         self.assertIn("미르", result.text)
 
+    def test_recovery_131133_curly_double_quote_ellipsis_repairs(self) -> None:
+        """Production recovery #1 residual: English title `..` before U+201D.
+
+        Run 20260807_131133_keysuri_global_tech_96d921fa blocked with
+        keysuri_korean_connector_ellipsis_blocked after leaving
+        `Leadership… ”` because curly double quotes were not delimiters.
+        """
+        text = (
+            "In July.. NVIDIA joined more than 200 companies and organizations in "
+            "signing “Open Weights and American AI Leadership..” as an initiative."
+        )
+        result = repair_korean_connector_ellipsis_text(text)
+        self.assertTrue(result.found)
+        self.assertTrue(result.repaired)
+        self.assertFalse(result.blocked)
+        self.assertNotRegex(result.text, r"…|\.{2,}")
+        self.assertIn("Leadership", result.text)
+        self.assertIn("initiative", result.text)
+
+        payload = {
+            "top_5_news": {
+                "items": [
+                    {
+                        "what_happened": text,
+                        "briefing_item": {"what_happened": text},
+                    }
+                ]
+            }
+        }
+        repaired, fields = validate_and_repair_keysuri_visible_text_quality(payload)
+        self.assertEqual(fields["visible_text_quality_status"], "pass")
+        self.assertTrue(fields["visible_text_ellipsis_found"])
+        self.assertTrue(fields["visible_text_ellipsis_repaired"])
+        self.assertFalse(fields["visible_text_ellipsis_blocked"])
+        self.assertNotIn(
+            KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+            fields.get("visible_text_quality_issue_codes") or [],
+        )
+        self.assertNotRegex(
+            repaired["top_5_news"]["items"][0]["what_happened"], r"…|\.{2,}"
+        )
+
+    def test_opening_curly_double_quote_ellipsis_repairs(self) -> None:
+        result = repair_korean_connector_ellipsis_text(
+            "Signed the letter..“Open Weights” today."
+        )
+        self.assertTrue(result.found)
+        self.assertFalse(result.blocked)
+        self.assertNotRegex(result.text, r"…|\.{2,}")
+
+
     def test_summary_trailing_dots_repaired(self) -> None:
         """Source summary ending with '...': should repair by stripping."""
         text = "삼성전자와 SK하이닉스 등의 반도체 투자 계획이 전남광주의 해묵은 현안을 풀어낼 수 있다..."
