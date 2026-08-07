@@ -847,6 +847,7 @@ def admin_runs_list(request: Request):
 <div class="page-head">
 <h1>최근 실행 기록</h1>
 <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+<a href="/admin/incidents" class="btn" style="background:#b91c1c;">장애 보고 / 재실행 승인</a>
 <a href="/admin/costs" class="btn" style="background:#0f172a;">비용 ledger</a>
 <a href="/admin/notices" class="btn" style="background:#0f172a;">공지 메일 관리</a>
 <a href="/admin/customer-recipients" class="btn" style="background:#0f172a;">베타 고객 수신자 관리</a>
@@ -857,6 +858,168 @@ def admin_runs_list(request: Request):
 <div class="card"><div class="table-wrap">{table}</div></div>
 """
     return HTMLResponse(_layout("Runs", inner))
+
+
+@router.get("/admin/incidents", response_class=HTMLResponse)
+def admin_incidents_list(request: Request):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    from natural_run_incident_store import list_incidents
+
+    incidents = list_incidents(limit=50)
+    rows = []
+    for item in incidents:
+        iid = _esc(item.get("incident_id"))
+        rows.append(
+            "<tr>"
+            f"<td><a href=\"/admin/incidents/{iid}\">{iid}</a></td>"
+            f"<td>{_esc(item.get('program_display') or item.get('program_id'))}</td>"
+            f"<td>{_esc(item.get('kst_date'))} {_esc(item.get('scheduled_slot'))}</td>"
+            f"<td>{_esc(item.get('status'))}</td>"
+            f"<td>{_esc(item.get('retry_verdict'))}</td>"
+            f"<td>{_esc(item.get('report_sent_at') or '-')}</td>"
+            "</tr>"
+        )
+    table = (
+        "<table><thead><tr>"
+        "<th>incident_id</th><th>program</th><th>slot</th><th>status</th>"
+        "<th>retry_verdict</th><th>report_sent_at</th>"
+        "</tr></thead><tbody>"
+        + ("".join(rows) if rows else "<tr><td colspan=\"6\">장애 보고가 없습니다.</td></tr>")
+        + "</tbody></table>"
+    )
+    inner = f"""
+<div class="page-head">
+<h1>자연실행 장애 보고</h1>
+<div style="display:flex;gap:8px;flex-wrap:wrap;">
+<a href="/admin/runs" class="btn" style="background:#475569;">← 실행 목록</a>
+</div>
+</div>
+<p>장애 발생만으로 재실행되지 않습니다. 상세에서 명시적으로 승인해야 합니다.</p>
+<div class="card"><div class="table-wrap">{table}</div></div>
+"""
+    return HTMLResponse(_layout("Incidents", inner))
+
+
+@router.get("/admin/incidents/{incident_id}", response_class=HTMLResponse)
+def admin_incident_detail(request: Request, incident_id: str):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    from natural_run_incident_store import load_incident, validate_incident_id
+
+    if not validate_incident_id(incident_id):
+        return HTMLResponse(_layout("Not found", "<p>잘못된 incident_id</p>"), status_code=404)
+    meta = load_incident(incident_id)
+    if not meta:
+        return HTMLResponse(_layout("Not found", "<p>장애 기록을 찾을 수 없습니다.</p>"), status_code=404)
+
+    warn = ""
+    if request.query_params.get("recovery_error"):
+        warn = f'<div class="warn">재실행 차단: {_esc(request.query_params.get("recovery_error"))}</div>'
+    if request.query_params.get("recovery_ok") == "1":
+        warn = (
+            f'<div class="card">재실행이 완료되었습니다. recovery run_id='
+            f'{_esc(request.query_params.get("recovery_run_id"))}</div>'
+        )
+
+    cause = meta.get("confirmed_cause")
+    cause_ko = "원인 미확정" if cause in (None, "") else str(cause)
+    stage_rows = "".join(
+        f"<tr><td>{_esc(k)}</td><td>{_esc(v)}</td></tr>"
+        for k, v in (meta.get("stage_map") or {}).items()
+    )
+    status = str(meta.get("status") or "")
+    can_approve = status in {"reported", "open", "recovery_failed"}
+    actions = ""
+    if can_approve:
+        actions = f"""
+<div class="card warn">
+<strong>재실행 승인 전 확인</strong>
+<ul>
+<li>프로그램: {_esc(meta.get('program_display') or meta.get('program_id'))}</li>
+<li>서비스 날짜: {_esc(meta.get('kst_date'))}</li>
+<li>원 실행 run_id: {_esc(meta.get('original_run_id') or '(없음)')}</li>
+<li>장애 원인: {_esc(cause_ko)}</li>
+<li>retry safety verdict: {_esc(meta.get('retry_verdict'))}</li>
+<li>예상 실행 범위: 운영자 검수용 생성 1회 (고객 발송 없음)</li>
+</ul>
+<p><strong>운영자 검수용 자연실행을 1회 다시 시도합니다. 고객 발송은 수행하지 않습니다.</strong></p>
+<form method="post" action="/admin/incidents/{_esc(incident_id)}/approve-recovery" style="display:inline-block;margin-right:12px;">
+<button class="btn" type="submit" style="background:#b91c1c;">재실행 승인</button>
+</form>
+<form method="post" action="/admin/incidents/{_esc(incident_id)}/dismiss" style="display:inline-block;">
+<button class="btn" type="submit" style="background:#475569;">재실행 안 함</button>
+</form>
+</div>
+"""
+    else:
+        actions = f'<p class="warn">현재 상태(<code>{_esc(status)}</code>)에서는 재실행 승인 버튼이 비활성입니다.</p>'
+
+    inner = f"""
+<div class="page-head">
+<h1>장애 상세</h1>
+<a href="/admin/incidents" class="btn" style="background:#475569;">← 목록</a>
+</div>
+{warn}
+<div class="card">
+<p>incident_id: <code>{_esc(incident_id)}</code><br>
+프로그램: {_esc(meta.get('program_display'))}<br>
+예정 실행: {_esc(meta.get('kst_date'))} {_esc(meta.get('scheduled_slot'))}<br>
+상태: {_esc(status)}<br>
+재실행 판정: {_esc(meta.get('retry_verdict'))}<br>
+권고: {_esc(meta.get('recommendation_ko'))}
+</p>
+<p><strong>요약</strong><br>{_esc(meta.get('summary_ko'))}</p>
+<p><strong>직접 원인</strong><br>{_esc(cause_ko)}</p>
+<table><thead><tr><th>단계</th><th>상태</th></tr></thead><tbody>{stage_rows}</tbody></table>
+</div>
+{actions}
+"""
+    return HTMLResponse(_layout(f"Incident {incident_id}", inner))
+
+
+@router.post("/admin/incidents/{incident_id}/dismiss")
+def admin_incident_dismiss(request: Request, incident_id: str):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    from natural_run_incident_store import dismiss_incident, validate_incident_id
+
+    if not validate_incident_id(incident_id):
+        return RedirectResponse(url="/admin/incidents?recovery_error=invalid_id", status_code=303)
+    dismiss_incident(incident_id)
+    return RedirectResponse(url=f"/admin/incidents/{incident_id}", status_code=303)
+
+
+@router.post("/admin/incidents/{incident_id}/approve-recovery")
+def admin_incident_approve_recovery(request: Request, incident_id: str):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    from natural_run_incident_store import validate_incident_id
+    from natural_run_recovery import execute_approved_recovery
+
+    if not validate_incident_id(incident_id):
+        return RedirectResponse(url="/admin/incidents?recovery_error=invalid_id", status_code=303)
+    result = execute_approved_recovery(incident_id)
+    if not result.get("ok") and result.get("error") == "recovery_lease_unavailable":
+        return RedirectResponse(
+            url=f"/admin/incidents/{incident_id}?recovery_error=lease_unavailable",
+            status_code=303,
+        )
+    if result.get("ok"):
+        rid = result.get("recovery_run_id") or ""
+        return RedirectResponse(
+            url=f"/admin/incidents/{incident_id}?recovery_ok=1&recovery_run_id={rid}",
+            status_code=303,
+        )
+    err = result.get("error") or "recovery_failed"
+    return RedirectResponse(
+        url=f"/admin/incidents/{incident_id}?recovery_error={err}",
+        status_code=303,
+    )
 
 
 @router.get("/admin/costs", response_class=HTMLResponse)
@@ -1088,6 +1251,16 @@ def admin_run_detail(request: Request, run_id: str):
         )
     delivery_sections = _render_delivery_report_sections(meta)
     cost_section = _render_cost_estimate_section(meta)
+    linked_incident_id = str(
+        meta.get("original_incident_id") or meta.get("incident_id") or ""
+    ).strip()
+    incident_link = ""
+    if linked_incident_id:
+        incident_link = (
+            f'<p><a class="btn" style="background:#b91c1c;" '
+            f'href="/admin/incidents/{_esc(linked_incident_id)}">'
+            f"장애 보고 / 재실행 승인 ({_esc(linked_incident_id)})</a></p>"
+        )
     meta_rows = "".join(
         f"<dt>{_esc(k)}</dt><dd>{_esc(v)}</dd>"
         for k, v in sorted(meta.items())
@@ -1106,6 +1279,7 @@ def admin_run_detail(request: Request, run_id: str):
 {warn}
 {delivery_sections}
 {cost_section}
+{incident_link}
 <div class="card">
 <dl class="meta">{meta_rows}</dl>
 <p>{email_link}</p>
