@@ -19,6 +19,7 @@ _TOKEN = "unit-test-internal-token"
 _GENIE_OWNER_REVIEW = "/internal/jobs/create-owner-review"
 _GENIE_TIMEOUT = "/internal/jobs/process-approval-timeouts"
 _KEYSURI = "/internal/jobs/create-keysuri-owner-review"
+_NATURAL_WATCHDOG = "/internal/jobs/natural-run-watchdog"
 
 _NATURAL_BODY = {
     "execution_class": "natural_scheduled",
@@ -36,6 +37,7 @@ class InternalJobsSharedAuthTests(unittest.TestCase):
         (_GENIE_OWNER_REVIEW, dict(_NATURAL_BODY)),
         (_GENIE_TIMEOUT, {}),
         (_KEYSURI, {"program_id": PROGRAM_KOREA, "dry_run": True}),
+        (_NATURAL_WATCHDOG, {}),
     )
 
     def setUp(self) -> None:
