@@ -866,6 +866,7 @@ def admin_incidents_list(request: Request):
     if need is not None:
         return need
     from natural_run_incident_store import list_incidents
+    from natural_run_reliability import NATURAL_SLOTS, load_readiness
 
     incidents = list_incidents(limit=50)
     rows = []
@@ -889,12 +890,39 @@ def admin_incidents_list(request: Request):
         + ("".join(rows) if rows else "<tr><td colspan=\"6\">장애 보고가 없습니다.</td></tr>")
         + "</tbody></table>"
     )
+    readiness_rows = []
+    for pid, slot in NATURAL_SLOTS.items():
+        meta = load_readiness(pid) or {}
+        status = meta.get("status") or "NOT_RUN"
+        readiness_rows.append(
+            "<tr>"
+            f"<td>{_esc(pid)}</td>"
+            f"<td>{_esc(slot)}</td>"
+            f"<td><strong>{_esc(status)}</strong></td>"
+            f"<td>{_esc(meta.get('checked_at') or '-')}</td>"
+            f"<td>{_esc(meta.get('deployed_revision') or '-')}</td>"
+            f"<td>{_esc(', '.join(meta.get('issue_codes') or []) or '-')}</td>"
+            "</tr>"
+        )
+    readiness_table = (
+        "<table><thead><tr>"
+        "<th>program</th><th>natural slot</th><th>precheck</th>"
+        "<th>last check</th><th>revision</th><th>issue codes</th>"
+        "</tr></thead><tbody>"
+        + "".join(readiness_rows)
+        + "</tbody></table>"
+    )
     inner = f"""
 <div class="page-head">
 <h1>자연실행 장애 보고</h1>
 <div style="display:flex;gap:8px;flex-wrap:wrap;">
 <a href="/admin/runs" class="btn" style="background:#475569;">← 실행 목록</a>
 </div>
+</div>
+<div class="card">
+<strong>사전점검 준비 상태</strong>
+<p style="font-size:12px;color:#555;">preflight_canary 결과만 표시합니다. 자연실행 incident와 섞지 않습니다.</p>
+<div class="table-wrap">{readiness_table}</div>
 </div>
 <p>장애 발생만으로 재실행되지 않습니다. 상세에서 명시적으로 승인해야 합니다.</p>
 <div class="card"><div class="table-wrap">{table}</div></div>

@@ -2772,6 +2772,7 @@ def run_keysuri_live_source_smoke(
     recipients: Optional[Sequence[str]] = None,
     html_out: Optional[Path] = None,
     source_pack_out: Optional[Path] = None,
+    frozen_source_pack_path: Optional[Path] = None,
     out_dir: Optional[Path] = None,
     repo_root: Optional[Path] = None,
     email_subject: Optional[str] = None,
@@ -2833,7 +2834,54 @@ def run_keysuri_live_source_smoke(
         "mutated_admin_runs": False,
     }
 
-    if not allow_network:
+    frozen_path = Path(frozen_source_pack_path) if frozen_source_pack_path else None
+    if frozen_path is not None:
+        # Reliability/preflight path: freeze selection, still allow Gemini.
+        try:
+            source_pack = json.loads(frozen_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return LiveSourceSmokeResult(
+                ok=False,
+                program_id=program_id,
+                source_pack_path=str(frozen_path),
+                html_path=str(html_path),
+                fetched_item_count=0,
+                feed_urls_used=[],
+                sample_marker_pass=False,
+                placeholder_gate_pass=False,
+                fetched_live_news=False,
+                use_gemini=use_gemini,
+                side_effects=side_effects,
+                error=f"frozen_source_pack_unreadable:{exc}",
+            )
+        if not isinstance(source_pack, dict):
+            return LiveSourceSmokeResult(
+                ok=False,
+                program_id=program_id,
+                source_pack_path=str(frozen_path),
+                html_path=str(html_path),
+                fetched_item_count=0,
+                feed_urls_used=[],
+                sample_marker_pass=False,
+                placeholder_gate_pass=False,
+                fetched_live_news=False,
+                use_gemini=use_gemini,
+                side_effects=side_effects,
+                error="frozen_source_pack_not_object",
+            )
+        feed_urls = []
+        src_n = len(source_pack.get("sources") or [])
+        fetched = [object()] * src_n  # length only; no live fetch
+        if source_pack_out is not None:
+            pack_path = Path(source_pack_out)
+            pack_path.parent.mkdir(parents=True, exist_ok=True)
+            pack_path.write_text(
+                json.dumps(source_pack, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        else:
+            pack_path = frozen_path
+    elif not allow_network:
         return LiveSourceSmokeResult(
             ok=False,
             program_id=program_id,
@@ -2848,86 +2896,86 @@ def run_keysuri_live_source_smoke(
             side_effects=side_effects,
             error="Network disabled (--no-network) but live source smoke requires fetch",
         )
-
-    feeds = _feeds_for_program(program_id)
-    feed_urls = [f["feed_url"] for f in feeds]
-    fetched: List[FetchedFeedItem] = []
-    per_feed = max(1, DEFAULT_ITEMS_PER_FEED)
-    fetch_errors: List[str] = []
-
-    for feed in feeds:
-        try:
-            fetched.extend(
-                fetch_feed_items(feed, max_items=per_feed, timeout_sec=DEFAULT_FETCH_TIMEOUT_SEC)
-            )
-        except (URLError, TimeoutError, ET.ParseError, ValueError) as exc:
-            fetch_errors.append(f"{feed['feed_id']}: {exc}")
-
-    if len(fetched) < max_items:
-        return LiveSourceSmokeResult(
-            ok=False,
-            program_id=program_id,
-            source_pack_path=str(pack_path),
-            html_path=str(html_path),
-            fetched_item_count=len(fetched),
-            feed_urls_used=feed_urls,
-            sample_marker_pass=False,
-            placeholder_gate_pass=False,
-            fetched_live_news=len(fetched) > 0,
-            use_gemini=use_gemini,
-            side_effects=side_effects,
-            error=(
-                f"Insufficient live feed items ({len(fetched)}); fetch errors: "
-                + "; ".join(fetch_errors[:5])
-            ),
-        )
-
-    side_effects["fetched_live_news"] = True
-    if program_id == PROGRAM_GLOBAL:
-        candidate_pack = build_live_candidate_source_pack(program_id, fetched)
-        selection = score_candidates_from_source_pack(candidate_pack)
-        source_pack = apply_scored_selection_to_source_pack(candidate_pack, selection)
-        debug_dir = preview_dir / "debug"
-        debug_dir.mkdir(parents=True, exist_ok=True)
-        dbg_stamp = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d_%H%M%S")
-        write_global_top5_selection_report(
-            selection,
-            debug_dir / f"global_top5_selection_{dbg_stamp}.json",
-        )
     else:
-        global_report: Optional[dict] = None
-        if global_selection_report_path is not None:
+        feeds = _feeds_for_program(program_id)
+        feed_urls = [f["feed_url"] for f in feeds]
+        fetched = []
+        per_feed = max(1, DEFAULT_ITEMS_PER_FEED)
+        fetch_errors: List[str] = []
+
+        for feed in feeds:
             try:
-                global_report = load_global_selection_report(global_selection_report_path)
-            except (FileNotFoundError, ValueError) as exc:
-                return LiveSourceSmokeResult(
-                    ok=False,
-                    program_id=program_id,
-                    source_pack_path=str(pack_path),
-                    html_path=str(html_path),
-                    fetched_item_count=len(fetched),
-                    feed_urls_used=feed_urls,
-                    sample_marker_pass=False,
-                    placeholder_gate_pass=False,
-                    fetched_live_news=True,
-                    use_gemini=use_gemini,
-                    side_effects=side_effects,
-                    error=str(exc),
+                fetched.extend(
+                    fetch_feed_items(feed, max_items=per_feed, timeout_sec=DEFAULT_FETCH_TIMEOUT_SEC)
                 )
-        candidate_pack = build_live_candidate_source_pack(program_id, fetched)
-        selection = score_korea_candidates_from_source_pack(
-            candidate_pack,
-            global_selection_report=global_report,
-        )
-        source_pack = apply_korea_scored_selection_to_source_pack(candidate_pack, selection)
-        debug_dir = preview_dir / "debug"
-        debug_dir.mkdir(parents=True, exist_ok=True)
-        dbg_stamp = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d_%H%M%S")
-        write_korea_top5_selection_report(
-            selection,
-            debug_dir / f"korea_top5_selection_{dbg_stamp}.json",
-        )
-    pack_path.write_text(json.dumps(source_pack, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            except (URLError, TimeoutError, ET.ParseError, ValueError) as exc:
+                fetch_errors.append(f"{feed['feed_id']}: {exc}")
+
+        if len(fetched) < max_items:
+            return LiveSourceSmokeResult(
+                ok=False,
+                program_id=program_id,
+                source_pack_path=str(pack_path),
+                html_path=str(html_path),
+                fetched_item_count=len(fetched),
+                feed_urls_used=feed_urls,
+                sample_marker_pass=False,
+                placeholder_gate_pass=False,
+                fetched_live_news=len(fetched) > 0,
+                use_gemini=use_gemini,
+                side_effects=side_effects,
+                error=(
+                    f"Insufficient live feed items ({len(fetched)}); fetch errors: "
+                    + "; ".join(fetch_errors[:5])
+                ),
+            )
+
+        side_effects["fetched_live_news"] = True
+        if program_id == PROGRAM_GLOBAL:
+            candidate_pack = build_live_candidate_source_pack(program_id, fetched)
+            selection = score_candidates_from_source_pack(candidate_pack)
+            source_pack = apply_scored_selection_to_source_pack(candidate_pack, selection)
+            debug_dir = preview_dir / "debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            dbg_stamp = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d_%H%M%S")
+            write_global_top5_selection_report(
+                selection,
+                debug_dir / f"global_top5_selection_{dbg_stamp}.json",
+            )
+        else:
+            global_report: Optional[dict] = None
+            if global_selection_report_path is not None:
+                try:
+                    global_report = load_global_selection_report(global_selection_report_path)
+                except (FileNotFoundError, ValueError) as exc:
+                    return LiveSourceSmokeResult(
+                        ok=False,
+                        program_id=program_id,
+                        source_pack_path=str(pack_path),
+                        html_path=str(html_path),
+                        fetched_item_count=len(fetched),
+                        feed_urls_used=feed_urls,
+                        sample_marker_pass=False,
+                        placeholder_gate_pass=False,
+                        fetched_live_news=True,
+                        use_gemini=use_gemini,
+                        side_effects=side_effects,
+                        error=str(exc),
+                    )
+            candidate_pack = build_live_candidate_source_pack(program_id, fetched)
+            selection = score_korea_candidates_from_source_pack(
+                candidate_pack,
+                global_selection_report=global_report,
+            )
+            source_pack = apply_korea_scored_selection_to_source_pack(candidate_pack, selection)
+            debug_dir = preview_dir / "debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            dbg_stamp = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d_%H%M%S")
+            write_korea_top5_selection_report(
+                selection,
+                debug_dir / f"korea_top5_selection_{dbg_stamp}.json",
+            )
+        pack_path.write_text(json.dumps(source_pack, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     prompt_input = build_keysuri_prompt_input(
         program_id, source_pack, trigger_source=trigger_source
@@ -2943,12 +2991,12 @@ def run_keysuri_live_source_smoke(
             feed_urls_used=feed_urls,
             sample_marker_pass=False,
             placeholder_gate_pass=False,
-            fetched_live_news=True,
+            fetched_live_news=bool(side_effects.get("fetched_live_news")),
             use_gemini=use_gemini,
             side_effects=side_effects,
             candidate_funnel_summary=funnel if isinstance(funnel, dict) else None,
             hold_reason=prompt_input.get("hold_reason"),
-            error=f"prompt_status={prompt_input.get('prompt_status')!r} after live source pack",
+            error=f"prompt_status={prompt_input.get('prompt_status')!r} after source pack",
         )
 
     generated_briefing = None

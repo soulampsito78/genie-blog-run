@@ -1,0 +1,356 @@
+{
+  "program_id": "keysuri_korea_tech",
+  "generated_at": "2026-06-09T00:28:29+09:00",
+  "notes": "Live source candidate pool — public RSS metadata fetch at 2026-06-09T00:28:29+09:00. Owner-review only; not customer-final.",
+  "sources": [
+    {
+      "source_id": "live-thelec-7868563f53",
+      "source_name": "더lec",
+      "source_url": "https://www.thelec.kr/news/articleView.html?idxno=57773",
+      "source_tier": "T2_TIER1_WIRE",
+      "feed_id": "thelec",
+      "fetched_at": "2026-06-09T00:28:29+09:00",
+      "published_at": "2026-06-09T00:28:26+09:00",
+      "title": "젠슨 황 만난 전영현 삼성전자 부회장 \"HBM4·파운드리 등 협력\"",
+      "publisher": "더lec",
+      "snippet": "삼성전자가 엔비디아와 SK하이닉스의 밀월 관계에도 자신감 있는 모습을 보였다. 삼성전자도 고대역폭메모리(HBM)와 반도체 위탁생산(파운드리) 등 엔비디아와 중장기 협력을 지속한다는 것이다.전영현 삼성전자 디바이스솔루션(DS) 부문장 부회장은 8일 서울 장충동 신라호텔 영빈관에서 \"저희는 저희 일을 열심히 할 것\"이라며 \"나중에 결과로써 보여드리겠다\"고 말했다. 젠슨 황 엔비디아 최고경영자(CEO)가 이날 SK하이닉스를 엔비디아의 최대 메모리 협력사라고 언급한 것에 대한 답변이다. 기술 경쟁력과 고객사 공급으로 성과를 입증하겠다는 의"
+    },
+    {
+      "source_id": "live-thelec-e0b79e8652",
+      "source_name": "더lec",
+      "source_url": "https://www.thelec.kr/news/articleView.html?idxno=57772",
+      "source_tier": "T2_TIER1_WIRE",
+      "feed_id": "thelec",
+      "fetched_at": "2026-06-09T00:28:29+09:00",
+      "published_at": "2026-06-09T00:28:26+09:00",
+      "title": "한미반도체, SK하이닉스 청주에 HBM4 TC 본더 첫 공급...442억 규모",
+      "publisher": "더lec",
+      "snippet": "한미반도체가 SK하이닉스에 6세대 고대역폭메모리(HBM4) 생산용 신형 열압착(TC) 본딩 장비(본더)를 첫 공급한다.8일 한미반도체는 SK하이닉스와 442억원 규모의 'TC 본더 4.5 그리핀' 장비 공급 계약을 체결했다고 공시했다. 계약 금액은 442억원으로, 지난해 한미반도체 연결 기준 매출의 7.6% 수준이다. 계약 기간은 오는 9월 2일까지다. 한미반도체는 해당일 전까지 장비를 공급하고 설치, 시운전, 점검 등을 모두 마칠 예정이다.SK하이닉스 관계자는 \"해당 장비는 청주에 있는 후공정 패키징 테스트(P&T) 생산 공장에"
+    },
+    {
+      "source_id": "live-aitimes-f757a0362a",
+      "source_name": "AI타임스",
+      "source_url": "https://www.aitimes.com/news/articleView.html?idxno=211497",
+      "source_tier": "T3_QUALITY_PRESS",
+      "feed_id": "aitimes",
+      "fetched_at": "2026-06-09T00:28:29+09:00",
+      "published_at": "2026-06-09T00:28:26+09:00",
+      "title": "젠슨 황, 방한 마지막 일정서 국내 AI 기업 독려...\"GPU 우선 공급”",
+      "publisher": "AI타임스",
+      "snippet": "젠슨 황 엔비디아 CEO가 8일 저녁 방한 마지막 일정으로 서울 신라호텔 영빈관에서 열린 ‘엔비디아 코리아 AI 에코시스템 리셉션’에 참석해 정부 및 국내 AI 기업, 스타트업을 독려하고 최신 GPU 우선 공급을 약속했다. ■ 엔비디아, GPU 차질 없이 공급...'베라 루빈' 우선 공급 약속먼저, 황 CEO는 배경훈 부총리 겸 과학기술정보통신부 장관과 국내 피지컬 AI 생태계를 중점으로 협력 방안을 논의했다. 화두는 ‘베라 루빈 기반의 AI 팩토리’ 도입이었다. 배경훈 부총리는 “APEC 협력 시 약속한 GPU 26만장의 차질 없"
+    },
+    {
+      "source_id": "live-venturesquare-240907114a",
+      "source_name": "벤처스퀘어",
+      "source_url": "https://www.venturesquare.net/1089881/",
+      "source_tier": "T3_QUALITY_PRESS",
+      "feed_id": "venturesquare",
+      "fetched_at": "2026-06-09T00:28:29+09:00",
+      "published_at": "2026-06-08T22:35:54+09:00",
+      "title": "원자력 기술, 스타트업 만난다…‘아토믹 네스트’ 5기 참가팀 모집",
+      "publisher": "벤처스퀘어",
+      "snippet": "한국원자력협력재단과 블루포인트파트너스가 원자력·방사선 기술 기반 창업 육성 프로그램 ‘아토믹 네스트’ 참가팀을 모집한다. SMR, 핵융합, 의료·우주 분야 등 원자력 융합 기술을 보유한 예비창업자와 초기 스타트업을 대상으로 사업화와 투자 연계 기회를 제공할 예정이다. The post 원자력 기술, 스타트업 만난다…‘아토믹 네스트’ 5기 참가팀 모집 appeared first on 벤처스퀘어 ."
+    },
+    {
+      "source_id": "live-zdkorea-05710adad8",
+      "source_name": "ZDNet Korea",
+      "source_url": "https://zdnet.co.kr/view/?no=20260608220303",
+      "source_tier": "T3_QUALITY_PRESS",
+      "feed_id": "zdkorea",
+      "fetched_at": "2026-06-09T00:28:29+09:00",
+      "published_at": "2026-06-08T22:05:51+09:00",
+      "title": "김성훈 업스테이지 대표 \"젠슨 황, 한국 AI 기업 투자 필요성 강조\"",
+      "publisher": "ZDNet Korea",
+      "snippet": "[지디넷코리아]\"오늘 밤 행사를 한마디로 표현하면 '투자'였다. 젠슨 황 엔비디아 최고경영자(CEO)가 한국 인공지능(AI) 기업들에 대한 투자가 필요하다는 이야기를 여러 차례 강조했다.\"김성훈 업스테이지 대표는 8일 서울 중구 신라호텔에서 엔비디아가 개최한 '코리아 AI 에코시스템 리셉션' 참석 후 취재진과 만나 이같이 밝혔다.코리아 AI 에코시스템 리셉션은 지난 5일부터 나흘간 이어진 황 CEO의 방한 일정을 마무리하는 자리로, 피지컬 AI 가치사슬에 속한 국내 AI·로봇 기업 대표들과의 비공개 간담회 형식으로 진행됐다.이날 현장엔 삼성전자와 SK하이닉스, SK텔레콤, 현대차그룹, LG전자, 네이버, 크래프톤 등 주요 대기업과 함께 업스테이지, NC AI, 프렌들리AI, 트웰브랩스, 파일러, 노타 등 AI 스타트업, 두산로보틱스, 리얼월드, 로보티즈, 엔닷라이트, 에이로봇 등 로봇·피지컬 AI 기업 등 총 18개사가 참석했다.반도체와 AI, 게임, 로봇 등 국내 AI 연관 산업 "
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "claim-live-thelec-7868563f53",
+      "statement": "젠슨 황 만난 전영현 삼성전자 부회장 \"HBM4·파운드리 등 협력\"",
+      "claim_type": "general",
+      "source_ids": [
+        "live-thelec-7868563f53"
+      ],
+      "confidence_label": "reported",
+      "category": "korea_semiconductor",
+      "headline": "젠슨 황 만난 전영현 삼성전자 부회장 \"HBM4·파운드리 등 협력\"",
+      "summary": "삼성전자가 엔비디아와 SK하이닉스의 밀월 관계에도 자신감 있는 모습을 보였다. 삼성전자도 고대역폭메모리(HBM)와 반도체 위탁생산(파운드리) 등 엔비디아와 중장기 협력을 지속한다는 것이다.전영현 삼성전자 디바이스솔루션(DS) 부문장 부회장은 8일 서울 장충동 신라호텔 영빈관에서 \"저희는 저희 일을 열심히 할 것\"이라며 \"나중에 결과로써 보여드리겠다\"고 말했다. 젠슨 황 엔비디아 최고경영자(CEO)가 이날 SK하이닉스를 엔비디아의 최대 메모리 협력사라고 언급한 것에 대한 답변이다. 기술 경쟁력과 고객사 공급으로 성과를 입증하겠다는 의",
+      "why_it_matters": "Public tech source (더lec) published: 젠슨 황 만난 전영현 삼성전자 부회장 \"HBM4·파운드리 등 협력\"",
+      "business_implication": "Live public source metadata may affect near-term tech watch priorities.",
+      "selection_score": 59,
+      "selection_score_before_diversity": 59,
+      "selection_rationale": "국내 총점 59점(구조 6, 실행 12, 국내관련 +9). 태그: korean_entity_mention, industrial_signal.",
+      "selection_classification": "watchlist",
+      "primary_category": "korea_semiconductor",
+      "secondary_categories": [
+        "korea_big_company_strategy",
+        "global_to_korea_translation",
+        "korea_consumer_mobility"
+      ],
+      "category_confidence": 0.95,
+      "reason_for_category": "keyword_hits:6 for korea_semiconductor",
+      "category_label_ko": "국내 반도체 / 장비 / 소재",
+      "owner_action_line": "내일 국내 반도체 / 장비 / 소재 관련 파트너·고객·입찰·정책 일정을 점검하세요.",
+      "next_day_impact_line": "내일 영향: 국내 반도체 / 장비 / 소재 신호가 의사결정·미팅 우선순위에 반영될 수 있습니다.",
+      "briefing_angle": "국내 적용",
+      "angle_chip": "국내 적용",
+      "hype_warning": false,
+      "press_release_only": false,
+      "selection_reason_tags": [
+        "korean_entity_mention",
+        "industrial_signal"
+      ],
+      "source_name": "더lec",
+      "source_domain": "thelec.kr",
+      "source_count_in_top5": 1,
+      "source_diversity_limited": false,
+      "source_concentration_limited": false,
+      "global_duplicate_detected": false,
+      "korea_angle_required": false,
+      "korea_angle_satisfied": false,
+      "duplicate_resolution": null,
+      "same_entity_not_same_story": false
+    },
+    {
+      "claim_id": "claim-live-thelec-e0b79e8652",
+      "statement": "한미반도체, SK하이닉스 청주에 HBM4 TC 본더 첫 공급...442억 규모",
+      "claim_type": "general",
+      "source_ids": [
+        "live-thelec-e0b79e8652"
+      ],
+      "confidence_label": "reported",
+      "category": "korea_semiconductor",
+      "headline": "한미반도체, SK하이닉스 청주에 HBM4 TC 본더 첫 공급...442억 규모",
+      "summary": "한미반도체가 SK하이닉스에 6세대 고대역폭메모리(HBM4) 생산용 신형 열압착(TC) 본딩 장비(본더)를 첫 공급한다.8일 한미반도체는 SK하이닉스와 442억원 규모의 'TC 본더 4.5 그리핀' 장비 공급 계약을 체결했다고 공시했다. 계약 금액은 442억원으로, 지난해 한미반도체 연결 기준 매출의 7.6% 수준이다. 계약 기간은 오는 9월 2일까지다. 한미반도체는 해당일 전까지 장비를 공급하고 설치, 시운전, 점검 등을 모두 마칠 예정이다.SK하이닉스 관계자는 \"해당 장비는 청주에 있는 후공정 패키징 테스트(P&T) 생산 공장에",
+      "why_it_matters": "Public tech source (더lec) published: 한미반도체, SK하이닉스 청주에 HBM4 TC 본더 첫 공급...442억 규모",
+      "business_implication": "Live public source metadata may affect near-term tech watch priorities.",
+      "selection_score": 58,
+      "selection_score_before_diversity": 58,
+      "selection_rationale": "국내 총점 58점(구조 15, 실행 6, 국내관련 +9). 태그: korean_entity_mention, industrial_signal.",
+      "selection_classification": "watchlist",
+      "primary_category": "korea_semiconductor",
+      "secondary_categories": [
+        "korea_big_company_strategy",
+        "korea_robotics_manufacturing"
+      ],
+      "category_confidence": 0.95,
+      "reason_for_category": "keyword_hits:6 for korea_semiconductor",
+      "category_label_ko": "국내 반도체 / 장비 / 소재",
+      "owner_action_line": "내일 국내 반도체 / 장비 / 소재 관련 파트너·고객·입찰·정책 일정을 점검하세요.",
+      "next_day_impact_line": "내일 영향: 국내 반도체 / 장비 / 소재 신호가 의사결정·미팅 우선순위에 반영될 수 있습니다.",
+      "briefing_angle": "국내 적용",
+      "angle_chip": "국내 적용",
+      "hype_warning": false,
+      "press_release_only": false,
+      "selection_reason_tags": [
+        "korean_entity_mention",
+        "industrial_signal"
+      ],
+      "source_name": "더lec",
+      "source_domain": "thelec.kr",
+      "source_count_in_top5": 2,
+      "source_diversity_limited": false,
+      "source_concentration_limited": false,
+      "global_duplicate_detected": false,
+      "korea_angle_required": false,
+      "korea_angle_satisfied": false,
+      "duplicate_resolution": null,
+      "same_entity_not_same_story": false
+    },
+    {
+      "claim_id": "claim-live-aitimes-f757a0362a",
+      "statement": "젠슨 황, 방한 마지막 일정서 국내 AI 기업 독려...\"GPU 우선 공급”",
+      "claim_type": "general",
+      "source_ids": [
+        "live-aitimes-f757a0362a"
+      ],
+      "confidence_label": "reported",
+      "category": "korea_ai_enterprise",
+      "headline": "젠슨 황, 방한 마지막 일정서 국내 AI 기업 독려...\"GPU 우선 공급”",
+      "summary": "젠슨 황 엔비디아 CEO가 8일 저녁 방한 마지막 일정으로 서울 신라호텔 영빈관에서 열린 ‘엔비디아 코리아 AI 에코시스템 리셉션’에 참석해 정부 및 국내 AI 기업, 스타트업을 독려하고 최신 GPU 우선 공급을 약속했다. ■ 엔비디아, GPU 차질 없이 공급...'베라 루빈' 우선 공급 약속먼저, 황 CEO는 배경훈 부총리 겸 과학기술정보통신부 장관과 국내 피지컬 AI 생태계를 중점으로 협력 방안을 논의했다. 화두는 ‘베라 루빈 기반의 AI 팩토리’ 도입이었다. 배경훈 부총리는 “APEC 협력 시 약속한 GPU 26만장의 차질 없",
+      "why_it_matters": "Public tech source (AI타임스) published: 젠슨 황, 방한 마지막 일정서 국내 AI 기업 독려...\"GPU 우선 공급”",
+      "business_implication": "Live public source metadata may affect near-term tech watch priorities.",
+      "selection_score": 60,
+      "selection_score_before_diversity": 60,
+      "selection_rationale": "국내 총점 60점(구조 6, 실행 9, 국내관련 +11). 태그: korean_entity_mention, global_to_korea_translation.",
+      "selection_classification": "top5_candidate",
+      "primary_category": "global_to_korea_translation",
+      "secondary_categories": [
+        "korea_policy_regulation",
+        "korea_startup_investment"
+      ],
+      "category_confidence": 0.69,
+      "reason_for_category": "keyword_hits:2 for global_to_korea_translation",
+      "category_label_ko": "글로벌→한국 번역 신호",
+      "owner_action_line": "내일 글로벌→한국 번역 신호 관련 파트너·고객·입찰·정책 일정을 점검하세요.",
+      "next_day_impact_line": "내일 영향: 글로벌→한국 번역 신호 신호가 의사결정·미팅 우선순위에 반영될 수 있습니다.",
+      "briefing_angle": "국내 적용",
+      "angle_chip": "국내 적용",
+      "hype_warning": false,
+      "press_release_only": false,
+      "selection_reason_tags": [
+        "korean_entity_mention",
+        "global_to_korea_translation"
+      ],
+      "source_name": "AI타임스",
+      "source_domain": "aitimes.com",
+      "source_count_in_top5": 1,
+      "source_diversity_limited": false,
+      "source_concentration_limited": false,
+      "global_duplicate_detected": false,
+      "korea_angle_required": false,
+      "korea_angle_satisfied": false,
+      "duplicate_resolution": null,
+      "same_entity_not_same_story": false
+    },
+    {
+      "claim_id": "claim-live-venturesquare-240907114a",
+      "statement": "원자력 기술, 스타트업 만난다…‘아토믹 네스트’ 5기 참가팀 모집",
+      "claim_type": "general",
+      "source_ids": [
+        "live-venturesquare-240907114a"
+      ],
+      "confidence_label": "reported",
+      "category": "korea_startup_investment",
+      "headline": "원자력 기술, 스타트업 만난다…‘아토믹 네스트’ 5기 참가팀 모집",
+      "summary": "한국원자력협력재단과 블루포인트파트너스가 원자력·방사선 기술 기반 창업 육성 프로그램 ‘아토믹 네스트’ 참가팀을 모집한다. SMR, 핵융합, 의료·우주 분야 등 원자력 융합 기술을 보유한 예비창업자와 초기 스타트업을 대상으로 사업화와 투자 연계 기회를 제공할 예정이다. The post 원자력 기술, 스타트업 만난다…‘아토믹 네스트’ 5기 참가팀 모집 appeared first on 벤처스퀘어 .",
+      "why_it_matters": "Public tech source (벤처스퀘어) published: 원자력 기술, 스타트업 만난다…‘아토믹 네스트’ 5기 참가팀 모집",
+      "business_implication": "Live public source metadata may affect near-term tech watch priorities.",
+      "selection_score": 60,
+      "selection_score_before_diversity": 60,
+      "selection_rationale": "국내 총점 60점(구조 7, 실행 13, 국내관련 +10). 태그: korean_entity_mention, policy_capital_signal.",
+      "selection_classification": "top5_candidate",
+      "primary_category": "korea_startup_investment",
+      "secondary_categories": [],
+      "category_confidence": 0.69,
+      "reason_for_category": "keyword_hits:2 for korea_startup_investment",
+      "category_label_ko": "국내 스타트업 / 투자 / M&A",
+      "owner_action_line": "내일 국내 스타트업 / 투자 / M&A 관련 파트너·고객·입찰·정책 일정을 점검하세요.",
+      "next_day_impact_line": "내일 영향: 국내 스타트업 / 투자 / M&A 신호가 의사결정·미팅 우선순위에 반영될 수 있습니다.",
+      "briefing_angle": "국내 적용",
+      "angle_chip": "국내 적용",
+      "hype_warning": false,
+      "press_release_only": false,
+      "selection_reason_tags": [
+        "korean_entity_mention",
+        "policy_capital_signal"
+      ],
+      "source_name": "벤처스퀘어",
+      "source_domain": "venturesquare.net",
+      "source_count_in_top5": 1,
+      "source_diversity_limited": false,
+      "source_concentration_limited": false,
+      "global_duplicate_detected": false,
+      "korea_angle_required": false,
+      "korea_angle_satisfied": false,
+      "duplicate_resolution": null,
+      "same_entity_not_same_story": false
+    },
+    {
+      "claim_id": "claim-live-zdkorea-05710adad8",
+      "statement": "김성훈 업스테이지 대표 \"젠슨 황, 한국 AI 기업 투자 필요성 강조\"",
+      "claim_type": "general",
+      "source_ids": [
+        "live-zdkorea-05710adad8"
+      ],
+      "confidence_label": "reported",
+      "category": "global_to_korea_translation",
+      "headline": "김성훈 업스테이지 대표 \"젠슨 황, 한국 AI 기업 투자 필요성 강조\"",
+      "summary": "[지디넷코리아]\"오늘 밤 행사를 한마디로 표현하면 '투자'였다. 젠슨 황 엔비디아 최고경영자(CEO)가 한국 인공지능(AI) 기업들에 대한 투자가 필요하다는 이야기를 여러 차례 강조했다.\"김성훈 업스테이지 대표는 8일 서울 중구 신라호텔에서 엔비디아가 개최한 '코리아 AI 에코시스템 리셉션' 참석 후 취재진과 만나 이같이 밝혔다.코리아 AI 에코시스템 리셉션은 지난 5일부터 나흘간 이어진 황 CEO의 방한 일정을 마무리하는 자리로, 피지컬 AI 가치사슬에 속한 국내 AI·로봇 기업 대표들과의 비공개 간담회 형식으로 진행됐다.이날 현장엔 삼성전자와 SK하이닉스, SK텔레콤, 현대차그룹, LG전자, 네이버, 크래프톤 등 주요 대기업과 함께 업스테이지, NC AI, 프렌들리AI, 트웰브랩스, 파일러, 노타 등 AI 스타트업, 두산로보틱스, 리얼월드, 로보티즈, 엔닷라이트, 에이로봇 등 로봇·피지컬 AI 기업 등 총 18개사가 참석했다.반도체와 AI, 게임, 로봇 등 국내 AI 연관 산업 ",
+      "why_it_matters": "Public tech source (ZDNet Korea) published: 김성훈 업스테이지 대표 \"젠슨 황, 한국 AI 기업 투자 필요성 강조\"",
+      "business_implication": "Live public source metadata may affect near-term tech watch priorities.",
+      "selection_score": 64,
+      "selection_score_before_diversity": 64,
+      "selection_rationale": "국내 총점 64점(구조 15, 실행 9, 국내관련 +6). 태그: korean_entity_mention.",
+      "selection_classification": "top5_candidate",
+      "primary_category": "korea_big_company_strategy",
+      "secondary_categories": [
+        "global_to_korea_translation",
+        "korea_semiconductor",
+        "korea_robotics_manufacturing"
+      ],
+      "category_confidence": 0.95,
+      "reason_for_category": "keyword_hits:7 for korea_big_company_strategy",
+      "category_label_ko": "국내 대기업 테크 전략",
+      "owner_action_line": "내일 국내 대기업 테크 전략 관련 파트너·고객·입찰·정책 일정을 점검하세요.",
+      "next_day_impact_line": "내일 영향: 국내 대기업 테크 전략 신호가 의사결정·미팅 우선순위에 반영될 수 있습니다.",
+      "briefing_angle": "국내 적용",
+      "angle_chip": "국내 적용",
+      "hype_warning": false,
+      "press_release_only": false,
+      "selection_reason_tags": [
+        "korean_entity_mention"
+      ],
+      "source_name": "ZDNet Korea",
+      "source_domain": "zdnet.co.kr",
+      "source_count_in_top5": 1,
+      "source_diversity_limited": false,
+      "source_concentration_limited": false,
+      "global_duplicate_detected": false,
+      "korea_angle_required": false,
+      "korea_angle_satisfied": false,
+      "duplicate_resolution": null,
+      "same_entity_not_same_story": false
+    }
+  ],
+  "korea_top5_selection": {
+    "generated_at": "2026-06-09T00:28:29+09:00",
+    "policy": "keysuri_korea_top5_selection_v2_duplicate_guard",
+    "duplicate_guard_status": "not_applied_no_global_report",
+    "global_story_count": 0,
+    "duplicate_detected_count": 0,
+    "duplicate_penalized_count": 0,
+    "duplicate_allowed_with_korea_angle_count": 0,
+    "selected_source_ids": [
+      "live-thelec-7868563f53",
+      "live-venturesquare-240907114a",
+      "live-zdkorea-05710adad8",
+      "live-aitimes-f757a0362a",
+      "live-thelec-e0b79e8652"
+    ],
+    "selected_scores": [
+      59,
+      60,
+      64,
+      60,
+      58
+    ],
+    "selected_scores_before_diversity": [
+      59,
+      60,
+      64,
+      60,
+      58
+    ],
+    "selected_primary_categories": [
+      "korea_semiconductor",
+      "korea_startup_investment",
+      "korea_big_company_strategy",
+      "global_to_korea_translation",
+      "korea_semiconductor"
+    ],
+    "final_category_distribution": {
+      "korea_semiconductor": 2,
+      "korea_startup_investment": 1,
+      "korea_big_company_strategy": 1,
+      "global_to_korea_translation": 1
+    },
+    "final_source_distribution": {
+      "thelec": 2,
+      "venturesquare": 1,
+      "zdkorea": 1,
+      "aitimes": 1
+    },
+    "diversity_limited_by_source_pool": false,
+    "diversity_quota_decisions": [
+      "selected:mandatory_industrial_slot:korea_semiconductor:젠슨 황 만난 전영현 삼성전자 부회장 \"HBM4·파운드리 등 협력\"",
+      "selected:mandatory_policy_capital_slot:korea_startup_investment:원자력 기술, 스타트업 만난다…‘아토믹 네스트’ 5기 참가팀 모집",
+      "selected:score_rank:korea_big_company_strategy:김성훈 업스테이지 대표 \"젠슨 황, 한국 AI 기업 투자 필요성 강조\"",
+      "selected:score_rank:global_to_korea_translation:젠슨 황, 방한 마지막 일정서 국내 AI 기업 독려...\"GPU 우선 공급”",
+      "selected:score_rank:korea_semiconductor:한미반도체, SK하이닉스 청주에 HBM4 TC 본더 첫 공급...442억 규모"
+    ],
+    "watchlist_count": 10,
+    "rejected_count": 20
+  }
+}

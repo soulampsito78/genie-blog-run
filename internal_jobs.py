@@ -109,6 +109,14 @@ class KeysuriOwnerReviewJobRequest(BaseModel):
     trigger_source: str = DEFAULT_TRIGGER_SOURCE
 
 
+class NaturalRunPreflightRequest(BaseModel):
+    program_id: str
+    scheduled_service_date: Optional[str] = None
+    scheduled_slot: Optional[str] = None
+    execution_class: str = "preflight_canary"
+    alert_on_fail: bool = True
+
+
 def _internal_job_token() -> str:
     return os.getenv("GENIE_INTERNAL_JOB_TOKEN", "").strip()
 
@@ -744,6 +752,61 @@ def natural_run_watchdog_endpoint(
     summary["auto_retry"] = 0
     summary["customer_send"] = 0
     return JSONResponse(status_code=200, content=summary)
+
+
+@router.post("/internal/jobs/natural-run-preflight")
+def natural_run_preflight_endpoint(
+    request: Request,
+    body: NaturalRunPreflightRequest,
+    x_genie_internal_job_token: Optional[str] = Header(None, alias="X-Genie-Internal-Job-Token"),
+):
+    """Weekday pre-natural preflight: generation/validation only.
+
+    Never image, never owner-review SMTP, never customer, never natural-slot
+    completion, never auto-recovery. Failed preflight does not disable Scheduler.
+    """
+    auth_fail = _verify_internal_job_token(request, x_genie_internal_job_token)
+    if auth_fail is not None:
+        return auth_fail
+
+    from natural_run_reliability import run_natural_preflight
+    from today_genie_execution_identity import EXECUTION_CLASS_PREFLIGHT_CANARY
+
+    if str(body.execution_class or "").strip() != EXECUTION_CLASS_PREFLIGHT_CANARY:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "error": "execution_class_must_be_preflight_canary",
+            },
+        )
+
+    try:
+        readiness = run_natural_preflight(
+            body.program_id,
+            scheduled_service_date=body.scheduled_service_date,
+            scheduled_slot=body.scheduled_slot,
+            alert_on_fail=body.alert_on_fail,
+        )
+    except Exception as exc:
+        logger.exception("natural-run-preflight failed program=%s", body.program_id)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": "preflight_failed",
+                "error_type": type(exc).__name__,
+                "program_id": body.program_id,
+                "customer_send": 0,
+                "natural_slot_mutation": 0,
+            },
+        )
+
+    readiness["customer_send"] = 0
+    readiness["natural_slot_mutation"] = 0
+    readiness["auto_retry"] = 0
+    status = 200 if readiness.get("status") in {"PRECHECK_PASS", "PRECHECK_FAIL"} else 500
+    return JSONResponse(status_code=status, content=readiness)
 
 
 @router.post("/internal/jobs/create-keysuri-owner-review")
