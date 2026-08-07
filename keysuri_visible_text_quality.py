@@ -28,6 +28,39 @@ _SPACE_RE = re.compile(r"\s+")
 _TAG_RE = re.compile(r"<[^>]+>")
 _STYLE_SCRIPT_RE = re.compile(r"<(?:style|script)[^>]*>.*?</(?:style|script)>", re.IGNORECASE | re.DOTALL)
 _EMAIL_RE = re.compile(r"([A-Za-z0-9._%+-]{2})[A-Za-z0-9._%+-]*(@[A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+
+# Structural connector-ellipsis grammar (not a growing char blacklist).
+# LEFT edge: word char OR a closing delimiter/quote that can precede a bridge.
+# RIGHT edge (content): word char OR an opening delimiter/quote.
+# RIGHT edge (punct): clause/sentence punctuation that should absorb the bridge.
+_WORD_CHAR = r"A-Za-z0-9가-힣"
+_CLOSING_DELIM = (
+    r"'"  # ASCII apostrophe / closer (Korea 18:30: '3파전'…삼성)
+    r"\""
+    r"\u2019\u201d"  # ’ ”
+    r"」』\)\]\}>"
+)
+_OPENING_DELIM = (
+    r"'"
+    r"\""
+    r"\u2018\u201c"  # ‘ “
+    r"「『\(\[\{\<"
+)
+# Right edge also accepts closing quotes/brackets: Global 13:11 residual was
+# word…closing-curly-quote (`Leadership… ”`). Closing on the left covers Korea
+# 18:30 (`'3파전'…삼성`); closing on the right covers Global 13:11.
+_RIGHT_EDGE = _OPENING_DELIM + _CLOSING_DELIM
+_CLAUSE_PUNCT = r"[,:;·|/／]"
+_SENTENCE_PUNCT = r"[.!?。！？]"
+_ZW_NBSP_RE = re.compile(r"[\u00a0\u200b\u200c\u200d\ufeff]")
+
+_CONNECTOR_TO_CONTENT_RE = re.compile(
+    rf"(?<=[{_WORD_CHAR}{_CLOSING_DELIM}])\s*…\s*(?=[{_WORD_CHAR}{_RIGHT_EDGE}])"
+)
+_CONNECTOR_TO_PUNCT_RE = re.compile(
+    rf"(?<=[{_WORD_CHAR}{_CLOSING_DELIM}])\s*…\s*(?={_CLAUSE_PUNCT}|{_SENTENCE_PUNCT})"
+)
+_TRAILING_ELLIPSIS_RE = re.compile(r"\s*…\s*$")
 _SKIP_KEY_TOKENS = (
     "url",
     "uri",
@@ -93,13 +126,23 @@ def contains_connector_ellipsis(value: Any) -> bool:
     return bool(_ELLIPSIS_RE.search(str(value or "")))
 
 
+def _normalize_ellipsis_unicode(text: str) -> str:
+    """Normalize punctuation variants before connector evaluation."""
+    out = _ZW_NBSP_RE.sub(" ", text)
+    # ASCII / fullwidth repeated dots → canonical ellipsis
+    out = re.sub(r"\.{2,}", "…", out)
+    out = re.sub(r"。{2,}", "…", out)
+    # Collapse whitespace around ellipsis for stable lookbehind/lookahead.
+    out = re.sub(r"\s*…\s*", "…", out)
+    return out
+
+
 def repair_korean_connector_ellipsis_text(value: Any) -> EllipsisRepairResult:
     original = str(value or "")
     if not contains_connector_ellipsis(original):
         return EllipsisRepairResult(original, found=False, repaired=False, blocked=False)
 
-    text = original
-    text = re.sub(r"\.{2,}", "…", text)
+    text = _normalize_ellipsis_unicode(original)
 
     if (
         "대규모 AI 생산을 위한" in text
@@ -131,23 +174,14 @@ def repair_korean_connector_ellipsis_text(value: Any) -> EllipsisRepairResult:
     for pattern, repl in replacements:
         repaired = re.sub(pattern, repl, repaired)
 
-    # Mid-text ellipsis between alphanumeric/Korean characters
-    repaired = re.sub(r"(?<=[A-Za-z0-9가-힣])\s*…\s*(?=[A-Za-z0-9가-힣])", " ", repaired)
-    # Mid-text ellipsis before quotes, brackets, or other delimiters.
-    # Include curly double quotes (U+201C/U+201D): recovery
-    # 20260807_131133_keysuri_global_tech_96d921fa left a residual
-    # `Leadership… ”` block because only straight/"smart-single" quotes
-    # were recognized as delimiters.
-    repaired = re.sub(
-        r"(?<=[A-Za-z0-9가-힣])\s*…\s*(?=['\u2018\u2019'\"\u201c\u201d「『\(\[\u3008\u300A])",
-        " ",
-        repaired,
-    )
-    # Terminal trailing ellipsis at end of text: strip to sentence period
-    repaired = re.sub(r"\s*…\s*$", "", repaired)
-    # Ellipsis immediately before sentence-ending punctuation
-    repaired = re.sub(r"\s*…\s*(?=[.!?。！？])", "", repaired)
-    repaired = re.sub(r"\s+([,.!?])", r"\1", repaired)
+    # Structural bridge repairs (content…content / delim…content / content…punct).
+    # Korea 18:30 residual: closing ASCII quote then ellipsis then word
+    # (`'3파전'…삼성`) — prior Global curly-quote patch only covered word…opening.
+    repaired = _CONNECTOR_TO_CONTENT_RE.sub(" ", repaired)
+    repaired = _CONNECTOR_TO_PUNCT_RE.sub("", repaired)
+    # Terminal trailing ellipsis (sentence-final) — strip so residual does not block.
+    repaired = _TRAILING_ELLIPSIS_RE.sub("", repaired)
+    repaired = re.sub(r"\s+([,.:;!?·])", r"\1", repaired)
     repaired = re.sub(r"\s+", " ", repaired).strip()
 
     if contains_connector_ellipsis(repaired):
