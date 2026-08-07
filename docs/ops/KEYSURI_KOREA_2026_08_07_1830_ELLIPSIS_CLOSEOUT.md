@@ -39,3 +39,17 @@ Structural connector bridges (not a punctuation blacklist):
 `RETRY_STATUS_UNKNOWN` is reserved for unknowable **side effects**, not unexplained validator text.
 
 Validator failure + customer=0 + no owner mail → actionable (`ALLOWED_WITH_WARNING` or `SAFE` once repair proven).
+
+## Closeout (deployed)
+
+| Item | Value |
+|---|---|
+| Final status | `KEESURI_KOREA_1830_PATCHED_AND_RETRY_ENABLED` |
+| tested HEAD / origin/main | `d986dcd61840d4384a0df95ca07dc7ab9500a95b` |
+| revision | `genie-blog-run-00285-lkq` |
+| digest | `sha256:bb78e3ec860df5a8fca29266a7365eb96151869f032b772e5b3ad41cca1c057d` |
+| suite ×2 | `2675` / `2675` OK identical |
+| no-send replay | validation PASS; model/image/SMTP/customer/natural = 0 |
+| live incident | `ROOT_CAUSE_CONFIRMED` + `RETRY_SAFE` |
+| Admin button | ENABLED |
+| Recovery executed | NO |
