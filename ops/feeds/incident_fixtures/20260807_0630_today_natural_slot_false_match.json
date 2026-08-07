@@ -1,0 +1,64 @@
+{
+  "_fixture_note": "Redacted structural fixture for Today 06:30 NATURAL_SLOT_FALSE_MATCH. Same-KST-date QA run 20260807_003207_today_genie_255d3454 emailed successfully (execution_class=qa_manual) and was incorrectly treated as the natural slot completer. Missing natural identity (natural_scheduled + scheduled_slot=06:30) must NEVER qualify. No secrets / recipients / raw prompts.",
+  "incident_id": "2026-08-07_today_genie_06-30",
+  "program_id": "today_genie",
+  "scheduled_slot": "06:30",
+  "kst_date": "2026-08-07",
+  "revision_at_failure": "genie-blog-run-00274-j2h",
+  "commit_sha_at_failure": "50da284",
+  "failure_class": "EXECUTION_IDENTITY/NATURAL_SLOT_FALSE_MATCH",
+  "failure_stage": "natural_slot_duplicate_gate",
+  "issue_codes_observed": [
+    "qa_consumed_natural_slot",
+    "invalid_natural_slot_duplicate_match",
+    "invalid_natural_slot_match"
+  ],
+  "qa_artifact": {
+    "run_id": "20260807_003207_today_genie_255d3454",
+    "mode": "today_genie",
+    "program_id": "today_genie",
+    "execution_class": "qa_manual",
+    "email_sent": true,
+    "artifact_status": "emailed",
+    "validation_result": "pass",
+    "owner_review_status": "pending_review",
+    "trigger_source": "manual_qa",
+    "scheduled_slot": "",
+    "parent_run_id": null,
+    "workflow_status": "validated"
+  },
+  "missing_natural_identity": {
+    "execution_class_is_natural_scheduled": false,
+    "scheduled_slot_is_0630": false,
+    "natural_slot_key_present": false
+  },
+  "natural_request_at_incident": {
+    "execution_class": "natural_scheduled",
+    "scheduled_slot": "06:30",
+    "trigger_source": "scheduled_owner_review",
+    "scheduler_body_at_incident": {},
+    "http_status": 200,
+    "latency_seconds": 4.77,
+    "new_artifact_created": false,
+    "silent_skip": true
+  },
+  "expected_qualification": {
+    "qualifies": false,
+    "disqualify_reason": "execution_class_qa_manual"
+  },
+  "expected_gate_actions": {
+    "natural_request_with_qa_artifact_only": "admit",
+    "adversarial_force_treat_emailed_qa_as_natural": "reject_invalid_match",
+    "adversarial_force_date_only_match": "reject_invalid_match",
+    "legitimate_natural_duplicate_present": "skip_legitimate_duplicate",
+    "missing_execution_class_on_request": "fail_closed"
+  },
+  "invariant": "email_sent=true with execution_class=qa_manual and missing natural identity must NEVER qualify as natural completer",
+  "old_behavior": "find_scheduled_owner_review_for_kst_date matched any same-KST-date emailed Today run and silently skipped 06:30",
+  "side_effects_at_failure": {
+    "email_sent_for_natural": false,
+    "customer_send": 0,
+    "natural_artifact_count_for_kst_date": 0,
+    "qa_artifact_count_for_kst_date": 1
+  }
+}

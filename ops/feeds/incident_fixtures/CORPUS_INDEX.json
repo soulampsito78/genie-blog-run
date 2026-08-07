@@ -1,0 +1,85 @@
+{
+  "_index_note": "Authoritative 2026-08-07 production-failure regression corpus (incidents A–D). status=regressed means the failure class remains covered by permanent offline regression; fixtures are redacted (no secrets / raw prompts / recipients).",
+  "corpus_date": "2026-08-07",
+  "incidents": [
+    {
+      "incident_key": "A",
+      "program_id": "today_genie",
+      "run_id": "20260807_003207_today_genie_255d3454",
+      "incident_id": "2026-08-07_today_genie_06-30",
+      "failure_class": "EXECUTION_IDENTITY/NATURAL_SLOT_FALSE_MATCH",
+      "failure_stage": "natural_slot_duplicate_gate",
+      "issue_codes": [
+        "qa_consumed_natural_slot",
+        "invalid_natural_slot_duplicate_match",
+        "invalid_natural_slot_match"
+      ],
+      "fixture_path": "ops/feeds/incident_fixtures/20260807_0630_today_natural_slot_false_match.json",
+      "harness_path": "tests/test_today_natural_slot_incident_harness.py",
+      "closeout_doc": "docs/TODAY_GENIE_POST_MIGRATION_FIRST_NATURAL_RUN_INCIDENT_2026_08_07.md",
+      "invariant": "QA/manual/reissue/preview/legacy emailed artifacts must NEVER qualify as the natural 06:30 slot completer; only natural_scheduled + slot + email_sent terminal success may satisfy.",
+      "old_behavior": "Same-KST-date emailed QA artifact was treated as the natural slot completer; scheduler 06:30 returned HTTP 200 silent skip with no new artifact.",
+      "status": "regressed"
+    },
+    {
+      "incident_key": "B",
+      "program_id": "keysuri_global_tech",
+      "run_id": "20260807_123001_keysuri_global_tech_a349afa9",
+      "incident_id": "2026-08-07_keysuri_global_tech_12-30",
+      "failure_class": "MODEL_CONTRACT_MALFORMED",
+      "failure_stage": "generation_validation",
+      "issue_codes": [
+        "generated_status_invalid",
+        "operational_status_invalid",
+        "top_5_news_missing",
+        "deep_dive_missing",
+        "one_line_checkpoint_missing",
+        "closing_sources_missing",
+        "gemini_json_missing_required_keys",
+        "gemini_json_schema_validation_failed"
+      ],
+      "fixture_path": "ops/feeds/incident_fixtures/20260807_1230_keysuri_global_display_shell.json",
+      "harness_path": "tests/test_keysuri_global_20260807_1230_incident_harness.py",
+      "closeout_doc": "docs/ops/KEYSURI_GLOBAL_2026_08_07_1230_INCIDENT_CLOSEOUT.md",
+      "invariant": "Display-only JSON shells missing required contract keys must fail generation_validation (or be deterministically scaffolded from trusted TOP5); never reach owner-review SMTP as a valid briefing.",
+      "old_behavior": "Model returned display-only shell; GLOBAL_MALFORMED_CONTRACT LLM repair repeated the shell; run terminated at generation_validation.",
+      "status": "regressed"
+    },
+    {
+      "incident_key": "C",
+      "program_id": "keysuri_global_tech",
+      "run_id": "20260807_131133_keysuri_global_tech_96d921fa",
+      "incident_id": "2026-08-07_keysuri_global_tech_12-30",
+      "failure_class": "VISIBLE_TEXT_UNICODE_BOUNDARY",
+      "failure_stage": "generation_validation",
+      "issue_codes": [
+        "keysuri_korean_connector_ellipsis_blocked",
+        "keysuri_korean_repeated_token_repaired"
+      ],
+      "fixture_path": "ops/feeds/incident_fixtures/20260807_131133_keysuri_global_recovery1_ellipsis.json",
+      "harness_path": "tests/test_keysuri_global_20260807_131133_recovery1_ellipsis_harness.py",
+      "closeout_doc": "docs/ops/KEYSURI_GLOBAL_2026_08_07_FIRST_RECOVERY_FAILURE_FORENSIC.md",
+      "invariant": "Ellipsis before curly/straight quote and bracket delimiter families must normalize and repair as connector bridges; residual connector ellipsis must not hard-block salvageable prose.",
+      "old_behavior": "Ellipsis before U+201D curly double quote was not in the delimiter class; recovery #1 blocked with keysuri_korean_connector_ellipsis_blocked after image generation.",
+      "status": "regressed"
+    },
+    {
+      "incident_key": "D",
+      "program_id": "keysuri_korea_tech",
+      "run_id": "20260807_183002_keysuri_korea_tech_fc4ce837",
+      "incident_id": "2026-08-07_keysuri_korea_tech_18-30",
+      "failure_class": "VISIBLE_TEXT_CONNECTOR_BRIDGE",
+      "failure_stage": "generation_validation",
+      "issue_codes": [
+        "keysuri_korean_connector_ellipsis_blocked",
+        "keysuri_korean_repeated_token_repaired"
+      ],
+      "fixture_path": "ops/feeds/incident_fixtures/20260807_1830_keysuri_korea_ellipsis.json",
+      "harness_path": "tests/test_keysuri_korea_20260807_1830_ellipsis_harness.py",
+      "closeout_doc": "docs/ops/KEYSURI_KOREA_2026_08_07_1830_ELLIPSIS_CLOSEOUT.md",
+      "invariant": "Closing-delimiter → ellipsis → next lexical token bridges must repair to PASS; genuine truncation ellipsis remains BLOCKED.",
+      "old_behavior": "Global curly-quote patch covered word…opening/closing-curly only; Korea residual closing-ASCII-quote…Hangul ('3파전'…삼성) still blocked.",
+      "status": "regressed"
+    }
+  ]
+}

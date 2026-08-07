@@ -23,7 +23,7 @@ KEYSURI_YEAR_SPAN_DURATION_REPAIRED = "keysuri_year_span_duration_repaired"
 KEYSURI_YEAR_SPAN_DURATION_BLOCKED = "keysuri_year_span_duration_blocked"
 KEYSURI_KOREA_TOKEN_DUPLICATION_BLOCKED = "keysuri_korea_token_duplication_blocked"
 
-_ELLIPSIS_RE = re.compile(r"…|\.{2,}")
+_ELLIPSIS_RE = re.compile(r"…|\.{2,}|\u22ef|\u2025")
 _SPACE_RE = re.compile(r"\s+")
 _TAG_RE = re.compile(r"<[^>]+>")
 _STYLE_SCRIPT_RE = re.compile(r"<(?:style|script)[^>]*>.*?</(?:style|script)>", re.IGNORECASE | re.DOTALL)
@@ -38,12 +38,14 @@ _CLOSING_DELIM = (
     r"'"  # ASCII apostrophe / closer (Korea 18:30: '3파전'…삼성)
     r"\""
     r"\u2019\u201d"  # ’ ”
+    r"\u3009\u300b"  # 〉 》
     r"」』\)\]\}>"
 )
 _OPENING_DELIM = (
     r"'"
     r"\""
     r"\u2018\u201c"  # ‘ “
+    r"\u3008\u300a"  # 〈 《
     r"「『\(\[\{\<"
 )
 # Right edge also accepts closing quotes/brackets: Global 13:11 residual was
@@ -129,9 +131,15 @@ def contains_connector_ellipsis(value: Any) -> bool:
 def _normalize_ellipsis_unicode(text: str) -> str:
     """Normalize punctuation variants before connector evaluation."""
     out = _ZW_NBSP_RE.sub(" ", text)
+    # Unicode ellipsis equivalents → canonical U+2026
+    out = out.replace("\u22ef", "…")  # ⋯ MIDLINE HORIZONTAL ELLIPSIS
+    out = out.replace("\u2025", "…")  # ‥ TWO DOT LEADER
     # ASCII / fullwidth repeated dots → canonical ellipsis
     out = re.sub(r"\.{2,}", "…", out)
     out = re.sub(r"。{2,}", "…", out)
+    # Mixed single-dot + ellipsis forms (.… / ….)
+    out = re.sub(r"\.…|…\.", "…", out)
+    out = re.sub(r"…+", "…", out)
     # Collapse whitespace around ellipsis for stable lookbehind/lookahead.
     out = re.sub(r"\s*…\s*", "…", out)
     return out
