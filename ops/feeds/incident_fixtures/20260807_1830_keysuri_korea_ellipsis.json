@@ -1,0 +1,48 @@
+{
+  "_fixture_note": "Redacted Korea 18:30 natural failure 20260807_183002_keysuri_korea_tech_fc4ce837 on genie-blog-run-00284-h9d. Blocked by keysuri_korean_connector_ellipsis_blocked. Residual was closing ASCII apostrophe then U+2026 then Hangul ( '3파전'…삼성 ). Prior Global curly-quote patch only covered word…opening-delimiter, not closing-delimiter…word. No secrets.",
+  "incident_id": "2026-08-07_keysuri_korea_tech_18-30",
+  "run_id": "20260807_183002_keysuri_korea_tech_fc4ce837",
+  "program_id": "keysuri_korea_tech",
+  "scheduled_slot": "18:30",
+  "revision_at_failure": "genie-blog-run-00284-h9d",
+  "error_code": "keysuri_korean_connector_ellipsis_blocked",
+  "issue_codes_observed": [
+    "keysuri_korean_connector_ellipsis_blocked",
+    "keysuri_korean_repeated_token_repaired"
+  ],
+  "blocking_field_path": "generated_briefing.top_5_news.items[2].korean_title",
+  "blocking_pattern_example": "KDB생명 인수전, 한국투자·한화·흥국 '3파전'…삼성·교보 불참",
+  "blocking_window": "'3파전'…삼성",
+  "unicode_codepoints_around_ellipsis": [
+    {"offset": -8, "char": "흥", "codepoint": "U+D765"},
+    {"offset": -7, "char": "국", "codepoint": "U+AD6D"},
+    {"offset": -6, "char": " ", "codepoint": "U+0020"},
+    {"offset": -5, "char": "'", "codepoint": "U+0027"},
+    {"offset": -4, "char": "3", "codepoint": "U+0033"},
+    {"offset": -3, "char": "파", "codepoint": "U+D30C"},
+    {"offset": -2, "char": "전", "codepoint": "U+C804"},
+    {"offset": -1, "char": "'", "codepoint": "U+0027"},
+    {"offset": 0, "char": "…", "codepoint": "U+2026"},
+    {"offset": 1, "char": "삼", "codepoint": "U+C0BC"},
+    {"offset": 2, "char": "성", "codepoint": "U+C131"},
+    {"offset": 3, "char": "·", "codepoint": "U+00B7"},
+    {"offset": 4, "char": "교", "codepoint": "U+AD50"},
+    {"offset": 5, "char": "보", "codepoint": "U+BCF4"},
+    {"offset": 6, "char": " ", "codepoint": "U+0020"},
+    {"offset": 7, "char": "불", "codepoint": "U+BD88"},
+    {"offset": 8, "char": "참", "codepoint": "U+CC38"}
+  ],
+  "also_repaired_examples": [
+    "아바코, 2분기 영업손실 127억…매출 인식 지연 영향",
+    "딥시크, 유니트리에 300억 투자…휴머노이드 AI 공동 개발 협력"
+  ],
+  "expected_post_patch_title": "KDB생명 인수전, 한국투자·한화·흥국 '3파전' 삼성·교보 불참",
+  "side_effects_at_failure": {
+    "email_sent": false,
+    "smtp_attempted": false,
+    "customer_send": 0,
+    "called_gemini": true,
+    "called_image_api": true
+  },
+  "why_global_patch_insufficient": "Global 13:11 fixed word…opening/closing-curly-quote look-ahead only; Korea residual is closing-ASCII-quote…word (look-behind on closing delimiter)."
+}
