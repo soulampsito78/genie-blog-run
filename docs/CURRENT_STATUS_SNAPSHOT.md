@@ -6,17 +6,19 @@
 **Sandbox harness giant step: local-only 2026-08-06 (KST) — §9 / closeout pointer**
 **Sandbox repository closeout: local-only 2026-08-07 (KST) — §9 / closeout pointer**
 **Today natural-slot incident: 2026-08-07 (KST) — see incident closeout pointer below**
-**Korean failure report + human recovery: 2026-08-07 (KST) — applied locally; Scheduler poll is ops wiring**
+**Korean failure report + human recovery: 2026-08-07 (KST) — production activated**
 **Basis: GCP audit — Cloud Scheduler, Cloud Run, GCS artifact inspection**
 **Service: `genie-blog-run`, region `asia-northeast3`**
 
 This document is the authoritative operational snapshot. Update it after each audit.
 
-> **Korean natural-run failure report + human-approved recovery (2026-08-07):**
-> SLA failures diagnose → Korean report to `EMAIL_TO` → wait. Admin may approve
-> exactly one recovery (`execution_class=recovery`); no auto-retry, no customer
-> send, no Scheduler rerun from watchdog. Endpoint:
-> `POST /internal/jobs/natural-run-watchdog`. Admin UI: `/admin/incidents`.
+> **Korean natural-run failure report + human-approved recovery (PRODUCTION 2026-08-07):**
+> Deployed revision `genie-blog-run-00278-7lj` @ `b6a9fc1`. Scheduler job
+> `Natural_Run_Watchdog` (`*/15 * * * *` Asia/Seoul) →
+> `POST /internal/jobs/natural-run-watchdog`. Activation watermark prevents
+> pre-activation backfill. Admin `/admin/incidents` for exactly-once recovery.
+> Synthetic verification mail sent once (`[GENIE WATCHDOG TEST]`); Gmail receipt
+> not independently confirmed in agent environment.
 > Runbook: [docs/ops/OWNER_REVIEW_FAILURE_ALERTING.md](ops/OWNER_REVIEW_FAILURE_ALERTING.md).
 
 > **Today_Geenee post-migration first natural-run incident (2026-08-07):**
@@ -96,6 +98,7 @@ This document is the authoritative operational snapshot. Update it after each au
 | `KeeSuri_Korea_Tech` | `keysuri_korea_tech` | 18:30 Mon–Fri | **ENABLED** | 2026-06-22 18:30 → 200 OK |
 | `Tomorrow_Geenee` | `tomorrow_genie` | 18:00 daily | **PAUSED** | No successful run on record |
 | `approval_timeout_processor` | internal | Every 10 min | **ENABLED** | 2026-06-23 06:00 → 200 OK |
+| `Natural_Run_Watchdog` | SLA report-only | Every 15 min | **ENABLED** | First poll 2026-08-07 10:15 KST → 200; watermark active; no content retry |
 
 ---
 

@@ -35,16 +35,49 @@ Admin reissue-as-natural, customer send, reply-to-email as command.
 
 `tomorrow_genie` is paused — watchdog skips it (0 failure reports).
 
-### Cloud Scheduler wiring (ops step — not auto-created by code)
+### Cloud Scheduler wiring (production — applied 2026-08-07)
 
-Create a Scheduler job that POSTs to the Cloud Run service:
+| Field | Value |
+|---|---|
+| Job name | `Natural_Run_Watchdog` |
+| Region | `asia-northeast3` |
+| State | `ENABLED` |
+| Schedule | `*/15 * * * *` |
+| Timezone | `Asia/Seoul` |
+| Method | `POST` |
+| URI | `…/internal/jobs/natural-run-watchdog` |
+| Body | `{}` |
+| Auth | `X-Genie-Internal-Job-Token` (same secret as other internal jobs) |
+| Attempt deadline | `180s` |
+| Behavior | report-only; `auto_retry=0`; `customer_send=0` |
 
-- Path: `/internal/jobs/natural-run-watchdog`
-- Header: `X-Genie-Internal-Job-Token: <GENIE_INTERNAL_JOB_TOKEN>`
-- Suggested cadence: every 15–30 minutes during operating hours (KST)
-- Body: empty JSON `{}`
-- Expectation: HTTP 200 with `auto_retry: 0`, `customer_send: 0`; at most one
-  failure-report email per `incident_id`
+Activation watermark: first successful poll persists
+`admin_incidents/_watchdog_activation.json`. Slots whose SLA threshold
+(scheduled time + **15 minutes** grace) is **before** `activated_at` are
+skipped (`pre_activation_slot`) so startup does not backfill historical alerts.
+
+Authenticated verification probe (not a real natural slot):
+
+```json
+{"verification_only": true}
+```
+
+Subject prefix: `[GENIE WATCHDOG TEST]`. Recovery on verification incidents is
+hard-blocked (`verification_only_recovery_blocked`).
+
+### Production activation (2026-08-07)
+
+| Item | Evidence |
+|---|---|
+| Deployed revision | `genie-blog-run-00278-7lj` |
+| Commit SHA | `b6a9fc15b350eee4f6a74878c8b8db8b271f21cf` |
+| First Scheduler poll | 2026-08-07 10:15 KST → HTTP 200 |
+| Synthetic alert emails | 1 (`verification_2026-08-07_watchdog_test`) |
+| Real Today/Global/Korea incidents created on activation | 0 |
+| Content / recovery / customer send from watchdog | 0 |
+
+Gmail Inbox receipt of the synthetic mail was **not** independently verified in
+the agent environment (SMTP accept / `report_sent_at` only).
 
 ### Admin recovery
 
