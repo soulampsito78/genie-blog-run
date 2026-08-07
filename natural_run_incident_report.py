@@ -105,6 +105,30 @@ def _kv_list(mapping: Mapping[str, Any]) -> str:
     return f"<ul>{items}</ul>"
 
 
+def _admin_cta_block(incident: Mapping[str, Any]) -> str:
+    """View-only Admin deep-link CTA. Never encodes secrets or triggers recovery."""
+    from admin_urls import build_incident_admin_url
+
+    iid = str(incident.get("incident_id") or "").strip()
+    smoke = bool(incident.get("smoke_failure") or incident.get("smoke_only"))
+    label = "검증 incident 보기" if smoke else "재실행 검토하기"
+    url = build_incident_admin_url(iid) if iid else None
+    if url:
+        return f"""
+<p style="margin:20px 0;">
+<a href="{_esc(url)}" style="display:inline-block;background:#b91c1c;color:#fff;padding:12px 18px;text-decoration:none;border-radius:4px;font-weight:700;">
+{_esc(label)}
+</a>
+</p>
+<p style="color:#555;font-size:12px;">이 링크는 승인 화면을 <strong>보기만</strong> 엽니다. 클릭만으로 재실행되지 않습니다.</p>
+"""
+    return """
+<p style="color:#7f1d1d;"><strong>Admin 바로가기 URL을 생성하지 못했습니다.</strong></p>
+<p>운영 Admin에 로그인한 뒤 <code>/admin/incidents</code>에서 해당 incident_id를 열어
+재실행을 검토하세요. (URL에 비밀값/토큰은 포함되지 않습니다.)</p>
+"""
+
+
 def build_failure_report_html(incident: Mapping[str, Any]) -> str:
     display = incident.get("program_display") or program_display_name(
         str(incident.get("program_id") or "")
@@ -187,6 +211,7 @@ def build_failure_report_html(incident: Mapping[str, Any]) -> str:
 <hr>
 <h2>8. 마지막 질문</h2>
 <p style="font-size:18px;"><strong>이 실행을 다시 시도할까요?</strong></p>
+{_admin_cta_block(incident)}
 <p>승인 전에는 시스템이 자동 재실행하지 않습니다.</p>
 <p style="color:#666;font-size:12px;">incident_id: {_esc(incident.get("incident_id"))}</p>
 </body></html>

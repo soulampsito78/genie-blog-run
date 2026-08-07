@@ -528,6 +528,7 @@ class AdminRecoveryRouteTests(unittest.TestCase):
                 "GENIE_ADMIN_PASSWORD": "test-admin-secret",
                 "GENIE_ARTIFACT_BUCKET": "",
                 "GENIE_ADMIN_ARTIFACT_BUCKET": "",
+                "GENIE_ADMIN_PUBLIC_BASE_URL": "https://genie-blog-run.example.run.app",
             },
             clear=False,
         )
@@ -550,18 +551,29 @@ class AdminRecoveryRouteTests(unittest.TestCase):
     def _login(self) -> None:
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
 
-    def test_approve_recovery_requires_login_and_calls_executor_once(self) -> None:
+    def _reported_safe_incident(self, **kwargs):
         from natural_run_incident_store import new_incident, save_incident, mark_report_sent
 
+        defaults = dict(
+            program_id="today_genie",
+            kst_date="2026-08-07",
+            confirmed_cause="Scheduler가 예정 시각에 실행되지 않았습니다.",
+            retry_verdict="SAFE_TO_RETRY",
+        )
+        defaults.update(kwargs)
+        incident = new_incident(**defaults)
+        save_incident(incident)
+        mark_report_sent(incident["incident_id"])
+        return incident
+
+    def test_approve_recovery_requires_login_and_calls_executor_once(self) -> None:
         unauth = self.client.post(
             "/admin/incidents/2026-08-07_today_genie_06-30/approve-recovery",
             follow_redirects=False,
         )
         self.assertIn(unauth.status_code, (302, 303))
 
-        incident = new_incident(program_id="today_genie", kst_date="2026-08-07")
-        save_incident(incident)
-        mark_report_sent(incident["incident_id"])
+        incident = self._reported_safe_incident()
         self._login()
         with mock.patch(
             "natural_run_recovery.execute_approved_recovery",
@@ -578,6 +590,161 @@ class AdminRecoveryRouteTests(unittest.TestCase):
             )
         self.assertEqual(resp.status_code, 303)
         exec_mock.assert_called_once()
+
+    def test_email_cta_and_verdict_gating_and_get_no_side_effect(self) -> None:
+        from natural_run_incident_report import build_failure_report_html
+        from natural_run_incident_store import (
+            RETRY_BLOCKED,
+            RETRY_REQUIRES_PATCH,
+            RETRY_SAFE_TO_RETRY,
+            RETRY_STATUS_UNKNOWN,
+            load_incident,
+            new_incident,
+            save_incident,
+            mark_report_sent,
+        )
+        from natural_run_recovery import execute_approved_recovery
+
+        real = new_incident(
+            program_id="today_genie",
+            kst_date="2026-08-07",
+            retry_verdict=RETRY_SAFE_TO_RETRY,
+            confirmed_cause="SMTP 실패",
+        )
+        html = build_failure_report_html(real)
+        self.assertIn("재실행 검토하기", html)
+        self.assertIn(
+            f"https://genie-blog-run.example.run.app/admin/incidents/{real['incident_id']}",
+            html,
+        )
+        self.assertNotIn("token=", html.lower())
+        self.assertNotIn("password=", html.lower())
+
+        smoke = dict(real)
+        smoke["smoke_failure"] = True
+        smoke["smoke_only"] = True
+        smoke_html = build_failure_report_html(smoke)
+        self.assertIn("검증 incident 보기", smoke_html)
+        self.assertNotIn(">재실행 검토하기<", smoke_html)
+
+        save_incident(real)
+        mark_report_sent(real["incident_id"])
+        unauth = self.client.get(
+            f"/admin/incidents/{real['incident_id']}", follow_redirects=False
+        )
+        self.assertIn(unauth.status_code, (302, 303))
+        self._login()
+        detail = self.client.get(f"/admin/incidents/{real['incident_id']}")
+        self.assertEqual(detail.status_code, 200)
+        self.assertIn("재실행 승인 검토", detail.text)
+        self.assertIn("만으로는 재실행되지 않습니다", detail.text)
+        after = load_incident(real["incident_id"])
+        self.assertIsNone(after.get("recovery_run_id"))
+        self.assertEqual(after.get("status"), "reported")
+
+        for verdict, needle in [
+            (RETRY_REQUIRES_PATCH, "수정 완료 전 재실행할 수 없습니다"),
+            (RETRY_BLOCKED, "현재 상태에서는 재실행할 수 없습니다"),
+            (RETRY_STATUS_UNKNOWN, "안전성이 확인되지 않아 재실행할 수 없습니다"),
+        ]:
+            meta = load_incident(real["incident_id"])
+            meta["retry_verdict"] = verdict
+            save_incident(meta)
+            page = self.client.get(f"/admin/incidents/{real['incident_id']}")
+            self.assertIn(needle, page.text)
+            self.assertNotIn(f"/admin/incidents/{real['incident_id']}/approve-confirm", page.text)
+
+        meta = load_incident(real["incident_id"])
+        meta["retry_verdict"] = RETRY_SAFE_TO_RETRY
+        save_incident(meta)
+        page = self.client.get(f"/admin/incidents/{real['incident_id']}")
+        self.assertIn("/approve-confirm", page.text)
+
+        conf = self.client.get(f"/admin/incidents/{real['incident_id']}/approve-confirm")
+        self.assertEqual(conf.status_code, 200)
+        self.assertIn("정확히 1회 다시 실행합니다", conf.text)
+        self.assertIn("고객 발송은 수행하지 않습니다", conf.text)
+        self.assertEqual(load_incident(real["incident_id"]).get("status"), "reported")
+
+        out1 = execute_approved_recovery(
+            real["incident_id"],
+            today_runner=lambda *a, **k: (
+                "20260807_120000_today_genie_aaaaaaaa",
+                mock.Mock(response_data={"validation_result": "pass"}),
+                True,
+            ),
+            send_fn=lambda *a, **k: True,
+        )
+        self.assertTrue(out1["ok"])
+        self.assertEqual(out1["customer_send"], 0)
+        out2 = execute_approved_recovery(
+            real["incident_id"],
+            today_runner=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("should not run")),
+            send_fn=lambda *a, **k: True,
+        )
+        self.assertFalse(out2["ok"])
+
+        smoke_inc = self._reported_safe_incident(
+            program_id="keysuri_korea_tech",
+            kst_date="2026-08-07",
+            retry_verdict=RETRY_SAFE_TO_RETRY,
+        )
+        smoke_meta = load_incident(smoke_inc["incident_id"])
+        smoke_meta["smoke_only"] = True
+        smoke_meta["verification_only"] = True
+        save_incident(smoke_meta)
+        blocked_page = self.client.get(f"/admin/incidents/{smoke_inc['incident_id']}")
+        self.assertIn("실제 recovery 승인이 금지", blocked_page.text)
+        post = self.client.post(
+            f"/admin/incidents/{smoke_inc['incident_id']}/approve-recovery",
+            follow_redirects=False,
+        )
+        self.assertEqual(post.status_code, 303)
+        self.assertIn("smoke_or_verification_blocked", post.headers.get("location", ""))
+
+        done_page = self.client.get(f"/admin/incidents/{real['incident_id']}")
+        self.assertIn("재실행 승인 완료", done_page.text)
+        self.assertNotIn("/approve-confirm", done_page.text)
+
+    def test_concurrent_approve_exactly_once(self) -> None:
+        import threading
+
+        from natural_run_recovery import execute_approved_recovery
+
+        incident = self._reported_safe_incident(
+            program_id="today_genie",
+            kst_date="2026-08-09",
+            retry_verdict="SAFE_TO_RETRY",
+        )
+        hits = []
+
+        def today_runner(*a, **k):
+            hits.append(1)
+            return (
+                "20260809_130000_today_genie_bbbbbbbb",
+                mock.Mock(response_data={"validation_result": "pass"}),
+                True,
+            )
+
+        results = [None, None]
+
+        def worker(idx: int) -> None:
+            results[idx] = execute_approved_recovery(
+                incident["incident_id"],
+                today_runner=today_runner,
+                send_fn=lambda *a, **k: True,
+            )
+
+        t1 = threading.Thread(target=worker, args=(0,))
+        t2 = threading.Thread(target=worker, args=(1,))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        oks = [r for r in results if r and r.get("ok")]
+        self.assertEqual(len(oks), 1)
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(oks[0].get("customer_send"), 0)
 
 
 if __name__ == "__main__":

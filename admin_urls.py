@@ -25,3 +25,20 @@ def build_owner_review_admin_url(run_id: str) -> Optional[str]:
     if not base:
         return None
     return f"{base}/admin/runs/{rid}"
+
+
+def build_incident_admin_url(incident_id: str) -> Optional[str]:
+    """Build Admin incident detail deep-link (view-only GET; no secrets)."""
+    from natural_run_incident_store import validate_incident_id
+
+    iid = str(incident_id or "").strip()
+    if not iid or not validate_incident_id(iid):
+        return None
+    base = resolve_admin_public_base_url()
+    if not base:
+        return None
+    # Reject obviously non-public bases (localhost / internal hosts).
+    lowered = base.lower()
+    if "localhost" in lowered or "127.0.0.1" in lowered or lowered.startswith("http://10."):
+        return None
+    return f"{base}/admin/incidents/{iid}"
