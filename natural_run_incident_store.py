@@ -45,6 +45,10 @@ NATURAL_SLOTS = {
 _INCIDENT_ID_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}_(today_genie|keysuri_global_tech|keysuri_korea_tech)_\d{2}-\d{2}$"
 )
+_VERIFICATION_ID_RE = re.compile(r"^verification_\d{4}-\d{2}-\d{2}_watchdog_test$")
+
+ACTIVATION_META_ID = "_watchdog_activation"
+ACTIVATION_ENV = "NATURAL_RUN_WATCHDOG_ACTIVATED_AT"
 
 _LOCK = threading.RLock()  # reentrant: lease helpers call save_incident under lock
 
@@ -83,7 +87,16 @@ def make_incident_id(program_id: str, kst_date: str, scheduled_slot: str) -> str
 
 
 def validate_incident_id(incident_id: str) -> bool:
-    return bool(_INCIDENT_ID_RE.match(str(incident_id or "").strip()))
+    text = str(incident_id or "").strip()
+    return bool(_INCIDENT_ID_RE.match(text) or _VERIFICATION_ID_RE.match(text))
+
+
+def is_verification_incident_id(incident_id: str) -> bool:
+    return bool(_VERIFICATION_ID_RE.match(str(incident_id or "").strip()))
+
+
+def make_verification_incident_id(kst_date: str) -> str:
+    return f"verification_{kst_date}_watchdog_test"
 
 
 def program_display_name(program_id: str) -> str:
@@ -113,9 +126,83 @@ def _uses_gcs() -> bool:
 
 
 def _object_key(incident_id: str) -> str:
-    if not validate_incident_id(incident_id):
+    text = str(incident_id or "").strip()
+    if text == ACTIVATION_META_ID:
+        return f"{INCIDENT_PREFIX}/{ACTIVATION_META_ID}.json"
+    if not validate_incident_id(text):
         raise ValueError("invalid incident_id")
-    return f"{INCIDENT_PREFIX}/{incident_id}.json"
+    return f"{INCIDENT_PREFIX}/{text}.json"
+
+
+def _read_raw_object(key: str) -> Optional[str]:
+    try:
+        if _uses_gcs():
+            return _gcs_download(key)
+        path = incidents_local_dir() / key.split("/", 1)[-1]
+        if not path.exists():
+            return None
+        return path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+
+
+def _write_raw_object(key: str, text: str) -> None:
+    with _LOCK:
+        if _uses_gcs():
+            _gcs_upload(key, text)
+        else:
+            path = incidents_local_dir() / key.split("/", 1)[-1]
+            path.write_text(text, encoding="utf-8")
+
+
+def load_activation_watermark() -> Optional[datetime]:
+    """Return durable activation time (KST-aware) if present."""
+    env = os.environ.get(ACTIVATION_ENV, "").strip()
+    if env:
+        try:
+            dt = datetime.fromisoformat(env.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=KST)
+            return dt.astimezone(KST)
+        except ValueError:
+            pass
+    raw = _read_raw_object(_object_key(ACTIVATION_META_ID))
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        text = str(data.get("activated_at") or "").strip()
+        if not text:
+            return None
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=KST)
+        return dt.astimezone(KST)
+    except Exception:
+        return None
+
+
+def ensure_activation_watermark(now: Optional[datetime] = None) -> datetime:
+    """Persist first activation timestamp; never moves backwards."""
+    if now is None:
+        now = datetime.now(KST)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=KST)
+    else:
+        now = now.astimezone(KST)
+    existing = load_activation_watermark()
+    if existing is not None:
+        return existing
+    payload = {
+        "activated_at": now.isoformat(),
+        "purpose": "natural_run_watchdog_startup_watermark",
+        "note": "Slots whose SLA threshold is before activated_at are not alerted on startup.",
+    }
+    _write_raw_object(
+        _object_key(ACTIVATION_META_ID),
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+    )
+    return now
 
 
 def _gcs_upload(key: str, text: str) -> None:
@@ -367,8 +454,38 @@ def mark_report_sent(incident_id: str) -> Optional[Dict[str, Any]]:
     meta["report_sent_at"] = now_kst_iso()
     meta["report_send_count"] = int(meta.get("report_send_count") or 0) + 1
     meta["status"] = STATUS_REPORTED
+    meta["report_lease_token"] = None
     save_incident(meta)
     return meta
+
+
+def acquire_report_lease(incident_id: str) -> Optional[str]:
+    """Exactly-once send lease across instances. None if already sent/leased."""
+    with _LOCK:
+        meta = load_incident(incident_id)
+        if not meta:
+            return None
+        if meta.get("report_sent_at"):
+            return None
+        if meta.get("report_lease_token"):
+            return None
+        token = secrets.token_hex(16)
+        meta["report_lease_token"] = token
+        meta["report_lease_acquired_at"] = now_kst_iso()
+        save_incident(meta)
+        return token
+
+
+def release_report_lease(incident_id: str, lease_token: str) -> None:
+    """Clear lease after failed send so a later poll may retry once."""
+    with _LOCK:
+        meta = load_incident(incident_id)
+        if not meta:
+            return
+        if str(meta.get("report_lease_token") or "") != str(lease_token or ""):
+            return
+        meta["report_lease_token"] = None
+        save_incident(meta)
 
 
 def dismiss_incident(incident_id: str) -> Optional[Dict[str, Any]]:

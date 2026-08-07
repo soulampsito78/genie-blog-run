@@ -29,9 +29,21 @@ def execute_approved_recovery(
     send_fn: Optional[Callable[..., bool]] = None,
 ) -> Dict[str, Any]:
     """Acquire lease and run exactly one recovery. No auto second attempt."""
+    from natural_run_incident_store import is_verification_incident_id
+
     incident = load_incident(incident_id)
     if not incident:
         return {"ok": False, "error": "incident_not_found", "auto_retry": 0, "customer_send": 0}
+
+    if incident.get("verification_only") or is_verification_incident_id(incident_id):
+        return {
+            "ok": False,
+            "error": "verification_only_recovery_blocked",
+            "incident_id": incident_id,
+            "auto_retry": 0,
+            "customer_send": 0,
+            "recovery_count": 0,
+        }
 
     lease = acquire_recovery_lease(incident_id)
     if not lease:

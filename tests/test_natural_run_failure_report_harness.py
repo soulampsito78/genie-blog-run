@@ -19,6 +19,8 @@ KST = ZoneInfo("Asia/Seoul")
 AFTER_TODAY_SLOT = datetime(2026, 8, 7, 7, 0, tzinfo=KST)
 AFTER_GLOBAL_SLOT = datetime(2026, 8, 7, 13, 0, tzinfo=KST)
 AFTER_KOREA_SLOT = datetime(2026, 8, 7, 19, 0, tzinfo=KST)
+# Activation before any same-day slot so harness polls are not watermark-skipped.
+ACTIVATION_EARLY = datetime(2026, 8, 7, 0, 5, tzinfo=KST)
 
 
 class _SmtpProbe:
@@ -196,6 +198,7 @@ class NaturalRunFailureReportHarness(unittest.TestCase):
             artifacts=[],
             request_evidence_by_program={"today_genie": {"scheduler_fired": False}},
             now=AFTER_TODAY_SLOT,
+            activated_at=ACTIVATION_EARLY,
             send_fn=self.smtp,
             programs=["today_genie"],
         )
@@ -209,6 +212,7 @@ class NaturalRunFailureReportHarness(unittest.TestCase):
             artifacts=[],
             request_evidence_by_program={"today_genie": {"scheduler_fired": False}},
             now=AFTER_TODAY_SLOT,
+            activated_at=ACTIVATION_EARLY,
             send_fn=self.smtp,
             programs=["today_genie"],
         )
@@ -319,6 +323,7 @@ class NaturalRunFailureReportHarness(unittest.TestCase):
             artifacts=[],
             request_evidence_by_program=evidence,
             now=AFTER_TODAY_SLOT,
+            activated_at=ACTIVATION_EARLY,
             send_fn=self.smtp,
             programs=["today_genie"],
         )
@@ -326,6 +331,7 @@ class NaturalRunFailureReportHarness(unittest.TestCase):
             artifacts=[],
             request_evidence_by_program=evidence,
             now=AFTER_TODAY_SLOT,
+            activated_at=ACTIVATION_EARLY,
             send_fn=self.smtp,
             programs=["today_genie"],
         )
@@ -445,12 +451,44 @@ class NaturalRunFailureReportHarness(unittest.TestCase):
         summary = run_watchdog_poll(
             artifacts=[],
             now=AFTER_TODAY_SLOT,
+            activated_at=ACTIVATION_EARLY,
             send_fn=self.smtp,
             programs=["tomorrow_genie"],
             paused_programs=["tomorrow_genie"],
         )
         self.assertEqual(self.smtp.calls, 0)
         self.assertTrue(summary["results"][0].get("skipped"))
+
+    def test_21_activation_watermark_skips_pre_activation_slots(self) -> None:
+        from natural_run_watchdog import run_watchdog_poll
+
+        # Activated after Today's SLA threshold — must not backfill alert.
+        late_activation = datetime(2026, 8, 7, 10, 0, tzinfo=KST)
+        summary = run_watchdog_poll(
+            artifacts=[],
+            request_evidence_by_program={"today_genie": {"scheduler_fired": False}},
+            now=AFTER_TODAY_SLOT.replace(hour=11),
+            activated_at=late_activation,
+            send_fn=self.smtp,
+            programs=["today_genie"],
+        )
+        self.assertEqual(self.smtp.calls, 0)
+        self.assertEqual(summary["results"][0].get("reason"), "pre_activation_slot")
+
+    def test_22_verification_probe_dedup_and_subject(self) -> None:
+        from natural_run_watchdog import run_watchdog_verification_probe
+        from natural_run_recovery import execute_approved_recovery
+
+        first = run_watchdog_verification_probe(now=AFTER_TODAY_SLOT, send_fn=self.smtp)
+        self.assertTrue(first["report_sent"])
+        self.assertTrue(first["subject"].startswith("[GENIE WATCHDOG TEST]"))
+        self._assert_korean_report_shape(self.smtp.bodies[0])
+        second = run_watchdog_verification_probe(now=AFTER_TODAY_SLOT, send_fn=self.smtp)
+        self.assertTrue(second["deduped"])
+        self.assertEqual(self.smtp.calls, 1)
+        blocked = execute_approved_recovery(first["incident_id"], send_fn=self.smtp)
+        self.assertEqual(blocked.get("error"), "verification_only_recovery_blocked")
+        self.assertEqual(blocked.get("customer_send"), 0)
 
 
 class AdminRecoveryRouteTests(unittest.TestCase):

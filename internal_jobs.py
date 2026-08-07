@@ -680,29 +680,40 @@ def process_approval_timeouts_endpoint(
     return JSONResponse(status_code=status_code, content=summary)
 
 
+class NaturalRunWatchdogJobRequest(BaseModel):
+    """Empty body for SLA poll; verification_only for authenticated mail UX proof."""
+
+    verification_only: bool = False
+
+
 @router.post("/internal/jobs/natural-run-watchdog")
 def natural_run_watchdog_endpoint(
     request: Request,
+    body: NaturalRunWatchdogJobRequest = NaturalRunWatchdogJobRequest(),
     x_genie_internal_job_token: Optional[str] = Header(None, alias="X-Genie-Internal-Job-Token"),
 ):
     """SLA poll: diagnose missed natural runs and email Korean reports.
 
     Never auto-retries, never customer-sends, never Scheduler-reruns.
+    Optional verification_only=true sends one [GENIE WATCHDOG TEST] report.
     """
     auth_fail = _verify_internal_job_token(request, x_genie_internal_job_token)
     if auth_fail is not None:
         return auth_fail
 
     from admin_store import list_run_artifacts
-    from natural_run_watchdog import run_watchdog_poll
+    from natural_run_watchdog import run_watchdog_poll, run_watchdog_verification_probe
 
     try:
-        artifacts = list_run_artifacts(limit=100)
-        summary = run_watchdog_poll(
-            artifacts=artifacts,
-            now=get_kst_now(),
-            paused_programs=["tomorrow_genie"],
-        )
+        if body.verification_only:
+            summary = run_watchdog_verification_probe(now=get_kst_now())
+        else:
+            artifacts = list_run_artifacts(limit=100)
+            summary = run_watchdog_poll(
+                artifacts=artifacts,
+                now=get_kst_now(),
+                paused_programs=["tomorrow_genie"],
+            )
     except Exception as exc:
         logger.exception(
             "natural_run_watchdog failed error_type=%s",

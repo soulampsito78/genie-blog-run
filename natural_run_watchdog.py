@@ -17,13 +17,17 @@ from natural_run_incident_store import (
     RETRY_SAFE_TO_RETRY,
     RETRY_STATUS_UNKNOWN,
     STATUS_REPORTED,
+    acquire_report_lease,
     empty_stage_map,
+    ensure_activation_watermark,
     kst_date_str,
     load_incident,
     make_incident_id,
+    make_verification_incident_id,
     mark_report_sent,
     new_incident,
     normalize_slot,
+    release_report_lease,
     save_incident,
     upsert_incident,
 )
@@ -71,6 +75,49 @@ def schedule_elapsed(
         minutes=grace_minutes
     )
     return now >= threshold
+
+
+def slot_sla_threshold(
+    *,
+    program_id: str,
+    now: Optional[datetime] = None,
+    grace_minutes: int = SLA_GRACE_MINUTES,
+) -> Optional[datetime]:
+    """KST datetime when an SLA miss becomes confirmable for today's slot."""
+    if now is None:
+        now = datetime.now(KST)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=KST)
+    else:
+        now = now.astimezone(KST)
+    slot = NATURAL_SLOTS.get(program_id)
+    if not slot:
+        return None
+    hh, mm = _slot_hour_minute(slot)
+    return now.replace(hour=hh, minute=mm, second=0, microsecond=0) + timedelta(
+        minutes=grace_minutes
+    )
+
+
+def slot_eligible_after_activation(
+    *,
+    program_id: str,
+    now: Optional[datetime] = None,
+    activated_at: Optional[datetime] = None,
+    grace_minutes: int = SLA_GRACE_MINUTES,
+) -> bool:
+    """Skip slots whose SLA threshold is before watchdog activation (no backfill storm)."""
+    if activated_at is None:
+        return True
+    threshold = slot_sla_threshold(program_id=program_id, now=now, grace_minutes=grace_minutes)
+    if threshold is None:
+        return False
+    act = activated_at
+    if act.tzinfo is None:
+        act = act.replace(tzinfo=KST)
+    else:
+        act = act.astimezone(KST)
+    return threshold >= act
 
 
 def _artifacts_for_program(
@@ -372,9 +419,24 @@ def report_incident_once(
         save_incident(incident)
         merged = incident
 
+    lease = acquire_report_lease(incident_id)
+    if not lease:
+        # Another instance sent or is sending; re-check for durable sent marker.
+        latest = load_incident(incident_id) or merged
+        return {
+            "ok": True,
+            "incident_id": incident_id,
+            "report_sent": False,
+            "deduped": True,
+            "auto_retry": 0,
+            "status": latest.get("status"),
+        }
+
     ok, subject = send_failure_report(merged, send_fn=send_fn)
     if ok:
         mark_report_sent(incident_id)
+    else:
+        release_report_lease(incident_id, lease)
     return {
         "ok": ok,
         "incident_id": incident_id,
@@ -383,6 +445,101 @@ def report_incident_once(
         "subject": subject,
         "auto_retry": 0,
         "status": STATUS_REPORTED if ok else merged.get("status"),
+    }
+
+
+def run_watchdog_verification_probe(
+    *,
+    send_fn: Optional[Callable[..., bool]] = None,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Authenticated synthetic Korean report. Never touches real natural slots."""
+    if now is None:
+        now = datetime.now(KST)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=KST)
+    else:
+        now = now.astimezone(KST)
+    kst_date = kst_date_str(now)
+    incident_id = make_verification_incident_id(kst_date)
+    existing = load_incident(incident_id)
+    if existing and existing.get("report_sent_at"):
+        return {
+            "ok": True,
+            "verification_only": True,
+            "incident_id": incident_id,
+            "report_sent": False,
+            "deduped": True,
+            "auto_retry": 0,
+            "customer_send": 0,
+            "recovery_count": 0,
+            "gemini_calls": 0,
+            "image_calls": 0,
+            "owner_review_generations": 0,
+        }
+
+    incident = {
+        "incident_id": incident_id,
+        "program_id": "watchdog_verification",
+        "program_display": "Watchdog_Verification",
+        "kst_date": kst_date,
+        "scheduled_slot": "99:99",
+        "status": "open",
+        "verification_only": True,
+        "facts": [
+            "운영자 인증 내부 경로로 요청된 워치독 검증용 합성 장애입니다.",
+            "실제 Today/Global/Korea 자연실행 슬롯 신원과 일치하지 않습니다.",
+        ],
+        "confirmed_cause": "검증용 합성 장애(실서비스 슬롯 실패 아님)",
+        "hypotheses": [],
+        "unknowns": [],
+        "stage_map": empty_stage_map(),
+        "retry_verdict": RETRY_STATUS_UNKNOWN,
+        "retry_verdict_ko": "검증 전용 — 실콘텐츠 재실행 대상이 아닙니다.",
+        "recommendation_ko": "실슬롯 재실행 금지. 메일 UX만 확인하세요.",
+        "summary_ko": (
+            "워치독 한국어 장애보고 메일 UX 검증입니다. "
+            "콘텐츠 생성·복구·고객 발송은 수행하지 않습니다."
+        ),
+        "outcomes": {
+            "자연실행 artifact": "해당 없음(검증)",
+            "운영자 검수 메일": "해당 없음(검증)",
+            "이미지 생성": "수행하지 않음",
+            "SMTP 시도": "장애보고 메일 1회만",
+            "고객 메일": "발송되지 않음",
+            "데이터/Artifact 손상": "없음",
+            "중복 발송": "없음",
+        },
+        "system_status": {
+            "서비스 상태": "검증 모드",
+            "Cloud Run": "확인불가",
+            "Scheduler": "확인불가",
+            "장애 실행": "검증 종료",
+            "다음 정규 실행": "영향 없음",
+        },
+        "first_failed_stage": "verification_probe",
+        "error_code": "watchdog_verification_only",
+        "report_sent_at": None,
+        "report_send_count": 0,
+        "recovery_lease_token": None,
+        "recovery_customer_send_count": 0,
+        "watchdog_auto_retry_count": 0,
+    }
+    incident["stage_map"]["실행 게이트"] = "검증"
+    report = report_incident_once(incident, send_fn=send_fn)
+    return {
+        "ok": bool(report.get("ok")),
+        "verification_only": True,
+        "incident_id": incident_id,
+        "report_sent": bool(report.get("report_sent")),
+        "deduped": bool(report.get("deduped")),
+        "subject": report.get("subject"),
+        "auto_retry": 0,
+        "customer_send": 0,
+        "recovery_count": 0,
+        "gemini_calls": 0,
+        "image_calls": 0,
+        "owner_review_generations": 0,
     }
 
 
@@ -508,8 +665,14 @@ def run_watchdog_poll(
     now: Optional[datetime] = None,
     send_fn: Optional[Callable[..., bool]] = None,
     programs: Optional[Sequence[str]] = None,
+    activated_at: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """Periodic SLA poll. Reports only; auto_retry always 0."""
+    if now is None:
+        now = datetime.now(KST)
+    watermark = activated_at
+    if watermark is None:
+        watermark = ensure_activation_watermark(now)
     paused = set(paused_programs or []) | set(PAUSED_PROGRAMS)
     targets = list(programs or NATURAL_SLOTS.keys())
     results = []
@@ -520,6 +683,19 @@ def run_watchdog_poll(
                     "program_id": program_id,
                     "skipped": True,
                     "reason": "paused",
+                    "report_sent": False,
+                    "auto_retry": 0,
+                }
+            )
+            continue
+        if not slot_eligible_after_activation(
+            program_id=program_id, now=now, activated_at=watermark
+        ):
+            results.append(
+                {
+                    "program_id": program_id,
+                    "skipped": True,
+                    "reason": "pre_activation_slot",
                     "report_sent": False,
                     "auto_retry": 0,
                 }
@@ -550,5 +726,6 @@ def run_watchdog_poll(
         "ok": True,
         "auto_retry": 0,
         "customer_send": 0,
+        "activated_at": watermark.isoformat() if watermark else None,
         "results": results,
     }
