@@ -5,8 +5,10 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 from admin_store import (
     artifact_email_path,
@@ -5178,7 +5180,12 @@ class ServiceFullRunInternalEndpointTests(unittest.TestCase):
             "image_source": "generated",
             "email_sent": True,
         }
-        with patch("internal_jobs.list_run_artifacts", return_value=[]):
+        # Freeze to a KST weekday so weekend_kst skip cannot short-circuit before
+        # service_full_run dispatch (wall-clock Sundays otherwise fail this test).
+        weekday = datetime(2026, 6, 22, 6, 30, tzinfo=ZoneInfo("Asia/Seoul"))
+        with patch("internal_jobs.get_kst_now", return_value=weekday), patch(
+            "internal_jobs.list_run_artifacts", return_value=[]
+        ):
             resp = self.client.post(
                 "/internal/jobs/create-owner-review",
                 headers={"X-Genie-Internal-Job-Token": _TOKEN},
