@@ -57,7 +57,7 @@ def _bridge(left: str, ell: str, right: str, ws: str) -> str:
 
 
 def _iter_matrix_cases():
-    """Yield (case_id, text, expect) where expect is 'pass' or 'blocked'."""
+    """Yield cases for repaired connectors, preserved endings, and blocked cuts."""
     for ell in ELLIPSIS_FORMS:
         for ws in WHITESPACE:
             for d in (*OPENING_DELIMS, *CLOSING_DELIMS):
@@ -87,7 +87,7 @@ def _iter_matrix_cases():
             yield (
                 f"sentence_final|{ell!r}|{ws!r}",
                 f"정상적인 문장 끝{ws}{ell}",
-                "pass",
+                "preserved",
             )
             yield (
                 f"genuine_truncation|{ell!r}|{ws!r}",
@@ -114,7 +114,11 @@ class KeysuriEllipsisUnicodeMatrixTests(unittest.TestCase):
                 if not result.blocked:
                     failures.append((case_id, text, result))
                 continue
-            # Connector / sentence-final → PASS with no residual connector ellipsis.
+            if expect == "preserved":
+                if result.blocked or not result.text.endswith("…") or ".." in result.text:
+                    failures.append((case_id, text, result))
+                continue
+            # Structural connector → PASS with no residual connector ellipsis.
             if result.blocked:
                 failures.append((case_id, text, result))
                 continue

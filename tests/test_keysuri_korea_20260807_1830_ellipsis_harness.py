@@ -85,12 +85,12 @@ class Korea1830EllipsisHarness(unittest.TestCase):
         blocked = repair_korean_connector_ellipsis_text("확인 불가 (…)")
         self.assertTrue(blocked.blocked)
 
-    def test_05_sentence_final_ellipsis_stripped_to_pass(self) -> None:
+    def test_05_sentence_final_ellipsis_preserved_to_pass(self) -> None:
         from keysuri_visible_text_quality import repair_korean_connector_ellipsis_text
 
         result = repair_korean_connector_ellipsis_text("정상적인 문장 끝…")
         self.assertFalse(result.blocked)
-        self.assertNotIn("…", result.text)
+        self.assertEqual(result.text, "정상적인 문장 끝…")
 
     def test_06_validation_failure_customer_zero_is_actionable(self) -> None:
         from natural_run_incident_store import (

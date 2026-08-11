@@ -66,6 +66,10 @@ from keysuri_news_contract import (
     validate_top_5_news_block,
 )
 from keysuri_renderer import render_keysuri_owner_review_html
+from keysuri_source_text_normalization import (
+    normalize_feed_source_text,
+    normalize_keysuri_source_pack,
+)
 from sent_news_dedup_gate import (
     canonicalize_url,
     recent_log_duplicate_reason,
@@ -585,8 +589,7 @@ def _parse_internal_issue_codes(parse_result: dict) -> List[str]:
 
 
 def _strip_html(text: str) -> str:
-    cleaned = re.sub(r"<[^>]+>", " ", text or "")
-    return re.sub(r"\s+", " ", cleaned).strip()
+    return normalize_feed_source_text(text, strip_markup=True).text
 
 
 def _slugify(value: str) -> str:
@@ -654,7 +657,9 @@ def parse_feed_xml(xml_bytes: bytes) -> List[Dict[str, str]]:
 
     parsed: List[Dict[str, str]] = []
     for entry in entries:
-        title = _first_text(entry, ("title",))
+        title = normalize_feed_source_text(
+            _first_text(entry, ("title",)), strip_markup=True
+        ).text
         link = _first_link(entry)
         if not title or not link.startswith("http"):
             continue
@@ -2975,7 +2980,16 @@ def run_keysuri_live_source_smoke(
                 selection,
                 debug_dir / f"korea_top5_selection_{dbg_stamp}.json",
             )
-        pack_path.write_text(json.dumps(source_pack, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        # Written below after source-text normalization so the persisted pack is
+        # exactly what ranking/prompt generation consumes.
+
+    source_pack = normalize_keysuri_source_pack(source_pack)
+    if frozen_path is None or source_pack_out is not None:
+        pack_path.parent.mkdir(parents=True, exist_ok=True)
+        pack_path.write_text(
+            json.dumps(source_pack, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
     prompt_input = build_keysuri_prompt_input(
         program_id, source_pack, trigger_source=trigger_source

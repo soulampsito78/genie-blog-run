@@ -5,6 +5,7 @@ Never triggers recovery or customer send. Watchdog and Admin share this store.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import secrets
@@ -23,6 +24,7 @@ STATUS_REPORTED = "reported"
 STATUS_RECOVERY_APPROVED = "recovery_approved"
 STATUS_RECOVERY_SUCCEEDED = "recovery_succeeded"
 STATUS_RECOVERY_FAILED = "recovery_failed"
+STATUS_RETRY_BLOCKED_PENDING_PATCH = "RETRY_BLOCKED_PENDING_PATCH"
 STATUS_DISMISSED = "dismissed"
 
 RETRY_SAFE_TO_RETRY = "SAFE_TO_RETRY"  # legacy synonym of RETRY_SAFE
@@ -312,6 +314,49 @@ def is_retry_actionable(verdict: Optional[str]) -> bool:
     return str(verdict or "").strip() in RETRY_ACTIONABLE_VERDICTS
 
 
+def build_recovery_failure_signature(components: Dict[str, Any]) -> str:
+    bounded = {
+        key: components.get(key)
+        for key in (
+            "incident_id",
+            "revision",
+            "stage",
+            "issue_code",
+            "structural_failure_class",
+            "selected_input_fingerprint",
+        )
+    }
+    body = json.dumps(bounded, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def recovery_guard_is_blocked(meta: Dict[str, Any]) -> bool:
+    if str(meta.get("status") or "") != STATUS_RETRY_BLOCKED_PENDING_PATCH:
+        return False
+    components = meta.get("recovery_failure_signature_components")
+    if not isinstance(components, dict):
+        return True
+    failed_revision = str(components.get("revision") or "")
+    current_revision = str(os.getenv("K_REVISION") or meta.get("revision") or "")
+    if failed_revision and current_revision and failed_revision != current_revision:
+        return False
+    failed_input = str(components.get("selected_input_fingerprint") or "")
+    current_input = str(meta.get("selected_input_fingerprint") or "")
+    if failed_input and current_input and failed_input != current_input:
+        return False
+    return True
+
+
+def recovery_effective_retry_verdict(meta: Dict[str, Any]) -> str:
+    if str(meta.get("status") or "") != STATUS_RETRY_BLOCKED_PENDING_PATCH:
+        return normalize_retry_actionability(meta.get("retry_verdict"))
+    if recovery_guard_is_blocked(meta):
+        return RETRY_BLOCKED
+    return normalize_retry_actionability(
+        meta.get("retry_verdict_before_recovery_guard") or RETRY_ALLOWED_WITH_WARNING
+    )
+
+
 def normalize_retry_actionability(verdict: Optional[str]) -> str:
     text = str(verdict or "").strip()
     if text == RETRY_SAFE_TO_RETRY:
@@ -514,6 +559,9 @@ def new_incident(
         "recovery_approved_at": None,
         "recovery_customer_send_count": 0,
         "watchdog_auto_retry_count": 0,
+        "recovery_failure_signature": None,
+        "recovery_failure_signature_count": 0,
+        "recovery_failure_history": [],
         "revision": os.getenv("K_REVISION", "").strip() or "",
     }
 
@@ -615,6 +663,7 @@ def upsert_incident(incident: Dict[str, Any]) -> Dict[str, Any]:
         STATUS_RECOVERY_APPROVED,
         STATUS_RECOVERY_SUCCEEDED,
         STATUS_RECOVERY_FAILED,
+        STATUS_RETRY_BLOCKED_PENDING_PATCH,
         STATUS_DISMISSED,
     }:
         merged["status"] = existing["status"]
@@ -682,6 +731,14 @@ def acquire_recovery_lease(incident_id: str) -> Optional[str]:
         if not meta:
             return None
         status = str(meta.get("status") or "")
+        if status == STATUS_RETRY_BLOCKED_PENDING_PATCH:
+            if recovery_guard_is_blocked(meta):
+                return None
+            unlocked_verdict = recovery_effective_retry_verdict(meta)
+            meta["status"] = STATUS_RECOVERY_FAILED
+            meta["retry_verdict"] = unlocked_verdict
+            meta["recovery_guard_unlocked_at"] = now_kst_iso()
+            status = STATUS_RECOVERY_FAILED
         if status in {STATUS_RECOVERY_APPROVED, STATUS_RECOVERY_SUCCEEDED, STATUS_DISMISSED}:
             return None
         if status == STATUS_RECOVERY_FAILED:
@@ -706,6 +763,7 @@ def complete_recovery(
     lease_token: str,
     success: bool,
     recovery_run_id: Optional[str] = None,
+    failure_signature_components: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     meta = load_incident(incident_id)
     if not meta:
@@ -718,6 +776,32 @@ def complete_recovery(
     if not success:
         # Clear lease so owner may approve again after failure (no auto retry).
         meta["recovery_lease_token"] = None
+        components = dict(failure_signature_components or {})
+        components.setdefault("incident_id", incident_id)
+        signature = build_recovery_failure_signature(components)
+        previous = str(meta.get("recovery_failure_signature") or "")
+        count = int(meta.get("recovery_failure_signature_count") or 0) + 1 if signature == previous else 1
+        meta["recovery_failure_signature"] = signature
+        meta["recovery_failure_signature_components"] = components
+        meta["recovery_failure_signature_count"] = count
+        history = list(meta.get("recovery_failure_history") or [])
+        history.append(
+            {
+                "signature": signature,
+                "failed_at": now_kst_iso(),
+                "recovery_run_id": recovery_run_id,
+                "components": components,
+            }
+        )
+        meta["recovery_failure_history"] = history[-8:]
+        if count >= 2:
+            meta["retry_verdict_before_recovery_guard"] = meta.get("retry_verdict")
+            meta["retry_verdict"] = RETRY_BLOCKED
+            meta["status"] = STATUS_RETRY_BLOCKED_PENDING_PATCH
+            meta["recovery_guard_message_ko"] = (
+                "동일한 원인으로 복구가 반복 실패했습니다. 현재 revision/입력 조건이 "
+                "변경되지 않아 추가 재실행을 차단합니다. 패치 또는 조건 변경 후 다시 허용됩니다."
+            )
     save_incident(meta)
     return meta
 

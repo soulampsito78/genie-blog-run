@@ -11,6 +11,7 @@ Hard invariants:
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import tempfile
@@ -121,6 +122,94 @@ def _revision_meta() -> Dict[str, str]:
     }
 
 
+def _stable_fingerprint(value: Any) -> str:
+    body = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def keysuri_input_fingerprint_fields(
+    source_pack: Mapping[str, Any],
+    generation_contract: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Bounded identity for comparing preflight input with a natural run."""
+    pid = str(source_pack.get("program_id") or "")
+    selection_key = "korea_top5_selection" if pid == PROGRAM_KOREA else "global_top5_selection"
+    selection = source_pack.get(selection_key)
+    if not isinstance(selection, Mapping):
+        selection = {}
+    selected_ids = [str(value) for value in selection.get("selected_source_ids") or [] if value]
+    source_rows = source_pack.get("sources") if isinstance(source_pack.get("sources"), list) else []
+    by_id = {
+        str(row.get("source_id") or ""): row
+        for row in source_rows
+        if isinstance(row, Mapping)
+    }
+    selected_headlines = [
+        str((by_id.get(source_id) or {}).get("title") or "") for source_id in selected_ids
+    ]
+    source_snapshot = [
+        {
+            "source_id": row.get("source_id"),
+            "source_url": row.get("source_url"),
+            "published_at": row.get("published_at"),
+            "title": row.get("title"),
+            "snippet": row.get("snippet"),
+        }
+        for row in source_rows
+        if isinstance(row, Mapping)
+    ]
+    contract = dict(generation_contract or {})
+    contract_identity = {
+        "schema_fingerprint": contract.get("schema_fingerprint"),
+        "prompt_template_fingerprint": contract.get("prompt_template_fingerprint"),
+        "model_identifier": contract.get("model_identifier"),
+    }
+    return {
+        "source_fetch_timestamp": source_pack.get("generated_at"),
+        "source_count": len(source_rows),
+        "selected_news_ids": selected_ids,
+        "selected_headlines": selected_headlines,
+        "source_snapshot_hash": _stable_fingerprint(source_snapshot),
+        "selection_fingerprint": _stable_fingerprint(
+            {"selected_news_ids": selected_ids, "selected_headlines": selected_headlines}
+        ),
+        "contract_fingerprint": _stable_fingerprint(contract_identity),
+        "model": contract.get("model_identifier"),
+    }
+
+
+def compare_natural_input_to_preflight(
+    natural_fields: Mapping[str, Any],
+    readiness: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    preflight = dict(readiness or {})
+    current_selection = natural_fields.get("selection_fingerprint")
+    preflight_selection = preflight.get("preflight_selection_fingerprint")
+    current_source = natural_fields.get("source_snapshot_hash")
+    preflight_source = preflight.get("preflight_source_snapshot_hash")
+    comparable = bool(preflight_selection and current_selection)
+    drift = bool(
+        comparable
+        and (
+            current_selection != preflight_selection
+            or (preflight_source and current_source != preflight_source)
+        )
+    )
+    return {
+        "preflight_comparison_available": comparable,
+        "preflight_input_drift": drift,
+        "preflight_input_diagnostic": "PREFLIGHT_INPUT_DRIFT" if drift else (
+            "PREFLIGHT_INPUT_MATCH" if comparable else "PREFLIGHT_INPUT_NOT_COMPARABLE"
+        ),
+        "preflight_source_snapshot_hash": preflight_source,
+        "preflight_selection_fingerprint": preflight_selection,
+        "natural_source_snapshot_hash": current_source,
+        "natural_selection_fingerprint": current_selection,
+        "preflight_revision": preflight.get("preflight_revision") or preflight.get("deployed_revision"),
+        "preflight_model": preflight.get("preflight_model"),
+    }
+
+
 def run_keysuri_reliability_generation(
     program_id: str,
     *,
@@ -129,7 +218,7 @@ def run_keysuri_reliability_generation(
     send_owner_email: bool = False,
     send_fn=None,
 ) -> Dict[str, Any]:
-    """Live-model generation against a frozen pack. No image / SMTP / natural slot."""
+    """No-send model generation: frozen for burn-in, live feeds for preflight."""
     if execution_class not in NON_NATURAL_PROBE_CLASSES:
         raise ValueError(f"forbidden_execution_class:{execution_class}")
     if send_owner_email:
@@ -138,8 +227,14 @@ def run_keysuri_reliability_generation(
     from keysuri_live_source_smoke import run_keysuri_live_source_smoke
 
     pid = str(program_id or "").strip()
-    pack = Path(frozen_pack_path) if frozen_pack_path else FROZEN_PACKS.get(pid)
-    if pack is None or not pack.is_file():
+    live_preflight = (
+        execution_class == EXECUTION_CLASS_PREFLIGHT_CANARY
+        and frozen_pack_path is None
+    )
+    pack = None if live_preflight else (
+        Path(frozen_pack_path) if frozen_pack_path else FROZEN_PACKS.get(pid)
+    )
+    if not live_preflight and (pack is None or not pack.is_file()):
         return {
             "ok": False,
             "program_id": pid,
@@ -153,15 +248,30 @@ def run_keysuri_reliability_generation(
         }
 
     started = _now_kst_iso()
+    output_prefix = PREFLIGHT_PREFIX if live_preflight else RELIABILITY_PREFIX
+    normalized_pack_out = _local_dir(output_prefix) / (
+        f"{datetime.now(KST).strftime('%Y%m%d_%H%M%S')}_{pid}_normalized_source_pack.json"
+    )
     smoke = run_keysuri_live_source_smoke(
         program_id=pid,
         use_gemini=True,
         send=False,
         frozen_source_pack_path=pack,
         trigger_source=execution_class,
-        allow_network=False,  # frozen pack bypasses network; keep fail-closed if miswired
+        allow_network=live_preflight,
+        out_dir=_local_dir(output_prefix),
+        source_pack_out=normalized_pack_out,
     )
-    # allow_network=False with frozen path is OK (frozen branch runs first)
+
+    source_pack: Dict[str, Any] = {}
+    try:
+        source_pack = json.loads(Path(smoke.source_pack_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        source_pack = {}
+    input_fields = keysuri_input_fingerprint_fields(
+        source_pack,
+        smoke.generation_contract if isinstance(smoke.generation_contract, dict) else {},
+    ) if source_pack else {}
 
     briefing = smoke.generated_briefing if isinstance(smoke.generated_briefing, dict) else {}
     repaired = briefing
@@ -194,7 +304,8 @@ def run_keysuri_reliability_generation(
         "preflight_canary": execution_class == EXECUTION_CLASS_PREFLIGHT_CANARY,
         "started_at": started,
         "finished_at": _now_kst_iso(),
-        "frozen_pack_path": str(pack),
+        "input_mode": "live_current_feed" if live_preflight else "frozen_reliability_pack",
+        "frozen_pack_path": str(pack) if pack is not None else None,
         "called_gemini": bool(smoke.called_gemini),
         "called_image_api": 0,
         "smtp": 0,
@@ -210,6 +321,7 @@ def run_keysuri_reliability_generation(
         "generation_diagnostics": dict(smoke.generation_diagnostics or {}),
         "generation_attempt_count": getattr(smoke, "generation_attempt_count", None),
         "error": None if validation_pass else (smoke.error or "validation_failed"),
+        **input_fields,
         **_revision_meta(),
     }
     stamp = datetime.now(KST).strftime("%Y%m%d_%H%M%S")
@@ -348,8 +460,6 @@ def run_program_canary(program_id: str, *, execution_class: str) -> Dict[str, An
     if pid == PROGRAM_TODAY:
         return run_today_reliability_generation(execution_class=execution_class)
     if pid in {PROGRAM_GLOBAL, PROGRAM_KOREA}:
-        # Frozen path ignores allow_network once pack is provided; pass True so
-        # accidental missing-pack cannot be confused with network disable error.
         return run_keysuri_reliability_generation(pid, execution_class=execution_class)
     return {"ok": False, "error": "unknown_program", "program_id": pid}
 
@@ -433,13 +543,24 @@ def run_natural_preflight(
                     send_genie_email(
                         subject=subject,
                         html_body=html,
-                        to_addrs=None,
+                        to_addrs_override=None,
                     )
                 )
         except Exception:
             logger.exception("preflight alert send failed program=%s", pid)
             alert_sent = False
     readiness["alert_sent"] = alert_sent
+    readiness["alert_on_fail"] = bool(alert_on_fail)
+    readiness["preflight_source_snapshot_hash"] = result.get("source_snapshot_hash")
+    readiness["preflight_selection_fingerprint"] = result.get("selection_fingerprint")
+    readiness["preflight_contract_fingerprint"] = result.get("contract_fingerprint")
+    readiness["preflight_revision"] = result.get("deployed_revision")
+    readiness["preflight_model"] = result.get("model")
+    readiness["selected_news_ids"] = list(result.get("selected_news_ids") or [])
+    readiness["selected_headlines"] = list(result.get("selected_headlines") or [])
+    readiness["source_fetch_timestamp"] = result.get("source_fetch_timestamp")
+    readiness["source_count"] = result.get("source_count")
+    readiness["input_mode"] = result.get("input_mode")
     readiness["canary_result"] = {
         k: result.get(k)
         for k in (
@@ -451,6 +572,9 @@ def run_natural_preflight(
             "error",
         )
     }
+    # Persist the alert outcome and representative-input identity, not only the
+    # preliminary status written before alert dispatch.
+    readiness["artifact_uri"] = _save_json(PREFLIGHT_PREFIX, f"{date}_{pid}", readiness)
     return readiness
 
 

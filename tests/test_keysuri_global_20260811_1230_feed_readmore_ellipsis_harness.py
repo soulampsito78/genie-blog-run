@@ -117,13 +117,15 @@ class KeysuriGlobal20260811FeedReadmoreEllipsisHarness(unittest.TestCase):
             self.assertNotIn("…", result.text)
 
     def test_06_sentence_final_and_quoted_ellipsis_remain_valid(self) -> None:
-        for text in (
-            "정상적인 문장 끝…",
-            "메가딜… '미르' IP 중국계 자본 품으로",
-        ):
-            result = repair_korean_connector_ellipsis_text(text)
-            self.assertFalse(result.blocked, msg=text)
-            self.assertNotIn("…", result.text)
+        sentence_final = "정상적인 문장 끝…"
+        result = repair_korean_connector_ellipsis_text(sentence_final)
+        self.assertFalse(result.blocked)
+        self.assertEqual(result.text, sentence_final)
+
+        connector = "메가딜… '미르' IP 중국계 자본 품으로"
+        result = repair_korean_connector_ellipsis_text(connector)
+        self.assertFalse(result.blocked)
+        self.assertNotIn("…", result.text)
 
     def test_07_genuine_paren_truncation_remains_blocked(self) -> None:
         result = repair_korean_connector_ellipsis_text("확인 불가 (…)")

@@ -18,6 +18,11 @@
 
 ## Live-model burn-in (no-send)
 
+Scope clarification (2026-08-11): the Global/Korea streaks below repeatedly used one
+frozen source pack. They proved **MODEL_PIPELINE_STABILITY** on fixed inputs. They did
+not prove **NATURAL_INPUT_DISTRIBUTION_RELIABILITY**, and should not be cited as evidence
+that an upcoming live TOP5 was covered.
+
 | Program | Consecutive PASS | Attempts | Terminal fails | Image/SMTP/Customer |
 |---|---|---|---|---|
 | Today | **10** | 10 | 0 | 0/0/0 |
@@ -34,9 +39,11 @@
 
 Natural jobs + Watchdog unchanged. `Tomorrow_Geenee` remains **PAUSED**.
 
-## Deployed preflight proof (2026-08-11 fixture date)
+## Historical deployed preflight proof (2026-08-11 fixture date)
 
-All three: `PRECHECK_PASS`, model called, image/SMTP/customer/slot/incident = 0.
+All three: `PRECHECK_PASS`, model called, image/SMTP/customer/slot/incident = 0. This
+historical proof used frozen fixture input for KeeSuri and therefore demonstrated
+side-effect isolation and fixed-input stability, not natural-input equivalence.
 
 ## Full suite ×2
 

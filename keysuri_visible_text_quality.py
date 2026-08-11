@@ -8,6 +8,18 @@ from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Tuple
 
 from keysuri_numeric_span_consistency import repair_year_span_duration
+from keysuri_source_text_normalization import (
+    AMBIGUOUS_UNSAFE,
+    DASH_CONNECTOR,
+    DELIMITER_ELLIPSIS_TOKEN,
+    FEED_READ_MORE_MARKER,
+    LEGIT_QUOTED,
+    LEGIT_SENTENCE_FINAL,
+    MALFORMED_DOT_RUN,
+    TOKEN_ELLIPSIS_DELIMITER,
+    TRUE_TRUNCATION,
+    classify_ellipsis_structure,
+)
 from keysuri_visible_text import (
     contains_dangling_quoted_title_fragment,
     contains_korea_impact_phrase_issues,
@@ -109,6 +121,9 @@ _QUALITY_FIELD_TEMPLATE: Dict[str, Any] = {
     "visible_text_korea_token_duplication_blocked": False,
     "year_span_diagnostics": [],
     "visible_text_quality_issue_codes": [],
+    "terminal_issue_codes": [],
+    "pre_repair_findings": [],
+    "repair_history": [],
     "visible_text_quality_samples": [],
 }
 
@@ -172,6 +187,30 @@ def repair_korean_connector_ellipsis_text(value: Any) -> EllipsisRepairResult:
     if not contains_connector_ellipsis(original):
         return EllipsisRepairResult(original, found=False, repaired=False, blocked=False)
 
+    structure = set(classify_ellipsis_structure(original))
+    unsafe_structure = structure & {
+            FEED_READ_MORE_MARKER,
+            DASH_CONNECTOR,
+            DELIMITER_ELLIPSIS_TOKEN,
+            TOKEN_ELLIPSIS_DELIMITER,
+            TRUE_TRUNCATION,
+            MALFORMED_DOT_RUN,
+            AMBIGUOUS_UNSAFE,
+    }
+    # An ellipsis immediately before the closing quote is structurally also a
+    # TOKEN_ELLIPSIS_DELIMITER, but inside a balanced quote it is editorial.
+    if LEGIT_QUOTED in structure:
+        unsafe_structure.discard(TOKEN_ELLIPSIS_DELIMITER)
+    purely_legitimate = bool(structure & {LEGIT_SENTENCE_FINAL, LEGIT_QUOTED}) and not unsafe_structure
+    if purely_legitimate:
+        normalized_legitimate = _normalize_ellipsis_unicode(original)
+        return EllipsisRepairResult(
+            normalized_legitimate,
+            found=True,
+            repaired=normalized_legitimate != original,
+            blocked=False,
+        )
+
     text = _normalize_ellipsis_unicode(original)
 
     if (
@@ -213,12 +252,18 @@ def repair_korean_connector_ellipsis_text(value: Any) -> EllipsisRepairResult:
     # Aug 10/11: clause/dash LEFT edges (`—…Firebird`, `:…Legends`, `·…삼성`).
     repaired = _CONNECTOR_TO_CONTENT_RE.sub(" ", repaired)
     repaired = _CONNECTOR_TO_PUNCT_RE.sub("", repaired)
-    # Terminal trailing ellipsis (sentence-final) — strip so residual does not block.
-    repaired = _TRAILING_ELLIPSIS_RE.sub("", repaired)
     repaired = re.sub(r"\s+([,.:;!?·])", r"\1", repaired)
     repaired = re.sub(r"\s+", " ", repaired).strip()
 
     if contains_connector_ellipsis(repaired):
+        remaining = set(classify_ellipsis_structure(repaired))
+        if remaining and remaining <= {LEGIT_SENTENCE_FINAL, LEGIT_QUOTED}:
+            return EllipsisRepairResult(
+                repaired,
+                found=True,
+                repaired=repaired != original,
+                blocked=False,
+            )
         return EllipsisRepairResult(repaired, found=True, repaired=False, blocked=True)
     return EllipsisRepairResult(repaired, found=True, repaired=repaired != original, blocked=False)
 
@@ -247,30 +292,68 @@ def _new_quality_fields() -> Dict[str, Any]:
     return copy.deepcopy(_QUALITY_FIELD_TEMPLATE)
 
 
-def _append_sample(fields: Dict[str, Any], *, path: str, before: Any, after: Any = "") -> None:
+def _append_sample(
+    fields: Dict[str, Any],
+    *,
+    path: str,
+    before: Any,
+    after: Any = "",
+    source_id: Any = None,
+    validator_result: str = "",
+) -> None:
     samples = fields.setdefault("visible_text_quality_samples", [])
     if len(samples) >= 12:
         return
-    entry: Dict[str, str] = {
+    entry: Dict[str, Any] = {
         "path": path,
+        "field": path.rsplit(".", 1)[-1],
         "sample": sanitize_quality_sample(before),
+        "provenance_class": list(classify_ellipsis_structure(before)),
     }
+    rank_match = re.search(r"(?:items|top_5_news)\[(\d+)\]", path)
+    if rank_match:
+        entry["rank"] = int(rank_match.group(1)) + 1
+    if str(source_id or "").strip():
+        entry["source_id"] = str(source_id).strip()[:160]
+    if validator_result:
+        entry["validator_result"] = validator_result
+    residual = _ELLIPSIS_RE.search(str(before or ""))
+    if residual:
+        start = max(0, residual.start() - 2)
+        end = min(len(str(before or "")), residual.end() + 2)
+        entry["unicode_codepoints"] = [
+            f"U+{ord(char):04X}" for char in str(before or "")[start:end]
+        ]
     repaired_sample = sanitize_quality_sample(after)
     if repaired_sample and repaired_sample != entry["sample"]:
         entry["repaired_sample"] = repaired_sample
+        entry["repair_before"] = entry["sample"]
+        entry["repair_after"] = repaired_sample
     samples.append(entry)
 
 
 def _walk_and_repair(node: Any, *, path: str, fields: Dict[str, Any]) -> Any:
     if isinstance(node, dict):
         out: Dict[Any, Any] = {}
+        context_source_id = node.get("source_id") or node.get("news_id") or node.get("claim_id")
         for key, value in node.items():
             child_path = f"{path}.{key}" if path else str(key)
             if isinstance(value, str) and _should_check_key(str(key)):
                 result = repair_korean_connector_ellipsis_text(value)
                 if result.found:
                     fields["visible_text_ellipsis_found"] = True
-                    _append_sample(fields, path=child_path, before=value, after=result.text)
+                    _append_sample(
+                        fields,
+                        path=child_path,
+                        before=value,
+                        after=result.text,
+                        source_id=context_source_id,
+                        validator_result=(
+                            "block" if result.blocked else (
+                                "repaired" if result.repaired else "allowed"
+                            )
+                        ),
+                    )
                     if result.blocked:
                         fields["visible_text_ellipsis_blocked"] = True
                     elif result.repaired:
@@ -322,7 +405,13 @@ def _walk_and_repair(node: Any, *, path: str, fields: Dict[str, Any]) -> Any:
 
 
 def _finalize_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
-    issue_codes = fields.setdefault("visible_text_quality_issue_codes", [])
+    prior_codes = [
+        str(code)
+        for code in fields.get("visible_text_quality_issue_codes") or []
+        if str(code or "").strip()
+    ]
+    issue_codes: list[str] = []
+    terminal_codes: list[str] = []
     blocked = bool(
         fields.get("visible_text_ellipsis_blocked")
         or fields.get("visible_text_dangling_quoted_title_blocked")
@@ -330,25 +419,37 @@ def _finalize_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
         or fields.get("visible_text_korea_token_duplication_blocked")
     )
     if fields.get("visible_text_ellipsis_blocked"):
-        if KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED not in issue_codes:
-            issue_codes.append(KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED)
+        terminal_codes.append(KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED)
     elif fields.get("visible_text_ellipsis_repaired"):
         if KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_REPAIRED not in issue_codes:
             issue_codes.append(KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_REPAIRED)
     if fields.get("visible_text_dangling_quoted_title_blocked"):
-        if KEYSURI_DANGLING_QUOTED_TITLE_BLOCKED not in issue_codes:
-            issue_codes.append(KEYSURI_DANGLING_QUOTED_TITLE_BLOCKED)
+        terminal_codes.append(KEYSURI_DANGLING_QUOTED_TITLE_BLOCKED)
     if fields.get("visible_text_year_span_blocked"):
-        if KEYSURI_YEAR_SPAN_DURATION_BLOCKED not in issue_codes:
-            issue_codes.append(KEYSURI_YEAR_SPAN_DURATION_BLOCKED)
+        terminal_codes.append(KEYSURI_YEAR_SPAN_DURATION_BLOCKED)
     elif fields.get("visible_text_year_span_repaired"):
         if KEYSURI_YEAR_SPAN_DURATION_REPAIRED not in issue_codes:
             issue_codes.append(KEYSURI_YEAR_SPAN_DURATION_REPAIRED)
     if fields.get("visible_text_korea_token_duplication_blocked"):
-        if KEYSURI_KOREA_TOKEN_DUPLICATION_BLOCKED not in issue_codes:
-            issue_codes.append(KEYSURI_KOREA_TOKEN_DUPLICATION_BLOCKED)
+        terminal_codes.append(KEYSURI_KOREA_TOKEN_DUPLICATION_BLOCKED)
     if fields.get("visible_text_repeated_token_repaired") and KEYSURI_KOREAN_REPEATED_TOKEN_REPAIRED not in issue_codes:
         issue_codes.append(KEYSURI_KOREAN_REPEATED_TOKEN_REPAIRED)
+    for code in terminal_codes:
+        if code not in issue_codes:
+            issue_codes.append(code)
+    historical_blocked = [
+        code for code in prior_codes if code.endswith("_blocked") and code not in terminal_codes
+    ]
+    pre_repair = fields.setdefault("pre_repair_findings", [])
+    for code in historical_blocked:
+        if code not in pre_repair:
+            pre_repair.append(code)
+    repairs = fields.setdefault("repair_history", [])
+    for sample in fields.get("visible_text_quality_samples") or []:
+        if isinstance(sample, dict) and sample.get("repaired_sample") and sample not in repairs:
+            repairs.append(copy.deepcopy(sample))
+    fields["visible_text_quality_issue_codes"] = issue_codes
+    fields["terminal_issue_codes"] = terminal_codes
     fields["visible_text_quality_status"] = "block" if blocked else "pass"
     return fields
 
@@ -376,7 +477,10 @@ def validate_keysuri_html_visible_text_quality(
     result = repair_korean_connector_ellipsis_text(text)
     if result.found:
         fields["visible_text_ellipsis_found"] = True
-        fields["visible_text_ellipsis_blocked"] = True
+        # Rendered output is immutable here. A repairable unsafe residual means
+        # the upstream repair path failed; a semantically legitimate ellipsis is
+        # allowed and preserved.
+        fields["visible_text_ellipsis_blocked"] = bool(result.blocked or result.repaired)
         _append_sample(fields, path=path, before=text, after=result.text)
     repeated = repair_korean_repeated_token_text(text)
     if repeated.found:
@@ -393,26 +497,9 @@ def merge_visible_text_quality_fields(*field_sets: Mapping[str, Any]) -> Dict[st
     for fields in field_sets:
         if not isinstance(fields, Mapping):
             continue
-        merged["visible_text_ellipsis_found"] = (
-            bool(merged["visible_text_ellipsis_found"])
-            or bool(fields.get("visible_text_ellipsis_found"))
-        )
-        merged["visible_text_ellipsis_repaired"] = (
-            bool(merged["visible_text_ellipsis_repaired"])
-            or bool(fields.get("visible_text_ellipsis_repaired"))
-        )
-        merged["visible_text_ellipsis_blocked"] = (
-            bool(merged["visible_text_ellipsis_blocked"])
-            or bool(fields.get("visible_text_ellipsis_blocked"))
-        )
-        merged["visible_text_repeated_token_found"] = (
-            bool(merged["visible_text_repeated_token_found"])
-            or bool(fields.get("visible_text_repeated_token_found"))
-        )
-        merged["visible_text_repeated_token_repaired"] = (
-            bool(merged["visible_text_repeated_token_repaired"])
-            or bool(fields.get("visible_text_repeated_token_repaired"))
-        )
+        for key, default in _QUALITY_FIELD_TEMPLATE.items():
+            if isinstance(default, bool):
+                merged[key] = bool(merged.get(key)) or bool(fields.get(key))
         for code in fields.get("visible_text_quality_issue_codes") or []:
             code = str(code or "").strip()
             if code and code not in issue_codes:
@@ -420,6 +507,11 @@ def merge_visible_text_quality_fields(*field_sets: Mapping[str, Any]) -> Dict[st
         for sample in fields.get("visible_text_quality_samples") or []:
             if isinstance(sample, dict) and sample not in samples and len(samples) < 12:
                 samples.append(dict(sample))
+        for key in ("pre_repair_findings", "repair_history"):
+            target = merged.setdefault(key, [])
+            for item in fields.get(key) or []:
+                if item not in target:
+                    target.append(copy.deepcopy(item))
     merged["visible_text_quality_issue_codes"] = issue_codes
     merged["visible_text_quality_samples"] = samples
     return _finalize_fields(merged)

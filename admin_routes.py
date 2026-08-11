@@ -945,9 +945,12 @@ def admin_incident_detail(request: Request, incident_id: str):
         ROOT_CAUSE_CONFIRMED,
         ROOT_CAUSE_PARTIAL,
         ROOT_CAUSE_UNKNOWN,
+        STATUS_RETRY_BLOCKED_PENDING_PATCH,
         is_retry_actionable,
         load_incident,
         normalize_retry_actionability,
+        recovery_effective_retry_verdict,
+        recovery_guard_is_blocked,
         validate_incident_id,
     )
 
@@ -973,7 +976,8 @@ def admin_incident_detail(request: Request, incident_id: str):
         for k, v in (meta.get("stage_map") or {}).items()
     )
     status = str(meta.get("status") or "")
-    verdict = normalize_retry_actionability(meta.get("retry_verdict"))
+    verdict = recovery_effective_retry_verdict(meta)
+    recovery_guard_blocked = recovery_guard_is_blocked(meta)
     root_cause = str(meta.get("root_cause_verdict") or ROOT_CAUSE_UNKNOWN)
     smoke = bool(meta.get("smoke_failure") or meta.get("smoke_only") or meta.get("verification_only"))
     outcomes = meta.get("outcomes") if isinstance(meta.get("outcomes"), dict) else {}
@@ -1013,7 +1017,15 @@ def admin_incident_detail(request: Request, incident_id: str):
 <p>메일 CTA의 「검증 incident 보기」는 조회 전용입니다.</p>
 </div>
 """
-    elif status not in {"reported", "open", "recovery_failed"}:
+    elif recovery_guard_blocked:
+        actions = f"""
+<div class="card warn">
+<button class="btn" type="button" disabled style="background:#94a3b8;cursor:not-allowed;">재실행 승인</button>
+<p><strong>{_esc(meta.get('recovery_guard_message_ko'))}</strong></p>
+<p>상태: <code>{_esc(STATUS_RETRY_BLOCKED_PENDING_PATCH)}</code></p>
+</div>
+"""
+    elif status not in {"reported", "open", "recovery_failed", STATUS_RETRY_BLOCKED_PENDING_PATCH}:
         actions = f'<p class="warn">현재 상태(<code>{_esc(status)}</code>)에서는 재실행 승인 버튼이 비활성입니다.</p>'
     elif verdict == RETRY_SAFE or verdict == RETRY_SAFE_TO_RETRY:
         actions = f"""
@@ -1107,9 +1119,12 @@ def admin_incident_approve_confirm(request: Request, incident_id: str):
         RETRY_ALLOWED_WITH_WARNING,
         RETRY_SAFE,
         RETRY_SAFE_TO_RETRY,
+        STATUS_RETRY_BLOCKED_PENDING_PATCH,
         is_retry_actionable,
         load_incident,
         normalize_retry_actionability,
+        recovery_effective_retry_verdict,
+        recovery_guard_is_blocked,
         validate_incident_id,
     )
 
@@ -1120,7 +1135,7 @@ def admin_incident_approve_confirm(request: Request, incident_id: str):
         return HTMLResponse(_layout("Not found", "<p>장애 기록을 찾을 수 없습니다.</p>"), status_code=404)
 
     status = str(meta.get("status") or "")
-    verdict = normalize_retry_actionability(meta.get("retry_verdict"))
+    verdict = recovery_effective_retry_verdict(meta)
     smoke = bool(meta.get("smoke_failure") or meta.get("smoke_only") or meta.get("verification_only"))
     if smoke:
         inner = (
@@ -1128,7 +1143,13 @@ def admin_incident_approve_confirm(request: Request, incident_id: str):
             f"<p><a href=\"/admin/incidents/{_esc(incident_id)}\">← 상세</a></p>"
         )
         return HTMLResponse(_layout("Approve blocked", inner), status_code=400)
-    if status not in {"reported", "open", "recovery_failed"}:
+    if recovery_guard_is_blocked(meta):
+        inner = (
+            f'<p class="warn">{_esc(meta.get("recovery_guard_message_ko"))}</p>'
+            f'<p><a href="/admin/incidents/{_esc(incident_id)}">← 상세</a></p>'
+        )
+        return HTMLResponse(_layout("Approve blocked", inner), status_code=400)
+    if status not in {"reported", "open", "recovery_failed", STATUS_RETRY_BLOCKED_PENDING_PATCH}:
         inner = (
             f"<p class=\"warn\">상태 <code>{_esc(status)}</code>에서는 재실행할 수 없습니다.</p>"
             f"<p><a href=\"/admin/incidents/{_esc(incident_id)}\">← 상세</a></p>"
@@ -1212,6 +1233,8 @@ def admin_incident_approve_recovery(request: Request, incident_id: str):
     if need is not None:
         return need
     from natural_run_incident_store import (
+        recovery_effective_retry_verdict,
+        recovery_guard_is_blocked,
         is_retry_actionable,
         load_incident,
         validate_incident_id,
@@ -1226,7 +1249,12 @@ def admin_incident_approve_recovery(request: Request, incident_id: str):
             url=f"/admin/incidents/{incident_id}?recovery_error=smoke_or_verification_blocked",
             status_code=303,
         )
-    if not is_retry_actionable(meta.get("retry_verdict")):
+    if recovery_guard_is_blocked(meta):
+        return RedirectResponse(
+            url=f"/admin/incidents/{incident_id}?recovery_error=retry_blocked_pending_patch",
+            status_code=303,
+        )
+    if not is_retry_actionable(recovery_effective_retry_verdict(meta)):
         return RedirectResponse(
             url=f"/admin/incidents/{incident_id}?recovery_error=verdict_not_actionable",
             status_code=303,

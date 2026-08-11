@@ -53,6 +53,11 @@ from keysuri_korea_longform_ux import (
     korea_warm_farewell_missing,
     max_paragraph_length,
 )
+from keysuri_source_text_normalization import (
+    LEGIT_QUOTED,
+    LEGIT_SENTENCE_FINAL,
+    classify_ellipsis_structure,
+)
 from keysuri_visible_text import (
     contains_duplicate_watch_arrows,
     contains_internal_owner_copy_leaks,
@@ -270,8 +275,10 @@ def _find_truncated_visible_lines(html: str) -> List[str]:
     for line in _visible_email_text_lines(html):
         without_urls = _URL_RE.sub("", line)
         if _VISIBLE_ELLIPSIS_RE.search(without_urls):
-            bad.append(line[:120])
-            continue
+            classes = set(classify_ellipsis_structure(without_urls))
+            if not classes or not classes <= {LEGIT_SENTENCE_FINAL, LEGIT_QUOTED}:
+                bad.append(line[:120])
+                continue
         if len(line) > 8 and not line.endswith((".", "!", "?", "다", "요", ")", "”", '"')):
             last_word = line.rstrip(":;,·— ").split(" ")[-1] if line.split() else ""
             if last_word in GLOBAL_DANGLING_CONNECTIVE_ENDINGS:

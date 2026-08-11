@@ -63,8 +63,8 @@ class KeysuriVisibleTextQualityTests(unittest.TestCase):
         self.assertNotIn("를 구축 이슈", result.text)
         self.assertNotIn("을 구축 이슈", result.text)
 
-    def test_trailing_ellipsis_repaired_not_blocked(self) -> None:
-        """Terminal trailing ellipsis is now repaired by stripping."""
+    def test_trailing_ellipsis_is_preserved_when_semantically_terminal(self) -> None:
+        """A terminal editorial ellipsis is preserved and does not block."""
         payload = {
             "top_5_news": {
                 "items": [
@@ -80,9 +80,9 @@ class KeysuriVisibleTextQualityTests(unittest.TestCase):
 
         self.assertEqual(fields["visible_text_quality_status"], "pass")
         self.assertTrue(fields["visible_text_ellipsis_found"])
-        self.assertTrue(fields["visible_text_ellipsis_repaired"])
+        self.assertFalse(fields["visible_text_ellipsis_repaired"])
         self.assertFalse(fields["visible_text_ellipsis_blocked"])
-        self.assertEqual(repaired["top_5_news"]["items"][0]["korean_title"], "확인 불가")
+        self.assertEqual(repaired["top_5_news"]["items"][0]["korean_title"], "확인 불가…")
         # URL fields are not checked/repaired
         self.assertEqual(repaired["top_5_news"]["items"][0]["source_url"], "https://example.com/a...b")
 
@@ -165,16 +165,17 @@ class KeysuriVisibleTextQualityTests(unittest.TestCase):
         self.assertNotRegex(result.text, r"…|\.{2,}")
 
 
-    def test_summary_trailing_dots_repaired(self) -> None:
-        """Source summary ending with '...': should repair by stripping."""
+    def test_summary_trailing_dots_normalized_as_editorial_ellipsis(self) -> None:
+        """A complete sentence ending in ASCII dots is normalized, not dropped."""
         text = "삼성전자와 SK하이닉스 등의 반도체 투자 계획이 전남광주의 해묵은 현안을 풀어낼 수 있다..."
         result = repair_korean_connector_ellipsis_text(text)
 
         self.assertTrue(result.found)
         self.assertTrue(result.repaired)
         self.assertFalse(result.blocked)
-        self.assertNotRegex(result.text, r"…|\.{2,}")
-        self.assertTrue(result.text.endswith("있다"))
+        self.assertTrue(result.text.endswith("…"))
+        self.assertNotRegex(result.text, r"\.{2,}")
+        self.assertTrue(result.text.endswith("있다…"))
 
     def test_full_payload_live_pattern_passes_after_repair(self) -> None:
         """Full payload mimicking the bec8c744 live failure: should pass after repair."""
@@ -202,7 +203,8 @@ class KeysuriVisibleTextQualityTests(unittest.TestCase):
         # Verify no ellipsis remains in repaired text
         self.assertNotRegex(repaired["top_5_news"]["items"][0]["headline"], r"…|\.{2,}")
         self.assertNotRegex(repaired["top_5_news"]["items"][0]["why_it_matters"], r"…|\.{2,}")
-        self.assertNotRegex(repaired["top_5_news"]["items"][0]["summary"], r"…|\.{2,}")
+        self.assertTrue(repaired["top_5_news"]["items"][0]["summary"].endswith("…"))
+        self.assertNotRegex(repaired["top_5_news"]["items"][0]["summary"], r"\.{2,}")
 
     def test_genuinely_unrecoverable_ellipsis_still_blocks(self) -> None:
         """Ellipsis in final rendered HTML always blocks regardless of repair."""

@@ -4464,6 +4464,7 @@ def _run_keysuri_service_full_run_impl(
             smoke=smoke,
             prompt_input=_failure_evidence_ctx.get("prompt_input"),
         )
+        meta.update(_preflight_drift_fields)
         artifact_saved = True
         try:
             save_run_artifact(meta, email_html=email_html)
@@ -4486,6 +4487,37 @@ def _run_keysuri_service_full_run_impl(
         trigger_source=trigger_source,
         usage_sink=gemini_usage_sink,
     )
+    _preflight_drift_fields: Dict[str, Any] = {}
+    if str(trigger_source or "").strip() == "scheduled_service_full_run":
+        try:
+            from natural_run_reliability import (
+                compare_natural_input_to_preflight,
+                keysuri_input_fingerprint_fields,
+                load_readiness,
+            )
+
+            natural_source_pack = json.loads(
+                Path(smoke.source_pack_path).read_text(encoding="utf-8")
+            )
+            natural_input_fields = keysuri_input_fingerprint_fields(
+                natural_source_pack,
+                smoke.generation_contract
+                if isinstance(smoke.generation_contract, dict)
+                else {},
+            )
+            readiness = load_readiness(
+                pid, datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
+            )
+            _preflight_drift_fields = compare_natural_input_to_preflight(
+                natural_input_fields, readiness
+            )
+        except Exception as exc:  # noqa: BLE001 - diagnostics must never stop natural run
+            _preflight_drift_fields = {
+                "preflight_comparison_available": False,
+                "preflight_input_drift": False,
+                "preflight_input_diagnostic": "PREFLIGHT_INPUT_NOT_COMPARABLE",
+                "preflight_comparison_error_type": type(exc).__name__,
+            }
     validation_result = _validation_result_from_smoke(smoke)
     if smoke.called_gemini and smoke.parse_status == "parsed_valid" and smoke.ok:
         validation_result = "pass"
@@ -5079,6 +5111,7 @@ def _run_keysuri_service_full_run_impl(
             ),
         )
     meta.update(visible_text_quality_fields)
+    meta.update(_preflight_drift_fields)
     meta["owner_email_subject"] = subject
     _log_owner_email_delivery_event(program_id=pid, run_id=run_id, fields=owner_email_fields)
     meta["artifact_status"] = "emailed" if email_sent else "stored"

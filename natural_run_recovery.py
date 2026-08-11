@@ -78,6 +78,7 @@ def execute_approved_recovery(
     validation_result = ""
     artifact_status = ""
     error = ""
+    runner_payload: Dict[str, Any] = {}
 
     try:
         if program_id == "today_genie":
@@ -100,6 +101,7 @@ def execute_approved_recovery(
             if result is not None:
                 payload = getattr(result, "response_data", None) or {}
                 if isinstance(payload, dict):
+                    runner_payload = dict(payload)
                     validation_result = str(payload.get("validation_result") or "")
             artifact_status = "emailed" if email_sent else "stored"
         elif program_id in {"keysuri_global_tech", "keysuri_korea_tech"}:
@@ -116,6 +118,7 @@ def execute_approved_recovery(
             )
             if not isinstance(payload, dict):
                 payload = {}
+            runner_payload = dict(payload)
             recovery_run_id = str(payload.get("run_id") or "") or None
             email_sent = bool(payload.get("email_sent"))
             validation_result = str(payload.get("validation_result") or "")
@@ -146,11 +149,40 @@ def execute_approved_recovery(
         error = type(exc).__name__
         success = False
 
+    issue_codes = [str(code) for code in runner_payload.get("issue_codes") or [] if code]
+    structural_failure_class = str(
+        runner_payload.get("error")
+        or runner_payload.get("error_code")
+        or (issue_codes[0] if issue_codes else "unknown_recovery_failure")
+    )
+    failure_signature_components = {
+        "incident_id": incident_id,
+        "revision": str(
+            runner_payload.get("deployed_revision")
+            or runner_payload.get("revision")
+            or incident.get("revision")
+            or ""
+        ),
+        "stage": str(
+            runner_payload.get("first_failed_stage")
+            or incident.get("first_failed_stage")
+            or ("validation" if validation_result == "block" else "unknown")
+        ),
+        "issue_code": issue_codes[0] if issue_codes else structural_failure_class,
+        "structural_failure_class": structural_failure_class,
+        "selected_input_fingerprint": str(
+            runner_payload.get("natural_selection_fingerprint")
+            or runner_payload.get("selected_input_fingerprint")
+            or incident.get("selected_input_fingerprint")
+            or ""
+        ),
+    }
     complete_recovery(
         incident_id,
         lease_token=lease,
         success=success,
         recovery_run_id=recovery_run_id,
+        failure_signature_components=None if success else failure_signature_components,
     )
     updated = load_incident(incident_id) or {}
     updated["recovery_outcomes"] = {
@@ -175,6 +207,9 @@ def execute_approved_recovery(
         "auto_retry": 0,
         "recovery_report_sent": send_ok,
         "recovery_report_subject": subject,
-        "status": STATUS_RECOVERY_SUCCEEDED if success else STATUS_RECOVERY_FAILED,
+        "status": str(
+            updated.get("status")
+            or (STATUS_RECOVERY_SUCCEEDED if success else STATUS_RECOVERY_FAILED)
+        ),
         "error": error or None,
     }
