@@ -133,9 +133,20 @@ class SourceNormalizationAndGrammarTests(unittest.TestCase):
 
 
 class PreflightRepresentativenessTests(unittest.TestCase):
-    def _source_pack(self, path: Path, *, suffix: str = "a") -> dict:
+    def _source_pack(
+        self,
+        path: Path,
+        *,
+        suffix: str = "a",
+        program_id: str = "keysuri_global_tech",
+    ) -> dict:
+        selection_key = (
+            "korea_top5_selection"
+            if program_id == "keysuri_korea_tech"
+            else "global_top5_selection"
+        )
         pack = {
-            "program_id": "keysuri_global_tech",
+            "program_id": program_id,
             "generated_at": "2026-08-11T11:45:00+09:00",
             "sources": [
                 {
@@ -148,7 +159,7 @@ class PreflightRepresentativenessTests(unittest.TestCase):
                 for i in range(5)
             ],
             "claims": [],
-            "global_top5_selection": {
+            selection_key: {
                 "selected_source_ids": [f"s{i}{suffix}" for i in range(5)]
             },
         }
@@ -180,8 +191,14 @@ class PreflightRepresentativenessTests(unittest.TestCase):
             pack_path = Path(td) / "pack.json"
             self._source_pack(pack_path)
             smoke = self._smoke(pack_path)
+
+            def live_runner(**kwargs):
+                kwargs["usage_sink"]["model"] = "gemini-live-test"
+                return smoke
+
             with mock.patch(
-                "keysuri_live_source_smoke.run_keysuri_live_source_smoke", return_value=smoke
+                "keysuri_live_source_smoke.run_keysuri_live_source_smoke",
+                side_effect=live_runner,
             ) as runner:
                 result = run_keysuri_reliability_generation(
                     "keysuri_global_tech", execution_class="preflight_canary"
@@ -192,6 +209,191 @@ class PreflightRepresentativenessTests(unittest.TestCase):
             kwargs = runner.call_args.kwargs
             self.assertIsNone(kwargs["frozen_source_pack_path"])
             self.assertTrue(kwargs["allow_network"])
+            self.assertTrue(
+                str(Path(kwargs["out_dir"])).endswith(
+                    "output/keysuri_preview/preflight/keysuri_global_tech"
+                )
+            )
+
+    def test_global_and_korea_preflight_paths_are_isolated_and_validator_safe(self) -> None:
+        from keysuri_html_preview_validation import _path_under_keysuri_preview_dir
+        from natural_run_reliability import run_keysuri_reliability_generation
+
+        for program_id in ("keysuri_global_tech", "keysuri_korea_tech"):
+            with self.subTest(program_id=program_id), tempfile.TemporaryDirectory() as td:
+                pack_path = Path(td) / "pack.json"
+                self._source_pack(pack_path, program_id=program_id)
+                smoke = self._smoke(pack_path)
+
+                def runner(**kwargs):
+                    kwargs["usage_sink"]["model"] = "gemini-runtime-test"
+                    self.assertTrue(_path_under_keysuri_preview_dir(Path(kwargs["out_dir"])))
+                    self.assertIn("preflight", Path(kwargs["out_dir"]).parts)
+                    self.assertEqual(Path(kwargs["out_dir"]).name, program_id)
+                    return smoke
+
+                with mock.patch(
+                    "keysuri_live_source_smoke.run_keysuri_live_source_smoke",
+                    side_effect=runner,
+                ):
+                    result = run_keysuri_reliability_generation(
+                        program_id, execution_class="preflight_canary"
+                    )
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["model"], "gemini-runtime-test")
+                self.assertEqual(result["called_image_api"], 0)
+                self.assertEqual(result["smtp"], 0)
+                self.assertEqual(result["customer"], 0)
+                self.assertEqual(result["natural_slot_mutation"], 0)
+                self.assertEqual(result["incident_created"], 0)
+
+    def test_owner_review_path_guard_still_rejects_outside_preview_tree(self) -> None:
+        from keysuri_html_preview_validation import (
+            _validate_owner_review_file_path,
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "owner_review.html"
+            path.write_text("<html></html>", encoding="utf-8")
+            issues = []
+            self.assertFalse(_validate_owner_review_file_path(path, issues))
+            self.assertIn("file_path_not_keysuri_preview_dir", [i.code for i in issues])
+
+    def test_today_preflight_keeps_independent_generation_path(self) -> None:
+        from natural_run_reliability import run_program_canary
+
+        today = {
+            "ok": True,
+            "program_id": "today_genie",
+            "called_gemini": True,
+            "natural_slot_mutation": 0,
+        }
+        with mock.patch(
+            "natural_run_reliability.run_today_reliability_generation",
+            return_value=today,
+        ) as today_runner, mock.patch(
+            "natural_run_reliability.run_keysuri_reliability_generation"
+        ) as keysuri_runner:
+            result = run_program_canary(
+                "today_genie", execution_class="preflight_canary"
+            )
+        self.assertEqual(result, today)
+        today_runner.assert_called_once_with(execution_class="preflight_canary")
+        keysuri_runner.assert_not_called()
+
+    def test_runtime_usage_model_overrides_configured_contract_model(self) -> None:
+        from natural_run_reliability import run_keysuri_reliability_generation
+
+        with tempfile.TemporaryDirectory() as td:
+            pack_path = Path(td) / "pack.json"
+            self._source_pack(pack_path)
+            smoke = self._smoke(pack_path)
+            smoke.generation_contract["model_identifier"] = "configured-model"
+
+            def runner(**kwargs):
+                kwargs["usage_sink"]["model"] = "actual-fallback-model"
+                return smoke
+
+            with mock.patch(
+                "keysuri_live_source_smoke.run_keysuri_live_source_smoke",
+                side_effect=runner,
+            ):
+                result = run_keysuri_reliability_generation(
+                    "keysuri_global_tech", execution_class="preflight_canary"
+                )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["model"], "actual-fallback-model")
+        self.assertTrue(result["contract_fingerprint"])
+
+    def test_model_call_without_identity_cannot_precheck_pass(self) -> None:
+        from natural_run_reliability import run_keysuri_reliability_generation
+
+        with tempfile.TemporaryDirectory() as td:
+            pack_path = Path(td) / "pack.json"
+            self._source_pack(pack_path)
+            smoke = self._smoke(pack_path)
+            smoke.generation_contract = {}
+            with mock.patch(
+                "keysuri_live_source_smoke.run_keysuri_live_source_smoke",
+                return_value=smoke,
+            ):
+                result = run_keysuri_reliability_generation(
+                    "keysuri_global_tech", execution_class="preflight_canary"
+                )
+        self.assertFalse(result["ok"])
+        self.assertIsNone(result["model"])
+        self.assertIn("keysuri_preflight_model_identity_missing", result["issue_codes"])
+
+    def test_failure_before_model_invocation_does_not_fabricate_identity(self) -> None:
+        from natural_run_reliability import run_keysuri_reliability_generation
+
+        with tempfile.TemporaryDirectory() as td:
+            pack_path = Path(td) / "pack.json"
+            self._source_pack(pack_path)
+            smoke = self._smoke(pack_path)
+            smoke.ok = False
+            smoke.called_gemini = False
+            smoke.parse_status = None
+            smoke.error = "generation_failed_before_invocation"
+            smoke.generation_contract = {}
+            with mock.patch(
+                "keysuri_live_source_smoke.run_keysuri_live_source_smoke",
+                return_value=smoke,
+            ):
+                result = run_keysuri_reliability_generation(
+                    "keysuri_global_tech", execution_class="preflight_canary"
+                )
+        self.assertFalse(result["ok"])
+        self.assertIsNone(result["model"])
+        self.assertNotIn("keysuri_preflight_model_identity_missing", result["issue_codes"])
+
+    def test_precheck_pass_requires_model_identity_after_model_call(self) -> None:
+        from natural_run_reliability import run_natural_preflight
+
+        result = {
+            "ok": True,
+            "program_id": "keysuri_global_tech",
+            "finished_at": "2026-08-12T00:40:00+09:00",
+            "called_gemini": True,
+            "model": None,
+            "issue_codes": [],
+        }
+        with mock.patch(
+            "natural_run_reliability.run_program_canary", return_value=result
+        ), mock.patch(
+            "natural_run_reliability._save_json", return_value="memory://preflight"
+        ):
+            readiness = run_natural_preflight(
+                "keysuri_global_tech", alert_on_fail=False
+            )
+        self.assertEqual(readiness["status"], "PRECHECK_FAIL")
+        self.assertFalse(readiness["validation_pass"])
+        self.assertIn(
+            "keysuri_preflight_model_identity_missing", readiness["issue_codes"]
+        )
+
+    def test_precheck_persists_actual_model_identity(self) -> None:
+        from natural_run_reliability import run_natural_preflight
+
+        result = {
+            "ok": True,
+            "program_id": "keysuri_global_tech",
+            "finished_at": "2026-08-12T00:40:00+09:00",
+            "called_gemini": True,
+            "model": "gemini-actual-runtime",
+            "issue_codes": [],
+        }
+        with mock.patch(
+            "natural_run_reliability.run_program_canary", return_value=result
+        ), mock.patch(
+            "natural_run_reliability._save_json", return_value="memory://preflight"
+        ):
+            readiness = run_natural_preflight(
+                "keysuri_global_tech", alert_on_fail=False
+            )
+        self.assertEqual(readiness["status"], "PRECHECK_PASS")
+        self.assertTrue(readiness["model_called"])
+        self.assertEqual(readiness["preflight_model"], "gemini-actual-runtime")
 
     def test_selection_drift_is_explicit_but_not_a_cancel_signal(self) -> None:
         from natural_run_reliability import (

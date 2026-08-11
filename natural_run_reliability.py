@@ -72,6 +72,18 @@ def _local_dir(prefix: str) -> Path:
     return base
 
 
+def _keysuri_probe_output_dir(program_id: str, execution_class: str) -> Path:
+    """Return an isolated path that still satisfies owner-review validation."""
+    scope = (
+        "preflight"
+        if execution_class == EXECUTION_CLASS_PREFLIGHT_CANARY
+        else "reliability"
+    )
+    path = REPO_ROOT / "output" / "keysuri_preview" / scope / program_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _save_json(prefix: str, name: str, payload: Mapping[str, Any]) -> str:
     body = json.dumps(dict(payload), ensure_ascii=False, indent=2) + "\n"
     if _uses_gcs():
@@ -249,9 +261,11 @@ def run_keysuri_reliability_generation(
 
     started = _now_kst_iso()
     output_prefix = PREFLIGHT_PREFIX if live_preflight else RELIABILITY_PREFIX
-    normalized_pack_out = _local_dir(output_prefix) / (
+    probe_output_dir = _keysuri_probe_output_dir(pid, execution_class)
+    normalized_pack_out = probe_output_dir / (
         f"{datetime.now(KST).strftime('%Y%m%d_%H%M%S')}_{pid}_normalized_source_pack.json"
     )
+    generation_usage: Dict[str, Any] = {}
     smoke = run_keysuri_live_source_smoke(
         program_id=pid,
         use_gemini=True,
@@ -259,8 +273,9 @@ def run_keysuri_reliability_generation(
         frozen_source_pack_path=pack,
         trigger_source=execution_class,
         allow_network=live_preflight,
-        out_dir=_local_dir(output_prefix),
+        out_dir=probe_output_dir,
         source_pack_out=normalized_pack_out,
+        usage_sink=generation_usage,
     )
 
     source_pack: Dict[str, Any] = {}
@@ -268,10 +283,21 @@ def run_keysuri_reliability_generation(
         source_pack = json.loads(Path(smoke.source_pack_path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError):
         source_pack = {}
+    generation_contract = (
+        dict(smoke.generation_contract)
+        if isinstance(smoke.generation_contract, dict)
+        else {}
+    )
+    # The Gemini caller writes the resolved model after a real response. Do not
+    # substitute the configured contract value for actual invocation evidence.
+    actual_model = str(generation_usage.get("model") or "").strip()
+    if actual_model:
+        generation_contract["model_identifier"] = actual_model
     input_fields = keysuri_input_fingerprint_fields(
         source_pack,
-        smoke.generation_contract if isinstance(smoke.generation_contract, dict) else {},
+        generation_contract,
     ) if source_pack else {}
+    input_fields["model"] = actual_model or None
 
     briefing = smoke.generated_briefing if isinstance(smoke.generated_briefing, dict) else {}
     repaired = briefing
@@ -284,6 +310,7 @@ def run_keysuri_reliability_generation(
     validation_pass = bool(
         smoke.ok
         and smoke.called_gemini
+        and actual_model
         and smoke.parse_status == "parsed_valid"
         and vt_fields.get("visible_text_quality_status", "pass") == "pass"
         and not vt_fields.get("visible_text_ellipsis_blocked")
@@ -292,6 +319,8 @@ def run_keysuri_reliability_generation(
     issue_codes = list(smoke.validation_issues or [])
     if smoke.error:
         issue_codes.append(str(smoke.error)[:160])
+    if smoke.called_gemini and not actual_model:
+        issue_codes.append("keysuri_preflight_model_identity_missing")
     for code in vt_fields.get("visible_text_quality_issue_codes") or []:
         if code not in issue_codes:
             issue_codes.append(code)
@@ -507,6 +536,18 @@ def run_natural_preflight(
     slot = scheduled_slot or NATURAL_SLOTS.get(pid, "")
     date = scheduled_service_date or datetime.now(KST).strftime("%Y-%m-%d")
     result = run_program_canary(pid, execution_class=EXECUTION_CLASS_PREFLIGHT_CANARY)
+    if (
+        pid in {PROGRAM_GLOBAL, PROGRAM_KOREA}
+        and result.get("called_gemini")
+        and not str(result.get("model") or "").strip()
+    ):
+        result = dict(result)
+        result["ok"] = False
+        issue_codes = list(result.get("issue_codes") or [])
+        if "keysuri_preflight_model_identity_missing" not in issue_codes:
+            issue_codes.append("keysuri_preflight_model_identity_missing")
+        result["issue_codes"] = issue_codes
+        result["error"] = result.get("error") or "model_identity_missing"
     readiness = {
         "program_id": pid,
         "kst_date": date,
