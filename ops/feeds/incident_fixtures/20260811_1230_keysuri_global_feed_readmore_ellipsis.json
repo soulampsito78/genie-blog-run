@@ -1,0 +1,23 @@
+{
+  "_fixture_note": "Exact Aug 11 Global 12:30 natural residual. Run 20260811_123001_keysuri_global_tech_6e91b786 on genie-blog-run-00289-4qz @ 88de548. Blocked by keysuri_korean_connector_ellipsis_blocked. Selected item claim-live-nvidia-blog-9f10ae9fb1 (GeForce NOW Shakes Up August With 26 New Games). Offending visible text is the NVIDIA RSS description ending in WordPress/feed read-more marker [&#8230;] → […] (U+005B U+2026 U+005D). Quality samples truncated at 120 chars hid the residual. Same marker class also explains repeated recovery failures on frozen TOP5. No secrets.",
+  "incident_id": "2026-08-11_keysuri_global_tech_12-30",
+  "run_id": "20260811_123001_keysuri_global_tech_6e91b786",
+  "execution_class": "natural_scheduled",
+  "revision_at_failure": "genie-blog-run-00289-4qz",
+  "commit_sha_at_failure": "88de548eae212c447905f145b0bf82bf4d7f1f55",
+  "error_code": "keysuri_korean_connector_ellipsis_blocked",
+  "issue_codes_observed": [
+    "keysuri_korean_connector_ellipsis_blocked",
+    "keysuri_korean_repeated_token_repaired"
+  ],
+  "visible_text_ellipsis_blocked": true,
+  "blocking_field_path": "generated_briefing.top_5_news.items[4].summary",
+  "selected_news_id": "claim-live-nvidia-blog-9f10ae9fb1",
+  "selected_headline": "GeForce NOW Shakes Up August With 26 New Games",
+  "blocking_pattern_example": "August is here, bringing 26 new games for GeForce NOW members. Command the seas in World of Warships: Legends and discover what’s next in the GeForce NOW library, starting with the eight newly added games this week. In addition, GeForce NOW is at the QuakeCon gaming conference this week in Grapevine, Texas, with hands-on experiences […]",
+  "residual_window": "xperiences […]",
+  "residual_unicode": "U+0020 U+005B U+2026 U+005D",
+  "root_cause_class": "FEED_READMORE_SQUARE_BRACKET_ELLIPSIS",
+  "not_display_shell": true,
+  "scaffold_relevant": false
+}

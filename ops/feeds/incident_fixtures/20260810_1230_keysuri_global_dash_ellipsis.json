@@ -1,0 +1,17 @@
+{
+  "_fixture_note": "Aug 10 Global 12:30 natural failure class companion. Same issue_code keysuri_korean_connector_ellipsis_blocked on genie-blog-run-00289-4qz. Structural LEFT-edge gap for dash/clause punctuation before ellipsis (today —…Firebird). Friday delimiter patch covered quotes/brackets as edges but not em-dash/en-dash/colon/middle-dot as LEFT bridge edges. No secrets.",
+  "incident_id": "2026-08-10_keysuri_global_tech_12-30",
+  "run_id": "20260810_123001_keysuri_global_tech_1ff5fed6",
+  "execution_class": "natural_scheduled",
+  "revision_at_failure": "genie-blog-run-00289-4qz",
+  "error_code": "keysuri_korean_connector_ellipsis_blocked",
+  "issue_codes_observed": [
+    "keysuri_korean_connector_ellipsis_blocked",
+    "keysuri_korean_repeated_token_repaired"
+  ],
+  "blocking_pattern_example": "The global buildout of AI infrastructure reached a new milestone today —… Firebird, an emerging AI cloud, launched the CIS",
+  "residual_window": "today —…Firebird",
+  "residual_unicode": "U+2014 U+2026",
+  "root_cause_class": "DASH_OR_CLAUSE_LEFT_EDGE_ELLIPSIS",
+  "not_display_shell": true
+}

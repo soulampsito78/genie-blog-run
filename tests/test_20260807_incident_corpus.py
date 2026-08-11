@@ -1,4 +1,4 @@
-"""Offline regression for the 2026-08-07 A–D incident corpus index."""
+"""Offline regression for the production incident corpus index (A–E)."""
 from __future__ import annotations
 
 import json
@@ -38,9 +38,9 @@ class IncidentCorpus20260807Tests(unittest.TestCase):
         cls.index = _load_index()
         cls.by_key = _by_key(cls.index)
 
-    def test_01_index_lists_a_through_d_regressed(self) -> None:
+    def test_01_index_lists_a_through_e_regressed(self) -> None:
         keys = [row["incident_key"] for row in self.index["incidents"]]
-        self.assertEqual(keys, ["A", "B", "C", "D"])
+        self.assertEqual(keys, ["A", "B", "C", "D", "E"])
         for key in keys:
             row = self.by_key[key]
             for field in _REQUIRED_INDEX_FIELDS:
@@ -138,6 +138,20 @@ class IncidentCorpus20260807Tests(unittest.TestCase):
         self.assertTrue(result.repaired)
         self.assertEqual(result.text, fx["expected_post_patch_title"])
         self.assertNotRegex(result.text, r"…|\.{2,}")
+
+    def test_07_incident_e_feed_readmore_repairs_not_blocked(self) -> None:
+        from keysuri_visible_text_quality import repair_korean_connector_ellipsis_text
+
+        row = self.by_key["E"]
+        self.assertEqual(row["failure_class"], "VISIBLE_TEXT_FEED_READMORE_ELLIPSIS")
+        fx = json.loads((_REPO / row["fixture_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(fx["run_id"], row["run_id"])
+        text = fx["blocking_pattern_example"]
+        self.assertIn("[…]", text)
+        result = repair_korean_connector_ellipsis_text(text)
+        self.assertFalse(result.blocked)
+        self.assertTrue(result.repaired)
+        self.assertNotIn("…", result.text)
 
 
 if __name__ == "__main__":

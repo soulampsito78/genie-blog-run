@@ -30,8 +30,9 @@ _STYLE_SCRIPT_RE = re.compile(r"<(?:style|script)[^>]*>.*?</(?:style|script)>", 
 _EMAIL_RE = re.compile(r"([A-Za-z0-9._%+-]{2})[A-Za-z0-9._%+-]*(@[A-Za-z0-9.-]+\.[A-Za-z]{2,})")
 
 # Structural connector-ellipsis grammar (not a growing char blacklist).
-# LEFT edge: word char OR a closing delimiter/quote that can precede a bridge.
-# RIGHT edge (content): word char OR an opening delimiter/quote.
+# LEFT edge: word char OR a closing delimiter/quote OR clause/dash punctuation
+# that commonly precedes a bridge in feed/model prose.
+# RIGHT edge (content): word char OR an opening/closing delimiter/quote.
 # RIGHT edge (punct): clause/sentence punctuation that should absorb the bridge.
 _WORD_CHAR = r"A-Za-z0-9가-힣"
 _CLOSING_DELIM = (
@@ -53,14 +54,25 @@ _OPENING_DELIM = (
 # 18:30 (`'3파전'…삼성`); closing on the right covers Global 13:11.
 _RIGHT_EDGE = _OPENING_DELIM + _CLOSING_DELIM
 _CLAUSE_PUNCT = r"[,:;·|/／]"
+# Dash/bar family often appears immediately before a bridge ellipsis in
+# English wire copy (`today —…Firebird`) and must be a LEFT edge, not a residual.
+_DASH_PUNCT = r"\u2013\u2014\u2015\u2212\-"  # – — ― − -
+# LEFT bridge edge = word | closing delim | clause punct | dash.
+# Covers Aug 10/11 `—…word`, `Warships:…Legends`, `흥국·…삼성`.
+_LEFT_EDGE = _WORD_CHAR + _CLOSING_DELIM + r",:;·|/／" + _DASH_PUNCT
 _SENTENCE_PUNCT = r"[.!?。！？]"
 _ZW_NBSP_RE = re.compile(r"[\u00a0\u200b\u200c\u200d\ufeff]")
+# RSS/WordPress read-more marker: matched square (or CJK) brackets around ellipsis.
+# Distinct from paren genuine-truncation `(…)` which remains blocked.
+_FEED_READMORE_ELLIPSIS_RE = re.compile(
+    r"\s*[\[【]\s*…\s*[\]】]"
+)
 
 _CONNECTOR_TO_CONTENT_RE = re.compile(
-    rf"(?<=[{_WORD_CHAR}{_CLOSING_DELIM}])\s*…\s*(?=[{_WORD_CHAR}{_RIGHT_EDGE}])"
+    rf"(?<=[{_LEFT_EDGE}])\s*…\s*(?=[{_WORD_CHAR}{_RIGHT_EDGE}])"
 )
 _CONNECTOR_TO_PUNCT_RE = re.compile(
-    rf"(?<=[{_WORD_CHAR}{_CLOSING_DELIM}])\s*…\s*(?={_CLAUSE_PUNCT}|{_SENTENCE_PUNCT})"
+    rf"(?<=[{_LEFT_EDGE}])\s*…\s*(?={_CLAUSE_PUNCT}|{_SENTENCE_PUNCT})"
 )
 _TRAILING_ELLIPSIS_RE = re.compile(r"\s*…\s*$")
 _SKIP_KEY_TOKENS = (
@@ -119,9 +131,19 @@ def _plain_text(value: Any) -> str:
 def sanitize_quality_sample(value: Any, *, max_chars: int = 120) -> str:
     sample = _plain_text(value)
     sample = _EMAIL_RE.sub(r"\1***\2", sample)
-    if len(sample) > max_chars:
-        sample = sample[:max_chars].rstrip()
-    return sample
+    if len(sample) <= max_chars:
+        return sample
+    # Prefer a window centered on the first residual ellipsis so production
+    # forensics are not truncated to a harmless prefix (Aug 11 Global 12:30).
+    match = _ELLIPSIS_RE.search(sample)
+    if match:
+        center = match.start()
+        half = max_chars // 2
+        start = max(0, center - half)
+        end = min(len(sample), start + max_chars)
+        start = max(0, end - max_chars)
+        return sample[start:end].strip()
+    return sample[:max_chars].rstrip()
 
 
 def contains_connector_ellipsis(value: Any) -> bool:
@@ -165,6 +187,9 @@ def repair_korean_connector_ellipsis_text(value: Any) -> EllipsisRepairResult:
         return EllipsisRepairResult(repaired, found=True, repaired=True, blocked=False)
 
     repaired = text
+    # Strip RSS/WordPress square-bracket read-more markers (` […]`, `[&#8230;]`).
+    # Parenthesis genuine-truncation `(…)` is intentionally NOT stripped here.
+    repaired = _FEED_READMORE_ELLIPSIS_RE.sub("", repaired)
     replacements: Tuple[Tuple[str, str], ...] = (
         (r"((?:을|를)\s+위한)\s*…\s*(흐름|움직임|변화|전환|확산)", r"\1 \2"),
         # "OBJECT를/을 구축… 이슈" leaves a stray 를/을 if only "구축" is captured
@@ -185,6 +210,7 @@ def repair_korean_connector_ellipsis_text(value: Any) -> EllipsisRepairResult:
     # Structural bridge repairs (content…content / delim…content / content…punct).
     # Korea 18:30 residual: closing ASCII quote then ellipsis then word
     # (`'3파전'…삼성`) — prior Global curly-quote patch only covered word…opening.
+    # Aug 10/11: clause/dash LEFT edges (`—…Firebird`, `:…Legends`, `·…삼성`).
     repaired = _CONNECTOR_TO_CONTENT_RE.sub(" ", repaired)
     repaired = _CONNECTOR_TO_PUNCT_RE.sub("", repaired)
     # Terminal trailing ellipsis (sentence-final) — strip so residual does not block.
