@@ -25,6 +25,7 @@ from natural_run_incident_store import (
     STATUS_OPEN,
     STATUS_REPORTED,
     acquire_report_lease,
+    clear_control_plane_recovery_guard,
     classify_retry_actionability,
     classify_root_cause_verdict,
     empty_stage_map,
@@ -819,6 +820,10 @@ def report_incident_once(
     incident_id = str(incident.get("incident_id") or "")
     existing = load_incident(incident_id)
     if existing and existing.get("report_sent_at"):
+        # Repair a repeat guard that was advanced purely by control-plane
+        # failures (no recovery run ever executed). This is a no-op unless that
+        # is provable, so a genuine recovery block is never cleared.
+        existing = clear_control_plane_recovery_guard(incident_id) or existing
         # The report is once-only, but diagnosis must still reconcile: a later
         # poll can carry evidence the first poll did not have. This never
         # re-sends, never reopens a terminal/recovery state, and never touches

@@ -12,6 +12,7 @@ from natural_run_incident_store import (
     complete_recovery,
     load_incident,
     mark_recovery_report_sent,
+    now_kst_iso,
     save_incident,
 )
 from today_genie_execution_identity import EXECUTION_CLASS_RECOVERY
@@ -86,8 +87,10 @@ def execute_approved_recovery(
             if runner is None:
                 from orchestrator import execute_orchestrator_run
 
-                def runner(**kwargs):  # type: ignore
-                    return execute_orchestrator_run(**kwargs)
+                # execute_orchestrator_run takes `mode` positionally. Wrapping it
+                # in a kwargs-only closure made every Today recovery raise
+                # TypeError at the call boundary, before any execution.
+                runner = execute_orchestrator_run
 
             run_id, result, email_sent = runner(
                 "today_genie",
@@ -177,12 +180,22 @@ def execute_approved_recovery(
             or ""
         ),
     }
+    # A failure that never produced a recovery run never reached content
+    # generation: no child artifact, no model call, no delivery. That is a
+    # control-plane defect, not a repeated content-recovery failure, and it must
+    # not advance the repeat-recovery guard. The error stays visible below.
+    execution_began = bool(recovery_run_id) or bool(runner_payload)
+    control_plane_failure = bool(error) and not success and not execution_began
     complete_recovery(
         incident_id,
         lease_token=lease,
         success=success,
         recovery_run_id=recovery_run_id,
-        failure_signature_components=None if success else failure_signature_components,
+        failure_signature_components=(
+            None
+            if success or control_plane_failure
+            else failure_signature_components
+        ),
     )
     updated = load_incident(incident_id) or {}
     updated["recovery_outcomes"] = {
@@ -192,6 +205,10 @@ def execute_approved_recovery(
         "owner_review_smtp": "smtp_accepted" if email_sent else "미발송 또는 실패",
         "고객 발송": "수행하지 않음",
     }
+    if control_plane_failure:
+        updated["recovery_control_error"] = error
+        updated["recovery_control_error_at"] = now_kst_iso()
+        updated["recovery_outcomes"]["생성 결과"] = f"재실행 요청 처리 오류({error})"
     save_incident(updated)
 
     send_ok, subject = send_recovery_report(updated, success=success, send_fn=send_fn)

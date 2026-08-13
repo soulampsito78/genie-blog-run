@@ -347,6 +347,68 @@ def recovery_guard_is_blocked(meta: Dict[str, Any]) -> bool:
     return True
 
 
+def recovery_guard_was_control_plane_only(meta: Dict[str, Any]) -> bool:
+    """True when the repeat guard was advanced without any recovery execution.
+
+    A genuine content-recovery failure produces a recovery run. When every
+    recorded failure has no recovery_run_id, nothing was generated, nothing was
+    delivered, and the guard is measuring controller defects rather than
+    repeated content failures.
+    """
+    if meta.get("recovery_run_id"):
+        return False
+    history = meta.get("recovery_failure_history")
+    if not isinstance(history, list) or not history:
+        return False
+    explicit_control_error = bool(meta.get("recovery_control_error"))
+    for entry in history:
+        if not isinstance(entry, dict):
+            return False
+        if entry.get("recovery_run_id"):
+            return False
+        if explicit_control_error:
+            continue
+        # Fail closed: without an explicit control-plane marker, require proof
+        # that the runner produced no payload at all. A real content failure
+        # carries its issue code here, so anything else is treated as genuine.
+        components = entry.get("components")
+        if not isinstance(components, dict):
+            return False
+        if str(components.get("structural_failure_class") or "") != "unknown_recovery_failure":
+            return False
+    return True
+
+
+def clear_control_plane_recovery_guard(incident_id: str) -> Optional[Dict[str, Any]]:
+    """Restore pre-guard actionability when no recovery ever executed.
+
+    Never clears a real recovery failure: it requires proof that every recorded
+    failure produced no recovery run. Forensic history is preserved under
+    recovery_control_plane_failures rather than discarded.
+    """
+    meta = load_incident(incident_id)
+    if not meta:
+        return None
+    if not recovery_guard_was_control_plane_only(meta):
+        return meta
+    history = list(meta.get("recovery_failure_history") or [])
+    preserved = list(meta.get("recovery_control_plane_failures") or [])
+    meta["recovery_control_plane_failures"] = (preserved + history)[-16:]
+    meta["recovery_failure_history"] = []
+    meta["recovery_failure_signature"] = None
+    meta["recovery_failure_signature_components"] = None
+    meta["recovery_failure_signature_count"] = 0
+    meta["recovery_guard_message_ko"] = None
+    restored = meta.pop("retry_verdict_before_recovery_guard", None)
+    meta["retry_verdict"] = normalize_retry_actionability(
+        restored or meta.get("retry_verdict")
+    )
+    if str(meta.get("status") or "") == STATUS_RETRY_BLOCKED_PENDING_PATCH:
+        meta["status"] = STATUS_RECOVERY_FAILED
+    save_incident(meta)
+    return meta
+
+
 def recovery_effective_retry_verdict(meta: Dict[str, Any]) -> str:
     if str(meta.get("status") or "") != STATUS_RETRY_BLOCKED_PENDING_PATCH:
         return normalize_retry_actionability(meta.get("retry_verdict"))
@@ -782,6 +844,11 @@ def complete_recovery(
     if not success:
         # Clear lease so owner may approve again after failure (no auto retry).
         meta["recovery_lease_token"] = None
+        if failure_signature_components is None:
+            # Caller proved no recovery execution began (control-plane failure).
+            # Record the failed attempt but never advance the repeat guard.
+            save_incident(meta)
+            return meta
         components = dict(failure_signature_components or {})
         components.setdefault("incident_id", incident_id)
         signature = build_recovery_failure_signature(components)
