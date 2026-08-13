@@ -655,6 +655,12 @@ def upsert_incident(incident: Dict[str, Any]) -> Dict[str, Any]:
         "recovery_report_sent_at",
         "recovery_customer_send_count",
         "watchdog_auto_retry_count",
+        # Repeat-recovery guard state is owned by the recovery-failure flow.
+        # A diagnostic upsert must never reset the signature, its count, or
+        # the history, or a blocked incident could be silently reopened.
+        "recovery_failure_signature",
+        "recovery_failure_signature_count",
+        "recovery_failure_history",
     ):
         if existing.get(key) is not None:
             merged[key] = existing.get(key)

@@ -22,6 +22,7 @@ from natural_run_incident_store import (
     ROOT_CAUSE_CONFIRMED,
     ROOT_CAUSE_PARTIAL,
     ROOT_CAUSE_UNKNOWN,
+    STATUS_OPEN,
     STATUS_REPORTED,
     acquire_report_lease,
     classify_retry_actionability,
@@ -308,6 +309,134 @@ def _natural_completer_exists(
     return None
 
 
+_TERMINAL_ARTIFACT_STATUSES = frozenset({"failed", "error", "blocked"})
+# Statuses that positively prove no customer mail left the system.
+_NO_CUSTOMER_SEND_STATUSES = frozenset(
+    {"", "not_sent", "none", "n/a", "blocked", "skipped", "suppressed"}
+)
+
+
+def _artifact_is_exact_natural_execution(
+    raw: Mapping[str, Any],
+    *,
+    program_id: str,
+    kst_date: str,
+    scheduled_slot: str,
+) -> bool:
+    """Exact natural-execution identity match.
+
+    Deliberately strict: a preflight / reliability / QA / smoke / reissue /
+    recovery / manual artifact must never qualify, and neither may another
+    program, service date, or slot.
+    """
+    mode = str(raw.get("mode") or raw.get("program_id") or "").strip()
+    if mode != program_id:
+        return False
+    # Absent class is NOT assumed natural — only the explicit natural class.
+    if str(raw.get("execution_class") or "").strip() != EXECUTION_CLASS_NATURAL_SCHEDULED:
+        return False
+    if raw.get("parent_run_id") or raw.get("admin_reissue"):
+        return False
+    if not str(raw.get("run_id") or "").startswith(kst_date.replace("-", "") + "_"):
+        return False
+    artifact_date = str(
+        raw.get("kst_schedule_date") or raw.get("target_date") or ""
+    ).strip()
+    if artifact_date and artifact_date != kst_date:
+        return False
+    artifact_slot = str(raw.get("scheduled_slot") or "").strip()
+    if artifact_slot and normalize_slot(artifact_slot) != normalize_slot(scheduled_slot):
+        return False
+    return True
+
+
+def _natural_execution_terminated(raw: Mapping[str, Any]) -> bool:
+    if str(raw.get("artifact_status") or "").strip().lower() in _TERMINAL_ARTIFACT_STATUSES:
+        return True
+    return str(raw.get("validation_result") or "").strip().lower() == "block"
+
+
+def failed_natural_artifact_for_slot(
+    artifacts: Sequence[Mapping[str, Any]],
+    *,
+    program_id: str,
+    kst_date: str,
+    scheduled_slot: str,
+) -> Optional[Mapping[str, Any]]:
+    """Return the exact failed natural artifact for this slot, if one exists.
+
+    Never returns a successful natural completion, and never returns a
+    non-natural execution class.
+    """
+    candidates: List[Mapping[str, Any]] = []
+    for raw in artifacts:
+        if not isinstance(raw, Mapping):
+            continue
+        if not _artifact_is_exact_natural_execution(
+            raw,
+            program_id=program_id,
+            kst_date=kst_date,
+            scheduled_slot=scheduled_slot,
+        ):
+            continue
+        # A successful natural completion is not a failure artifact.
+        if bool(raw.get("email_sent")) and str(raw.get("validation_result") or "") != "block":
+            continue
+        if not _natural_execution_terminated(raw):
+            continue
+        candidates.append(raw)
+    if not candidates:
+        return None
+    # run_id embeds YYYYMMDD_HHMMSS, so lexical order is chronological.
+    return sorted(candidates, key=lambda r: str(r.get("run_id") or ""))[-1]
+
+
+def natural_artifact_side_effects(raw: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """Proven delivery side effects, or None when the artifact cannot prove them.
+
+    Returning None keeps the incident at RETRY_STATUS_UNKNOWN, which is the
+    correct conservative outcome: recovery actionability must never be inferred
+    from an artifact that is silent about SMTP or customer delivery.
+    """
+    if "email_sent" not in raw:
+        return None
+    email_sent = bool(raw.get("email_sent"))
+    cust_status = str(raw.get("customer_delivery_status") or "").strip().lower()
+    if not cust_status:
+        return None
+
+    policy = raw.get("policy") if isinstance(raw.get("policy"), Mapping) else {}
+    if "smtp_attempted" in raw:
+        smtp_attempted = bool(raw.get("smtp_attempted"))
+    elif not email_sent and policy.get("send_email") is False:
+        # Policy proves the owner-review send was suppressed before SMTP.
+        smtp_attempted = False
+    else:
+        return None
+
+    if cust_status in _NO_CUSTOMER_SEND_STATUSES:
+        customer_send = 0
+    else:
+        raw_count = (
+            raw.get("customer_recipient_count")
+            or raw.get("customer_email_recipient_count")
+            or raw.get("smtp_accepted_recipient_count")
+        )
+        try:
+            customer_send = int(raw_count or 0)
+        except (TypeError, ValueError):
+            return None
+        if customer_send <= 0:
+            # Delivery-ish status without a count: assume delivered, stay blocked.
+            customer_send = 1
+    return {
+        "email_sent": email_sent,
+        "customer_delivery_status": cust_status,
+        "customer_send": customer_send,
+        "smtp_attempted": smtp_attempted,
+    }
+
+
 def diagnose_program_sla(
     *,
     program_id: str,
@@ -528,6 +657,89 @@ def diagnose_program_sla(
     if same_day and not completer:
         facts.append(f"동일 KST 날짜 관련 artifact {len(same_day)}건이 있으나 자연실행 완료로 인정되지 않습니다.")
 
+    # Fallback evidence. Structured failure events and request evidence always
+    # win; only when neither proved a stage do we fall back to the persisted
+    # failed natural artifact, which is authoritative about what actually ran
+    # and what it delivered. Without this, a pipeline-internal failure leaves
+    # the incident blind and Admin recovery closed.
+    issue_codes: List[str] = []
+    original_run_id: Optional[str] = None
+    if first_failed == "unknown" and confirmed_cause is None:
+        bound = failed_natural_artifact_for_slot(
+            artifacts,
+            program_id=program_id,
+            kst_date=kst_date,
+            scheduled_slot=slot,
+        )
+        if bound is not None:
+            original_run_id = str(bound.get("run_id") or "") or None
+            for code in bound.get("issue_codes") or []:
+                text = str(code).strip()
+                if text and text not in issue_codes:
+                    issue_codes.append(text)
+            validation_blocked = (
+                str(bound.get("validation_result") or "").strip().lower() == "block"
+            )
+            stage["Artifact"] = "정상"
+            outcomes["자연실행 artifact"] = "생성됨(자연실행 실패)"
+            facts.append(
+                f"실패한 자연실행 artifact를 확인했습니다 (run_id={original_run_id})."
+            )
+            detection_note = (
+                "자연실행이 시작됐으나 완료되지 않았고, 실패 artifact가 남아 있습니다."
+            )
+            if validation_blocked:
+                first_failed = "generation_validation"
+                error_code = issue_codes[0] if issue_codes else "validation_block"
+                confirmed_cause = (
+                    "생성 결과 검증에서 차단되어 운영자 검수 메일이 발송되지 않았습니다."
+                )
+                stage["데이터 수집"] = "정상"
+                stage["콘텐츠 생성"] = "정상"
+                stage["검증"] = "실패"
+                stage["이미지"] = "미실행"
+                stage["운영자 메일"] = "미실행"
+                summary = (
+                    f"오늘 {slot} {PROGRAM_DISPLAY.get(program_id, program_id)} 자연실행은 "
+                    "시작됐으나 생성 결과 검증에서 차단됐습니다. 운영자 검수 메일과 고객 "
+                    "발송은 실행되지 않았습니다."
+                )
+
+            side = natural_artifact_side_effects(bound)
+            if side is None:
+                # Artifact cannot prove delivery side effects — stay conservative.
+                unknowns.append("실패 artifact의 SMTP/고객 발송 부작용")
+            else:
+                outcomes["운영자 검수 메일"] = (
+                    "발송됨" if side["email_sent"] else "발송되지 않음"
+                )
+                outcomes["SMTP 시도"] = (
+                    "시도됨" if side["smtp_attempted"] else "시도되지 않음"
+                )
+                outcomes["고객 메일"] = (
+                    "발송되지 않음" if side["customer_send"] == 0 else "발송됨"
+                )
+                root_cause_verdict = classify_root_cause_verdict(
+                    confirmed_cause=confirmed_cause,
+                    error_code=error_code,
+                )
+                retry_verdict = classify_retry_actionability(
+                    email_sent=side["email_sent"],
+                    customer_send=side["customer_send"],
+                    customer_delivery_status=side["customer_delivery_status"],
+                    smtp_attempted=side["smtp_attempted"],
+                    execution_terminated=True,
+                    root_cause_verdict=root_cause_verdict,
+                )
+                retry_ko = retry_verdict_ko_for(
+                    retry_verdict, root_cause_verdict=root_cause_verdict
+                )
+                recommendation = (
+                    "재실행 보류"
+                    if retry_verdict == RETRY_BLOCKED
+                    else "주의 후 재실행 가능"
+                )
+
     system_status = {
         "서비스 상태": "확인불가",
         "Cloud Run": stage.get("Cloud Run", "확인불가"),
@@ -552,8 +764,10 @@ def diagnose_program_sla(
         retry_verdict=retry_verdict,
         retry_verdict_ko=retry_ko,
         recommendation_ko=recommendation,
+        original_run_id=original_run_id,
         first_failed_stage=first_failed,
         error_code=error_code,
+        issue_codes=issue_codes,
         system_status=system_status,
         outcomes=outcomes,
         summary_ko=summary,
@@ -561,6 +775,39 @@ def diagnose_program_sla(
     incident["root_cause_verdict"] = root_cause_verdict
     incident["detection_note_ko"] = detection_note
     return incident
+
+
+# Reconciliation may only enrich diagnosis. Report/lease/recovery-guard state
+# is owned by the send and recovery flows and must survive untouched.
+_RECONCILABLE_STATUSES = frozenset({STATUS_OPEN, STATUS_REPORTED})
+_DIAGNOSIS_ONLY_EXCLUDED_KEYS = frozenset(
+    {
+        "status",
+        "created_at",
+        "detected_at",
+        "report_sent_at",
+        "report_send_count",
+        "report_lease_token",
+        "report_lease_acquired_at",
+        "recovery_failure_signature",
+        "recovery_failure_signature_count",
+        "recovery_failure_history",
+        "recovery_lease_token",
+        "recovery_approved_at",
+        "recovery_run_id",
+        "recovery_report_sent_at",
+        "recovery_customer_send_count",
+        "watchdog_auto_retry_count",
+    }
+)
+
+
+def _diagnosis_only(incident: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in incident.items()
+        if key not in _DIAGNOSIS_ONLY_EXCLUDED_KEYS
+    }
 
 
 def report_incident_once(
@@ -572,12 +819,23 @@ def report_incident_once(
     incident_id = str(incident.get("incident_id") or "")
     existing = load_incident(incident_id)
     if existing and existing.get("report_sent_at"):
+        # The report is once-only, but diagnosis must still reconcile: a later
+        # poll can carry evidence the first poll did not have. This never
+        # re-sends, never reopens a terminal/recovery state, and never touches
+        # the repeat-recovery guard.
+        reconciled = False
+        latest = existing
+        if str(existing.get("status") or "") in _RECONCILABLE_STATUSES:
+            latest = upsert_incident(_diagnosis_only(incident))
+            reconciled = True
         return {
             "ok": True,
             "incident_id": incident_id,
             "report_sent": False,
             "deduped": True,
             "auto_retry": 0,
+            "reconciled": reconciled,
+            "status": latest.get("status"),
         }
     if existing:
         merged = upsert_incident(incident)
