@@ -1,0 +1,12 @@
+# Customer backend (customer/) dependencies.
+#
+# Kept SEPARATE from requirements.txt on purpose: requirements.txt drives the
+# production Dockerfile for the operational GENIE / KeeSuri briefing runtime,
+# and Phase 1 must not change that image. Merge these into requirements.txt
+# only when the customer API is actually deployed.
+#
+# Install:  pip install -r requirements-customer.txt
+
+SQLAlchemy>=2.0,<3.0
+alembic>=1.13
+psycopg[binary]>=3.1
