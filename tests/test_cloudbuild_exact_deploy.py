@@ -27,6 +27,7 @@ class CloudBuildExactDeployTests(unittest.TestCase):
         self.assertIn("--no-traffic", deploy_script)
         self.assertIn("status.imageDigest", deploy_script)
         self.assertIn('test "$$deployed_image" = "$$immutable_image"', deploy_script)
+        self.assertIn("printf '%s\\n'", deploy_script)
         self.assertIn('--to-revisions="$$revision_name=100"', promote_script)
         self.assertNotIn("--to-latest", promote_script)
         self.assertNotIn("--memory", deploy_script + promote_script)

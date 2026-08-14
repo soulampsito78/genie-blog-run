@@ -57,7 +57,7 @@ steps:
           > /workspace/deployed-image.txt
         read -r deployed_image < /workspace/deployed-image.txt
         test "$$deployed_image" = "$$immutable_image"
-        printf '%s' "$$revision_name" > /workspace/deployed-revision.txt
+        printf '%s\n' "$$revision_name" > /workspace/deployed-revision.txt
 
   # Traffic may be pinned to an older revision. Promote only the exact revision
   # created above, after its immutable digest has been verified.
