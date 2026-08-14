@@ -73,6 +73,17 @@ def program_info(meta: Mapping[str, Any]) -> Dict[str, str]:
 
 
 def display_time(meta: Mapping[str, Any]) -> str:
+    """Human-facing KST time; full ISO provenance stays in ``technical_time``."""
+    parsed = _artifact_datetime(meta)
+    if parsed is not None:
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
+        if parsed.date() == now.date():
+            return f"오늘 {parsed.strftime('%H:%M')}"
+        return f"{parsed.month}월 {parsed.day}일 {parsed.strftime('%H:%M')}"
+    return _technical_time(meta)
+
+
+def _artifact_datetime(meta: Mapping[str, Any]) -> Optional[datetime]:
     for key in ("created_at", "created_at_kst", "completed_at", "owner_reviewed_at"):
         raw = str(meta.get(key) or "").strip()
         if not raw:
@@ -81,22 +92,42 @@ def display_time(meta: Mapping[str, Any]) -> str:
             parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
             if parsed.tzinfo is not None:
                 parsed = parsed.astimezone(ZoneInfo("Asia/Seoul"))
-            return parsed.strftime("%Y.%m.%d %H:%M")
+            elif parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=ZoneInfo("Asia/Seoul"))
+            return parsed
         except ValueError:
-            return raw
+            continue
     rid = str(meta.get("run_id") or "")
     match = re.match(r"^(\d{8})_(\d{6})_", rid)
     if match:
         try:
-            return datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S").strftime("%Y.%m.%d %H:%M")
+            return datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S").replace(
+                tzinfo=ZoneInfo("Asia/Seoul")
+            )
         except ValueError:
             pass
+    return None
+
+
+def _technical_time(meta: Mapping[str, Any]) -> str:
+    parsed = _artifact_datetime(meta)
+    if parsed is not None:
+        return parsed.isoformat(timespec="seconds")
+    for key in ("created_at", "created_at_kst", "completed_at", "owner_reviewed_at"):
+        raw = str(meta.get(key) or "").strip()
+        if raw:
+            return raw
     return "시각 미기록"
 
 
 def run_date(meta: Mapping[str, Any]) -> str:
-    shown = display_time(meta)
-    return shown[:10] if len(shown) >= 10 and shown[4] == "." else "날짜 미기록"
+    parsed = _artifact_datetime(meta)
+    return parsed.strftime("%Y.%m.%d") if parsed is not None else "날짜 미기록"
+
+
+def run_kst_date(meta: Mapping[str, Any]) -> str:
+    parsed = _artifact_datetime(meta)
+    return parsed.strftime("%Y-%m-%d") if parsed is not None else ""
 
 
 def run_origin(meta: Mapping[str, Any]) -> str:
@@ -393,6 +424,7 @@ def run_projection(meta: Mapping[str, Any], *, current_recipient_count: Optional
         "run_id": str(meta.get("run_id") or ""),
         "program": info,
         "time": display_time(meta),
+        "technical_time": _technical_time(meta),
         "date": run_date(meta),
         "origin": run_origin(meta),
         "subject": subject(meta),
@@ -409,7 +441,9 @@ def run_projection(meta: Mapping[str, Any], *, current_recipient_count: Optional
 
 def latest_by_program(runs: Iterable[Mapping[str, Any]]) -> Dict[str, Mapping[str, Any]]:
     latest: Dict[str, Mapping[str, Any]] = {}
-    for meta in runs:
+    # GCS listing order is object-update order, not necessarily execution order:
+    # a late-written historical recovery must not become the apparent latest run.
+    for meta in _sort_newest(runs):
         pid = program_id(meta)
         if pid in ACTIVE_PROGRAM_IDS and pid not in latest:
             latest[pid] = meta
@@ -424,6 +458,165 @@ def needs_review(meta: Mapping[str, Any]) -> bool:
         return False
     owner = str(meta.get("owner_review_status") or meta.get("workflow_status") or "").lower()
     return owner not in {"approved", "dismissed", "held"} and validation_is_pass(meta)
+
+
+_DELIVERY_ATTENTION = frozenset({"PARTIAL DELIVERY", "REFUSED ALL", "RESULT UNKNOWN"})
+
+
+def _sort_newest(runs: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    return sorted(
+        runs,
+        key=lambda item: _artifact_datetime(item) or datetime.min.replace(tzinfo=ZoneInfo("Asia/Seoul")),
+        reverse=True,
+    )
+
+
+def _logical_publication_key(meta: Mapping[str, Any]) -> tuple[str, str]:
+    """Only group runs when their program and KST publication date are both known."""
+    return (program_id(meta), run_kst_date(meta))
+
+
+def review_actionability_projection(
+    runs: Iterable[Mapping[str, Any]], *, now: Optional[datetime] = None
+) -> Dict[str, list[Mapping[str, Any]]]:
+    """Read-only owner-decision projection.
+
+    Stored ``pending_review`` is historical evidence, not an instruction to send.
+    A primary action must be today's safe, unsent leaf.  We only suppress an
+    older record on direct child lineage or a terminal delivery in its exact
+    program/date publication group; ambiguous old work remains discoverable.
+    """
+    active = [item for item in runs if is_active_program(item)]
+    by_id = {str(item.get("run_id") or ""): item for item in active}
+    children: dict[str, list[Mapping[str, Any]]] = {}
+    for item in active:
+        parent = str(item.get("parent_run_id") or "").strip()
+        if parent and parent in by_id:
+            children.setdefault(parent, []).append(item)
+    terminal_by_key: set[tuple[str, str]] = set()
+    for item in active:
+        delivery = delivery_projection(item)["label"]
+        if delivery in {"SMTP SUBMITTED", "PARTIAL DELIVERY", "REFUSED ALL", "RESULT UNKNOWN"}:
+            key = _logical_publication_key(item)
+            if all(key):
+                terminal_by_key.add(key)
+
+    now_kst = (now or datetime.now(ZoneInfo("Asia/Seoul")))
+    if now_kst.tzinfo is None:
+        now_kst = now_kst.replace(tzinfo=ZoneInfo("Asia/Seoul"))
+    today = now_kst.astimezone(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
+    current: list[Mapping[str, Any]] = []
+    historical_unresolved: list[Mapping[str, Any]] = []
+    delivery_attention: list[Mapping[str, Any]] = []
+    superseded: list[Mapping[str, Any]] = []
+    for item in _sort_newest(active):
+        delivery = delivery_projection(item)["label"]
+        if delivery in _DELIVERY_ATTENTION:
+            delivery_attention.append(item)
+        if not needs_review(item):
+            continue
+        run_id = str(item.get("run_id") or "")
+        key = _logical_publication_key(item)
+        proven_superseded = bool(children.get(run_id)) or (all(key) and key in terminal_by_key)
+        if proven_superseded:
+            superseded.append(item)
+        elif run_kst_date(item) == today:
+            current.append(item)
+        else:
+            historical_unresolved.append(item)
+    return {
+        "current": current,
+        "historical_unresolved": historical_unresolved,
+        "delivery_attention": delivery_attention,
+        "superseded": superseded,
+    }
+
+
+def preflight_projection(
+    readiness: Optional[Mapping[str, Any]], program: Mapping[str, str], *, now: Optional[datetime] = None
+) -> Dict[str, str]:
+    """Preflight evidence is deliberately independent from Scheduler state."""
+    scheduled = str(program.get("preflight_time") or "--:--")
+    evidence = dict(readiness or {})
+    status = str(evidence.get("status") or "").upper()
+    checked = str(evidence.get("checked_at") or evidence.get("finished_at") or "")
+    if status in {"PRECHECK_PASS", "PASS"}:
+        return {"state": "pass", "label": "사전점검 정상", "detail": display_timestamp(checked), "provenance": status or "PRECHECK_PASS"}
+    if status in {"PRECHECK_FAIL", "FAIL", "FAILED"}:
+        return {"state": "fail", "label": "사전점검 실패", "detail": display_timestamp(checked), "provenance": status}
+    now_kst = (now or datetime.now(ZoneInfo("Asia/Seoul")))
+    if now_kst.tzinfo is None:
+        now_kst = now_kst.replace(tzinfo=ZoneInfo("Asia/Seoul"))
+    hour, minute = (int(value) for value in scheduled.split(":", 1))
+    expected = now_kst.astimezone(ZoneInfo("Asia/Seoul")).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if now_kst.astimezone(ZoneInfo("Asia/Seoul")) < expected:
+        return {"state": "not_yet_run", "label": "아직 실행 전", "detail": f"{scheduled} 예정", "provenance": "NOT_YET_RUN"}
+    return {"state": "stale", "label": "오늘 근거 확인 필요", "detail": f"{scheduled} 예정", "provenance": "STALE"}
+
+
+def display_timestamp(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "근거 없음"
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(ZoneInfo("Asia/Seoul"))
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
+        if parsed.date() == now.date():
+            return f"오늘 {parsed.strftime('%H:%M')}"
+        return f"{parsed.month}월 {parsed.day}일 {parsed.strftime('%H:%M')}"
+    except ValueError:
+        return raw
+
+
+def scheduler_label(value: Any) -> str:
+    state = str(value or "").upper()
+    return {"ENABLED": "활성", "PAUSED": "일시중지", "UNAVAILABLE": "확인 불가"}.get(state, state or "확인 불가")
+
+
+def incident_current_projection(
+    incidents: Iterable[Mapping[str, Any]], runs: Iterable[Mapping[str, Any]]
+) -> Dict[str, list[Mapping[str, Any]]]:
+    """Separate current incidents from evidence-proven resolved history without writes."""
+    run_rows = list(runs)
+    current: list[Mapping[str, Any]] = []
+    historical: list[Mapping[str, Any]] = []
+    for incident in incidents:
+        status = str(incident.get("status") or "open").lower()
+        incident_id = str(incident.get("incident_id") or "")
+        resolved = status in {"recovery_succeeded", "dismissed", "resolved"}
+        if not resolved and incident_id:
+            for run in run_rows:
+                linked = str(run.get("original_incident_id") or run.get("recovery_for_incident_id") or run.get("incident_id") or "")
+                if linked != incident_id:
+                    continue
+                delivery = delivery_projection(run)["label"]
+                if validation_is_pass(run) and delivery == "SMTP SUBMITTED":
+                    resolved = True
+                    break
+        # A later completed customer publication for the same program is not a
+        # replacement-lineage claim.  It is nevertheless defensible evidence
+        # that this dated operational incident is no longer current when it
+        # passed validation and has a fully evidenced customer submission.  Do
+        # not use preflight/canary/QA evidence for this conclusion.
+        if not resolved:
+            incident_date = str(incident.get("kst_date") or "")
+            incident_program = str(incident.get("program_id") or "")
+            if not incident_date or not incident_program:
+                current.append(incident)
+                continue
+            for run in run_rows:
+                trigger = str(run.get("trigger_source") or "").lower()
+                if program_id(run) != incident_program or run_kst_date(run) <= incident_date:
+                    continue
+                if any(token in trigger for token in ("preflight", "canary", "qa")) or not validation_is_pass(run):
+                    continue
+                if delivery_projection(run)["label"] == "SMTP SUBMITTED":
+                    resolved = True
+                    break
+        (historical if resolved else current).append(incident)
+    return {"current": _sort_newest(current), "historical": _sort_newest(historical)}
 
 
 def incident_projection(meta: Mapping[str, Any]) -> Dict[str, Any]:

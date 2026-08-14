@@ -97,7 +97,7 @@ def email_preview(content: str | None, *, title: str = "고객에게 보이는 �
     <div><p class="eyebrow">FINAL CONTENT</p><h2 id="briefing-preview-title">{esc(title)}</h2></div>
     <span class="evidence-label">저장된 실제 HTML</span>
   </div>
-  <iframe class="briefing-frame" title="저장된 고객 브리핑 미리보기" sandbox srcdoc="{srcdoc}"></iframe>
+  <iframe class="briefing-frame" title="저장된 고객 브리핑 미리보기" sandbox="allow-same-origin" srcdoc="{srcdoc}"></iframe>
 </section>
 """
 

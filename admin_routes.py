@@ -33,12 +33,15 @@ from admin_view_models import (
     ACTIVE_PROGRAM_IDS,
     delivery_projection,
     incident_projection,
+    incident_current_projection,
     is_active_program,
     latest_by_program,
-    needs_review,
-    program_id as _vm_program_id,
+    preflight_projection,
     run_projection,
+    review_actionability_projection,
+    scheduler_label,
 )
+from admin_preview_assets import read_preview_asset, rewrite_customer_html_for_admin_preview
 
 from admin_store import (
     EXECUTABLE_REISSUE_SCOPE,
@@ -884,6 +887,18 @@ def _run_card(meta: Dict[str, Any], *, recipient_count: int, action_label: str =
 """
 
 
+def _admin_email_preview_for_run(
+    run_id: str,
+    meta: Dict[str, Any],
+    customer_html: str | None,
+    *,
+    title: str = "고객에게 보이는 브리핑",
+) -> str:
+    """Browser-only CID resolution; the persisted customer HTML is untouched."""
+    preview_html = rewrite_customer_html_for_admin_preview(run_id, meta, customer_html or "")
+    return _ui_email_preview(preview_html, title=title)
+
+
 @router.get("/admin/operations", response_class=HTMLResponse)
 def admin_operations(request: Request):
     need = _require_login(request)
@@ -896,20 +911,10 @@ def admin_operations(request: Request):
     incidents = list_incidents(limit=50)
     recipient_count, recipients_ok = _current_recipient_count()
     latest = latest_by_program(runs)
-    review_backlog = [meta for meta in runs if needs_review(meta)]
-    review_latest: Dict[str, Dict[str, Any]] = {}
-    for meta in review_backlog:
-        review_latest.setdefault(_vm_program_id(meta), meta)
-    review_runs = list(review_latest.values())
-    open_incident_backlog = [
-        item for item in incidents
-        if str(item.get("status") or "") not in {"recovery_succeeded", "dismissed", "resolved"}
-        and str(item.get("program_id") or "") in ACTIVE_PROGRAM_IDS
-    ]
-    open_incident_latest: Dict[str, Dict[str, Any]] = {}
-    for item in open_incident_backlog:
-        open_incident_latest.setdefault(str(item.get("program_id") or ""), item)
-    open_incidents = list(open_incident_latest.values())
+    review_projection = review_actionability_projection(runs)
+    review_runs = list(review_projection["current"])
+    incident_rows = [item for item in incidents if str(item.get("program_id") or "") in ACTIVE_PROGRAM_IDS]
+    open_incidents = list(incident_current_projection(incident_rows, runs)["current"])
     action_items = "".join(
         f"""
 <div class="action-card">
@@ -952,7 +957,7 @@ def admin_operations(request: Request):
 <article class="program-card">
   <div class="program-card__top"><div><p class="eyebrow">{_esc(program['display'])}</p><h2>{_esc(program['name'])}</h2>
   <p class="program-card__time">자연 실행 {program['natural_time']} · Preflight {program['preflight_time']}</p></div>
-  {_ui_badge(preflight, 'good' if preflight in {'PRECHECK_PASS','PASS'} else 'warn' if preflight != 'NOT RUN' else 'neutral')}</div>
+  {_ui_badge(preflight_projection(readiness, program)['label'], 'good' if preflight_projection(readiness, program)['state'] == 'pass' else 'warn' if preflight_projection(readiness, program)['state'] != 'not_yet_run' else 'neutral')}</div>
   <p class="program-card__state">{_esc(state['label'])}</p><p class="program-card__impact">{_esc(state['impact'])}</p>
   <div class="program-card__footer"><span>{_esc(latest_line)}</span><a href="{href}">{_esc(state['action'])}</a></div>
 </article>""")
@@ -961,7 +966,7 @@ def admin_operations(request: Request):
     inner = f"""
 {_ui_page_header('오늘의 운영', '세 프로그램의 현재 상태와 owner가 지금 해야 할 일만 먼저 보여줍니다.')}
 <div class="metrics">
-  {_ui_metric('검수 필요', len(review_runs), '프로그램')}
+  {_ui_metric('검수 필요', len(review_runs), '현재 실행')}
   {_ui_metric('열린 장애', len(open_incidents), '건')}
   {_ui_metric('현재 수신자', recipient_count if recipients_ok else '확인 필요', '명')}
   {_ui_metric('활성 프로그램', 3, 'Today · Global · Korea')}
@@ -983,27 +988,20 @@ def admin_review_queue(request: Request):
         return need
     recipient_count, recipients_ok = _current_recipient_count()
     runs = [meta for meta in list_run_artifacts(limit=100) if is_active_program(meta)]
-    def _review_priority(meta: Dict[str, Any]) -> int:
-        view = run_projection(meta)
-        owner = str(meta.get("owner_review_status") or "").lower()
-        if needs_review(meta):
-            return 0  # needs owner decision
-        if view["delivery"]["label"] in {"PARTIAL DELIVERY", "REFUSED ALL", "RESULT UNKNOWN"}:
-            return 1  # delivery problem
-        if owner == "held":
-            return 2
-        if view["delivery"]["label"] == "SMTP SUBMITTED":
-            return 3
-        return 4
-    runs.sort(key=_review_priority)
-    cards = "".join(_run_card(meta, recipient_count=recipient_count) for meta in runs)
-    if not cards:
-        cards = _ui_empty_state("검수 대기 없음", "현재 발송 가능한 검수 대기 브리핑이 없습니다.")
+    queue = review_actionability_projection(runs)
+    current_cards = "".join(_run_card(dict(meta), recipient_count=recipient_count) for meta in queue["current"])
+    if not current_cards:
+        current_cards = _ui_empty_state("현재 검수 대기 없음", "오늘의 안전한 owner 결정 대기 브리핑이 없습니다.")
+    delivery_cards = "".join(_run_card(dict(meta), recipient_count=recipient_count, action_label="발송 근거 보기") for meta in queue["delivery_attention"])
+    historical_cards = "".join(_run_card(dict(meta), recipient_count=recipient_count, action_label="기록 확인") for meta in queue["historical_unresolved"])
     source_note = f"현재 수신자 {recipient_count}명" if recipients_ok else "수신자 설정 확인 필요"
     inner = f"""
-{_ui_page_header('검수함', '실제 고객 브리핑과 발송 근거를 한 화면에서 확인합니다.', 'REVIEW QUEUE')}
-<div class="section-heading"><div><h2>Owner 결정 · 발송 문제 · 보류 · 완료</h2></div><span class="evidence-label">{_esc(source_note)}</span></div>
-<div class="stack">{cards}</div>
+{_ui_page_header('검수함', '현재 owner 결정과 발송 결과 확인을 구분합니다. 과거 원본은 변경하지 않습니다.', 'REVIEW QUEUE')}
+<div class="section-heading"><div><h2>내 결정이 필요합니다</h2></div><span class="evidence-label">{_esc(source_note)}</span></div>
+<div class="stack">{current_cards}</div>
+<div class="section-heading"><div><h2>발송 결과 확인 필요</h2></div></div>
+<div class="stack">{delivery_cards or _ui_empty_state('확인할 발송 결과 없음','일부 거절 또는 결과 미확정 기록이 없습니다.')}</div>
+<details class="technical-details"><summary>과거 미처리 · 확인 필요 ({len(queue['historical_unresolved'])})</summary><div class="technical-details__body"><p>후속 실행이나 고객 발송으로 대체되었다는 근거가 없는 과거 항목입니다. 현재 고객 발송 결정으로 취급하지 않습니다.</p><div class="stack">{historical_cards or _ui_empty_state('과거 미처리 없음','확인할 과거 검수 기록이 없습니다.')}</div></div></details>
 """
     return HTMLResponse(_layout("Review Queue", inner, active="reviews"))
 
@@ -1055,21 +1053,30 @@ def admin_system(request: Request):
         operational = status_by_program[program["id"]]
         meta = latest.get(program["id"])
         latest_result = run_projection(meta)["state"]["label"] if meta else "최근 실행 없음"
+        latest_delivery = run_projection(meta)["delivery"]["label_ko"] if meta else "근거 없음"
+        readiness = recent_evidence.get(program["id"]) or {}
+        preflight = preflight_projection(readiness, program)
+        provenance = str(operational["provenance"])
+        scheduler_live = provenance == "LIVE"
+        provenance_ko = "현재 확인됨" if scheduler_live else "확인 불가"
+        scheduler_state = scheduler_label(operational.get("state") if scheduler_live else "UNAVAILABLE")
+        scheduler_helper = provenance_ko if scheduler_live else "사전점검 근거와 별도"
         cards.append(f"""
-<article class="program-card"><p class="eyebrow">{_esc(program['display'])}</p><h2>{_esc(program['name'])}</h2>{_ui_badge(operational['provenance'], 'good' if operational['provenance'] == 'LIVE' else ('warn' if operational['provenance'] == 'RECENT EVIDENCE' else 'danger'))}
+<article class="program-card"><p class="eyebrow">{_esc(program['display'])}</p><h2>{_esc(program['name'])}</h2>{_ui_badge(provenance_ko, 'good' if provenance == 'LIVE' else ('warn' if provenance == 'RECENT EVIDENCE' else 'danger'))}
 <div class="metrics" style="grid-template-columns:1fr;margin-top:16px;">
-{_ui_metric('Scheduler 상태', operational['state'], operational['provenance'])}
-{_ui_metric('Schedule', operational.get('schedule') or f"평일 {program['natural_time']} KST", operational.get('timezone') or 'Asia/Seoul')}
-{_ui_metric('Last attempt', operational.get('last_attempt') or '근거 없음', operational['provenance'])}
+{_ui_metric('Scheduler 상태', scheduler_state, scheduler_helper)}
+{_ui_metric('자연 실행', f"평일 {program['natural_time']} KST", operational.get('schedule') or '저장된 일정')}
+{_ui_metric('오늘 사전점검', preflight['label'], preflight['detail'])}
 {_ui_metric('최근 실행 결과', latest_result, run_projection(meta)['time'] if meta else '근거 없음')}
-</div></article>""")
+{_ui_metric('최근 고객 발송', latest_delivery, run_projection(meta)['delivery']['summary'] if meta else '근거 없음')}
+</div>{_ui_technical_details(dict(operational), (('Scheduler provenance', provenance), ('Scheduler state raw', operational.get('state')), ('Scheduler schedule raw', operational.get('schedule')), ('Scheduler last attempt ISO', operational.get('last_attempt')), ('Preflight provenance', preflight['provenance']), ('Preflight evidence ISO', readiness.get('checked_at') or readiness.get('finished_at'))))}</article>""")
     cloud_run = status["cloud_run"]
     inner = f"""
-{_ui_page_header('시스템 상태', '읽기 전용 adapter가 Scheduler와 Cloud Run 근거의 출처를 구분합니다.', 'READ-ONLY OPERATIONAL TRUTH')}
-<div class="notice">LIVE는 현재 Cloud API 응답, RECENT EVIDENCE는 저장된 최근 근거, UNAVAILABLE은 현재 확인 불가를 뜻합니다. 이 화면에는 pause·resume·run-now·deploy 권한이 없습니다.</div>
+{_ui_page_header('시스템 상태', '읽기 전용 근거에서 Scheduler, 사전점검, 최근 실행과 발송을 각각 보여줍니다.', 'READ-ONLY OPERATIONAL TRUTH')}
+<div class="notice">현재 확인됨은 Cloud API 응답, 최근 확인됨은 저장된 근거, 확인 불가는 현재 조회 불가를 뜻합니다. Scheduler 조회 실패가 사전점검 미실행을 뜻하지는 않습니다. 이 화면에는 pause·resume·run-now·deploy 권한이 없습니다.</div>
 <div class="card-grid" style="margin-top:14px;">{''.join(cards)}</div>
 <div class="section-heading"><div><p class="eyebrow">PRODUCTION</p><h2>런타임 식별</h2></div></div>
-<div class="metrics">{_ui_metric('Truth source',cloud_run['provenance'])}{_ui_metric('Health',cloud_run.get('health') or 'UNAVAILABLE')}{_ui_metric('Revision',cloud_run.get('serving_revision') or 'UNAVAILABLE')}{_ui_metric('Commit SHA',cloud_run.get('commit_sha') or 'UNAVAILABLE')}</div>
+<div class="metrics">{_ui_metric('근거 출처',{'LIVE':'현재 확인됨','RECENT EVIDENCE':'최근 확인됨','UNAVAILABLE':'확인 불가'}.get(cloud_run['provenance'],cloud_run['provenance']))}{_ui_metric('상태',cloud_run.get('health') or '확인 불가')}{_ui_metric('Revision',cloud_run.get('serving_revision') or '확인 불가')}{_ui_metric('Commit SHA',cloud_run.get('commit_sha') or '확인 불가')}</div>
 """
     return HTMLResponse(_layout("System", inner, active="system"))
 
@@ -1178,8 +1185,10 @@ def admin_incidents_list(request: Request):
         item for item in list_incidents(limit=50)
         if str(item.get("program_id") or "") in ACTIVE_PROGRAM_IDS
     ]
+    runs = [meta for meta in list_run_artifacts(limit=100) if is_active_program(meta)]
+    projected = incident_current_projection(incidents, runs)
     cards = []
-    for item in incidents:
+    for item in projected["current"]:
         view = incident_projection(item)
         cards.append(f"""
 <article class="run-card">
@@ -1194,7 +1203,9 @@ def admin_incidents_list(request: Request):
     inner = f"""
 {_ui_page_header('장애·복구', '고객 영향과 안전한 다음 행동을 먼저 보여줍니다. 자동 재실행과 자동 고객 발송은 없습니다.', 'INCIDENTS & RECOVERY')}
 <div class="notice">장애 상세를 여는 것만으로 복구가 실행되지 않습니다. 기존 확인 화면과 명시적 POST 안전 장치를 유지합니다.</div>
-<div class="stack" style="margin-top:14px;">{''.join(cards) if cards else _ui_empty_state('장애 보고 없음','현재 저장된 활성 프로그램 장애가 없습니다.')}</div>
+<div class="section-heading"><div><h2>현재 장애 / 조치 필요</h2></div></div>
+<div class="stack" style="margin-top:14px;">{''.join(cards) if cards else _ui_empty_state('현재 장애 없음','현재 조치가 필요한 활성 프로그램 장애가 없습니다.')}</div>
+<details class="technical-details"><summary>해결된 장애 / 이력 ({len(projected['historical'])})</summary><div class="technical-details__body"><p>명시적 종료·복구 성공 또는 이후 검증된 정상 고객 발송 근거가 있는 기록입니다.</p><div class="stack">{''.join(f'<article class="run-card"><div class="run-card__top"><div><p class="eyebrow">{_esc(incident_projection(item)["program"]["display"])}</p><h3>{_esc(incident_projection(item)["scheduled"] or "실행 시각 미기록")} 발행 장애</h3></div>{_ui_badge("해결됨 / 이력", "neutral")}</div><div class="actions"><a class="btn btn--secondary" href="/admin/incidents/{_esc(item.get("incident_id"))}">기록 보기</a></div></article>' for item in projected['historical']) or _ui_empty_state('해결된 장애 이력 없음','현재 표시할 해결된 활성 프로그램 장애가 없습니다.')}</div></div></details>
 """
     return HTMLResponse(_layout("Incidents", inner, active="incidents"))
 
@@ -1903,7 +1914,7 @@ def admin_run_detail(request: Request, run_id: str):
   <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">VALIDATION</p><h2>검수 결과</h2></div>{_ui_badge(validation['label'], validation['tone'])}</div>
   <p>{_esc(validation['summary'])}</p><ul class="validation-list">{validation_items}</ul>
 </section>
-{_ui_email_preview(email_html)}
+{_admin_email_preview_for_run(run_id, meta, email_html)}
 <section class="surface">
   <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">DELIVERY</p><h2>고객 이메일 발송 상태</h2></div>{_ui_badge(delivery['label'], delivery['tone'])}</div>
   <div class="metrics">{delivery_metrics}</div><p style="color:var(--muted);">{_esc(delivery['summary'])} Provider acceptance는 수신함 도착 확인이 아닙니다.</p>
@@ -1991,13 +2002,41 @@ def admin_run_email_preview(request: Request, run_id: str):
         return need
     if not validate_run_id(run_id):
         return HTMLResponse("<p>잘못된 run_id</p>", status_code=404)
+    meta = load_run_artifact(run_id)
     content = load_run_email_html(run_id)
-    if content is None:
+    if content is None or meta is None:
         return HTMLResponse(
             _layout("Email missing", "<p>저장된 이메일 HTML이 없습니다.</p>"),
             status_code=404,
         )
-    return HTMLResponse(content)
+    return HTMLResponse(
+        _layout(
+            "Email preview",
+            _admin_email_preview_for_run(run_id, meta, content),
+            active="reviews",
+        )
+    )
+
+
+@router.get("/admin/runs/{run_id}/preview-assets/{slot}")
+def admin_run_preview_asset(request: Request, run_id: str, slot: str):
+    """Authenticated exact-run image stream for browser-only CID preview resolution."""
+    need = _require_login(request)
+    if need is not None:
+        return need
+    if not validate_run_id(run_id) or slot not in {"top", "bottom"}:
+        return Response(status_code=404)
+    meta = load_run_artifact(run_id)
+    if not meta:
+        return Response(status_code=404)
+    payload, media_type = read_preview_asset(run_id, meta, slot)
+    if payload is None or media_type is None:
+        return Response(status_code=404)
+    return Response(
+        content=payload,
+        media_type=media_type,
+        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.get("/admin/runs/{run_id}/approve-confirm", response_class=HTMLResponse)
@@ -2064,7 +2103,7 @@ def admin_run_approve_confirm(request: Request, run_id: str):
 {_ui_metric('기존 발송 상태', delivery['label_ko'], delivery['label'])}
 {_ui_metric('확인 스냅샷', snapshot['approval_snapshot_id'])}
 </div></section>
-{_ui_email_preview(prepared.customer_html, title='지금 발송할 최종 브리핑')}
+{_admin_email_preview_for_run(run_id, meta, prepared.customer_html, title='지금 발송할 최종 브리핑')}
 <section class="surface"><div class="section-heading" style="margin-top:0"><div><p class="eyebrow">WHO RECEIVES IT</p><h2>고정된 수신 대상</h2></div></div><p><strong>{recipient_label}</strong></p><ul>{recipient_items}</ul><h3>최종 이미지</h3><ul>{image_items}</ul></section>
 <div class="notice notice--danger"><strong>주의</strong> — 승인 시 이 정확한 브리핑이 이 정확한 수신자에게 즉시 제출되며 되돌릴 수 없습니다. 콘텐츠·이미지·수신자 설정이 바뀌면 발송은 <code>APPROVAL_TARGET_CHANGED</code>로 차단되며 재확인이 필요합니다.</div>
 <form method="post" action="/admin/runs/{_esc(run_id)}/approve">
