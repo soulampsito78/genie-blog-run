@@ -185,8 +185,12 @@ def read_preview_asset(run_id: str, meta: Mapping[str, Any], slot: str) -> tuple
     if asset.backend == "gcs":
         try:
             blob = _get_gcs_bucket().blob(asset.object_name)
-            if not blob.exists():
-                return None, None
+            # ``Blob.exists()`` is only a boolean probe and does not hydrate
+            # object metadata in google-cloud-storage.  Production therefore
+            # saw ``content_type is None`` for valid JPEGs and rejected them.
+            # Reload the exact, already run-bound object before MIME validation;
+            # missing objects still fail closed via the caught NotFound error.
+            blob.reload()
             media_type = str(blob.content_type or "").split(";", 1)[0].lower()
             if media_type not in _SAFE_IMAGE_TYPES:
                 return None, None
