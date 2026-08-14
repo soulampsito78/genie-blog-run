@@ -234,6 +234,59 @@ def slot_sla_threshold(
     )
 
 
+def watchdog_programs_due_for_reconciliation(
+    *,
+    now: Optional[datetime] = None,
+    programs: Optional[Sequence[str]] = None,
+    paused_programs: Optional[Sequence[str]] = None,
+    grace_minutes: int = SLA_GRACE_MINUTES,
+) -> List[str]:
+    """Return due same-day slots outside the newest slot's start window.
+
+    This calculation is intentionally storage-free so the HTTP endpoint can
+    run it before listing run artifacts or constructing a storage client.  Once
+    a later natural slot starts, earlier slots have already had their own grace
+    and reconciliation window; rescanning them at the new slot start would
+    compete with the newly-started generation.  Therefore 06:30, 12:30 and
+    18:30 (and each slot's grace window) return no targets.
+
+    Once the newest started slot crosses its grace threshold, all same-day
+    slots whose thresholds have elapsed are returned.  This restores the
+    normal reconciliation set (including report-send retries for an earlier
+    slot) without doing that work during a later natural run's start window.
+    """
+    if now is None:
+        current = datetime.now(KST)
+    elif now.tzinfo is None:
+        current = now.replace(tzinfo=KST)
+    else:
+        current = now.astimezone(KST)
+    if current.weekday() >= 5:
+        return []
+
+    paused = set(paused_programs or []) | set(PAUSED_PROGRAMS)
+    targets = list(programs or NATURAL_SLOTS.keys())
+    started: List[tuple[datetime, str]] = []
+    for program_id in targets:
+        if program_id in paused or program_id not in NATURAL_SLOTS:
+            continue
+        hh, mm = _slot_hour_minute(NATURAL_SLOTS[program_id])
+        slot_start = current.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if slot_start <= current:
+            started.append((slot_start, program_id))
+    if not started:
+        return []
+
+    newest_start, _newest_program_id = max(started, key=lambda row: row[0])
+    if current < newest_start + timedelta(minutes=grace_minutes):
+        return []
+    return [
+        program_id
+        for slot_start, program_id in sorted(started, key=lambda row: row[0])
+        if current >= slot_start + timedelta(minutes=grace_minutes)
+    ]
+
+
 def slot_eligible_after_activation(
     *,
     program_id: str,
@@ -292,19 +345,27 @@ def _natural_completer_exists(
             if match.qualifies:
                 return raw
         else:
-            # KeeSuri: successful emailed non-reissue parent counts as natural completer
-            # when execution_class is natural_scheduled OR legacy emailed scheduled trigger.
+            # KeeSuri: manual/recovery/reissue artifacts must never satisfy the
+            # natural slot.  A pre-identity legacy artifact is accepted only
+            # with the exact historical Scheduler trigger; new artifacts must
+            # carry the explicit natural class and canonical slot.
             if raw.get("parent_run_id"):
                 continue
             cls = str(raw.get("execution_class") or "").strip()
+            trigger = str(raw.get("trigger_source") or "").strip()
+            if trigger != "scheduled_service_full_run":
+                continue
             if cls and cls != EXECUTION_CLASS_NATURAL_SCHEDULED:
                 continue
-            if cls == EXECUTION_CLASS_QA_MANUAL:
-                continue
+            if cls:
+                artifact_slot = normalize_slot(str(raw.get("scheduled_slot") or ""))
+                if artifact_slot != normalize_slot(scheduled_slot):
+                    continue
             if bool(raw.get("email_sent")) and str(raw.get("validation_result") or "") != "block":
                 if not cls:
-                    # Legacy KeeSuri without class: treat emailed as completer for SLA
-                    # (recovery still stamps recovery class separately).
+                    # Legacy KeeSuri without class: the exact scheduled trigger
+                    # is the only migration bridge.  Date/program/email gates
+                    # above still apply.
                     return raw
                 return raw
     return None
@@ -753,6 +814,16 @@ def diagnose_program_sla(
     elif ev.get("health_ok") is True and ev.get("service_ready") is not True:
         system_status["서비스 상태"] = "부분 확인(health만 확인, Ready 미확인)"
 
+    # A branch may prove a direct cause without independently setting the root
+    # axis (for example the historical HTTP-200 QA-slot silent skip).  Derive
+    # PARTIAL here, but never upgrade an explicitly CONFIRMED verdict or infer
+    # a root merely from the generic SLA-miss error code.
+    if root_cause_verdict == ROOT_CAUSE_UNKNOWN and confirmed_cause:
+        root_cause_verdict = classify_root_cause_verdict(
+            confirmed_cause=confirmed_cause,
+            error_code=error_code,
+        )
+
     incident = new_incident(
         program_id=program_id,
         kst_date=kst_date,
@@ -763,6 +834,7 @@ def diagnose_program_sla(
         unknowns=unknowns,
         stage_map=stage,
         retry_verdict=retry_verdict,
+        root_cause_verdict=root_cause_verdict,
         retry_verdict_ko=retry_ko,
         recommendation_ko=recommendation,
         original_run_id=original_run_id,
@@ -773,7 +845,6 @@ def diagnose_program_sla(
         outcomes=outcomes,
         summary_ko=summary,
     )
-    incident["root_cause_verdict"] = root_cause_verdict
     incident["detection_note_ko"] = detection_note
     return incident
 

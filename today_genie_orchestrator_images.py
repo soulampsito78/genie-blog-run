@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from admin_store import _get_gcs_client
 from renderers import today_genie_email_inline_cid_pair
 from service_full_run_contract import (
     ERROR_IMAGE_GENERATION_FAILED,
@@ -211,9 +212,7 @@ def _upload_customer_image(
     object_name: str,
     source_path: Path,
 ) -> None:
-    from google.cloud import storage
-
-    bucket = storage.Client().bucket(bucket_name)
+    bucket = _get_gcs_client().bucket(bucket_name)
     bucket.blob(object_name).upload_from_filename(
         str(source_path),
         content_type="image/jpeg",

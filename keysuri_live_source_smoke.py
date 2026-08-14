@@ -76,6 +76,7 @@ from sent_news_dedup_gate import (
     select_with_diversity_caps,
 )
 from sent_news_log_store import recent_sent_news_log
+from memory_observability import record_memory_stage
 
 PROGRAM_GLOBAL = "keysuri_global_tech"
 PROGRAM_KOREA = "keysuri_korea_tech"
@@ -3013,6 +3014,8 @@ def run_keysuri_live_source_smoke(
             error=f"prompt_status={prompt_input.get('prompt_status')!r} after source pack",
         )
 
+    record_memory_stage("after_source_selection")
+
     generated_briefing = None
     parse_status: Optional[str] = None
     parse_meta: Dict[str, Any] = {}
@@ -3037,7 +3040,9 @@ def run_keysuri_live_source_smoke(
             prompt_input = generation_result["prompt_input"]
             generation_diagnostics = generation_result["generation_diagnostics"]
             side_effects["called_gemini"] = True
+            record_memory_stage("after_model_generation")
         except KeysuriGeminiError as exc:
+            record_memory_stage("after_model_generation")
             gen_diag = dict(getattr(exc, "diagnostics", None) or {})
             issue_codes = []
             msg = str(exc)
@@ -3309,6 +3314,7 @@ def run_keysuri_live_source_smoke(
         )
 
     html_path.write_text(html, encoding="utf-8")
+    record_memory_stage("after_render")
 
     pack_text = pack_path.read_text(encoding="utf-8")
     marker_hits = scan_sample_markers(pack_text, html)

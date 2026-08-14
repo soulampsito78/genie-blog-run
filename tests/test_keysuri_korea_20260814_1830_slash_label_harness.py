@@ -14,6 +14,7 @@ emitting them.
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from keysuri_briefing_content_quality import _KOREA_CUSTOMER_SLASH_LABEL_RE
 from keysuri_korea_longform_ux import (
@@ -93,6 +94,46 @@ class KoreaOneLineCheckpointProducerTests(unittest.TestCase):
             )
         )
         self.assertEqual(_slash_label_hits(rendered), [])
+
+    def test_exact_incident_text_reaches_final_gmail_visible_qa_pass(self) -> None:
+        """Producer -> real Gmail renderer -> final pre-SMTP visible QA."""
+        from keysuri_briefing_content_quality import (
+            validate_korea_post_render_visible_quality,
+        )
+        from keysuri_contract_preview_renderer import (
+            IMAGE_MODE_EMAIL,
+            build_keysuri_korea_gmail_owner_email_html,
+            prepare_contract_preview_fixture,
+        )
+        from tests.test_keysuri_contract_preview_renderer import (
+            build_korea_contract_fixture,
+        )
+
+        fixture = build_korea_contract_fixture()
+        fixture["one_line_checkpoint"] = build_korea_one_line_checkpoint(
+            [], existing=PRODUCTION_CHECKPOINT_20260814
+        )
+        fixture["top_shot_image_src"] = "cid:keysuri_topshot_korea_aug14_lineage"
+        prepare_contract_preview_fixture(
+            fixture,
+            repo_root=Path(__file__).resolve().parents[1],
+            image_mode=IMAGE_MODE_EMAIL,
+        )
+        email_html = build_keysuri_korea_gmail_owner_email_html(
+            fixture,
+            subject="[운영자 검토] Kee-Suri Korea Tech",
+            admin_url="https://example.com/admin/runs/aug14-lineage",
+            run_id="aug14-lineage",
+        )
+        result = validate_korea_post_render_visible_quality(email_html)
+
+        self.assertIn("AI와 로봇", email_html)
+        self.assertNotIn("AI/로봇", email_html)
+        self.assertTrue(result.ok, result.issues)
+        self.assertNotIn(
+            "korea_visible_text_customer_slash_label_artifact",
+            {issue.code for issue in result.issues},
+        )
 
     def test_substantive_checkpoint_content_is_preserved(self) -> None:
         """Normalizing must not discard the model's actual observation."""

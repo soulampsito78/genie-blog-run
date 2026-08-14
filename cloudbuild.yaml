@@ -1,0 +1,99 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    id: Build
+    args:
+      - build
+      - --no-cache
+      - -t
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+      - .
+      - -f
+      - Dockerfile
+
+  - name: gcr.io/cloud-builders/docker
+    id: Push
+    args:
+      - push
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: ResolveDigest
+    entrypoint: bash
+    env:
+      - IMAGE_TAG=$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+    args:
+      - -ceu
+      - |
+        gcloud artifacts docker images describe "$$IMAGE_TAG" \
+          --project=$_AR_PROJECT_ID \
+          --format='value(image_summary.fully_qualified_digest)' \
+          > /workspace/immutable-image.txt
+        test -s /workspace/immutable-image.txt
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: DeployExact
+    entrypoint: bash
+    env:
+      - REVISION_SUFFIX=gcb-$BUILD_ID
+      - SERVICE_NAME=$_SERVICE_NAME
+    args:
+      - -ceu
+      - |
+        read -r immutable_image < /workspace/immutable-image.txt
+        revision_name="$$SERVICE_NAME-$$REVISION_SUFFIX"
+        gcloud run services update "$$SERVICE_NAME" \
+          --platform=managed \
+          --image="$$immutable_image" \
+          --revision-suffix="$$REVISION_SUFFIX" \
+          --no-traffic \
+          --labels=managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID,gcb-trigger-id=$_TRIGGER_ID \
+          --region=$_DEPLOY_REGION \
+          --project=$_AR_PROJECT_ID \
+          --quiet
+        gcloud run revisions describe "$$revision_name" \
+          --region=$_DEPLOY_REGION \
+          --project=$_AR_PROJECT_ID \
+          --format='value(status.imageDigest)' \
+          > /workspace/deployed-image.txt
+        read -r deployed_image < /workspace/deployed-image.txt
+        test "$$deployed_image" = "$$immutable_image"
+        printf '%s' "$$revision_name" > /workspace/deployed-revision.txt
+
+  # Traffic may be pinned to an older revision. Promote only the exact revision
+  # created above, after its immutable digest has been verified.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: PromoteExact
+    entrypoint: bash
+    env:
+      - SERVICE_NAME=$_SERVICE_NAME
+    args:
+      - -ceu
+      - |
+        read -r revision_name < /workspace/deployed-revision.txt
+        test -n "$$revision_name"
+        gcloud run services update-traffic "$$SERVICE_NAME" \
+          --to-revisions="$$revision_name=100" \
+          --region=$_DEPLOY_REGION \
+          --project=$_AR_PROJECT_ID \
+          --quiet
+
+images:
+  - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  substitutionOption: ALLOW_LOOSE
+
+substitutions:
+  _AR_HOSTNAME: asia-northeast3-docker.pkg.dev
+  _AR_PROJECT_ID: gen-lang-client-0667098249
+  _AR_REPOSITORY: cloud-run-source-deploy
+  _DEPLOY_REGION: asia-northeast3
+  _PLATFORM: managed
+  _SERVICE_NAME: genie-blog-run
+  _TRIGGER_ID: a4352f88-77f4-4724-b563-800d3ec7a6b8
+
+tags:
+  - gcp-cloud-build-deploy-cloud-run
+  - gcp-cloud-build-deploy-cloud-run-managed
+  - genie-blog-run

@@ -12,11 +12,12 @@ import secrets
 import time
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Optional
+from urllib.parse import urlencode
 
 logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Form, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from admin_components import (
     badge as _ui_badge,
@@ -36,12 +37,13 @@ from admin_view_models import (
     incident_current_projection,
     is_active_program,
     latest_by_program,
+    needs_review,
     preflight_projection,
     run_projection,
     review_actionability_projection,
     scheduler_label,
 )
-from admin_preview_assets import read_preview_asset, rewrite_customer_html_for_admin_preview
+from admin_preview_assets import read_preview_asset, stream_customer_html_for_admin_preview
 
 from admin_store import (
     EXECUTABLE_REISSUE_SCOPE,
@@ -59,6 +61,7 @@ from admin_store import (
     now_kst_iso,
     load_run_artifact,
     load_run_email_html,
+    list_run_artifact_page,
     list_run_artifacts,
     owner_review_email_label_ko,
     record_parent_reissue_audit,
@@ -66,6 +69,7 @@ from admin_store import (
     reissue_parent_block_reason,
     remove_beta_recipient,
     resolve_customer_recipients,
+    run_email_html_exists,
     update_run_artifact,
     validate_run_id,
 )
@@ -98,7 +102,7 @@ from admin_notice_store import (
     NOTICE_TYPES,
     VISIBLE_RECIPIENT_POLICY,
     create_notice_draft,
-    list_notices,
+    list_notice_page,
     load_notice,
     mark_failed,
     mark_previewed,
@@ -110,8 +114,14 @@ from admin_notice_delivery import (
     render_notice_body_html,
     send_admin_notice_email,
 )
-from admin_safety_store import append_operator_audit, list_operator_audit, safety_storage_display_path
+from admin_safety_store import (
+    append_operator_audit,
+    list_operator_audit_page,
+    safety_storage_display_path,
+)
 from admin_operational_status import default_operational_status_service
+from memory_observability import MemoryEvidenceRecorder
+from natural_run_activity import active_natural_run_snapshot
 
 router = APIRouter(tags=["admin"])
 
@@ -129,6 +139,8 @@ _NOTICE_TYPE_LABELS = {
     "incident_notice": "장애 안내",
     "custom_notice": "자유 작성",
 }
+
+ADMIN_UI_PAGE_SIZE = 50
 
 SESSION_COOKIE = "genie_admin_session"
 SESSION_SALT = b"genie-admin-session-v1"
@@ -543,6 +555,56 @@ def _esc(text: object) -> str:
     return html.escape(str(text or ""), quote=True)
 
 
+def _admin_list_cursor(request: Request) -> str:
+    """Return a bounded opaque list cursor; each store validates its format."""
+    return str(request.query_params.get("cursor") or "").strip()[:256]
+
+
+def _admin_audit_cursor(request: Request) -> str:
+    """Keep audit pagination independent from the run-history cursor."""
+    return str(request.query_params.get("audit_cursor") or "").strip()[:256]
+
+
+def _admin_pagination_controls(
+    path: str,
+    page: Dict[str, Any],
+    *,
+    preserved_query: Optional[Dict[str, str]] = None,
+    cursor_param: str = "cursor",
+) -> str:
+    """Render one-way cursor navigation without retaining prior page payloads."""
+    links = []
+    if str(page.get("cursor") or ""):
+        first_query = {
+            key: value
+            for key, value in (preserved_query or {}).items()
+            if str(value or "")
+        }
+        first_href = path
+        if first_query:
+            first_href = f"{path}?{urlencode(first_query)}"
+        links.append(
+            f'<a class="btn btn--secondary" href="{_esc(first_href)}">최신 기록으로</a>'
+        )
+
+    next_cursor = str(page.get("next_cursor") or "")
+    if bool(page.get("has_more")) and next_cursor:
+        next_query = {
+            key: value
+            for key, value in (preserved_query or {}).items()
+            if str(value or "")
+        }
+        next_query[cursor_param] = next_cursor
+        next_href = f"{path}?{urlencode(next_query)}"
+        links.append(
+            f'<a class="btn btn--secondary" rel="next" href="{_esc(next_href)}">이전 기록 더 보기</a>'
+        )
+
+    if not links:
+        return ""
+    return f'<nav class="actions" aria-label="목록 페이지 이동">{"".join(links)}</nav>'
+
+
 def _render_panel_row(label: str, value: str) -> str:
     return (
         f"<tr><th scope=\"row\" style=\"width:34%;font-weight:700;background:#f8fafc;\">{_esc(label)}</th>"
@@ -801,6 +863,46 @@ def _layout(title: str, inner: str, *, active: str = "", authenticated: bool = T
     return _ui_layout(title, inner, active=active, authenticated=authenticated)
 
 
+def _begin_heavy_admin_projection(
+    *, title: str, active: str
+) -> tuple[MemoryEvidenceRecorder, Optional[HTMLResponse]]:
+    """Start a bounded list projection or defer it during same-instance natural work."""
+    recorder = MemoryEvidenceRecorder()
+    recorder.record("route_start")
+    snapshot = active_natural_run_snapshot()
+    if not snapshot.get("active"):
+        return recorder, None
+    recorder.record("after_projection")
+    programs = ", ".join(snapshot.get("program_ids") or []) or "natural_scheduled"
+    inner = f"""
+{_ui_page_header('잠시 후 다시 확인해 주세요', '자연 실행과 같은 인스턴스에서 큰 운영 화면을 동시에 만들지 않습니다.', 'NATURAL RUN ACTIVE')}
+<div class="notice"><strong>브리핑 자연 실행 진행 중</strong><p>{_esc(programs)} 실행이 끝나면 이 화면의 최신 목록을 다시 불러올 수 있습니다. 로그인과 서비스 상태 확인은 계속 사용할 수 있습니다.</p></div>
+"""
+    page = _layout(title, inner, active=active)
+    recorder.record("after_template")
+    response = HTMLResponse(
+        page,
+        status_code=200,
+        headers={"Retry-After": "30", "X-Genie-Admin-Projection": "deferred"},
+    )
+    recorder.record("route_end")
+    return recorder, response
+
+
+def _finish_heavy_admin_projection(
+    recorder: MemoryEvidenceRecorder,
+    *,
+    title: str,
+    inner: str,
+    active: str,
+) -> HTMLResponse:
+    page = _layout(title, inner, active=active)
+    recorder.record("after_template")
+    response = HTMLResponse(page)
+    recorder.record("route_end")
+    return response
+
+
 @router.get("/admin", response_class=HTMLResponse)
 def admin_home(request: Request):
     gate = _require_admin(request)
@@ -889,14 +991,15 @@ def _run_card(meta: Dict[str, Any], *, recipient_count: int, action_label: str =
 
 def _admin_email_preview_for_run(
     run_id: str,
-    meta: Dict[str, Any],
-    customer_html: str | None,
     *,
     title: str = "고객에게 보이는 브리핑",
+    approval_snapshot_id: str = "",
 ) -> str:
-    """Browser-only CID resolution; the persisted customer HTML is untouched."""
-    preview_html = rewrite_customer_html_for_admin_preview(run_id, meta, customer_html or "")
-    return _ui_email_preview(preview_html, title=title)
+    """Point at the bounded preview route; never duplicate HTML in ``srcdoc``."""
+    url = f"/admin/runs/{run_id}/email"
+    if approval_snapshot_id:
+        url += f"?approval_snapshot_id={approval_snapshot_id}"
+    return _ui_email_preview(url, title=title)
 
 
 @router.get("/admin/operations", response_class=HTMLResponse)
@@ -904,6 +1007,11 @@ def admin_operations(request: Request):
     need = _require_login(request)
     if need is not None:
         return need
+    memory, deferred = _begin_heavy_admin_projection(
+        title="Operations", active="operations"
+    )
+    if deferred is not None:
+        return deferred
     from natural_run_incident_store import list_incidents
     from natural_run_reliability import load_readiness
 
@@ -963,6 +1071,7 @@ def admin_operations(request: Request):
 </article>""")
 
     recipient_note = "현재 수신자 설정을 정상적으로 읽었습니다." if recipients_ok else "수신자 설정 근거를 읽지 못했습니다. 발송 전 재확인이 필요합니다."
+    memory.record("after_projection")
     inner = f"""
 {_ui_page_header('오늘의 운영', '세 프로그램의 현재 상태와 owner가 지금 해야 할 일만 먼저 보여줍니다.')}
 <div class="metrics">
@@ -978,7 +1087,9 @@ def admin_operations(request: Request):
 <div class="section-heading"><div><p class="eyebrow">PROGRAMS</p><h2>오늘의 프로그램</h2></div><span class="evidence-label">{_esc(recipient_note)}</span></div>
 <div class="card-grid">{''.join(cards)}</div>
 """
-    return HTMLResponse(_layout("Operations", inner, active="operations"))
+    return _finish_heavy_admin_projection(
+        memory, title="Operations", inner=inner, active="operations"
+    )
 
 
 @router.get("/admin/reviews", response_class=HTMLResponse)
@@ -986,15 +1097,35 @@ def admin_review_queue(request: Request):
     need = _require_login(request)
     if need is not None:
         return need
+    memory, deferred = _begin_heavy_admin_projection(
+        title="Review Queue", active="reviews"
+    )
+    if deferred is not None:
+        return deferred
     recipient_count, recipients_ok = _current_recipient_count()
-    runs = [meta for meta in list_run_artifacts(limit=100) if is_active_program(meta)]
-    queue = review_actionability_projection(runs)
+    page = list_run_artifact_page(
+        limit=ADMIN_UI_PAGE_SIZE,
+        cursor=_admin_list_cursor(request),
+    )
+    runs = [meta for meta in page["items"] if is_active_program(meta)]
+    if str(page.get("cursor") or ""):
+        # Older cursor pages are evidence-only. A superseding child can live on
+        # a newer page, so an old parent must never regain an actionable CTA
+        # merely because the child is outside this page's bounded window.
+        queue = {
+            "current": (),
+            "delivery_attention": (),
+            "historical_unresolved": tuple(runs),
+        }
+    else:
+        queue = review_actionability_projection(runs)
     current_cards = "".join(_run_card(dict(meta), recipient_count=recipient_count) for meta in queue["current"])
     if not current_cards:
         current_cards = _ui_empty_state("현재 검수 대기 없음", "오늘의 안전한 owner 결정 대기 브리핑이 없습니다.")
     delivery_cards = "".join(_run_card(dict(meta), recipient_count=recipient_count, action_label="발송 근거 보기") for meta in queue["delivery_attention"])
     historical_cards = "".join(_run_card(dict(meta), recipient_count=recipient_count, action_label="기록 확인") for meta in queue["historical_unresolved"])
     source_note = f"현재 수신자 {recipient_count}명" if recipients_ok else "수신자 설정 확인 필요"
+    memory.record("after_projection")
     inner = f"""
 {_ui_page_header('검수함', '현재 owner 결정과 발송 결과 확인을 구분합니다. 과거 원본은 변경하지 않습니다.', 'REVIEW QUEUE')}
 <div class="section-heading"><div><h2>내 결정이 필요합니다</h2></div><span class="evidence-label">{_esc(source_note)}</span></div>
@@ -1002,8 +1133,11 @@ def admin_review_queue(request: Request):
 <div class="section-heading"><div><h2>발송 결과 확인 필요</h2></div></div>
 <div class="stack">{delivery_cards or _ui_empty_state('확인할 발송 결과 없음','일부 거절 또는 결과 미확정 기록이 없습니다.')}</div>
 <details class="technical-details"><summary>과거 미처리 · 확인 필요 ({len(queue['historical_unresolved'])})</summary><div class="technical-details__body"><p>후속 실행이나 고객 발송으로 대체되었다는 근거가 없는 과거 항목입니다. 현재 고객 발송 결정으로 취급하지 않습니다.</p><div class="stack">{historical_cards or _ui_empty_state('과거 미처리 없음','확인할 과거 검수 기록이 없습니다.')}</div></div></details>
+{_admin_pagination_controls('/admin/reviews', page)}
 """
-    return HTMLResponse(_layout("Review Queue", inner, active="reviews"))
+    return _finish_heavy_admin_projection(
+        memory, title="Review Queue", inner=inner, active="reviews"
+    )
 
 
 @router.get("/admin/delivery", response_class=HTMLResponse)
@@ -1011,7 +1145,16 @@ def admin_delivery(request: Request):
     need = _require_login(request)
     if need is not None:
         return need
-    runs = [meta for meta in list_run_artifacts(limit=100) if is_active_program(meta)]
+    memory, deferred = _begin_heavy_admin_projection(
+        title="Delivery", active="delivery"
+    )
+    if deferred is not None:
+        return deferred
+    page = list_run_artifact_page(
+        limit=ADMIN_UI_PAGE_SIZE,
+        cursor=_admin_list_cursor(request),
+    )
+    runs = [meta for meta in page["items"] if is_active_program(meta)]
     rows = []
     for meta in runs:
         view = run_projection(meta)
@@ -1030,11 +1173,15 @@ def admin_delivery(request: Request):
   <p style="color:var(--muted);">Provider acceptance는 수신함 도착 확인이 아닙니다.</p>
   <a class="btn btn--secondary" href="/admin/runs/{_esc(view['run_id'])}">발송 근거 보기</a>
 </article>""")
+    memory.record("after_projection")
     inner = f"""
 {_ui_page_header('발송', 'SMTP가 남긴 근거만 표시합니다. 실제 수신함 도착을 추정하지 않습니다.', 'DELIVERY EVIDENCE')}
 <div class="stack">{''.join(rows) if rows else _ui_empty_state('발송 기록 없음','현재 확인 가능한 고객 발송 기록이 없습니다.')}</div>
+{_admin_pagination_controls('/admin/delivery', page)}
 """
-    return HTMLResponse(_layout("Delivery", inner, active="delivery"))
+    return _finish_heavy_admin_projection(
+        memory, title="Delivery", inner=inner, active="delivery"
+    )
 
 
 @router.get("/admin/system", response_class=HTMLResponse)
@@ -1042,6 +1189,11 @@ def admin_system(request: Request):
     need = _require_login(request)
     if need is not None:
         return need
+    memory, deferred = _begin_heavy_admin_projection(
+        title="System", active="system"
+    )
+    if deferred is not None:
+        return deferred
     from natural_run_reliability import load_readiness
 
     latest = latest_by_program(list_run_artifacts(limit=100))
@@ -1071,6 +1223,7 @@ def admin_system(request: Request):
 {_ui_metric('최근 고객 발송', latest_delivery, run_projection(meta)['delivery']['summary'] if meta else '근거 없음')}
 </div>{_ui_technical_details(dict(operational), (('Scheduler provenance', provenance), ('Scheduler state raw', operational.get('state')), ('Scheduler schedule raw', operational.get('schedule')), ('Scheduler last attempt ISO', operational.get('last_attempt')), ('Preflight provenance', preflight['provenance']), ('Preflight evidence ISO', readiness.get('checked_at') or readiness.get('finished_at'))))}</article>""")
     cloud_run = status["cloud_run"]
+    memory.record("after_projection")
     inner = f"""
 {_ui_page_header('시스템 상태', '읽기 전용 근거에서 Scheduler, 사전점검, 최근 실행과 발송을 각각 보여줍니다.', 'READ-ONLY OPERATIONAL TRUTH')}
 <div class="notice">현재 확인됨은 Cloud API 응답, 최근 확인됨은 저장된 근거, 확인 불가는 현재 조회 불가를 뜻합니다. Scheduler 조회 실패가 사전점검 미실행을 뜻하지는 않습니다. 이 화면에는 pause·resume·run-now·deploy 권한이 없습니다.</div>
@@ -1078,7 +1231,9 @@ def admin_system(request: Request):
 <div class="section-heading"><div><p class="eyebrow">PRODUCTION</p><h2>런타임 식별</h2></div></div>
 <div class="metrics">{_ui_metric('근거 출처',{'LIVE':'현재 확인됨','RECENT EVIDENCE':'최근 확인됨','UNAVAILABLE':'확인 불가'}.get(cloud_run['provenance'],cloud_run['provenance']))}{_ui_metric('상태',cloud_run.get('health') or '확인 불가')}{_ui_metric('Revision',cloud_run.get('serving_revision') or '확인 불가')}{_ui_metric('Commit SHA',cloud_run.get('commit_sha') or '확인 불가')}</div>
 """
-    return HTMLResponse(_layout("System", inner, active="system"))
+    return _finish_heavy_admin_projection(
+        memory, title="System", inner=inner, active="system"
+    )
 
 
 @router.get("/admin/settings", response_class=HTMLResponse)
@@ -1104,13 +1259,26 @@ def admin_settings(request: Request):
 
 
 def _history_page(request: Request) -> HTMLResponse:
+    memory, deferred = _begin_heavy_admin_projection(
+        title="History", active="history"
+    )
+    if deferred is not None:
+        return deferred
     mode_filter = str(request.query_params.get("program") or "").strip()
     state_filter = str(request.query_params.get("state") or "").strip()
     date_filter = str(request.query_params.get("date") or "").strip()
     recipient_count, _ = _current_recipient_count()
-    runs = [meta for meta in list_run_artifacts(limit=100) if is_active_program(meta)]
+    page = list_run_artifact_page(
+        limit=ADMIN_UI_PAGE_SIZE,
+        cursor=_admin_list_cursor(request),
+    )
+    runs = [meta for meta in page["items"] if is_active_program(meta)]
     if mode_filter in ACTIVE_PROGRAM_IDS:
-        runs = [meta for meta in runs if _vm_program_id(meta) == mode_filter]
+        runs = [
+            meta
+            for meta in runs
+            if run_projection(meta)["program"]["id"] == mode_filter
+        ]
     if date_filter:
         runs = [meta for meta in runs if date_filter.replace("-", ".") in run_projection(meta)["date"]]
     if state_filter:
@@ -1139,10 +1307,15 @@ def _history_page(request: Request) -> HTMLResponse:
         f'<option value="{value}"{" selected" if state_filter == value else ""}>{label}</option>'
         for value, label in (("", "전체"), ("normal", "정상"), ("review", "검수 필요"), ("incident", "장애"), ("sent", "발송 완료"))
     )
+    audit_page = list_operator_audit_page(
+        limit=ADMIN_UI_PAGE_SIZE,
+        cursor=_admin_audit_cursor(request),
+    )
     audit_rows = "".join(
         f'<tr><td>{_esc(row.get("timestamp"))}</td><td>{_esc(row.get("action"))}</td><td>{_esc(row.get("run_id") or row.get("incident_id") or "-")}</td><td>{_esc(row.get("result") or row.get("reason_code") or "-")}</td></tr>'
-        for row in list_operator_audit(limit=50)
+        for row in audit_page["items"]
     ) or '<tr><td colspan="4">저장된 operator action이 없습니다.</td></tr>'
+    memory.record("after_projection")
     inner = f"""
 {_ui_page_header('실행 이력', '날짜별로 자연 실행, 복구, 재발행과 고객 발송 흐름을 봅니다.', 'HISTORY')}
 <form method="get" action="/admin/history" class="surface form-grid history-filter">
@@ -1151,11 +1324,14 @@ def _history_page(request: Request) -> HTMLResponse:
 <label>날짜<input type="date" name="date" value="{_esc(date_filter)}"></label>
 <button class="btn" type="submit">필터 적용</button></form>
 {''.join(group_html) if group_html else _ui_empty_state('조건에 맞는 이력 없음','필터를 바꾸거나 새 실행 기록을 기다리세요.')}
-<details class="technical-details"><summary>Operator action audit</summary><div class="technical-details__body"><p>저장소: {_esc(safety_storage_display_path())}</p><div class="table-wrap"><table><thead><tr><th>시각</th><th>행동</th><th>대상</th><th>결과</th></tr></thead><tbody>{audit_rows}</tbody></table></div></div></details>
+{_admin_pagination_controls(str(request.url.path), page, preserved_query={'program': mode_filter, 'state': state_filter, 'date': date_filter})}
+<details class="technical-details"><summary>Operator action audit</summary><div class="technical-details__body"><p>저장소: {_esc(safety_storage_display_path())}</p><div class="table-wrap"><table><thead><tr><th>시각</th><th>행동</th><th>대상</th><th>결과</th></tr></thead><tbody>{audit_rows}</tbody></table></div>{_admin_pagination_controls(str(request.url.path), audit_page, preserved_query={'program': mode_filter, 'state': state_filter, 'date': date_filter, 'cursor': str(page.get('cursor') or '')}, cursor_param='audit_cursor')}</div></details>
 <div class="table-wrap" style="display:none" aria-hidden="true"></div>
 <div style="display:none"><a href="/admin/customer-recipients">베타 고객 수신자 관리</a><a href="/admin/costs">비용 ledger</a><a href="/admin/notices">공지 메일 관리</a></div>
 """
-    return HTMLResponse(_layout("History", inner, active="history"))
+    return _finish_heavy_admin_projection(
+        memory, title="History", inner=inner, active="history"
+    )
 
 
 @router.get("/admin/history", response_class=HTMLResponse)
@@ -1179,10 +1355,19 @@ def admin_incidents_list(request: Request):
     need = _require_login(request)
     if need is not None:
         return need
-    from natural_run_incident_store import list_incidents
+    memory, deferred = _begin_heavy_admin_projection(
+        title="Incidents", active="incidents"
+    )
+    if deferred is not None:
+        return deferred
+    from natural_run_incident_store import list_incident_page
 
+    page = list_incident_page(
+        limit=ADMIN_UI_PAGE_SIZE,
+        cursor=_admin_list_cursor(request),
+    )
     incidents = [
-        item for item in list_incidents(limit=50)
+        item for item in page["items"]
         if str(item.get("program_id") or "") in ACTIVE_PROGRAM_IDS
     ]
     runs = [meta for meta in list_run_artifacts(limit=100) if is_active_program(meta)]
@@ -1200,14 +1385,18 @@ def admin_incidents_list(request: Request):
   </div>
   <div class="actions"><a class="btn" href="/admin/incidents/{_esc(view['incident_id'])}">{_esc(view['next_action'])}</a></div>
 </article>""")
+    memory.record("after_projection")
     inner = f"""
 {_ui_page_header('장애·복구', '고객 영향과 안전한 다음 행동을 먼저 보여줍니다. 자동 재실행과 자동 고객 발송은 없습니다.', 'INCIDENTS & RECOVERY')}
 <div class="notice">장애 상세를 여는 것만으로 복구가 실행되지 않습니다. 기존 확인 화면과 명시적 POST 안전 장치를 유지합니다.</div>
 <div class="section-heading"><div><h2>현재 장애 / 조치 필요</h2></div></div>
 <div class="stack" style="margin-top:14px;">{''.join(cards) if cards else _ui_empty_state('현재 장애 없음','현재 조치가 필요한 활성 프로그램 장애가 없습니다.')}</div>
 <details class="technical-details"><summary>해결된 장애 / 이력 ({len(projected['historical'])})</summary><div class="technical-details__body"><p>명시적 종료·복구 성공 또는 이후 검증된 정상 고객 발송 근거가 있는 기록입니다.</p><div class="stack">{''.join(f'<article class="run-card"><div class="run-card__top"><div><p class="eyebrow">{_esc(incident_projection(item)["program"]["display"])}</p><h3>{_esc(incident_projection(item)["scheduled"] or "실행 시각 미기록")} 발행 장애</h3></div>{_ui_badge("해결됨 / 이력", "neutral")}</div><div class="actions"><a class="btn btn--secondary" href="/admin/incidents/{_esc(item.get("incident_id"))}">기록 보기</a></div></article>' for item in projected['historical']) or _ui_empty_state('해결된 장애 이력 없음','현재 표시할 해결된 활성 프로그램 장애가 없습니다.')}</div></div></details>
+{_admin_pagination_controls('/admin/incidents', page)}
 """
-    return HTMLResponse(_layout("Incidents", inner, active="incidents"))
+    return _finish_heavy_admin_projection(
+        memory, title="Incidents", inner=inner, active="incidents"
+    )
 
 
 @router.get("/admin/incidents/{incident_id}", response_class=HTMLResponse)
@@ -1215,6 +1404,11 @@ def admin_incident_detail(request: Request, incident_id: str):
     need = _require_login(request)
     if need is not None:
         return need
+    memory, deferred = _begin_heavy_admin_projection(
+        title="Incident", active="incidents"
+    )
+    if deferred is not None:
+        return deferred
     from natural_run_incident_store import (
         RETRY_ALLOWED_WITH_WARNING,
         RETRY_BLOCKED,
@@ -1226,6 +1420,7 @@ def admin_incident_detail(request: Request, incident_id: str):
         ROOT_CAUSE_PARTIAL,
         ROOT_CAUSE_UNKNOWN,
         STATUS_RETRY_BLOCKED_PENDING_PATCH,
+        incident_retry_review_allowed,
         is_retry_actionable,
         load_incident,
         normalize_retry_actionability,
@@ -1259,6 +1454,7 @@ def admin_incident_detail(request: Request, incident_id: str):
     verdict = recovery_effective_retry_verdict(meta)
     recovery_guard_blocked = recovery_guard_is_blocked(meta)
     root_cause = str(meta.get("root_cause_verdict") or ROOT_CAUSE_UNKNOWN)
+    retry_review_allowed = incident_retry_review_allowed(meta)
     smoke = bool(meta.get("smoke_failure") or meta.get("smoke_only") or meta.get("verification_only"))
     outcomes = meta.get("outcomes") if isinstance(meta.get("outcomes"), dict) else {}
     customer_status = outcomes.get("고객 메일") or meta.get("recovery_customer_send_count") or "발송되지 않음"
@@ -1307,7 +1503,21 @@ def admin_incident_detail(request: Request, incident_id: str):
 """
     elif status not in {"reported", "open", "recovery_failed", STATUS_RETRY_BLOCKED_PENDING_PATCH}:
         actions = f'<p class="warn">현재 상태(<code>{_esc(status)}</code>)에서는 재실행 승인 버튼이 비활성입니다.</p>'
-    elif verdict == RETRY_SAFE or verdict == RETRY_SAFE_TO_RETRY:
+    elif root_cause.strip().upper() in {
+        "",
+        "UNKNOWN",
+        "INCONCLUSIVE",
+        "ROOT_CAUSE_UNKNOWN",
+        "ROOT_CAUSE_INCONCLUSIVE",
+    }:
+        actions = """
+<div class="card warn">
+<button class="btn" type="button" disabled style="background:#94a3b8;cursor:not-allowed;">재실행 검토 보류</button>
+<p><strong>원인 조사 필요 — 재실행 보류</strong></p>
+<p>원인과 재실행 부작용이 충분히 확인된 뒤에만 검토 버튼을 열 수 있습니다.</p>
+</div>
+"""
+    elif retry_review_allowed and (verdict == RETRY_SAFE or verdict == RETRY_SAFE_TO_RETRY):
         actions = f"""
 <div class="card">
 <p>원인 판정: <strong>{_esc(root_cause)}</strong> · 재실행 판정: <strong>RETRY_SAFE</strong></p>
@@ -1319,7 +1529,7 @@ def admin_incident_detail(request: Request, incident_id: str):
 <p style="font-size:12px;color:#555;">이 페이지(GET)만으로는 재실행되지 않습니다. 확인 화면에서 POST해야 합니다.</p>
 </div>
 """
-    elif verdict == RETRY_ALLOWED_WITH_WARNING:
+    elif retry_review_allowed and verdict == RETRY_ALLOWED_WITH_WARNING:
         actions = f"""
 <div class="card warn">
 <p>원인 판정: <strong>{_esc(root_cause)}</strong> · 재실행 판정: <strong>RETRY_ALLOWED_WITH_WARNING</strong></p>
@@ -1342,13 +1552,13 @@ def admin_incident_detail(request: Request, incident_id: str):
     else:
         actions = """
 <div class="card warn">
-<button class="btn" type="button" disabled style="background:#94a3b8;cursor:not-allowed;">재실행 승인</button>
-<p><strong>재실행 부작용을 확정하지 못해 버튼을 열 수 없습니다.</strong> (RETRY_STATUS_UNKNOWN)</p>
-<p>원인 미확정만으로는 버튼을 닫지 않습니다. 고객 발송·SMTP 모호성 등 부작용이 불명일 때만 이 상태가 됩니다.</p>
+<button class="btn" type="button" disabled style="background:#94a3b8;cursor:not-allowed;">재실행 검토 보류</button>
+<p><strong>재실행 부작용을 확정하지 못해 검토 버튼을 열 수 없습니다.</strong> (RETRY_STATUS_UNKNOWN)</p>
+<p>고객 발송·SMTP 등 부작용이 안전하다고 확인된 뒤에만 재실행을 검토합니다.</p>
 </div>
 """
 
-    if status == "recovery_failed" and not smoke and is_retry_actionable(verdict):
+    if status == "recovery_failed" and not smoke and retry_review_allowed:
         label = "재실행 승인" if verdict in {RETRY_SAFE, RETRY_SAFE_TO_RETRY} else "재실행 시도"
         actions = f"""
 <div class="card warn">
@@ -1410,7 +1620,13 @@ def admin_incident_detail(request: Request, incident_id: str):
 </section>
 {technical}
 """
-    return HTMLResponse(_layout(f"Incident {incident_id}", inner, active="incidents"))
+    memory.record("after_projection")
+    return _finish_heavy_admin_projection(
+        memory,
+        title=f"Incident {incident_id}",
+        inner=inner,
+        active="incidents",
+    )
 
 
 @router.get("/admin/incidents/{incident_id}/approve-confirm", response_class=HTMLResponse)
@@ -1424,6 +1640,7 @@ def admin_incident_approve_confirm(request: Request, incident_id: str):
         RETRY_SAFE,
         RETRY_SAFE_TO_RETRY,
         STATUS_RETRY_BLOCKED_PENDING_PATCH,
+        incident_retry_review_allowed,
         is_retry_actionable,
         load_incident,
         normalize_retry_actionability,
@@ -1459,7 +1676,7 @@ def admin_incident_approve_confirm(request: Request, incident_id: str):
             f"<p><a href=\"/admin/incidents/{_esc(incident_id)}\">← 상세</a></p>"
         )
         return HTMLResponse(_layout("Approve blocked", inner), status_code=400)
-    if not is_retry_actionable(verdict):
+    if not incident_retry_review_allowed(meta):
         inner = (
             f"<p class=\"warn\">재실행 판정 <code>{_esc(verdict)}</code> — 승인할 수 없습니다.</p>"
             f"<p><a href=\"/admin/incidents/{_esc(incident_id)}\">← 상세</a></p>"
@@ -1548,6 +1765,7 @@ def admin_incident_approve_recovery(request: Request, incident_id: str, csrf_tok
     if not _verify_csrf(request, f"incident_recovery:{incident_id}", csrf_token):
         return _csrf_rejected()
     from natural_run_incident_store import (
+        incident_retry_review_allowed,
         recovery_effective_retry_verdict,
         recovery_guard_is_blocked,
         is_retry_actionable,
@@ -1569,7 +1787,7 @@ def admin_incident_approve_recovery(request: Request, incident_id: str, csrf_tok
             url=f"/admin/incidents/{incident_id}?recovery_error=retry_blocked_pending_patch",
             status_code=303,
         )
-    if not is_retry_actionable(recovery_effective_retry_verdict(meta)):
+    if not incident_retry_review_allowed(meta):
         return RedirectResponse(
             url=f"/admin/incidents/{incident_id}?recovery_error=verdict_not_actionable",
             status_code=303,
@@ -1782,6 +2000,11 @@ def admin_run_detail(request: Request, run_id: str):
     need = _require_login(request)
     if need is not None:
         return need
+    memory, deferred = _begin_heavy_admin_projection(
+        title="Review", active="reviews"
+    )
+    if deferred is not None:
+        return deferred
     if not validate_run_id(run_id):
         return HTMLResponse(_layout("Not found", "<p>잘못된 run_id</p>"), status_code=404)
     meta = load_run_artifact(run_id)
@@ -1800,8 +2023,7 @@ def admin_run_detail(request: Request, run_id: str):
             '<div class="warn">재발행 실행은 완료되었지만 운영자 검토용 이메일은 발송되지 않았습니다. '
             "SMTP 설정, EMAIL_TO(소유자 계정), 정책/이미지 자산을 확인하세요.</div>"
         )
-    email_html = load_run_email_html(run_id)
-    has_email = email_html is not None
+    has_email = run_email_html_exists(run_id)
     email_link = f'<a href="/admin/runs/{_esc(run_id)}/email" target="_blank">이메일 HTML 미리보기</a>' if has_email else "<em>저장된 이메일 HTML 없음</em>"
     can_approve, approve_err = can_approve_customer_send(meta, has_email_html=has_email)
     mode = str(meta.get("mode") or "")
@@ -1901,6 +2123,7 @@ def admin_run_detail(request: Request, run_id: str):
             ("Parent / incident", view["parent_run_id"] or view["incident_id"]),
             ("Legacy delivery evidence", legacy_delivery_note),
         ),
+        raw_url=f"/admin/runs/{run_id}/json",
     )
     inner = f"""
 {_ui_page_header('브리핑 검수', '고객에게 보이는 실제 콘텐츠와 검수·발송 근거를 한 화면에서 확인합니다.', view['program']['display'])}
@@ -1914,7 +2137,7 @@ def admin_run_detail(request: Request, run_id: str):
   <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">VALIDATION</p><h2>검수 결과</h2></div>{_ui_badge(validation['label'], validation['tone'])}</div>
   <p>{_esc(validation['summary'])}</p><ul class="validation-list">{validation_items}</ul>
 </section>
-{_admin_email_preview_for_run(run_id, meta, email_html)}
+{_admin_email_preview_for_run(run_id) if has_email else _ui_email_preview(None)}
 <section class="surface">
   <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">DELIVERY</p><h2>고객 이메일 발송 상태</h2></div>{_ui_badge(delivery['label'], delivery['tone'])}</div>
   <div class="metrics">{delivery_metrics}</div><p style="color:var(--muted);">{_esc(delivery['summary'])} Provider acceptance는 수신함 도착 확인이 아닙니다.</p>
@@ -1947,7 +2170,13 @@ def admin_run_detail(request: Request, run_id: str):
 {technical}
 <div class="table-wrap" style="display:none" aria-hidden="true">{email_link}<a href="/admin/customer-recipients">베타 고객 수신자 관리</a><a href="/admin/notices">공지 메일 관리</a></div>
 """
-    return HTMLResponse(_layout(f"Review {run_id}", inner, active="reviews"))
+    memory.record("after_projection")
+    return _finish_heavy_admin_projection(
+        memory,
+        title=f"Review {run_id}",
+        inner=inner,
+        active="reviews",
+    )
 
 
 @router.post("/admin/runs/{run_id}/hold")
@@ -2000,6 +2229,11 @@ def admin_run_email_preview(request: Request, run_id: str):
     need = _require_login(request)
     if need is not None:
         return need
+    memory, deferred = _begin_heavy_admin_projection(
+        title="Email preview", active="reviews"
+    )
+    if deferred is not None:
+        return deferred
     if not validate_run_id(run_id):
         return HTMLResponse("<p>잘못된 run_id</p>", status_code=404)
     meta = load_run_artifact(run_id)
@@ -2009,13 +2243,74 @@ def admin_run_email_preview(request: Request, run_id: str):
             _layout("Email missing", "<p>저장된 이메일 HTML이 없습니다.</p>"),
             status_code=404,
         )
-    return HTMLResponse(
-        _layout(
-            "Email preview",
-            _admin_email_preview_for_run(run_id, meta, content),
-            active="reviews",
-        )
+    snapshot_id = str(request.query_params.get("approval_snapshot_id") or "").strip()
+    if snapshot_id:
+        from admin_approval import ApprovalTargetError, verify_approval_snapshot
+
+        try:
+            _snapshot, prepared = verify_approval_snapshot(
+                snapshot_id=snapshot_id,
+                run_id=run_id,
+                meta=meta,
+                saved_html=content,
+                operator_id=_operator_id(request),
+            )
+        except ApprovalTargetError as exc:
+            return HTMLResponse(
+                _layout(
+                    "Preview unavailable",
+                    f'<p class="warn">현재 승인 대상 미리보기를 열 수 없습니다: {_esc(exc.code)}</p>',
+                    active="reviews",
+                ),
+                status_code=409,
+            )
+        content = prepared.customer_html
+    memory.record("after_projection")
+
+    def observed_preview_stream():
+        memory.record("after_template")
+        try:
+            yield from stream_customer_html_for_admin_preview(run_id, meta, content)
+        finally:
+            memory.record("route_end")
+
+    return StreamingResponse(
+        observed_preview_stream(),
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Security-Policy": "default-src 'none'; img-src 'self' data: https:; style-src 'unsafe-inline'",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
+
+
+@router.get("/admin/runs/{run_id}/json")
+def admin_run_raw_json(request: Request, run_id: str):
+    """Explicit detail-only raw view, isolated from the normal HTML projection."""
+    need = _require_login(request)
+    if need is not None:
+        return need
+    memory, deferred = _begin_heavy_admin_projection(
+        title="Raw run JSON", active="reviews"
+    )
+    if deferred is not None:
+        return deferred
+    if not validate_run_id(run_id):
+        return Response(status_code=404)
+    meta = load_run_artifact(run_id)
+    if meta is None:
+        return Response(status_code=404)
+    memory.record("after_projection")
+    content = json.dumps(meta, ensure_ascii=False, indent=2, default=str)
+    memory.record("after_template")
+    response = Response(
+        content=content,
+        media_type="application/json; charset=utf-8",
+        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+    )
+    memory.record("route_end")
+    return response
 
 
 @router.get("/admin/runs/{run_id}/preview-assets/{slot}")
@@ -2024,6 +2319,20 @@ def admin_run_preview_asset(request: Request, run_id: str, slot: str):
     need = _require_login(request)
     if need is not None:
         return need
+    memory = MemoryEvidenceRecorder()
+    memory.record("route_start")
+    if active_natural_run_snapshot().get("active"):
+        memory.record("after_projection")
+        memory.record("after_template")
+        response = Response(
+            status_code=503,
+            headers={
+                "Retry-After": "30",
+                "X-Genie-Admin-Projection": "deferred",
+            },
+        )
+        memory.record("route_end")
+        return response
     if not validate_run_id(run_id) or slot not in {"top", "bottom"}:
         return Response(status_code=404)
     meta = load_run_artifact(run_id)
@@ -2032,11 +2341,15 @@ def admin_run_preview_asset(request: Request, run_id: str, slot: str):
     payload, media_type = read_preview_asset(run_id, meta, slot)
     if payload is None or media_type is None:
         return Response(status_code=404)
-    return Response(
+    memory.record("after_projection")
+    memory.record("after_template")
+    response = Response(
         content=payload,
         media_type=media_type,
         headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
     )
+    memory.record("route_end")
+    return response
 
 
 @router.get("/admin/runs/{run_id}/approve-confirm", response_class=HTMLResponse)
@@ -2044,6 +2357,11 @@ def admin_run_approve_confirm(request: Request, run_id: str):
     need = _require_login(request)
     if need is not None:
         return need
+    memory, deferred = _begin_heavy_admin_projection(
+        title="Approve", active="reviews"
+    )
+    if deferred is not None:
+        return deferred
     if not validate_run_id(run_id):
         return HTMLResponse(_layout("Not found", "<p>잘못된 run_id</p>"), status_code=404)
     meta = load_run_artifact(run_id)
@@ -2083,6 +2401,12 @@ def admin_run_approve_confirm(request: Request, run_id: str):
             "recipient_configuration_version": snapshot["recipient_configuration_version"],
         },
     )
+    prepared_subject = prepared.subject
+    approval_snapshot_id = str(snapshot["approval_snapshot_id"])
+    # The preview is served separately.  Do not retain either large HTML body
+    # while constructing the confirmation-page projection.
+    del prepared
+    del email_html
     session_token = _session_token_from_request(request)
     nonce, cookie_value = issue_approval_nonce(run_id, session_token)
     recipient_count = int(snapshot["recipient_count"])
@@ -2095,15 +2419,16 @@ def admin_run_approve_confirm(request: Request, run_id: str):
         f'<li>{_esc(row.get("position"))}: {_esc(row.get("filename"))}</li>'
         for row in snapshot.get("images") or []
     )
+    memory.record("after_projection")
     inner = f"""
 {_ui_page_header('고객 발송 최종 확인', '이 정확한 브리핑을 아래의 정확한 수신자에게 발송합니다.', view['program']['display'])}
 <section class="surface"><div class="metrics">
-{_ui_metric('실제 제목', prepared.subject)}
+{_ui_metric('실제 제목', prepared_subject)}
 {_ui_metric('고정 수신자', recipient_label)}
 {_ui_metric('기존 발송 상태', delivery['label_ko'], delivery['label'])}
 {_ui_metric('확인 스냅샷', snapshot['approval_snapshot_id'])}
 </div></section>
-{_admin_email_preview_for_run(run_id, meta, prepared.customer_html, title='지금 발송할 최종 브리핑')}
+{_admin_email_preview_for_run(run_id, title='지금 발송할 최종 브리핑', approval_snapshot_id=approval_snapshot_id)}
 <section class="surface"><div class="section-heading" style="margin-top:0"><div><p class="eyebrow">WHO RECEIVES IT</p><h2>고정된 수신 대상</h2></div></div><p><strong>{recipient_label}</strong></p><ul>{recipient_items}</ul><h3>최종 이미지</h3><ul>{image_items}</ul></section>
 <div class="notice notice--danger"><strong>주의</strong> — 승인 시 이 정확한 브리핑이 이 정확한 수신자에게 즉시 제출되며 되돌릴 수 없습니다. 콘텐츠·이미지·수신자 설정이 바뀌면 발송은 <code>APPROVAL_TARGET_CHANGED</code>로 차단되며 재확인이 필요합니다.</div>
 <form method="post" action="/admin/runs/{_esc(run_id)}/approve">
@@ -2122,7 +2447,9 @@ def admin_run_approve_confirm(request: Request, run_id: str):
 <p><a href="/admin/runs/{_esc(run_id)}">← 실행 상세</a></p>
 <details class="technical-details"><summary>기술 세부정보 보기</summary><div class="technical-details__body"><div class="diagnostic-grid"><div class="diagnostic-row"><span>Run ID</span><code>{_esc(run_id)}</code></div><div class="diagnostic-row"><span>mode</span><code>{_esc(meta.get('mode'))}</code></div><div class="diagnostic-row"><span>content hash</span><code>{_esc(snapshot.get('rendered_content_sha256'))}</code></div><div class="diagnostic-row"><span>recipient config hash</span><code>{_esc(snapshot.get('recipient_configuration_hash'))}</code></div></div></div></details>
 """
-    resp = HTMLResponse(_layout(f"Approve {run_id}", inner, active="reviews"))
+    page = _layout(f"Approve {run_id}", inner, active="reviews")
+    memory.record("after_template")
+    resp = HTMLResponse(page)
     resp.set_cookie(
         APPROVE_NONCE_COOKIE,
         cookie_value,
@@ -2132,6 +2459,7 @@ def admin_run_approve_confirm(request: Request, run_id: str):
         max_age=APPROVE_NONCE_TTL_SECONDS,
         path="/",
     )
+    memory.record("route_end")
     return resp
 
 
@@ -2737,7 +3065,11 @@ def admin_notices_list(request: Request):
     need = _require_login(request)
     if need is not None:
         return need
-    notices = list_notices(limit=50)
+    page = list_notice_page(
+        limit=ADMIN_UI_PAGE_SIZE,
+        cursor=_admin_list_cursor(request),
+    )
+    notices = page["items"]
     rows = []
     for n in notices:
         nid = _esc(n.get("notice_id"))
@@ -2765,6 +3097,7 @@ def admin_notices_list(request: Request):
 </div>
 <p style="font-size:13px;color:#64748b;">브리핑 고객 최종 발송(approve)과 완전히 분리된 별도 기능입니다.</p>
 <div class="card"><div class="table-wrap">{table}</div></div>
+{_admin_pagination_controls('/admin/notices', page)}
 <p><a href="/admin/runs">← 실행 목록</a></p>
 """
     return HTMLResponse(_layout("운영 공지", inner))

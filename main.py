@@ -48,6 +48,7 @@ from validators import (
 from weather_image_context import build_image_weather_context_for_today
 from keysuri_gemini_client import extract_gemini_usage_metadata
 from genie_cost_estimate import estimate_genie_generation_cost
+from memory_observability import memory_evidence_scope, record_memory_stage
 
 
 def configure_application_logging() -> None:
@@ -2183,14 +2184,14 @@ def health() -> Dict[str, Any]:
     }
 
 
-@app.post("/")
-def generate(job: JobRequest) -> Dict[str, Any]:
+def _generate_impl(job: JobRequest) -> Dict[str, Any]:
     mode = job.type
     if mode not in SUPPORTED_MODES:
         raise HTTPException(status_code=400, detail=f"Unsupported type: {mode}")
 
     controlled_test_target_date = _controlled_test_target_date_from_request(job)
     runtime_input = build_runtime_input(mode, controlled_test_target_date=controlled_test_target_date)
+    record_memory_stage("after_source_selection")
     if (
         mode == "today_genie"
         and runtime_input.get("today_genie_feed_gate") == "block"
@@ -2258,6 +2259,7 @@ def generate(job: JobRequest) -> Dict[str, Any]:
                 data = parse_model_json(raw_text, mode)
             else:
                 raise
+    record_memory_stage("after_model_generation")
     if mode == "today_genie":
         data["hashtags"] = finalize_today_genie_hashtag_list(data, runtime_input)
         data = enforce_today_genie_market_snapshot_from_feeds(data, runtime_input)
@@ -2318,6 +2320,7 @@ def generate(job: JobRequest) -> Dict[str, Any]:
         "email_body_html": email_html,
         "naver_blog_body_html": naver_body_html,
     }
+    record_memory_stage("after_render")
 
     runtime_check = _runtime_validation_check_payload(
         runtime_input=runtime_input,
@@ -2359,3 +2362,18 @@ def generate(job: JobRequest) -> Dict[str, Any]:
             "rendered_channels": rendered,
         },
     }
+
+
+@app.post("/")
+def generate(job: JobRequest) -> Dict[str, Any]:
+    """Bounded memory evidence around the model API request itself."""
+    with memory_evidence_scope() as recorder:
+        recorder.record("request_start")
+        try:
+            result = _generate_impl(job)
+        except Exception:
+            recorder.record("request_end")
+            raise
+        recorder.record("request_end")
+        result["memory_stage_evidence"] = recorder.evidence()
+        return result

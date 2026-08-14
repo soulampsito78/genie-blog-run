@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 
 from admin_store import (
+    _get_gcs_client,
     admin_artifact_bucket_name,
     admin_artifact_gcs_prefix,
     artifact_email_path,
@@ -25,6 +26,7 @@ from admin_store import (
     load_run_email_html,
     now_kst_iso,
     save_run_artifact,
+    save_run_memory_evidence,
 )
 from admin_cost_ledger import save_cost_record_best_effort
 from admin_urls import build_owner_review_admin_url
@@ -94,6 +96,7 @@ from owner_review_failure_events import (
     emit_owner_review_failure_from_artifact_meta,
     infer_first_failed_stage,
 )
+from natural_run_incident_store import NATURAL_SLOTS
 from service_full_run_contract import (
     ERROR_IMAGE_GENERATION_FAILED,
     IMAGE_GEN_GENERATED,
@@ -104,6 +107,13 @@ from service_full_run_contract import (
     build_service_artifact_fields,
 )
 from service_image_api import invoke_vertex_image_generation
+from memory_observability import (
+    configured_memory_limit_gib,
+    memory_evidence_scope,
+    record_memory_stage,
+    record_memory_stage_if_absent,
+)
+from today_genie_execution_identity import EXECUTION_CLASS_NATURAL_SCHEDULED
 
 logger = logging.getLogger(__name__)
 
@@ -368,6 +378,33 @@ def attach_bounded_post_generation_failure_evidence(
 _REPO = Path(__file__).resolve().parent
 _KEYSURI_PROGRAMS = frozenset({PROGRAM_GLOBAL, PROGRAM_KOREA})
 
+
+def _keysuri_scheduled_natural_identity_fields(
+    *,
+    program_id: str,
+    run_id: str,
+    trigger_source: str,
+) -> Dict[str, str]:
+    """Canonical artifact identity for the admitted KeeSuri Scheduler path.
+
+    Manual/recovery/service tests return no fields and therefore cannot be
+    promoted into natural completion by this helper.
+    """
+    pid = str(program_id or "").strip()
+    if str(trigger_source or "").strip() != "scheduled_service_full_run":
+        return {}
+    slot = str(NATURAL_SLOTS.get(pid) or "").strip()
+    date_token = str(run_id or "").split("_", 1)[0]
+    if not slot or not re.fullmatch(r"\d{8}", date_token):
+        return {}
+    return {
+        "execution_class": EXECUTION_CLASS_NATURAL_SCHEDULED,
+        "scheduled_slot": slot,
+        "kst_schedule_date": (
+            f"{date_token[:4]}-{date_token[4:6]}-{date_token[6:8]}"
+        ),
+    }
+
 _PROGRAM_EMAIL_SUBJECT = {
     PROGRAM_GLOBAL: "[운영자 검토] Kee-Suri Global Tech",
     PROGRAM_KOREA: "[운영자 검토] Kee-Suri Korea Tech",
@@ -512,9 +549,7 @@ def inline_jpeg_parts_for_korea_service_email(
 
 
 def _upload_keysuri_image(bucket_name: str, object_name: str, source_path: Path) -> None:
-    from google.cloud import storage
-
-    storage.Client().bucket(bucket_name).blob(object_name).upload_from_filename(
+    _get_gcs_client().bucket(bucket_name).blob(object_name).upload_from_filename(
         str(source_path), content_type="image/jpeg"
     )
 
@@ -683,9 +718,7 @@ def _download_keysuri_top_image_from_gcs(
     if not object_name:
         return "top_image_gcs_object_not_configured"
     try:
-        from google.cloud import storage
-
-        blob = storage.Client().bucket(bucket_name).blob(object_name)
+        blob = _get_gcs_client().bucket(bucket_name).blob(object_name)
         if not blob.exists():
             return "top_image_gcs_missing"
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -953,9 +986,7 @@ def _download_korea_bottom_asset_from_gcs(dest: Path, gcs_object: str) -> Option
     if not object_name:
         return "korea_bottom_asset_gcs_object_not_configured"
     try:
-        from google.cloud import storage
-
-        blob = storage.Client().bucket(bucket_name).blob(object_name)
+        blob = _get_gcs_client().bucket(bucket_name).blob(object_name)
         if not blob.exists():
             return "korea_bottom_asset_gcs_missing"
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -4402,46 +4433,74 @@ def run_keysuri_service_full_run(
     the original exception is re-raised unchanged.
     """
     run_context: Dict[str, Any] = {"program_id": str(program_id or "").strip()}
-    try:
-        return _run_keysuri_service_full_run_impl(
-            program_id,
-            trigger_source=trigger_source,
-            send_owner_email=send_owner_email,
-            dry_run=dry_run,
-            smoke_runner=smoke_runner,
-            image_canary_runner=image_canary_runner,
-            bottom_generate_fn=bottom_generate_fn,
-            bottom_watermark_fn=bottom_watermark_fn,
-            send_fn=send_fn,
-            image_upload_fn=image_upload_fn,
-            _run_context=run_context,
-        )
-    except Exception as exc:
+    with memory_evidence_scope() as memory_recorder:
+        memory_recorder.record("request_start")
         try:
-            emit_owner_review_failure_from_artifact_meta(
-                {
-                    "program_id": run_context.get("program_id") or "",
-                    "run_id": run_context.get("run_id") or "",
-                    "trigger_source": trigger_source,
-                    "email_sent": False,
-                },
+            result = _run_keysuri_service_full_run_impl(
+                program_id,
+                trigger_source=trigger_source,
+                send_owner_email=send_owner_email,
                 dry_run=dry_run,
-                first_failed_stage="service_exception",
-                error_code="service_unexpected_exception",
-                artifact_saved=bool(run_context.get("artifact_saved")),
+                smoke_runner=smoke_runner,
+                image_canary_runner=image_canary_runner,
+                bottom_generate_fn=bottom_generate_fn,
+                bottom_watermark_fn=bottom_watermark_fn,
+                send_fn=send_fn,
+                image_upload_fn=image_upload_fn,
+                _run_context=run_context,
             )
-        except Exception:
+        except Exception as exc:
+            memory_recorder.record("request_end")
+            exception_evidence = memory_recorder.evidence()
+            exception_run_id = str(run_context.get("run_id") or "")
+            if exception_run_id:
+                try:
+                    save_run_memory_evidence(exception_run_id, exception_evidence)
+                except Exception:
+                    logger.exception(
+                        "keysuri_service_full_run: exception memory evidence persistence failed run_id=%s",
+                        exception_run_id,
+                    )
+            try:
+                emit_owner_review_failure_from_artifact_meta(
+                    {
+                        "program_id": run_context.get("program_id") or "",
+                        "run_id": run_context.get("run_id") or "",
+                        "trigger_source": trigger_source,
+                        "email_sent": False,
+                        "memory_stage_evidence": exception_evidence,
+                    },
+                    dry_run=dry_run,
+                    first_failed_stage="service_exception",
+                    error_code="service_unexpected_exception",
+                    artifact_saved=bool(run_context.get("artifact_saved")),
+                )
+            except Exception:
+                logger.exception(
+                    "keysuri_service_full_run: exception-boundary failure event emit failed run_id=%s",
+                    run_context.get("run_id"),
+                )
+            # Exception class only — never a traceback, prompt, or secret in the event.
             logger.exception(
-                "keysuri_service_full_run: exception-boundary failure event emit failed run_id=%s",
+                "keysuri_service_full_run: unexpected exception run_id=%s error_type=%s",
                 run_context.get("run_id"),
+                type(exc).__name__,
             )
-        # Exception class only — never a traceback, prompt, or secret in the event.
-        logger.exception(
-            "keysuri_service_full_run: unexpected exception run_id=%s error_type=%s",
-            run_context.get("run_id"),
-            type(exc).__name__,
-        )
-        raise
+            raise
+
+        memory_recorder.record("request_end")
+        evidence = memory_recorder.evidence()
+        result["memory_stage_evidence"] = evidence
+        run_id = str(result.get("run_id") or run_context.get("run_id") or "")
+        if run_id:
+            try:
+                save_run_memory_evidence(run_id, evidence)
+            except Exception:
+                logger.exception(
+                    "keysuri_service_full_run: memory evidence persistence failed run_id=%s",
+                    run_id,
+                )
+        return result
 
 
 def _run_keysuri_service_full_run_impl(
@@ -4476,6 +4535,11 @@ def _run_keysuri_service_full_run_impl(
     request_start = now_kst_iso()
     request_started_perf = time.perf_counter()
     run_id = generate_run_id(pid)
+    natural_identity_fields = _keysuri_scheduled_natural_identity_fields(
+        program_id=pid,
+        run_id=run_id,
+        trigger_source=trigger_source,
+    )
     if _run_context is not None:
         # Expose identity to the exception boundary as soon as it exists.
         _run_context["run_id"] = run_id
@@ -4511,6 +4575,7 @@ def _run_keysuri_service_full_run_impl(
         Persistence and notification are independent: a storage fault must not
         swallow the operator event, and the event must not mask the run failure.
         """
+        meta.update(natural_identity_fields)
         attach_bounded_post_generation_failure_evidence(
             meta,
             smoke=smoke,
@@ -4539,6 +4604,11 @@ def _run_keysuri_service_full_run_impl(
         trigger_source=trigger_source,
         usage_sink=gemini_usage_sink,
     )
+    # The real smoke runner records these inside the exact source/model phases.
+    # Fallback samples make injected runners observable without overwriting the
+    # phase-accurate samples from the production runner.
+    record_memory_stage_if_absent("after_source_selection")
+    record_memory_stage_if_absent("after_model_generation")
     _preflight_drift_fields: Dict[str, Any] = {}
     if str(trigger_source or "").strip() == "scheduled_service_full_run":
         try:
@@ -4670,6 +4740,7 @@ def _run_keysuri_service_full_run_impl(
         # Backward-compatible with a pid-only injected image_canary_runner.
         image_outcome = canary_fn(pid)
     if not image_outcome.ok:
+        record_memory_stage("after_image_generation")
         meta = build_service_artifact_fields(
             run_id=run_id,
             mode=pid,
@@ -4837,6 +4908,8 @@ def _run_keysuri_service_full_run_impl(
             bottom_image_status = "placeholder"
             issue_codes.extend(bottom_issues)
 
+    record_memory_stage("after_image_generation")
+
     contract_fixture_preview = _build_service_contract_fixture(
         pid,
         prompt_input=prompt_input,
@@ -4959,6 +5032,7 @@ def _run_keysuri_service_full_run_impl(
         validate_keysuri_html_visible_text_quality(html, path="owner_preview_html.visible_text"),
         validate_keysuri_html_visible_text_quality(email_html, path="owner_email_html.visible_text"),
     )
+    record_memory_stage("after_render")
     visible_text_quality_fields = merge_visible_text_quality_fields(
         visible_text_quality_fields,
         html_quality_fields,
@@ -5060,6 +5134,7 @@ def _run_keysuri_service_full_run_impl(
     email_sent = False
     smtp_attempted = False
     subject = owner_subject
+    record_memory_stage("before_owner_smtp")
     if send_owner_email:
         if os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip() not in ("1", "true", "yes"):
             issue_codes.append("owner_review_send_gate_off")
@@ -5118,6 +5193,7 @@ def _run_keysuri_service_full_run_impl(
         owner_review_url=owner_review_url or None,
         artifact_storage_durable=storage_durable,
     )
+    meta.update(natural_identity_fields)
     owner_email_fields = _owner_email_delivery_fields(
         smtp_attempted=smtp_attempted,
         email_sent=email_sent,
@@ -5252,7 +5328,7 @@ def _run_keysuri_service_full_run_impl(
         meta["request_end"] = now_kst_iso()
         meta["request_latency_ms"] = int((time.perf_counter() - request_started_perf) * 1000)
         meta["configured_vcpu"] = 1
-        meta["configured_memory_gib"] = 0.5
+        meta["configured_memory_gib"] = configured_memory_limit_gib()
         meta["billing_mode"] = "request_based"
         meta["min_instances"] = 0
         meta["max_instances"] = 20
@@ -5322,6 +5398,7 @@ def _run_keysuri_service_full_run_impl(
         "cost_record_saved": meta.get("cost_record_saved"),
         "cost_ledger_saved": meta.get("cost_ledger_saved"),
     }
+    success_payload.update(natural_identity_fields)
     for key in _GENERATION_RECOVERY_DIAGNOSTIC_KEYS:
         if key in meta:
             success_payload[key] = copy.deepcopy(meta[key])

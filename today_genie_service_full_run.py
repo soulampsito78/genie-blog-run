@@ -7,7 +7,14 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from admin_store import artifact_email_path, artifact_json_path, generate_run_id, now_kst_iso, save_run_artifact
+from admin_store import (
+    artifact_email_path,
+    artifact_json_path,
+    generate_run_id,
+    now_kst_iso,
+    save_run_artifact,
+    save_run_memory_evidence,
+)
 from admin_urls import build_owner_review_admin_url
 from orchestrator import OrchestrationResult, run_genie_job
 from renderers import today_genie_email_inline_cid_pair
@@ -20,6 +27,13 @@ from service_full_run_contract import (
 from service_image_api import DEFAULT_VERTEX_IMAGE_MODEL, invoke_vertex_image_generation
 from admin_cost_ledger import save_cost_record_best_effort
 from genie_cost_estimate import estimate_genie_generation_cost
+from memory_observability import (
+    configured_memory_limit_gib,
+    memory_evidence_scope,
+    record_memory_stage,
+    record_memory_stage_from_evidence,
+    record_memory_stage_if_absent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +46,29 @@ _OUTPUT_IMAGES = _REPO / "output" / "images" / "today_genie"
 WATERMARK_LABEL = "MirAI:ON"
 WATERMARK_METHOD = "apply_today_genie_brand_footer"
 WATERMARK_ISSUE_CODE = "TODAY_GENIE_IMAGE_WATERMARK_FAILED"
+
+
+def _today_scheduled_natural_identity_fields(
+    *, trigger_source: str, identity_fields: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Allow only an endpoint-admitted Today natural identity into artifacts."""
+    source = dict(identity_fields or {})
+    if (
+        str(trigger_source or "").strip() != "scheduled_owner_review"
+        or str(source.get("execution_class") or "").strip() != "natural_scheduled"
+        or str(source.get("scheduled_slot") or "").strip() != "06:30"
+    ):
+        return {}
+    return {
+        key: source[key]
+        for key in (
+            "execution_class",
+            "scheduled_slot",
+            "natural_slot_key",
+            "kst_schedule_date",
+        )
+        if source.get(key) not in (None, "")
+    }
 
 
 def _watermark_marker_path(image_path: Path) -> Path:
@@ -218,13 +255,15 @@ def _dedup_artifact_fields_from_payload(payload: Dict[str, Any]) -> Dict[str, An
     }
 
 
-def run_today_genie_service_full_run(
+def _run_today_genie_service_full_run_impl(
     *,
     trigger_source: str = SERVICE_FULL_RUN_TRIGGER,
     send_owner_email: bool = True,
     dry_run: bool = False,
     generate_fn: Optional[Callable[..., Path]] = None,
     send_fn: Optional[Callable[..., bool]] = None,
+    execution_identity_fields: Optional[Dict[str, Any]] = None,
+    _run_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Service-level Today_Geenee full run: Gemini text, image API, admin artifact, SMTP."""
     if dry_run:
@@ -239,12 +278,21 @@ def run_today_genie_service_full_run(
 
     request_start = now_kst_iso()
     request_started_perf = time.perf_counter()
+    natural_identity = _today_scheduled_natural_identity_fields(
+        trigger_source=trigger_source,
+        identity_fields=execution_identity_fields,
+    )
     result = run_genie_job("today_genie")
     payload = result.response_data if isinstance(result.response_data, dict) else {}
+    upstream_memory = payload.get("memory_stage_evidence")
+    record_memory_stage_from_evidence("after_source_selection", upstream_memory)
+    record_memory_stage_from_evidence("after_model_generation", upstream_memory)
     validation_result = str(payload.get("validation_result") or "")
     workflow_status = str(payload.get("workflow_status") or "")
     issue_codes = _extract_issue_codes(result)
     run_id = generate_run_id("today_genie")
+    if _run_context is not None:
+        _run_context["run_id"] = run_id
 
     if result.response_status != 200 or validation_result != "pass":
         meta = build_service_artifact_fields(
@@ -258,6 +306,7 @@ def run_today_genie_service_full_run(
             workflow_status=workflow_status,
             email_sent=False,
         )
+        meta.update(natural_identity)
         save_run_artifact(meta, email_html="")
         return {
             "ok": False,
@@ -279,6 +328,7 @@ def run_today_genie_service_full_run(
         run_id=run_id,
         generate_fn=generate_fn,
     )
+    record_memory_stage("after_image_generation")
 
     if not image_bundle.ok:
         err = image_bundle.top.error_code or image_bundle.bottom.error_code or ERROR_IMAGE_GENERATION_FAILED
@@ -295,6 +345,7 @@ def run_today_genie_service_full_run(
             email_sent=False,
             error_code=err,
         )
+        meta.update(natural_identity)
         save_run_artifact(meta, email_html="")
         return {
             "ok": False,
@@ -334,6 +385,7 @@ def run_today_genie_service_full_run(
                 email_sent=False,
                 error_code="missing_admin_url",
             )
+            meta.update(natural_identity)
             save_run_artifact(meta, email_html="")
             return {
                 "ok": False,
@@ -368,6 +420,7 @@ def run_today_genie_service_full_run(
                 email_sent=False,
                 error_code="admin_review_link_missing_in_html",
             )
+            meta.update(natural_identity)
             save_run_artifact(meta, email_html=email_html)
             return {
                 "ok": False,
@@ -380,6 +433,8 @@ def run_today_genie_service_full_run(
         drafts = data.get("channel_drafts") or {}
         subject = f"[운영자 검토] {drafts.get('email_subject') or '(Genie briefing)'}"
         inline_parts = _inline_parts_from_bundle(image_bundle)
+        record_memory_stage("after_render")
+        record_memory_stage("before_owner_smtp")
         smtp_attempted = True
         sender = send_fn or send_genie_email
         os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
@@ -393,6 +448,9 @@ def run_today_genie_service_full_run(
         )
     elif send_owner_email:
         logger.info("today_genie service_full_run: email skipped (policy send_email=False)")
+    # A no-send or policy-suppressed run still records both decision boundaries.
+    record_memory_stage_if_absent("after_render")
+    record_memory_stage_if_absent("before_owner_smtp")
 
     meta = build_service_artifact_fields(
         run_id=run_id,
@@ -409,6 +467,7 @@ def run_today_genie_service_full_run(
         response_status=result.response_status,
         workflow_status=workflow_status,
     )
+    meta.update(natural_identity)
     meta.update(_dedup_artifact_fields_from_payload(payload))
     # Persist the model-authored image prompts so a later image_only reissue can
     # regenerate images without a second text generation.
@@ -482,7 +541,7 @@ def run_today_genie_service_full_run(
         meta["request_end"] = now_kst_iso()
         meta["request_latency_ms"] = int((time.perf_counter() - request_started_perf) * 1000)
         meta["configured_vcpu"] = 1
-        meta["configured_memory_gib"] = 0.5
+        meta["configured_memory_gib"] = configured_memory_limit_gib()
         meta["billing_mode"] = "request_based"
         meta["min_instances"] = 0
         meta["max_instances"] = 20
@@ -531,3 +590,53 @@ def run_today_genie_service_full_run(
         "cost_record_saved": meta.get("cost_record_saved"),
         "cost_ledger_saved": meta.get("cost_ledger_saved"),
     }
+
+
+def run_today_genie_service_full_run(
+    *,
+    trigger_source: str = SERVICE_FULL_RUN_TRIGGER,
+    send_owner_email: bool = True,
+    dry_run: bool = False,
+    generate_fn: Optional[Callable[..., Path]] = None,
+    send_fn: Optional[Callable[..., bool]] = None,
+    execution_identity_fields: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Observable boundary around the Today full-run implementation."""
+    run_context: Dict[str, Any] = {}
+    with memory_evidence_scope() as recorder:
+        recorder.record("request_start")
+        try:
+            result = _run_today_genie_service_full_run_impl(
+                trigger_source=trigger_source,
+                send_owner_email=send_owner_email,
+                dry_run=dry_run,
+                generate_fn=generate_fn,
+                send_fn=send_fn,
+                execution_identity_fields=execution_identity_fields,
+                _run_context=run_context,
+            )
+        except Exception:
+            recorder.record("request_end")
+            run_id = str(run_context.get("run_id") or "")
+            if run_id:
+                try:
+                    save_run_memory_evidence(run_id, recorder.evidence())
+                except Exception:
+                    logger.exception(
+                        "today_genie service_full_run: exception memory evidence persistence failed run_id=%s",
+                        run_id,
+                    )
+            raise
+        recorder.record("request_end")
+        evidence = recorder.evidence()
+        result["memory_stage_evidence"] = evidence
+        run_id = str(result.get("run_id") or "")
+        if run_id:
+            try:
+                save_run_memory_evidence(run_id, evidence)
+            except Exception:
+                logger.exception(
+                    "today_genie service_full_run: memory evidence persistence failed run_id=%s",
+                    run_id,
+                )
+        return result

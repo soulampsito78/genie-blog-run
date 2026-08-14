@@ -17,7 +17,7 @@ from natural_run_incident_store import (
     RETRY_SAFE,
     RETRY_SAFE_TO_RETRY,
     RETRY_STATUS_UNKNOWN,
-    is_retry_actionable,
+    incident_retry_review_allowed,
     normalize_retry_actionability,
     program_display_name,
 )
@@ -55,7 +55,9 @@ def failure_report_subject(incident: Mapping[str, Any]) -> str:
         return f"[GENIE SMOKE 장애보고] {display} {slot} — 스모크 실패 (실슬롯 아님)"
     if incident.get("verification_only"):
         return f"[GENIE WATCHDOG TEST] {display} {slot} 검증용 장애보고 (실슬롯 아님)"
-    return f"[GENIE 장애보고] {display} {slot} 자연실행 실패 — 재실행 승인 필요"
+    if incident_retry_review_allowed(incident):
+        return f"[GENIE 장애보고] {display} {slot} 자연실행 실패 — 재실행 검토"
+    return f"[GENIE 장애보고] {display} {slot} 자연실행 실패 — 원인 조사 필요 · 재실행 보류"
 
 
 def recovery_success_subject(incident: Mapping[str, Any]) -> str:
@@ -115,13 +117,12 @@ def _admin_cta_block(incident: Mapping[str, Any]) -> str:
 
     iid = str(incident.get("incident_id") or "").strip()
     smoke = bool(incident.get("smoke_failure") or incident.get("smoke_only"))
-    verdict = normalize_retry_actionability(incident.get("retry_verdict"))
     url = build_incident_admin_url(iid) if iid else None
 
     if smoke:
         label = "검증 incident 보기"
         question = ""
-    elif is_retry_actionable(verdict):
+    elif incident_retry_review_allowed(incident):
         label = "재실행 검토하기"
         question = '<p style="font-size:18px;"><strong>이 실행을 다시 시도할까요?</strong></p>'
     else:
@@ -183,11 +184,35 @@ def build_failure_report_html(incident: Mapping[str, Any]) -> str:
     recommendation = _sanitize_text(
         incident.get("recommendation_ko") or "추가 조사 필요", max_len=200
     )
+    retry_review_allowed = incident_retry_review_allowed(incident)
+    if retry_review_allowed:
+        retry_disposition = "재실행 검토 가능"
+    else:
+        retry_disposition = "원인 조사 필요 — 재실행 보류"
+        verdict_ko = (
+            "원인 또는 재실행 부작용이 충분히 확인되지 않아 현재는 재실행 검토를 보류합니다."
+        )
+        recommendation = retry_disposition
     contributing = ""
     if hypotheses:
         contributing = "<br>".join(_esc(_sanitize_text(h)) for h in hypotheses[:5])
     else:
         contributing = "(해당 없음 또는 미확정)"
+
+    if retry_review_allowed:
+        approval_governance = (
+            "시스템이 실제 재실행을 수행하지 않습니다. "
+            "Admin에서 검토 후 명시적으로 승인해야 합니다."
+        )
+        final_governance = "승인 전에는 시스템이 자동 재실행하지 않습니다."
+    else:
+        approval_governance = (
+            "현재는 Admin 재실행 승인 대상이 아닙니다. "
+            "원인과 재실행 부작용을 확인한 뒤 판정을 갱신해야 합니다."
+        )
+        final_governance = (
+            "원인 조사와 재실행 판정 갱신 전에는 시스템이 재실행하지 않습니다."
+        )
 
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8"><title>GENIE 장애보고</title></head>
@@ -198,7 +223,7 @@ def build_failure_report_html(incident: Mapping[str, Any]) -> str:
 예정 실행: {_esc(kst_date)} {_esc(slot)} KST<br>
 장애 감지: {_esc(detected)}<br>
 현재 상태: {_esc(status)}<br>
-재실행 여부: <strong>승인 대기</strong>
+재실행 상태: <strong>{_esc(retry_disposition)}</strong>
 </p>
 <hr>
 <h2>1. 무슨 일이 발생했습니까?</h2>
@@ -228,11 +253,11 @@ def build_failure_report_html(incident: Mapping[str, Any]) -> str:
 <hr>
 <h2>7. 시스템 권고</h2>
 <p>{_esc(recommendation)}</p>
-<p>시스템이 실제 재실행을 수행하지 않습니다. Admin에서 명시적으로 승인해야 합니다.</p>
+<p>{_esc(approval_governance)}</p>
 <hr>
 <h2>8. 마지막 안내</h2>
 {_admin_cta_block(incident)}
-<p>승인 전에는 시스템이 자동 재실행하지 않습니다.</p>
+<p>{_esc(final_governance)}</p>
 <p style="color:#666;font-size:12px;">incident_id: {_esc(incident.get("incident_id"))}</p>
 </body></html>
 """

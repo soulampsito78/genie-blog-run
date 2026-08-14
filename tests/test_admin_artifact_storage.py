@@ -33,15 +33,23 @@ class _FakeBlob:
         self.name = key
         self.updated = None
         self.time_created = None
+        self.size: int | None = None
 
     def exists(self) -> bool:
         return self.name in self._store
+
+    def reload(self) -> None:
+        self.size = len(self._store[self.name].encode("utf-8"))
 
     def upload_from_string(self, data: str, content_type: str | None = None) -> None:
         self._store[self.name] = data
 
     def download_as_text(self, encoding: str = "utf-8") -> str:
         return self._store[self.name]
+
+    def download_as_bytes(self, *, start: int = 0, end: int | None = None) -> bytes:
+        payload = self._store[self.name].encode("utf-8")
+        return payload[start : None if end is None else end + 1]
 
     def delete(self) -> None:
         self._store.pop(self.name, None)

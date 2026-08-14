@@ -6,13 +6,14 @@ from __future__ import annotations
 
 import json
 import hashlib
+import heapq
 import os
 import re
 import secrets
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 from zoneinfo import ZoneInfo
 
 KST = ZoneInfo("Asia/Seoul")
@@ -69,7 +70,39 @@ ACTIVATION_META_ID = "_watchdog_activation"
 SMOKE_LATEST_META_ID = "_smoke_latest"
 ACTIVATION_ENV = "NATURAL_RUN_WATCHDOG_ACTIVATED_AT"
 
+# UI/report reads are deliberately bounded.  GCS object order is not a reliable
+# execution order, so we inspect a bounded metadata window and sort only that
+# window before downloading at most the requested number of incident documents.
+INCIDENT_LIST_DEFAULT_LIMIT = 50
+INCIDENT_LIST_MAX_LIMIT = 100
+INCIDENT_GCS_SCAN_MAX_RESULTS = 256
+INCIDENT_LIST_SUMMARY_SUFFIX = ".summary.json"
+INCIDENT_LIST_SUMMARY_PREFIX = "admin_incident_summaries"
+_INCIDENT_LIST_SUMMARY_KEYS = (
+    "incident_id",
+    "program_id",
+    "program_display",
+    "kst_date",
+    "scheduled_slot",
+    "status",
+    "created_at",
+    "updated_at",
+    "detected_at",
+    "first_failed_stage",
+    "root_cause_verdict",
+    "retry_verdict",
+    "recovery_run_id",
+    "recovery_customer_send_count",
+    "outcomes",
+)
+INCIDENT_GCS_MONTH_LOOKBACK = 12
+INCIDENT_GCS_NATURAL_MONTH_MAX_RESULTS = 96  # at most 3 slots × 31 days
+INCIDENT_GCS_VERIFICATION_MONTH_MAX_RESULTS = 40  # at most one/day
+INCIDENT_GCS_SMOKE_MONTH_MAX_RESULTS = 32  # latest pointer is added separately
+
 _LOCK = threading.RLock()  # reentrant: lease helpers call save_incident under lock
+_GCS_CLIENT_LOCK = threading.Lock()
+_GCS_CLIENT: Any = None
 
 
 def now_kst_iso() -> str:
@@ -172,6 +205,82 @@ def _object_key(incident_id: str) -> str:
     return f"{INCIDENT_PREFIX}/{text}.json"
 
 
+def _summary_object_key(incident_id: str) -> str:
+    if not validate_incident_id(incident_id):
+        raise ValueError("invalid incident_id")
+    return f"{INCIDENT_LIST_SUMMARY_PREFIX}/{incident_id}.json"
+
+
+def _summary_local_path(incident_id: str) -> Path:
+    if not validate_incident_id(incident_id):
+        raise ValueError("invalid incident_id")
+    return incidents_local_dir() / f"{incident_id}{INCIDENT_LIST_SUMMARY_SUFFIX}"
+
+
+def build_incident_list_summary(incident: Mapping[str, Any]) -> Dict[str, Any]:
+    """Allowlisted projection metadata; never includes failure payloads or HTML."""
+    summary: Dict[str, Any] = {"incident_list_summary": True}
+    for key in _INCIDENT_LIST_SUMMARY_KEYS:
+        value = incident.get(key)
+        if key == "outcomes" and isinstance(value, Mapping):
+            summary[key] = {
+                name: str(value.get(name) or "")[:120]
+                for name in ("고객 메일", "중복 발송")
+                if name in value
+            }
+        elif isinstance(value, str):
+            summary[key] = value[:500]
+        elif value is None or isinstance(value, (bool, int, float)):
+            summary[key] = value
+    return summary
+
+
+def _write_incident_summary(incident_id: str, incident: Mapping[str, Any]) -> None:
+    text = json.dumps(
+        build_incident_list_summary(incident),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    if _uses_gcs():
+        _gcs_upload(_summary_object_key(incident_id), text)
+    else:
+        _summary_local_path(incident_id).write_text(text, encoding="utf-8")
+
+
+def _read_incident_summary(incident_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        if _uses_gcs():
+            raw = _gcs_download(_summary_object_key(incident_id))
+        else:
+            path = _summary_local_path(incident_id)
+            raw = path.read_text(encoding="utf-8") if path.is_file() else None
+        data = json.loads(raw) if raw else None
+    except (OSError, TypeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _skeletal_incident_summary(incident_id: str) -> Dict[str, Any]:
+    program_id = next(
+        (program for program in NATURAL_SLOTS if f"_{program}_" in incident_id),
+        "",
+    )
+    kst_date = ""
+    match = re.search(r"\d{4}-\d{2}-\d{2}", incident_id)
+    if match:
+        kst_date = match.group(0)
+    return {
+        "incident_list_summary": True,
+        "summary_available": False,
+        "summary_source": "legacy_object_identity",
+        "incident_id": incident_id,
+        "program_id": program_id,
+        "program_display": program_display_name(program_id),
+        "kst_date": kst_date,
+        "status": "metadata_only",
+    }
+
+
 def _read_raw_object(key: str) -> Optional[str]:
     try:
         if _uses_gcs():
@@ -269,18 +378,25 @@ def load_smoke_latest_incident_id() -> Optional[str]:
         return None
 
 
-def _gcs_upload(key: str, text: str) -> None:
-    from google.cloud import storage
+def _gcs_storage_client():
+    """Return one lazily-created process client; never cache GCS responses."""
+    global _GCS_CLIENT
+    with _GCS_CLIENT_LOCK:
+        if _GCS_CLIENT is None:
+            from google.cloud import storage
 
-    client = storage.Client()
+            _GCS_CLIENT = storage.Client()
+        return _GCS_CLIENT
+
+
+def _gcs_upload(key: str, text: str) -> None:
+    client = _gcs_storage_client()
     bucket = client.bucket(_bucket_name())
     bucket.blob(key).upload_from_string(text, content_type="application/json; charset=utf-8")
 
 
 def _gcs_download(key: str) -> Optional[str]:
-    from google.cloud import storage
-
-    client = storage.Client()
+    client = _gcs_storage_client()
     bucket = client.bucket(_bucket_name())
     blob = bucket.blob(key)
     if not blob.exists():
@@ -288,25 +404,188 @@ def _gcs_download(key: str) -> Optional[str]:
     return blob.download_as_text(encoding="utf-8")
 
 
-def _gcs_list_ids(limit: int = 100) -> List[str]:
-    from google.cloud import storage
-
-    client = storage.Client()
-    bucket = client.bucket(_bucket_name())
-    prefix = f"{INCIDENT_PREFIX}/"
-    blobs = list(bucket.list_blobs(prefix=prefix))
-    blobs.sort(key=lambda b: getattr(b, "updated", None) or getattr(b, "time_created", None), reverse=True)
+def _recent_month_tokens(
+    *,
+    now: Optional[datetime] = None,
+    count: int = INCIDENT_GCS_MONTH_LOOKBACK,
+) -> List[str]:
+    if now is None:
+        current = datetime.now(KST)
+    elif now.tzinfo is None:
+        current = now.replace(tzinfo=KST)
+    else:
+        current = now.astimezone(KST)
+    year, month = current.year, current.month
     out: List[str] = []
-    for blob in blobs:
-        name = blob.name
-        if not name.endswith(".json"):
-            continue
-        stem = name[len(prefix) : -len(".json")]
-        if validate_incident_id(stem):
-            out.append(stem)
-        if len(out) >= max(1, limit):
-            break
+    for _ in range(max(1, int(count or 1))):
+        out.append(f"{year:04d}-{month:02d}")
+        month -= 1
+        if month == 0:
+            year -= 1
+            month = 12
     return out
+
+
+def _incident_id_recency_epoch(incident_id: str) -> float:
+    """Best-effort chronological key when GCS metadata lacks timestamps."""
+    text = str(incident_id or "").strip()
+    try:
+        if _INCIDENT_ID_RE.match(text):
+            slot = text.rsplit("_", 1)[-1].replace("-", ":")
+            return datetime.fromisoformat(f"{text[:10]}T{slot}:00").replace(
+                tzinfo=KST
+            ).timestamp()
+        if _VERIFICATION_ID_RE.match(text):
+            date_text = text[len("verification_") : len("verification_") + 10]
+            return datetime.fromisoformat(f"{date_text}T00:00:00").replace(
+                tzinfo=KST
+            ).timestamp()
+        if _SMOKE_ID_RE.match(text):
+            _prefix, date_text, clock, _suffix = text.split("_", 3)
+            return datetime.strptime(
+                f"{date_text} {clock}", "%Y-%m-%d %H%M%S"
+            ).replace(tzinfo=KST).timestamp()
+    except (TypeError, ValueError):
+        pass
+    return 0.0
+
+
+def _gcs_blob_recency_epoch(blob: Any, incident_id: str) -> float:
+    value = getattr(blob, "updated", None) or getattr(blob, "time_created", None)
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=KST)
+        return value.timestamp()
+    if isinstance(value, (int, float)):
+        return float(value)
+    if value:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=KST)
+            return parsed.timestamp()
+        except ValueError:
+            pass
+    return _incident_id_recency_epoch(incident_id)
+
+
+def _gcs_list_id_rows(
+    limit: int,
+    *,
+    now: Optional[datetime] = None,
+    cursor: str = "",
+) -> List[tuple[str, float]]:
+    """Return a bounded, true-newest incident page across mixed id namespaces."""
+    requested = min(max(1, int(limit or 1)), INCIDENT_GCS_SCAN_MAX_RESULTS)
+    client = _gcs_storage_client()
+    bucket = client.bucket(_bucket_name())
+    root_prefix = f"{INCIDENT_PREFIX}/"
+    candidates: Dict[str, float] = {}
+    state = {"materialized": 0}
+    cursor_score = _incident_id_recency_epoch(cursor) if validate_incident_id(cursor) else 0.0
+    cursor_key = (cursor_score, cursor) if cursor_score else None
+
+    def add_blobs(blobs: List[Any]) -> None:
+        for blob in blobs:
+            name = str(getattr(blob, "name", "") or "")
+            if not name.startswith(root_prefix) or not name.endswith(".json"):
+                continue
+            stem = name[len(root_prefix) : -len(".json")]
+            if not validate_incident_id(stem):
+                continue
+            score = _incident_id_recency_epoch(stem)
+            if cursor_key is not None and (score, stem) >= cursor_key:
+                continue
+            candidates[stem] = score
+
+    def read_prefix(prefix: str, cap: int) -> List[Any]:
+        remaining = INCIDENT_GCS_SCAN_MAX_RESULTS - state["materialized"]
+        if remaining <= 0:
+            return []
+        bounded = min(max(1, cap), remaining)
+        blobs = list(bucket.list_blobs(prefix=prefix, max_results=bounded))
+        state["materialized"] += len(blobs)
+        return blobs
+
+    def scan_smoke_partition(
+        prefix: str,
+        levels: tuple[tuple[str, int], ...],
+    ) -> None:
+        if state["materialized"] >= INCIDENT_GCS_SCAN_MAX_RESULTS:
+            return
+        cap = min(
+            INCIDENT_GCS_SMOKE_MONTH_MAX_RESULTS,
+            INCIDENT_GCS_SCAN_MAX_RESULTS - state["materialized"],
+        )
+        blobs = read_prefix(prefix, cap)
+        if len(blobs) < cap or not levels:
+            add_blobs(blobs)
+            return
+        separator, width = levels[0]
+        for value in range(width - 1, -1, -1):
+            scan_smoke_partition(
+                f"{prefix}{separator}{value:02d}", levels[1:]
+            )
+            if len(candidates) >= requested:
+                break
+            if state["materialized"] >= INCIDENT_GCS_SCAN_MAX_RESULTS:
+                break
+
+    latest_smoke_id = load_smoke_latest_incident_id()
+    if latest_smoke_id:
+        latest_score = _incident_id_recency_epoch(latest_smoke_id)
+        if cursor_key is None or (latest_score, latest_smoke_id) < cursor_key:
+            candidates[latest_smoke_id] = latest_score
+
+    month_anchor = now
+    if validate_incident_id(cursor):
+        score = _incident_id_recency_epoch(cursor)
+        if score:
+            month_anchor = datetime.fromtimestamp(score, tz=KST)
+    for month_token in _recent_month_tokens(now=month_anchor):
+        # Smoke ids can greatly exceed the nominal daily count. Refine an
+        # ascending saturated page by newest day/hour/minute/second prefixes.
+        scan_smoke_partition(
+            f"{root_prefix}smoke_{month_token}",
+            # Include day 31.  The harmless day 00 probe keeps the generic
+            # newest-to-oldest partition walker simple and bounded.
+            (("-", 32), ("_", 24), ("", 60), ("", 60)),
+        )
+        for namespace, category_limit in (
+            ("", INCIDENT_GCS_NATURAL_MONTH_MAX_RESULTS),
+            ("verification_", INCIDENT_GCS_VERIFICATION_MONTH_MAX_RESULTS),
+        ):
+            remaining = INCIDENT_GCS_SCAN_MAX_RESULTS - state["materialized"]
+            if remaining <= 0:
+                break
+            blobs = read_prefix(
+                f"{root_prefix}{namespace}{month_token}",
+                min(category_limit, remaining),
+            )
+            add_blobs(blobs)
+        if state["materialized"] >= INCIDENT_GCS_SCAN_MAX_RESULTS:
+            break
+        if len(candidates) >= requested:
+            break
+
+    ordered = sorted(
+        candidates.items(),
+        key=lambda row: (row[1], row[0]),
+        reverse=True,
+    )
+    return ordered[:requested]
+
+
+def _gcs_list_ids(
+    limit: int = 100,
+    *,
+    now: Optional[datetime] = None,
+) -> List[str]:
+    requested = min(max(1, int(limit or 1)), INCIDENT_LIST_MAX_LIMIT)
+    return [
+        incident_id
+        for incident_id, _score in _gcs_list_id_rows(requested, now=now)
+    ]
 
 
 def is_retry_actionable(verdict: Optional[str]) -> bool:
@@ -417,6 +696,39 @@ def recovery_effective_retry_verdict(meta: Dict[str, Any]) -> str:
     return normalize_retry_actionability(
         meta.get("retry_verdict_before_recovery_guard") or RETRY_ALLOWED_WITH_WARNING
     )
+
+
+_NON_ACTIONABLE_ROOT_CAUSE_VERDICTS = frozenset(
+    {
+        "",
+        "UNKNOWN",
+        "INCONCLUSIVE",
+        ROOT_CAUSE_UNKNOWN,
+        "ROOT_CAUSE_INCONCLUSIVE",
+    }
+)
+
+
+def incident_retry_review_allowed(incident: Mapping[str, Any]) -> bool:
+    """Whether retry-review language or a recovery CTA is truthful.
+
+    Root-cause certainty and side-effect safety are independent axes.  A safe
+    retry verdict alone must not invite recovery while the root-cause verdict is
+    unknown/inconclusive.  Smoke and verification incidents are always
+    view-only regardless of their synthetic verdict fields.
+    """
+    if incident.get("smoke_failure") or incident.get("smoke_only"):
+        return False
+    if incident.get("verification_only"):
+        return False
+    root = str(incident.get("root_cause_verdict") or "").strip().upper()
+    if root in _NON_ACTIONABLE_ROOT_CAUSE_VERDICTS:
+        return False
+    persisted_verdict = normalize_retry_actionability(incident.get("retry_verdict"))
+    if not is_retry_actionable(persisted_verdict):
+        return False
+    verdict = recovery_effective_retry_verdict(dict(incident))
+    return is_retry_actionable(verdict)
 
 
 def normalize_retry_actionability(verdict: Optional[str]) -> str:
@@ -553,6 +865,7 @@ def new_incident(
     unknowns: Optional[List[str]] = None,
     stage_map: Optional[Dict[str, str]] = None,
     retry_verdict: str = RETRY_STATUS_UNKNOWN,
+    root_cause_verdict: Optional[str] = None,
     retry_verdict_ko: str = "",
     recommendation_ko: str = "추가 조사 필요",
     original_run_id: Optional[str] = None,
@@ -583,7 +896,13 @@ def new_incident(
         "stage_map": dict(stage_map or empty_stage_map()),
         "retry_verdict": retry_verdict,
         "retry_verdict_ko": retry_verdict_ko,
-        "root_cause_verdict": ROOT_CAUSE_UNKNOWN,
+        "root_cause_verdict": (
+            str(root_cause_verdict or "").strip()
+            or classify_root_cause_verdict(
+                confirmed_cause=confirmed_cause,
+                error_code=error_code,
+            )
+        ),
         "recommendation_ko": recommendation_ko,
         "original_run_id": original_run_id,
         "recovery_run_id": None,
@@ -641,6 +960,7 @@ def save_incident(incident: Dict[str, Any]) -> str:
         else:
             path = incidents_local_dir() / f"{incident_id}.json"
             path.write_text(text, encoding="utf-8")
+        _write_incident_summary(incident_id, payload)
     return incident_id
 
 
@@ -666,20 +986,123 @@ def load_incident(incident_id: str) -> Optional[Dict[str, Any]]:
     return data if isinstance(data, dict) else None
 
 
-def list_incidents(limit: int = 50) -> List[Dict[str, Any]]:
+def list_incident_page(
+    limit: int = INCIDENT_LIST_DEFAULT_LIMIT, *, cursor: str = ""
+) -> Dict[str, Any]:
+    requested = min(max(1, int(limit or 1)), INCIDENT_LIST_MAX_LIMIT)
+    valid_cursor = cursor if validate_incident_id(cursor) else ""
+    fetch_limit = min(INCIDENT_LIST_MAX_LIMIT, requested + 1)
     ids: List[str]
     if _uses_gcs():
-        ids = _gcs_list_ids(limit)
+        ids = [
+            incident_id
+            for incident_id, _score in _gcs_list_id_rows(
+                fetch_limit,
+                cursor=valid_cursor,
+            )
+        ]
     else:
         root = incidents_local_dir()
-        files = sorted(root.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-        ids = [p.stem for p in files if validate_incident_id(p.stem)][: max(1, limit)]
+        cursor_key = (
+            (_incident_id_recency_epoch(valid_cursor), valid_cursor)
+            if valid_cursor
+            else None
+        )
+        ids = [
+            incident_id
+            for incident_id, _score in heapq.nlargest(
+                fetch_limit,
+                (
+                    (path.stem, _incident_id_recency_epoch(path.stem))
+                    for path in root.glob("*.json")
+                    if not path.name.endswith(INCIDENT_LIST_SUMMARY_SUFFIX)
+                    and validate_incident_id(path.stem)
+                    and (
+                        cursor_key is None
+                        or (_incident_id_recency_epoch(path.stem), path.stem)
+                        < cursor_key
+                    )
+                ),
+                key=lambda row: (row[1], row[0]),
+            )
+        ]
+    ids = ids[:fetch_limit]
     out: List[Dict[str, Any]] = []
     for iid in ids:
-        meta = load_incident(iid)
-        if meta:
-            out.append(meta)
-    return out
+        out.append(_read_incident_summary(iid) or _skeletal_incident_summary(iid))
+    has_more = len(out) > requested
+    items = out[:requested]
+    return {
+        "items": items,
+        "limit": requested,
+        "cursor": valid_cursor,
+        "next_cursor": (
+            str(items[-1].get("incident_id") or "") if has_more and items else ""
+        ),
+        "has_more": has_more,
+    }
+
+
+def list_incidents(
+    limit: int = INCIDENT_LIST_DEFAULT_LIMIT, *, cursor: str = ""
+) -> List[Dict[str, Any]]:
+    """Return summary-only list rows; details use ``load_incident`` explicitly."""
+    return list_incident_page(limit=limit, cursor=cursor)["items"]
+
+
+def backfill_recent_incident_list_summaries(
+    limit: int = INCIDENT_LIST_MAX_LIMIT, *, dry_run: bool = True
+) -> Dict[str, Any]:
+    """Bounded explicit migration; never runs from an Admin GET."""
+    requested = min(max(1, int(limit or 1)), INCIDENT_LIST_MAX_LIMIT)
+    if _uses_gcs():
+        ids = _gcs_list_ids(requested)
+        missing = [
+            incident_id
+            for incident_id in ids
+            if not _gcs_storage_client()
+            .bucket(_bucket_name())
+            .blob(_summary_object_key(incident_id))
+            .exists()
+        ]
+    else:
+        files = heapq.nlargest(
+            requested,
+            (
+                path
+                for path in incidents_local_dir().glob("*.json")
+                if not path.name.endswith(INCIDENT_LIST_SUMMARY_SUFFIX)
+                and validate_incident_id(path.stem)
+            ),
+            key=lambda path: path.stat().st_mtime,
+        )
+        missing = [
+            path.stem for path in files if not _summary_local_path(path.stem).is_file()
+        ]
+    report: Dict[str, Any] = {
+        "ok": True,
+        "dry_run": bool(dry_run),
+        "limit": requested,
+        "legacy_candidates": len(missing),
+        "written": 0,
+        "errors": 0,
+        "candidate_incident_ids": missing,
+    }
+    if dry_run:
+        return report
+    for incident_id in missing:
+        incident = load_incident(incident_id)
+        if incident is None:
+            report["errors"] += 1
+            continue
+        try:
+            _write_incident_summary(incident_id, incident)
+        except Exception:
+            report["errors"] += 1
+            continue
+        report["written"] += 1
+    report["ok"] = report["errors"] == 0
+    return report
 
 
 def upsert_incident(incident: Dict[str, Any]) -> Dict[str, Any]:

@@ -65,6 +65,7 @@ def technical_details(
     rows: Iterable[tuple[str, object]],
     *,
     title: str = "기술 세부정보 보기",
+    raw_url: str = "",
 ) -> str:
     summary = "".join(
         '<div class="diagnostic-row">'
@@ -72,32 +73,39 @@ def technical_details(
         '</div>'
         for label, value in rows
     )
-    raw = esc(json.dumps(dict(meta), ensure_ascii=False, indent=2, default=str))
+    raw_block = (
+        '<details class="raw-details"><summary>원본 JSON 보기</summary>'
+        f'<p><a href="{esc(raw_url)}" target="_blank" rel="noopener">'
+        "별도 화면에서 원본 JSON 열기</a></p></details>"
+        if raw_url
+        else (
+            '<details class="raw-details"><summary>원본 JSON 보기</summary>'
+            f'<pre>{esc(json.dumps(dict(meta), ensure_ascii=False, indent=2, default=str))}</pre>'
+            "</details>"
+        )
+    )
     return f"""
 <details class="technical-details">
   <summary>{esc(title)}</summary>
   <div class="technical-details__body">
     <div class="diagnostic-grid">{summary}</div>
-    <details class="raw-details">
-      <summary>원본 JSON 보기</summary>
-      <pre>{raw}</pre>
-    </details>
+    {raw_block}
   </div>
 </details>
 """
 
 
-def email_preview(content: str | None, *, title: str = "고객에게 보이는 브리핑") -> str:
-    if not str(content or "").strip():
+def email_preview(preview_url: str | None, *, title: str = "고객에게 보이는 브리핑") -> str:
+    """Render an iframe URL, never a duplicated full-HTML ``srcdoc`` value."""
+    if not str(preview_url or "").strip():
         return empty_state("저장된 브리핑 없음", "고객 발송용 HTML이 없어 승인할 수 없습니다.")
-    srcdoc = html.escape(str(content), quote=True)
     return f"""
 <section class="briefing-section" aria-labelledby="briefing-preview-title">
   <div class="section-heading">
     <div><p class="eyebrow">FINAL CONTENT</p><h2 id="briefing-preview-title">{esc(title)}</h2></div>
     <span class="evidence-label">저장된 실제 HTML</span>
   </div>
-  <iframe class="briefing-frame" title="저장된 고객 브리핑 미리보기" sandbox="allow-same-origin" srcdoc="{srcdoc}"></iframe>
+  <iframe class="briefing-frame" title="저장된 고객 브리핑 미리보기" sandbox="allow-same-origin" src="{esc(preview_url)}" loading="lazy"></iframe>
 </section>
 """
 

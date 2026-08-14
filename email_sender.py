@@ -19,11 +19,11 @@ import logging
 import os
 import smtplib
 import hashlib
-from email import message_from_string
 from email.message import Message
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from memory_observability import record_memory_stage
 from typing import List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
@@ -431,20 +431,21 @@ def send_genie_email(
                 inline_jpeg_parts or [],
                 att_parts,
             )
-            payload = msg.as_string()
         else:
             msg = MIMEMultipart("alternative")
             msg["Subject"] = subject or "(Genie briefing)"
             msg["From"] = from_addr
             msg["To"] = _safe_to_header()
             msg.attach(MIMEText(html_body, "html", "utf-8"))
-            payload = msg.as_string()
             inline_input_hashes = []
             attachment_input_hashes = []
 
-        parsed = message_from_string(payload)
-        sent_html_bytes = _extract_html_bytes(parsed)
+        # Inspect the already-built MIME tree before serialization.  Parsing the
+        # whole serialized message created a second in-memory copy of every
+        # base64 image at the exact point where image-heavy runs peak.
+        sent_html_bytes = _extract_html_bytes(msg)
         intended_html_bytes = html_body.encode("utf-8")
+        payload = msg.as_string()
         _LAST_SEND_TRACE = {
             "to_header": str(msg.get("To", "")),
             "cc_header": str(msg.get("Cc", "")),
@@ -452,7 +453,6 @@ def send_genie_email(
             "subject": subject or "(Genie briefing)",
             "envelope_to": list(to_addrs),
             "mime_html_present": bool(sent_html_bytes),
-            "mime_html_text": sent_html_bytes.decode("utf-8", errors="replace") if sent_html_bytes else "",
             "mime_html_sha256": hashlib.sha256(sent_html_bytes).hexdigest() if sent_html_bytes else "",
             "intended_html_sha256": hashlib.sha256(intended_html_bytes).hexdigest(),
             "mime_html_byte_identical": sent_html_bytes == intended_html_bytes,
@@ -461,6 +461,10 @@ def send_genie_email(
             "inline_input_hashes": inline_input_hashes,
             "attachment_input_hashes": attachment_input_hashes,
         }
+
+        # This is the meaningful owner-send boundary: MIME parts and the SMTP
+        # payload have been materialized, but no provider submission has begun.
+        record_memory_stage("before_owner_smtp")
 
         with smtplib.SMTP(host, port, timeout=30) as server:
             server.starttls()

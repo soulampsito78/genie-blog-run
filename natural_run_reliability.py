@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 from zoneinfo import ZoneInfo
 
+from admin_store import _get_gcs_client
 from keysuri_generation_prompt import PROGRAM_GLOBAL, PROGRAM_KOREA
 from keysuri_visible_text_quality import validate_and_repair_keysuri_visible_text_quality
 from today_genie_execution_identity import (
@@ -87,9 +88,7 @@ def _keysuri_probe_output_dir(program_id: str, execution_class: str) -> Path:
 def _save_json(prefix: str, name: str, payload: Mapping[str, Any]) -> str:
     body = json.dumps(dict(payload), ensure_ascii=False, indent=2) + "\n"
     if _uses_gcs():
-        from google.cloud import storage  # type: ignore
-
-        client = storage.Client()
+        client = _get_gcs_client()
         bucket = client.bucket(_artifact_bucket())
         blob = bucket.blob(f"{prefix}/{name}.json")
         blob.upload_from_string(body, content_type="application/json; charset=utf-8")
@@ -103,9 +102,7 @@ def load_readiness(program_id: str, kst_date: Optional[str] = None) -> Optional[
     date = kst_date or datetime.now(KST).strftime("%Y-%m-%d")
     name = f"{date}_{program_id}"
     if _uses_gcs():
-        from google.cloud import storage  # type: ignore
-
-        client = storage.Client()
+        client = _get_gcs_client()
         bucket = client.bucket(_artifact_bucket())
         blob = bucket.blob(f"{PREFLIGHT_PREFIX}/{name}.json")
         if not blob.exists():

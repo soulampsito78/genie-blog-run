@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from functools import lru_cache
+from threading import Lock
 from typing import Any, Dict, List, Protocol
 
 
@@ -32,17 +34,23 @@ class GcpOperationalReadAdapter:
         self.project = project
         self.region = region
         self.service_name = service_name
+        self._authorized_session = None
+        self._session_lock = Lock()
 
     def _session(self):
         if not self.project:
             raise RuntimeError("gcp_project_unavailable")
-        import google.auth
-        from google.auth.transport.requests import AuthorizedSession
+        if self._authorized_session is None:
+            with self._session_lock:
+                if self._authorized_session is None:
+                    import google.auth
+                    from google.auth.transport.requests import AuthorizedSession
 
-        credentials, _ = google.auth.default(
-            scopes=["https://www.googleapis.com/auth/cloud-platform.read-only"]
-        )
-        return AuthorizedSession(credentials)
+                    credentials, _ = google.auth.default(
+                        scopes=["https://www.googleapis.com/auth/cloud-platform.read-only"]
+                    )
+                    self._authorized_session = AuthorizedSession(credentials)
+        return self._authorized_session
 
     def read_scheduler_jobs(self) -> List[Dict[str, Any]]:
         url = (
@@ -72,13 +80,20 @@ class GcpOperationalReadAdapter:
         response = self._session().get(url, timeout=5)
         response.raise_for_status()
         item = response.json()
-        annotations = item.get("template", {}).get("annotations", {})
+        template = item.get("template", {})
+        annotations = template.get("annotations", {})
+        labels = {
+            **(item.get("labels", {}) or {}),
+            **(template.get("labels", {}) or {}),
+        }
         return {
             "service": self.service_name,
             "serving_revision": str(item.get("latestReadyRevision") or "").rsplit("/", 1)[-1],
             "commit_sha": str(
                 annotations.get("GENIE_COMMIT_SHA")
                 or annotations.get("COMMIT_SHA")
+                or labels.get("commit-sha")
+                or labels.get("commit_sha")
                 or os.getenv("GENIE_COMMIT_SHA", "")
                 or os.getenv("COMMIT_SHA", "")
             ),
@@ -160,10 +175,17 @@ class OperationalStatusService:
         }
 
 
+@lru_cache(maxsize=1)
+def _default_operational_status_service_cached(
+    project: str, region: str, service: str
+) -> OperationalStatusService:
+    return OperationalStatusService(
+        GcpOperationalReadAdapter(project=project, region=region, service_name=service)
+    )
+
+
 def default_operational_status_service() -> OperationalStatusService:
     project = os.getenv("GOOGLE_CLOUD_PROJECT", "").strip() or os.getenv("PROJECT_ID", "").strip()
     region = os.getenv("GENIE_GCP_REGION", "asia-northeast3").strip()
     service = os.getenv("K_SERVICE", "genie-blog-run").strip()
-    return OperationalStatusService(
-        GcpOperationalReadAdapter(project=project, region=region, service_name=service)
-    )
+    return _default_operational_status_service_cached(project, region, service)

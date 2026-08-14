@@ -2,13 +2,19 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from admin_preview_assets import (
+    PREVIEW_ASSET_MAX_BYTES,
+    PREVIEW_HTML_STREAM_CHUNK_CHARS,
+    PreviewAsset,
     preview_assets_for_run,
     read_preview_asset,
     rewrite_customer_html_for_admin_preview,
+    stream_customer_html_for_admin_preview,
 )
 
 
@@ -37,6 +43,7 @@ class _ProductionBlob:
     def __init__(self, name: str):
         self.name = name
         self.content_type = None
+        self.size = None
 
     def exists(self) -> bool:
         return True
@@ -45,8 +52,9 @@ class _ProductionBlob:
         if self.name.endswith("missing.jpg"):
             raise FileNotFoundError(self.name)
         self.content_type = "image/png" if self.name.endswith(".png") else "image/jpeg"
+        self.size = len(f"jpeg:{self.name}".encode())
 
-    def download_as_bytes(self) -> bytes:
+    def download_as_bytes(self, *, start: int = 0, end=None) -> bytes:
         return f"jpeg:{self.name}".encode()
 
 
@@ -119,6 +127,34 @@ class ProductionRealityPreviewAssetTests(unittest.TestCase):
         self.assertEqual(customer_html, original)
         self.assertIn(f"/admin/runs/{RUN_ID}/preview-assets/top", preview)
         self.assertIn(f"/admin/runs/{RUN_ID}/preview-assets/bottom", preview)
+
+    def test_preview_stream_never_yields_an_unbounded_html_chunk(self):
+        body = "x" * (PREVIEW_HTML_STREAM_CHUNK_CHARS * 3 + 17)
+        chunks = list(stream_customer_html_for_admin_preview(RUN_ID, {}, body))
+        self.assertTrue(chunks)
+        self.assertLessEqual(max(len(chunk) for chunk in chunks), PREVIEW_HTML_STREAM_CHUNK_CHARS)
+        self.assertTrue("".join(chunks).endswith(body))
+
+    def test_oversized_local_preview_image_is_rejected_before_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "oversized.jpg"
+            with path.open("wb") as handle:
+                handle.truncate(PREVIEW_ASSET_MAX_BYTES + 1)
+            asset = PreviewAsset(
+                slot="top",
+                cid="bounded-top",
+                backend="local",
+                local_path=path,
+            )
+            with mock.patch(
+                "admin_preview_assets.preview_assets_for_run",
+                return_value={"top": asset},
+            ), mock.patch.object(
+                Path,
+                "read_bytes",
+                side_effect=AssertionError("oversized asset must not be read"),
+            ):
+                self.assertEqual(read_preview_asset(RUN_ID, {}, "top"), (None, None))
 
 
 if __name__ == "__main__":

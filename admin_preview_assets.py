@@ -11,7 +11,7 @@ import mimetypes
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Iterator, Mapping, Optional
 
 from admin_store import (
     _get_gcs_bucket,
@@ -25,6 +25,12 @@ _CID = re.compile(r"^[A-Za-z0-9._@+\-]+$")
 _IMG_TAG = re.compile(r"<img\b(?P<attrs>[^>]*?)\s*/?>", re.IGNORECASE)
 _SRC_ATTR = re.compile(r"\bsrc\s*=\s*(['\"])(?P<src>[^'\"]+)\1", re.IGNORECASE)
 _SAFE_IMAGE_TYPES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif"})
+PREVIEW_ASSET_MAX_BYTES = 12 * 1024 * 1024
+PREVIEW_HTML_STREAM_CHUNK_CHARS = 64 * 1024
+_PREVIEW_FALLBACK_STYLE = (
+    "<style>.admin-preview-image-unavailable{padding:18px;border:1px dashed #9a5700;"
+    "border-radius:8px;background:#fff2d9;color:#65400b;font:14px system-ui,sans-serif;}</style>"
+)
 
 
 @dataclass(frozen=True)
@@ -132,8 +138,7 @@ def preview_asset_url(run_id: str, slot: str) -> str:
     return f"/admin/runs/{run_id}/preview-assets/{slot}"
 
 
-def rewrite_customer_html_for_admin_preview(run_id: str, meta: Mapping[str, Any], customer_html: str) -> str:
-    """Replace only img tags with a CID source; canonical saved HTML is never changed."""
+def _preview_img_rewriter(run_id: str, meta: Mapping[str, Any]):
     assets = preview_assets_for_run(run_id, meta)
     known = preview_known_cids(meta)
     resolved_by_cid = {asset.cid: asset for asset in assets.values()}
@@ -160,12 +165,36 @@ def rewrite_customer_html_for_admin_preview(run_id: str, meta: Mapping[str, Any]
             f'role="status">이미지 미리보기 없음 · 저장된 {html.escape(slot, quote=True)} 이미지 근거를 확인하세요.</div>'
         )
 
-    rendered = _IMG_TAG.sub(replace, str(customer_html))
-    return (
-        "<style>.admin-preview-image-unavailable{padding:18px;border:1px dashed #9a5700;"
-        "border-radius:8px;background:#fff2d9;color:#65400b;font:14px system-ui,sans-serif;}</style>"
-        + rendered
-    )
+    return replace
+
+
+def stream_customer_html_for_admin_preview(
+    run_id: str,
+    meta: Mapping[str, Any],
+    customer_html: str,
+) -> Iterator[str]:
+    """Yield a CID-resolved preview without building a second full HTML string."""
+    replace = _preview_img_rewriter(run_id, meta)
+    source = str(customer_html or "")
+
+    def chunks(start: int, end: int) -> Iterator[str]:
+        while start < end:
+            next_offset = min(end, start + PREVIEW_HTML_STREAM_CHUNK_CHARS)
+            yield source[start:next_offset]
+            start = next_offset
+
+    yield _PREVIEW_FALLBACK_STYLE
+    offset = 0
+    for match in _IMG_TAG.finditer(source):
+        yield from chunks(offset, match.start())
+        yield replace(match)
+        offset = match.end()
+    yield from chunks(offset, len(source))
+
+
+def rewrite_customer_html_for_admin_preview(run_id: str, meta: Mapping[str, Any], customer_html: str) -> str:
+    """Compatibility helper; route code should prefer the streaming variant."""
+    return "".join(stream_customer_html_for_admin_preview(run_id, meta, customer_html))
 
 
 def read_preview_asset(run_id: str, meta: Mapping[str, Any], slot: str) -> tuple[Optional[bytes], Optional[str]]:
@@ -177,8 +206,12 @@ def read_preview_asset(run_id: str, meta: Mapping[str, Any], slot: str) -> tuple
         return None, None
     if asset.backend == "local" and asset.local_path is not None:
         try:
+            if asset.local_path.stat().st_size > PREVIEW_ASSET_MAX_BYTES:
+                return None, None
             payload = asset.local_path.read_bytes()
         except OSError:
+            return None, None
+        if not payload or len(payload) > PREVIEW_ASSET_MAX_BYTES:
             return None, None
         media_type = mimetypes.guess_type(asset.local_path.name)[0] or "image/jpeg"
         return (payload, media_type) if media_type in _SAFE_IMAGE_TYPES else (None, None)
@@ -192,9 +225,17 @@ def read_preview_asset(run_id: str, meta: Mapping[str, Any], slot: str) -> tuple
             # missing objects still fail closed via the caught NotFound error.
             blob.reload()
             media_type = str(blob.content_type or "").split(";", 1)[0].lower()
-            if media_type not in _SAFE_IMAGE_TYPES:
+            size = int(blob.size or 0)
+            if (
+                media_type not in _SAFE_IMAGE_TYPES
+                or size <= 0
+                or size > PREVIEW_ASSET_MAX_BYTES
+            ):
                 return None, None
-            return blob.download_as_bytes(), media_type
+            payload = blob.download_as_bytes(start=0, end=size - 1)
+            if len(payload) != size or len(payload) > PREVIEW_ASSET_MAX_BYTES:
+                return None, None
+            return payload, media_type
         except Exception:
             return None, None
     return None, None

@@ -5,6 +5,7 @@ import hmac
 import json
 import logging
 import os
+from contextlib import nullcontext
 from typing import Any, Callable, Dict, Optional
 
 from fastapi import APIRouter, Header, Request
@@ -30,6 +31,7 @@ from genie_schedule_policy import (
     get_kst_now,
     today_genie_weekend_skip_payload,
 )
+from natural_run_activity import track_natural_run_activity
 from orchestrator import execute_orchestrator_run
 from today_genie_execution_identity import (
     EXECUTION_CLASS_NATURAL_SCHEDULED,
@@ -568,11 +570,18 @@ def create_owner_review_endpoint(
         from today_genie_service_full_run import run_today_genie_service_full_run
 
         try:
-            payload = run_today_genie_service_full_run(
-                trigger_source=trigger,
-                send_owner_email=body.send_owner_email,
-                dry_run=body.dry_run,
-            )
+            with track_natural_run_activity(
+                program_id=identity.program_id,
+                kst_date=identity.kst_date,
+                scheduled_slot=identity.scheduled_slot,
+                execution_class=identity.execution_class,
+            ):
+                payload = run_today_genie_service_full_run(
+                    trigger_source=trigger,
+                    send_owner_email=body.send_owner_email,
+                    dry_run=body.dry_run,
+                    execution_identity_fields=identity_fields_for_artifact(identity),
+                )
             if isinstance(payload, dict):
                 payload.update(
                     {
@@ -599,13 +608,19 @@ def create_owner_review_endpoint(
         return JSONResponse(status_code=status_code, content=payload)
 
     try:
-        run_id, result, email_sent = execute_orchestrator_run(
-            "today_genie",
-            trigger_source=trigger,
-            send_owner_email=body.send_owner_email,
-            execution_class=identity.execution_class,
+        with track_natural_run_activity(
+            program_id=identity.program_id,
+            kst_date=identity.kst_date,
             scheduled_slot=identity.scheduled_slot,
-        )
+            execution_class=identity.execution_class,
+        ):
+            run_id, result, email_sent = execute_orchestrator_run(
+                "today_genie",
+                trigger_source=trigger,
+                send_owner_email=body.send_owner_email,
+                execution_class=identity.execution_class,
+                scheduled_slot=identity.scheduled_slot,
+            )
     except ScheduledWeekendSkip as exc:
         logger.info("create_owner_review: orchestrator weekend guard payload=%s", exc.payload)
         return JSONResponse(status_code=200, content=exc.payload)
@@ -712,28 +727,61 @@ def natural_run_watchdog_endpoint(
     if auth_fail is not None:
         return auth_fail
 
-    from admin_store import list_run_artifacts
     from natural_run_watchdog import (
         run_watchdog_poll,
         run_watchdog_smoke_failure_probe,
         run_watchdog_verification_probe,
+        watchdog_programs_due_for_reconciliation,
     )
 
     try:
+        watchdog_now = get_kst_now()
         if body.smoke_failure:
             summary = run_watchdog_smoke_failure_probe(
-                now=get_kst_now(),
+                now=watchdog_now,
                 incident_id=body.incident_id,
             )
         elif body.verification_only:
-            summary = run_watchdog_verification_probe(now=get_kst_now())
+            summary = run_watchdog_verification_probe(now=watchdog_now)
         else:
-            artifacts = list_run_artifacts(limit=100)
-            summary = run_watchdog_poll(
-                artifacts=artifacts,
-                now=get_kst_now(),
+            due_programs = watchdog_programs_due_for_reconciliation(
+                now=watchdog_now,
                 paused_programs=["tomorrow_genie"],
             )
+            if not due_programs:
+                summary = {
+                    "ok": True,
+                    "watchdog_fast_path": True,
+                    "reason": "no_sla_due",
+                    "due_programs": [],
+                    "results": [],
+                }
+            else:
+                from natural_run_activity import active_natural_run_snapshot
+
+                active = active_natural_run_snapshot()
+                if active.get("active"):
+                    summary = {
+                        "ok": True,
+                        "watchdog_fast_path": True,
+                        "reason": "natural_execution_in_progress",
+                        "due_programs": due_programs,
+                        "active_identity_count": int(
+                            active.get("active_identity_count") or 0
+                        ),
+                        "active_request_count": int(
+                            active.get("active_request_count") or 0
+                        ),
+                        "results": [],
+                    }
+                else:
+                    artifacts = list_run_artifacts(limit=100)
+                    summary = run_watchdog_poll(
+                        artifacts=artifacts,
+                        now=watchdog_now,
+                        paused_programs=["tomorrow_genie"],
+                        programs=due_programs,
+                    )
     except Exception as exc:
         logger.exception(
             "natural_run_watchdog failed error_type=%s",
@@ -825,13 +873,31 @@ def create_keysuri_owner_review_endpoint(
         return JSONResponse(status_code=400, content=err)
 
     try:
-        payload = create_keysuri_owner_review_job(
-            normalized,
-            trigger_source=body.trigger_source,
-            dry_run=body.dry_run,
-            service_full_run=body.service_full_run,
-            send_owner_email=body.send_owner_email,
+        is_natural_execution = (
+            body.service_full_run
+            and not body.dry_run
+            and str(body.trigger_source or "").strip() == "scheduled_service_full_run"
         )
+        if is_natural_execution:
+            from natural_run_incident_store import NATURAL_SLOTS
+            from today_genie_execution_identity import kst_date_str
+
+            activity_context = track_natural_run_activity(
+                program_id=normalized,
+                kst_date=kst_date_str(get_kst_now()),
+                scheduled_slot=NATURAL_SLOTS[normalized],
+                execution_class=EXECUTION_CLASS_NATURAL_SCHEDULED,
+            )
+        else:
+            activity_context = nullcontext("")
+        with activity_context:
+            payload = create_keysuri_owner_review_job(
+                normalized,
+                trigger_source=body.trigger_source,
+                dry_run=body.dry_run,
+                service_full_run=body.service_full_run,
+                send_owner_email=body.send_owner_email,
+            )
     except Exception as exc:
         _log_keysuri_owner_review_job_event(
             event="keysuri_owner_review_endpoint_exception",

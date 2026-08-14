@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import json
 import hashlib
+import heapq
+import itertools
 import os
 import re
 import secrets
+import threading
+from calendar import monthrange
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -22,6 +26,109 @@ _RUN_ID_MODES = (
 )
 _RUN_ID_RE = re.compile(
     r"^[0-9]{8}_[0-9]{6}_(today_genie|tomorrow_genie|keysuri_global_tech|keysuri_korea_tech)_[a-f0-9]{8}$"
+)
+
+# Owner Admin collection reads must stay small even when the durable bucket has
+# accumulated years of run artifacts.  GCS has no reverse-order listing, so we
+# inspect bounded recent date partitions (refined to hour/minute on overflow)
+# and select run ids before downloading any JSON body. The per-run
+# ``.summary.json`` object contains only
+# fields needed by list/status projections; full artifacts remain detail-only.
+ADMIN_RUN_LIST_MAX_LIMIT = 200
+ADMIN_RUN_LIST_GCS_SCAN_MAX = 5_000
+ADMIN_RUN_LIST_MONTH_LOOKBACK = 24
+ADMIN_RUN_LIST_PREFIX_SCAN_MAX = 1_000
+ADMIN_RUN_LIST_SUMMARY_SUFFIX = ".summary.json"
+ADMIN_RUN_MEMORY_SUFFIX = ".memory.json"
+ADMIN_EMAIL_HTML_MAX_BYTES = 6 * 1024 * 1024
+ADMIN_RUN_MEMORY_MAX_BYTES = 64 * 1024
+MAX_CUSTOMER_DELIVERY_EVENTS_PER_RUN = 32
+
+_RUN_MEMORY_STAGE_NAMES = frozenset(
+    {
+        "request_start",
+        "after_source_selection",
+        "after_model_generation",
+        "after_render",
+        "after_image_generation",
+        "before_owner_smtp",
+        "request_end",
+    }
+)
+_RUN_MEMORY_SOURCES = frozenset(
+    {
+        "unavailable",
+        "proc_status",
+        "resource_getrusage",
+        "upstream:proc_status",
+        "upstream:resource_getrusage",
+    }
+)
+
+_RUN_LIST_SUMMARY_KEYS = (
+    "run_id",
+    "mode",
+    "program_id",
+    "created_at",
+    "created_at_kst",
+    "completed_at",
+    "owner_reviewed_at",
+    "trigger_source",
+    "execution_class",
+    "scheduled_slot",
+    "kst_schedule_date",
+    "target_date",
+    "artifact_status",
+    "workflow_status",
+    "validation_result",
+    "terminal_issue_codes",
+    "issue_codes",
+    "validation_issue_codes",
+    "email_sent",
+    "smtp_attempted",
+    "owner_email_delivery_status",
+    "smtp_status",
+    "customer_delivery_status",
+    "customer_email_delivery_status",
+    "customer_email_recipient_count",
+    "customer_recipient_count",
+    "smtp_accepted_recipient_count",
+    "smtp_refused_recipient_count",
+    "smtp_refused_recipients_masked",
+    "customer_delivery_unknown_count",
+    "customer_email_sent_at_kst",
+    "customer_sent_at",
+    "customer_delivery_completed_at",
+    "owner_review_status",
+    "customer_email_subject",
+    "email_subject",
+    "subject",
+    "owner_email_subject",
+    "briefing_subject",
+    "recovery_run",
+    "original_incident_id",
+    "recovery_for_incident_id",
+    "incident_id",
+    "admin_reissue",
+    "parent_run_id",
+    "reissue_scope",
+    "verification_mode",
+    "safe_fail",
+    "generated_image_path",
+    "generated_image_path_watermarked",
+    "customer_top_image_path",
+    "run_specific_images",
+    "top_image_cid",
+    "deployed_revision",
+    "revision",
+    "runtime_revision",
+    "called_gemini",
+    "artifact_saved",
+    "error",
+    "error_code",
+    "first_failed_stage",
+    "final_selected_count",
+    "data_collected",
 )
 
 OWNER_REVIEW_STATUSES = frozenset(
@@ -252,6 +359,14 @@ def gcs_json_object_key(run_id: str) -> str:
     return gcs_artifact_object_key(run_id, ".json")
 
 
+def gcs_summary_object_key(run_id: str) -> str:
+    return gcs_artifact_object_key(run_id, ADMIN_RUN_LIST_SUMMARY_SUFFIX)
+
+
+def gcs_memory_object_key(run_id: str) -> str:
+    return gcs_artifact_object_key(run_id, ADMIN_RUN_MEMORY_SUFFIX)
+
+
 def gcs_email_object_key(run_id: str) -> str:
     return gcs_artifact_object_key(run_id, ".email.html")
 
@@ -261,6 +376,7 @@ def gcs_contract_preview_object_key(run_id: str) -> str:
 
 
 _gcs_client: Any = None
+_gcs_client_lock = threading.Lock()
 
 
 def _uses_gcs_backend() -> bool:
@@ -270,9 +386,11 @@ def _uses_gcs_backend() -> bool:
 def _get_gcs_client() -> Any:
     global _gcs_client
     if _gcs_client is None:
-        from google.cloud import storage
+        with _gcs_client_lock:
+            if _gcs_client is None:
+                from google.cloud import storage
 
-        _gcs_client = storage.Client()
+                _gcs_client = storage.Client()
     return _gcs_client
 
 
@@ -301,12 +419,60 @@ def _gcs_delete_object(key: str) -> None:
         blob.delete()
 
 
+def _bounded_summary_value(value: Any) -> Any:
+    """Keep list projections scalar and bounded; never carry source documents."""
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value[:1_000] if isinstance(value, str) else value
+    if isinstance(value, (list, tuple)):
+        return [
+            item[:240] if isinstance(item, str) else item
+            for item in value[:50]
+            if isinstance(item, (str, int, float, bool)) or item is None
+        ]
+    return None
+
+
+def build_run_artifact_list_summary(meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Return only metadata required by Admin/natural-run list projections."""
+    summary: Dict[str, Any] = {"artifact_list_summary": True}
+    for key in _RUN_LIST_SUMMARY_KEYS:
+        if key not in meta:
+            continue
+        value = meta.get(key)
+        if key == "validation_result" and isinstance(value, dict):
+            nested = {
+                nested_key: _bounded_summary_value(value.get(nested_key))
+                for nested_key in ("status", "result", "issue_codes")
+                if nested_key in value
+            }
+            summary[key] = nested
+            continue
+        bounded = _bounded_summary_value(value)
+        if bounded is not None or value is None:
+            summary[key] = bounded
+    policy = meta.get("policy")
+    if isinstance(policy, dict) and "send_email" in policy:
+        summary["policy"] = {"send_email": bool(policy.get("send_email"))}
+    return summary
+
+
+def _write_summary_blob(run_id: str, meta: Dict[str, Any]) -> None:
+    summary = build_run_artifact_list_summary(meta)
+    payload = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+    if _uses_gcs_backend():
+        _gcs_upload_text(gcs_summary_object_key(run_id), payload, content_type="application/json")
+        return
+    artifact_summary_path(run_id).write_text(payload, encoding="utf-8")
+
+
 def _write_json_blob(run_id: str, meta: Dict[str, Any]) -> None:
     payload = json.dumps(meta, ensure_ascii=False, indent=2)
     if _uses_gcs_backend():
         _gcs_upload_text(gcs_json_object_key(run_id), payload, content_type="application/json")
+        _write_summary_blob(run_id, meta)
         return
     artifact_json_path(run_id).write_text(payload, encoding="utf-8")
+    _write_summary_blob(run_id, meta)
 
 
 def _read_json_blob(run_id: str) -> Optional[Dict[str, Any]]:
@@ -340,15 +506,58 @@ def _write_email_blob(run_id: str, email_html: str) -> None:
     artifact_email_path(run_id).write_text(email_html, encoding="utf-8")
 
 
+def _bounded_gcs_email_blob(run_id: str) -> Any:
+    """Return an exact HTML blob only after authoritative size metadata passes."""
+    blob = _get_gcs_bucket().blob(gcs_email_object_key(run_id))
+    try:
+        if not blob.exists():
+            return None
+        blob.reload()
+        size = int(blob.size)
+    except Exception:
+        # Metadata uncertainty must not turn into an unbounded body download.
+        return None
+    if size < 0 or size > ADMIN_EMAIL_HTML_MAX_BYTES:
+        return None
+    return blob
+
+
 def _read_email_blob(run_id: str) -> Optional[str]:
     if _uses_gcs_backend():
-        return _gcs_download_text(gcs_email_object_key(run_id))
+        blob = _bounded_gcs_email_blob(run_id)
+        if blob is None:
+            return None
+        expected_size = int(blob.size)
+        try:
+            payload = blob.download_as_bytes(
+                start=0,
+                end=max(0, ADMIN_EMAIL_HTML_MAX_BYTES - 1),
+            )
+        except Exception:
+            return None
+        if len(payload) != expected_size or len(payload) > ADMIN_EMAIL_HTML_MAX_BYTES:
+            return None
+        try:
+            return payload.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
     path = artifact_email_path(run_id)
-    if not path.is_file():
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    if size < 0 or size > ADMIN_EMAIL_HTML_MAX_BYTES:
         return None
     try:
-        return path.read_text(encoding="utf-8")
+        with path.open("rb") as handle:
+            payload = handle.read(ADMIN_EMAIL_HTML_MAX_BYTES + 1)
     except OSError:
+        return None
+    if len(payload) > ADMIN_EMAIL_HTML_MAX_BYTES:
+        return None
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError:
         return None
 
 
@@ -399,6 +608,18 @@ def artifact_json_path(run_id: str) -> Path:
     if not validate_run_id(run_id):
         raise ValueError("invalid run_id")
     return admin_runs_dir() / f"{run_id}.json"
+
+
+def artifact_summary_path(run_id: str) -> Path:
+    if not validate_run_id(run_id):
+        raise ValueError("invalid run_id")
+    return admin_runs_dir() / f"{run_id}{ADMIN_RUN_LIST_SUMMARY_SUFFIX}"
+
+
+def artifact_memory_path(run_id: str) -> Path:
+    if not validate_run_id(run_id):
+        raise ValueError("invalid run_id")
+    return admin_runs_dir() / f"{run_id}{ADMIN_RUN_MEMORY_SUFFIX}"
 
 
 def artifact_email_path(run_id: str) -> Path:
@@ -715,8 +936,13 @@ def append_customer_delivery_event(meta: Dict[str, Any], event: Dict[str, Any]) 
     events = meta.get("customer_delivery_events")
     if not isinstance(events, list):
         events = []
-    events.append(event)
-    meta["customer_delivery_events"] = events
+    prior_total = int(meta.get("customer_delivery_event_count") or len(events))
+    bounded = [*events[-(MAX_CUSTOMER_DELIVERY_EVENTS_PER_RUN - 1) :], dict(event)]
+    meta["customer_delivery_events"] = bounded
+    meta["customer_delivery_event_count"] = prior_total + 1
+    meta["customer_delivery_events_truncated"] = (
+        prior_total + 1 > len(bounded)
+    )
 
 
 def record_parent_reissue_audit(
@@ -771,51 +997,492 @@ def load_run_email_html(run_id: str) -> Optional[str]:
     return _read_email_blob(run_id)
 
 
-def _list_run_ids_from_gcs(limit: int) -> List[str]:
-    prefix = f"{admin_artifact_gcs_prefix()}/"
-    blobs = list(_get_gcs_bucket().list_blobs(prefix=prefix))
-    json_blobs = [b for b in blobs if b.name.endswith(".json")]
-    def _blob_sort_key(blob: Any) -> datetime:
-        ts = getattr(blob, "updated", None) or getattr(blob, "time_created", None)
-        if ts is None:
-            return datetime.min.replace(tzinfo=ZoneInfo("UTC"))
-        return ts
-
-    json_blobs.sort(key=_blob_sort_key, reverse=True)
-    run_ids: List[str] = []
-    for blob in json_blobs:
-        name = blob.name
-        if not name.startswith(prefix):
-            continue
-        stem = name[len(prefix) :]
-        if not stem.endswith(".json"):
-            continue
-        run_id = stem[: -len(".json")]
-        if validate_run_id(run_id):
-            run_ids.append(run_id)
-        if len(run_ids) >= max(1, limit):
-            break
-    return run_ids
-
-
-def list_run_artifacts(limit: int = 50) -> List[Dict[str, Any]]:
+def run_email_html_exists(run_id: str) -> bool:
+    """Check exact HTML object metadata without downloading the HTML body."""
+    if not validate_run_id(run_id):
+        return False
     if _uses_gcs_backend():
-        run_ids = _list_run_ids_from_gcs(limit)
+        return _bounded_gcs_email_blob(run_id) is not None
+    try:
+        size = artifact_email_path(run_id).stat().st_size
+    except OSError:
+        return False
+    return 0 <= size <= ADMIN_EMAIL_HTML_MAX_BYTES
+
+
+def _bounded_nonnegative_int(value: Any) -> int:
+    try:
+        return min(max(0, int(value or 0)), (1 << 63) - 1)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _normalize_run_memory_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
+    """Allowlist the small numeric evidence contract before persistence."""
+    stages_in = evidence.get("stages")
+    stages: Dict[str, Dict[str, int]] = {}
+    if isinstance(stages_in, dict):
+        for stage in _RUN_MEMORY_STAGE_NAMES:
+            sample = stages_in.get(stage)
+            if not isinstance(sample, dict):
+                continue
+            rss_kib = _bounded_nonnegative_int(sample.get("rss_kib"))
+            hwm_kib = max(
+                rss_kib, _bounded_nonnegative_int(sample.get("hwm_kib"))
+            )
+            stages[stage] = {
+                "rss_kib": rss_kib,
+                "hwm_kib": hwm_kib,
+            }
+    source = str(evidence.get("source") or "unavailable")[:80]
+    if source not in _RUN_MEMORY_SOURCES:
+        source = "unavailable"
+    peak_hwm_kib = max(
+        (sample["hwm_kib"] for sample in stages.values()), default=0
+    )
+    configured_limit_kib = _bounded_nonnegative_int(
+        evidence.get("configured_limit_kib")
+    )
+    return {
+        "source": source,
+        "unit": "KiB",
+        "stage_count": len(stages),
+        "peak_hwm_kib": peak_hwm_kib,
+        "configured_limit_kib": configured_limit_kib,
+        "headroom_kib": (
+            max(0, configured_limit_kib - peak_hwm_kib)
+            if configured_limit_kib
+            else 0
+        ),
+        "stages": stages,
+    }
+
+
+def save_run_memory_evidence(run_id: str, evidence: Dict[str, Any]) -> Dict[str, Any]:
+    """Write a small sidecar; never reads or rewrites the full run artifact."""
+    if not validate_run_id(run_id):
+        raise ValueError("invalid run_id")
+    if not isinstance(evidence, dict):
+        raise TypeError("memory evidence must be an object")
+    normalized = _normalize_run_memory_evidence(evidence)
+    payload = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+    if _uses_gcs_backend():
+        _gcs_upload_text(
+            gcs_memory_object_key(run_id), payload, content_type="application/json"
+        )
+    else:
+        artifact_memory_path(run_id).write_text(payload, encoding="utf-8")
+    return normalized
+
+
+def load_run_memory_evidence(run_id: str) -> Optional[Dict[str, Any]]:
+    """Load only the bounded memory sidecar, never the full run artifact."""
+    if not validate_run_id(run_id):
+        return None
+    if _uses_gcs_backend():
+        blob = _get_gcs_bucket().blob(gcs_memory_object_key(run_id))
+        try:
+            if not blob.exists():
+                return None
+            blob.reload()
+            expected_size = int(blob.size)
+        except Exception:
+            return None
+        if expected_size < 0 or expected_size > ADMIN_RUN_MEMORY_MAX_BYTES:
+            return None
+        try:
+            payload = blob.download_as_bytes(
+                start=0,
+                end=max(0, ADMIN_RUN_MEMORY_MAX_BYTES - 1),
+            )
+        except Exception:
+            return None
+        if len(payload) != expected_size or len(payload) > ADMIN_RUN_MEMORY_MAX_BYTES:
+            return None
+    else:
+        path = artifact_memory_path(run_id)
+        if not path.is_file():
+            return None
+        try:
+            expected_size = path.stat().st_size
+            if expected_size < 0 or expected_size > ADMIN_RUN_MEMORY_MAX_BYTES:
+                return None
+            with path.open("rb") as handle:
+                payload = handle.read(ADMIN_RUN_MEMORY_MAX_BYTES + 1)
+        except OSError:
+            return None
+        if len(payload) != expected_size or len(payload) > ADMIN_RUN_MEMORY_MAX_BYTES:
+            return None
+    try:
+        raw = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return _normalize_run_memory_evidence(data) if isinstance(data, dict) else None
+
+
+def _bounded_list_blobs(bucket: Any, *, prefix: str, max_results: int):
+    """Compatibility wrapper that never consumes more than ``max_results`` blobs."""
+    try:
+        iterator = bucket.list_blobs(prefix=prefix, max_results=max_results)
+    except TypeError:  # small local fakes / older compatible clients
+        iterator = bucket.list_blobs(prefix=prefix)
+    return itertools.islice(iterator, max_results)
+
+
+def _summary_run_id_from_object_name(name: str, prefix: str) -> tuple[str, bool]:
+    if not name.startswith(prefix):
+        return "", False
+    stem = name[len(prefix) :]
+    if stem.endswith(ADMIN_RUN_MEMORY_SUFFIX):
+        return "", False
+    if stem.endswith(ADMIN_RUN_LIST_SUMMARY_SUFFIX):
+        run_id = stem[: -len(ADMIN_RUN_LIST_SUMMARY_SUFFIX)]
+        return (run_id, True) if validate_run_id(run_id) else ("", False)
+    if stem.endswith(".json"):
+        run_id = stem[: -len(".json")]
+        return (run_id, False) if validate_run_id(run_id) else ("", False)
+    return "", False
+
+
+def _read_summary_blob(blob: Any) -> Optional[Dict[str, Any]]:
+    try:
+        raw = blob.download_as_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _skeletal_run_list_summary(run_id: str, blob: Any = None) -> Dict[str, Any]:
+    """Build a tiny legacy row from object identity without reading its JSON."""
+    match = _RUN_ID_RE.match(run_id)
+    mode = match.group(1) if match is not None else ""
+    created_at = ""
+    try:
+        created_at = datetime.strptime(
+            run_id[:15], "%Y%m%d_%H%M%S"
+        ).replace(tzinfo=ZoneInfo("Asia/Seoul")).isoformat()
+    except ValueError:
+        pass
+    summary: Dict[str, Any] = {
+        "artifact_list_summary": True,
+        "summary_source": "legacy_object_metadata",
+        "summary_available": False,
+        "run_id": run_id,
+        "mode": mode,
+        "program_id": mode,
+        "artifact_status": "metadata_only",
+        "customer_delivery_status": "metadata_unavailable",
+    }
+    if created_at:
+        summary["created_at"] = created_at
+        summary["created_at_kst"] = created_at
+    stamp = getattr(blob, "updated", None) or getattr(blob, "time_created", None)
+    try:
+        summary["storage_updated_at"] = stamp.isoformat() if stamp is not None else ""
+    except (AttributeError, TypeError, ValueError):
+        summary["storage_updated_at"] = ""
+    return summary
+
+
+def _collect_recent_run_candidates_from_gcs(
+    limit: int,
+    *,
+    cursor: str = "",
+) -> tuple[Dict[str, List[Any]], int]:
+    prefix = f"{admin_artifact_gcs_prefix()}/"
+    bucket = _get_gcs_bucket()
+    # run_id -> [summary blob, legacy full-json blob]. Listing materializes only
+    # lightweight Blob metadata. Callers decide whether full JSON may be read.
+    candidates: Dict[str, List[Any]] = {}
+    state = {"scanned": 0}
+    before_run_id = cursor if validate_run_id(cursor) else ""
+    cursor_dt: Optional[datetime] = None
+    if before_run_id:
+        try:
+            cursor_dt = datetime.strptime(before_run_id[:15], "%Y%m%d_%H%M%S")
+        except ValueError:
+            cursor_dt = None
+
+    def add_blobs(blobs: List[Any]) -> None:
+        for blob in blobs:
+            run_id, is_summary = _summary_run_id_from_object_name(str(blob.name), prefix)
+            if not run_id or (before_run_id and run_id >= before_run_id):
+                continue
+            row = candidates.setdefault(run_id, [None, None])
+            if is_summary:
+                row[0] = blob
+            else:
+                row[1] = blob
+
+    def scan_partition(
+        partition_prefix: str,
+        levels: tuple[int, ...],
+        *,
+        upper_values: tuple[int, ...] = (),
+    ) -> None:
+        remaining = ADMIN_RUN_LIST_GCS_SCAN_MAX - state["scanned"]
+        if remaining <= 0:
+            return
+        cap = min(ADMIN_RUN_LIST_PREFIX_SCAN_MAX, remaining)
+        blobs = list(
+            _bounded_list_blobs(bucket, prefix=partition_prefix, max_results=cap)
+        )
+        state["scanned"] += len(blobs)
+        saturated = len(blobs) >= cap
+        if not saturated or not levels or state["scanned"] >= ADMIN_RUN_LIST_GCS_SCAN_MAX:
+            add_blobs(blobs)
+            return
+
+        # A saturated ascending GCS window may contain only the oldest objects
+        # in this date partition. Refine newest-first by hour/minute/second.
+        # On a cursor's own day, start at that cursor's exact time instead of
+        # repeatedly materializing all newer prefixes until the global cap is
+        # exhausted. The final run-id comparison still excludes the cursor and
+        # disambiguates multiple runs in the same second.
+        before_count = len(candidates)
+        width = levels[0]
+        upper = min(width - 1, upper_values[0]) if upper_values else width - 1
+        for value in range(upper, -1, -1):
+            scan_partition(
+                f"{partition_prefix}{value:02d}",
+                levels[1:],
+                upper_values=(
+                    upper_values[1:]
+                    if upper_values and value == upper
+                    else ()
+                ),
+            )
+            if len(candidates) >= limit:
+                break
+            if state["scanned"] >= ADMIN_RUN_LIST_GCS_SCAN_MAX:
+                break
+        if len(candidates) == before_count and state["scanned"] >= ADMIN_RUN_LIST_GCS_SCAN_MAX:
+            add_blobs(blobs)
+
+    now = datetime.now(ZoneInfo("Asia/Seoul"))
+    start_day = now.date()
+    if cursor_dt is not None:
+        start_day = min(start_day, cursor_dt.date())
+    year, month = start_day.year, start_day.month
+    for month_offset in range(ADMIN_RUN_LIST_MONTH_LOOKBACK):
+        month_token = f"{year:04d}{month:02d}"
+        remaining = ADMIN_RUN_LIST_GCS_SCAN_MAX - state["scanned"]
+        if remaining <= 0:
+            break
+        cap = min(ADMIN_RUN_LIST_PREFIX_SCAN_MAX, remaining)
+        month_blobs = list(
+            _bounded_list_blobs(
+                bucket, prefix=f"{prefix}{month_token}", max_results=cap
+            )
+        )
+        state["scanned"] += len(month_blobs)
+        saturated = len(month_blobs) >= cap
+        if not saturated or state["scanned"] >= ADMIN_RUN_LIST_GCS_SCAN_MAX:
+            add_blobs(month_blobs)
+        else:
+            day_upper = monthrange(year, month)[1]
+            if month_offset == 0:
+                day_upper = min(day_upper, start_day.day)
+            before_count = len(candidates)
+            for day in range(day_upper, 0, -1):
+                cursor_time_upper = (
+                    (cursor_dt.hour, cursor_dt.minute, cursor_dt.second)
+                    if cursor_dt is not None
+                    and cursor_dt.year == year
+                    and cursor_dt.month == month
+                    and cursor_dt.day == day
+                    else ()
+                )
+                scan_partition(
+                    f"{prefix}{month_token}{day:02d}_",
+                    (24, 60, 60),
+                    upper_values=cursor_time_upper,
+                )
+                if len(candidates) >= limit or state["scanned"] >= ADMIN_RUN_LIST_GCS_SCAN_MAX:
+                    break
+            if len(candidates) == before_count and state["scanned"] >= ADMIN_RUN_LIST_GCS_SCAN_MAX:
+                add_blobs(month_blobs)
+        if len(candidates) >= limit or state["scanned"] >= ADMIN_RUN_LIST_GCS_SCAN_MAX:
+            break
+        month -= 1
+        if month == 0:
+            year -= 1
+            month = 12
+    return candidates, state["scanned"]
+
+
+def _list_run_summaries_from_gcs(limit: int, *, cursor: str = "") -> List[Dict[str, Any]]:
+    candidates, _scanned = _collect_recent_run_candidates_from_gcs(
+        limit, cursor=cursor
+    )
+
+    out: List[Dict[str, Any]] = []
+    for run_id in sorted(candidates, reverse=True)[:limit]:
+        summary_blob, full_blob = candidates[run_id]
+        summary = _read_summary_blob(summary_blob) if summary_blob is not None else None
+        # Normal list GETs are summary-only and read-only. Legacy/corrupt rows
+        # remain visible from object identity, but their full JSON is never
+        # downloaded here. Use the explicit bounded backfill helper separately.
+        out.append(summary or _skeletal_run_list_summary(run_id, full_blob))
+    return out
+
+
+def _local_run_id_from_json_path(path: Path) -> str:
+    name = path.name
+    if name.endswith(ADMIN_RUN_MEMORY_SUFFIX):
+        return ""
+    if name.endswith(ADMIN_RUN_LIST_SUMMARY_SUFFIX):
+        run_id = name[: -len(ADMIN_RUN_LIST_SUMMARY_SUFFIX)]
+    elif name.endswith(".json"):
+        run_id = name[: -len(".json")]
+    else:
+        return ""
+    return run_id if validate_run_id(run_id) else ""
+
+
+def _read_local_summary(run_id: str) -> Optional[Dict[str, Any]]:
+    path = artifact_summary_path(run_id)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def list_run_artifact_page(limit: int = 50, *, cursor: str = "") -> Dict[str, Any]:
+    """Return one newest-first metadata page with an opaque run-id cursor."""
+    bounded_limit = max(1, min(int(limit), ADMIN_RUN_LIST_MAX_LIMIT))
+    valid_cursor = cursor if validate_run_id(cursor) else ""
+    fetch_limit = bounded_limit + 1
+    if _uses_gcs_backend():
+        rows = _list_run_summaries_from_gcs(fetch_limit, cursor=valid_cursor)
     else:
         root = admin_runs_dir()
-        files = sorted(root.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-        run_ids = []
-        for path in files:
-            if validate_run_id(path.stem):
-                run_ids.append(path.stem)
-            if len(run_ids) >= max(1, limit):
-                break
-    out: List[Dict[str, Any]] = []
-    for run_id in run_ids[: max(1, limit)]:
-        meta = load_run_artifact(run_id)
-        if meta:
-            out.append(meta)
-    return out
+        run_ids = heapq.nlargest(
+            fetch_limit,
+            (
+                run_id
+                for path in root.glob("*.json")
+                if not path.name.endswith(ADMIN_RUN_LIST_SUMMARY_SUFFIX)
+                and not path.name.endswith(ADMIN_RUN_MEMORY_SUFFIX)
+                and (run_id := _local_run_id_from_json_path(path))
+                and (not valid_cursor or run_id < valid_cursor)
+            ),
+        )
+        rows = []
+        for run_id in run_ids:
+            summary = _read_local_summary(run_id)
+            rows.append(summary or _skeletal_run_list_summary(run_id))
+
+    has_more = len(rows) > bounded_limit
+    items = rows[:bounded_limit]
+    return {
+        "items": items,
+        "limit": bounded_limit,
+        "cursor": valid_cursor,
+        "next_cursor": (
+            str(items[-1].get("run_id") or "") if has_more and items else ""
+        ),
+        "has_more": has_more,
+    }
+
+
+def list_run_artifacts(limit: int = 50, *, cursor: str = "") -> List[Dict[str, Any]]:
+    """Return bounded metadata summaries; full JSON/HTML stays detail-only."""
+    return list_run_artifact_page(limit=limit, cursor=cursor)["items"]
+
+
+def backfill_recent_run_list_summaries(
+    limit: int = ADMIN_RUN_LIST_MAX_LIMIT,
+    *,
+    dry_run: bool = True,
+) -> Dict[str, Any]:
+    """Explicit bounded migration for recent legacy run summary sidecars.
+
+    This helper is never called by an Admin request. Its safe default performs
+    only bounded object/path discovery; ``dry_run=False`` downloads and writes
+    at most ``ADMIN_RUN_LIST_MAX_LIMIT`` recent full documents.
+    """
+    bounded_limit = max(1, min(int(limit), ADMIN_RUN_LIST_MAX_LIMIT))
+    report: Dict[str, Any] = {
+        "ok": True,
+        "dry_run": bool(dry_run),
+        "limit": bounded_limit,
+        "scanned_objects": 0,
+        "legacy_candidates": 0,
+        "written": 0,
+        "errors": 0,
+        "candidate_run_ids": [],
+    }
+
+    if _uses_gcs_backend():
+        candidates, scanned = _collect_recent_run_candidates_from_gcs(bounded_limit)
+        report["scanned_objects"] = scanned
+        selected = [
+            (run_id, full_blob)
+            for run_id, (summary_blob, full_blob) in sorted(
+                candidates.items(), reverse=True
+            )[:bounded_limit]
+            if summary_blob is None and full_blob is not None
+        ]
+        report["legacy_candidates"] = len(selected)
+        report["candidate_run_ids"] = [run_id for run_id, _blob in selected]
+        if dry_run:
+            return report
+        for run_id, full_blob in selected:
+            full = _read_summary_blob(full_blob)
+            if full is None:
+                report["errors"] = int(report["errors"]) + 1
+                continue
+            try:
+                _write_summary_blob(run_id, full)
+            except (OSError, KeyError, TypeError, ValueError):
+                report["errors"] = int(report["errors"]) + 1
+                continue
+            report["written"] = int(report["written"]) + 1
+        report["ok"] = report["errors"] == 0
+        return report
+
+    root = admin_runs_dir()
+    run_paths = heapq.nlargest(
+        bounded_limit,
+        (
+            (run_id, path)
+            for path in root.glob("*.json")
+            if not path.name.endswith(ADMIN_RUN_LIST_SUMMARY_SUFFIX)
+            and (run_id := _local_run_id_from_json_path(path))
+        ),
+        key=lambda item: item[0],
+    )
+    selected_paths = [
+        (run_id, path)
+        for run_id, path in run_paths
+        if not artifact_summary_path(run_id).is_file()
+    ]
+    report["scanned_objects"] = len(run_paths)
+    report["legacy_candidates"] = len(selected_paths)
+    report["candidate_run_ids"] = [run_id for run_id, _path in selected_paths]
+    if dry_run:
+        return report
+    for run_id, path in selected_paths:
+        try:
+            full = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(full, dict):
+                raise TypeError("run artifact must be an object")
+            _write_summary_blob(run_id, full)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            report["errors"] = int(report["errors"]) + 1
+            continue
+        report["written"] = int(report["written"]) + 1
+    report["ok"] = report["errors"] == 0
+    return report
 
 
 def update_run_artifact(
@@ -1476,6 +2143,27 @@ def process_approval_timeouts(
     """
     from collections import Counter
 
+    # Timeout customer delivery is permanently retired on main.  Return before
+    # resolving SMTP/customer config, listing GCS, downloading run JSON, or
+    # loading any stored email HTML.  Keeping the historical scanner below makes
+    # the legacy behavior explicit without paying for it in production.
+    retired = _timeout_customer_send_retired()
+    if retired:
+        return {
+            "ok": True,
+            "error": None,
+            "scanned": 0,
+            "eligible": 0,
+            "sent": 0,
+            "skipped": 0,
+            "errors": 0,
+            "run_ids_sent": [],
+            "skip_reasons": {},
+            "error_run_ids": [],
+            "retired": True,
+            "note": "timeout customer send retired",
+        }
+
     from today_geenee_customer_delivery import (
         customer_delivery_config_ready,
         send_customer_timeout_draft_email,
@@ -1499,7 +2187,6 @@ def process_approval_timeouts(
             "error_run_ids": [],
         }
 
-    retired = _timeout_customer_send_retired()
     summary: Dict[str, Any] = {
         "ok": True,
         "error": None,
@@ -1529,11 +2216,6 @@ def process_approval_timeouts(
             continue
 
         summary["eligible"] = int(summary["eligible"]) + 1
-        if retired:
-            skip_counter["timeout_send_retired"] += 1
-            summary["skipped"] = int(summary["skipped"]) + 1
-            continue
-
         if not send_customer_timeout_draft_email(saved_html, view):
             summary["errors"] = int(summary["errors"]) + 1
             summary["error_run_ids"].append(run_id)
@@ -1543,9 +2225,6 @@ def process_approval_timeouts(
         summary["run_ids_sent"].append(run_id)
 
     summary["skip_reasons"] = dict(skip_counter)
-    if retired:
-        summary["retired"] = True
-        summary["note"] = "timeout customer send retired"
     return summary
 
 

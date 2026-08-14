@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from admin_store import resolve_customer_recipients
+from admin_store import _get_gcs_client, resolve_customer_recipients
 from email_sender import parse_customer_to_addrs, send_genie_email
 from keysuri_email_identity import build_keysuri_customer_subject, sanitize_preheader_text
 from keysuri_contract_preview_renderer import (
@@ -297,10 +297,8 @@ def _repo_root() -> Path:
 
 
 def _download_keysuri_gcs_image(bucket_name: str, object_name: str, dest: Path) -> None:
-    from google.cloud import storage
-
     dest.parent.mkdir(parents=True, exist_ok=True)
-    storage.Client().bucket(bucket_name).blob(object_name).download_to_filename(str(dest))
+    _get_gcs_client().bucket(bucket_name).blob(object_name).download_to_filename(str(dest))
 
 
 def _is_korea_generated_v6(meta: Dict[str, Any]) -> bool:

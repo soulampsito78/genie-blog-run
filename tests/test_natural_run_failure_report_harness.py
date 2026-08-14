@@ -72,7 +72,9 @@ class NaturalRunFailureReportHarness(unittest.TestCase):
         self.assertIn("시스템 권고", html)
         if require_retry_question:
             self.assertIn("이 실행을 다시 시도할까요?", html)
-        self.assertIn("승인 전에는 시스템이 자동 재실행하지 않습니다.", html)
+            self.assertIn("승인 전에는 시스템이 자동 재실행하지 않습니다.", html)
+        else:
+            self.assertIn("시스템이 재실행하지 않습니다.", html)
         self.assertNotIn("Traceback", html)
         self.assertNotIn("smtp_password", html.lower())
 
@@ -228,6 +230,7 @@ class NaturalRunFailureReportHarness(unittest.TestCase):
                 program_id="today_genie",
                 kst_date="2026-08-07",
                 retry_verdict=RETRY_SAFE,
+                confirmed_cause="Scheduler 미실행이 확인되었습니다.",
             )
         )
         self.assertIn("이 실행을 다시 시도할까요?", html)
@@ -405,6 +408,7 @@ class NaturalRunFailureReportHarness(unittest.TestCase):
             program_id="today_genie",
             kst_date="2026-08-07",
             retry_verdict=RETRY_REQUIRES_PATCH,
+            confirmed_cause="검증 오류가 확인되었습니다.",
             retry_verdict_ko="수정 완료 전에는 재실행하지 않는 것이 안전합니다.",
         )
         html = build_failure_report_html(incident)

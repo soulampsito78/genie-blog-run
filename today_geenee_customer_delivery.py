@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from admin_store import resolve_customer_recipients
+from admin_store import _get_gcs_client, resolve_customer_recipients
 from email_sender import parse_customer_to_addrs, send_genie_email
 from renderers import today_genie_email_inline_cid_pair
 
@@ -90,10 +90,8 @@ def _resolve_path_under_repo(path_value: str) -> Path:
 
 
 def _download_gcs_customer_image(bucket_name: str, object_name: str, target: Path) -> None:
-    from google.cloud import storage
-
     target.parent.mkdir(parents=True, exist_ok=True)
-    storage.Client().bucket(bucket_name).blob(object_name).download_to_filename(str(target))
+    _get_gcs_client().bucket(bucket_name).blob(object_name).download_to_filename(str(target))
 
 
 def _generated_provenance_present(meta: Dict[str, Any]) -> bool:

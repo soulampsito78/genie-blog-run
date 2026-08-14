@@ -9,9 +9,12 @@ submission boundary.  This does not claim provider-side exactly-once delivery.
 from __future__ import annotations
 
 import json
+import heapq
+import itertools
 import os
 import re
 import secrets
+from calendar import monthrange
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,6 +30,12 @@ from admin_store import (
 SCHEMA_VERSION = 1
 SAFETY_PREFIX = "admin_safety"
 APPROVAL_SNAPSHOT_TTL_SECONDS = 15 * 60
+MAX_AUDIT_METADATA_DICT_ITEMS = 50
+MAX_AUDIT_METADATA_LIST_ITEMS = 50
+ADMIN_AUDIT_LIST_MAX_LIMIT = 500
+ADMIN_AUDIT_GCS_SCAN_MAX = 2_000
+ADMIN_AUDIT_MONTH_LOOKBACK = 24
+ADMIN_AUDIT_PREFIX_SCAN_MAX = 500
 
 _SNAPSHOT_ID_RE = re.compile(r"^aps_[0-9]{8}_[a-f0-9]{16}$")
 _COMMAND_ID_RE = re.compile(r"^delivery_[a-f0-9]{40}$")
@@ -213,14 +222,19 @@ def sanitize_audit_metadata(value: Any, *, _depth: int = 0) -> Any:
         return "[truncated]"
     if isinstance(value, dict):
         out: Dict[str, Any] = {}
-        for raw_key, raw_value in value.items():
+        for raw_key, raw_value in itertools.islice(
+            value.items(), MAX_AUDIT_METADATA_DICT_ITEMS
+        ):
             key = str(raw_key)
             if _SENSITIVE_KEY_RE.search(key):
                 continue
             out[key[:80]] = sanitize_audit_metadata(raw_value, _depth=_depth + 1)
         return out
     if isinstance(value, (list, tuple)):
-        return [sanitize_audit_metadata(item, _depth=_depth + 1) for item in list(value)[:50]]
+        return [
+            sanitize_audit_metadata(item, _depth=_depth + 1)
+            for item in itertools.islice(value, MAX_AUDIT_METADATA_LIST_ITEMS)
+        ]
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value[:500] if isinstance(value, str) else value
     return str(value)[:500]
@@ -259,12 +273,134 @@ def append_operator_audit(
     return record
 
 
-def list_operator_audit(limit: int = 100) -> List[Dict[str, Any]]:
-    limit = max(1, min(int(limit), 500))
+def _bounded_audit_blobs(bucket: Any, *, prefix: str, max_results: int):
+    try:
+        iterator = bucket.list_blobs(prefix=prefix, max_results=max_results)
+    except TypeError:
+        iterator = bucket.list_blobs(prefix=prefix)
+    return itertools.islice(iterator, max_results)
+
+
+def _collect_recent_audit_names(limit: int, *, cursor: str = "") -> tuple[List[str], int]:
+    base_prefix = f"{SAFETY_PREFIX}/operator_audit/evt_"
+    bucket = _get_gcs_bucket()
+    names: set[str] = set()
+    state = {"scanned": 0}
+    valid_cursor = cursor if _EVENT_ID_RE.fullmatch(cursor) else ""
+    cursor_dt: Optional[datetime] = None
+    if valid_cursor:
+        try:
+            cursor_dt = datetime.strptime(valid_cursor[4:19], "%Y%m%dT%H%M%S")
+        except ValueError:
+            cursor_dt = None
+
+    def add_blobs(blobs: List[Any]) -> None:
+        for blob in blobs:
+            name = str(blob.name)
+            event_id = name.rsplit("/", 1)[-1][:-5] if name.endswith(".json") else ""
+            if not _EVENT_ID_RE.fullmatch(event_id):
+                continue
+            if valid_cursor and event_id >= valid_cursor:
+                continue
+            names.add(name)
+
+    def scan_partition(
+        partition_prefix: str,
+        levels: tuple[int, ...],
+        *,
+        upper_values: tuple[int, ...] = (),
+    ) -> None:
+        remaining = ADMIN_AUDIT_GCS_SCAN_MAX - state["scanned"]
+        if remaining <= 0:
+            return
+        cap = min(ADMIN_AUDIT_PREFIX_SCAN_MAX, remaining)
+        blobs = list(
+            _bounded_audit_blobs(bucket, prefix=partition_prefix, max_results=cap)
+        )
+        state["scanned"] += len(blobs)
+        saturated = len(blobs) >= cap
+        if not saturated or not levels or state["scanned"] >= ADMIN_AUDIT_GCS_SCAN_MAX:
+            add_blobs(blobs)
+            return
+        before_count = len(names)
+        upper = (
+            min(levels[0] - 1, upper_values[0])
+            if upper_values
+            else levels[0] - 1
+        )
+        for value in range(upper, -1, -1):
+            scan_partition(
+                f"{partition_prefix}{value:02d}",
+                levels[1:],
+                upper_values=(
+                    upper_values[1:]
+                    if upper_values and value == upper
+                    else ()
+                ),
+            )
+            if len(names) >= limit or state["scanned"] >= ADMIN_AUDIT_GCS_SCAN_MAX:
+                break
+        if len(names) == before_count and state["scanned"] >= ADMIN_AUDIT_GCS_SCAN_MAX:
+            add_blobs(blobs)
+
+    now = datetime.now(ZoneInfo("Asia/Seoul"))
+    start_day = now.date()
+    if cursor_dt is not None:
+        start_day = min(start_day, cursor_dt.date())
+    year, month = start_day.year, start_day.month
+    for month_offset in range(ADMIN_AUDIT_MONTH_LOOKBACK):
+        month_token = f"{year:04d}{month:02d}"
+        remaining = ADMIN_AUDIT_GCS_SCAN_MAX - state["scanned"]
+        if remaining <= 0:
+            break
+        cap = min(ADMIN_AUDIT_PREFIX_SCAN_MAX, remaining)
+        month_blobs = list(
+            _bounded_audit_blobs(
+                bucket, prefix=f"{base_prefix}{month_token}", max_results=cap
+            )
+        )
+        state["scanned"] += len(month_blobs)
+        saturated = len(month_blobs) >= cap
+        if not saturated or state["scanned"] >= ADMIN_AUDIT_GCS_SCAN_MAX:
+            add_blobs(month_blobs)
+        else:
+            day_upper = monthrange(year, month)[1]
+            if month_offset == 0:
+                day_upper = min(day_upper, start_day.day)
+            before_count = len(names)
+            for day in range(day_upper, 0, -1):
+                cursor_time_upper = (
+                    (cursor_dt.hour, cursor_dt.minute, cursor_dt.second)
+                    if cursor_dt is not None
+                    and cursor_dt.year == year
+                    and cursor_dt.month == month
+                    and cursor_dt.day == day
+                    else ()
+                )
+                scan_partition(
+                    f"{base_prefix}{month_token}{day:02d}T",
+                    (24, 60, 60),
+                    upper_values=cursor_time_upper,
+                )
+                if len(names) >= limit or state["scanned"] >= ADMIN_AUDIT_GCS_SCAN_MAX:
+                    break
+            if len(names) == before_count and state["scanned"] >= ADMIN_AUDIT_GCS_SCAN_MAX:
+                add_blobs(month_blobs)
+        if len(names) >= limit or state["scanned"] >= ADMIN_AUDIT_GCS_SCAN_MAX:
+            break
+        month -= 1
+        if month == 0:
+            year -= 1
+            month = 12
+    return heapq.nlargest(limit, names), state["scanned"]
+
+
+def list_operator_audit_page(limit: int = 100, *, cursor: str = "") -> Dict[str, Any]:
+    """Return a bounded newest-first audit page and stable event-id cursor."""
+    bounded_limit = max(1, min(int(limit), ADMIN_AUDIT_LIST_MAX_LIMIT))
+    fetch_limit = bounded_limit + 1
     if _uses_gcs_backend():
-        prefix = f"{SAFETY_PREFIX}/operator_audit/"
-        blobs = list(_get_gcs_bucket().list_blobs(prefix=prefix))
-        names = sorted((b.name for b in blobs if b.name.endswith(".json")), reverse=True)[:limit]
+        names, _scanned = _collect_recent_audit_names(fetch_limit, cursor=cursor)
         rows: List[Dict[str, Any]] = []
         for name in names:
             raw = _gcs_download_text(name)
@@ -274,14 +410,37 @@ def list_operator_audit(limit: int = 100) -> List[Dict[str, Any]]:
                 continue
             if isinstance(row, dict):
                 rows.append(row)
-        return rows
-    paths = sorted((_local_root() / "operator_audit").glob("evt_*.json"), reverse=True)[:limit]
-    rows = []
-    for path in paths:
-        try:
-            row = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if isinstance(row, dict):
-            rows.append(row)
-    return rows
+    else:
+        valid_cursor = cursor if _EVENT_ID_RE.fullmatch(cursor) else ""
+        paths = heapq.nlargest(
+            fetch_limit,
+            (
+                path
+                for path in (_local_root() / "operator_audit").glob("evt_*.json")
+                if not valid_cursor or path.stem < valid_cursor
+            ),
+            key=lambda path: path.name,
+        )
+        rows = []
+        for path in paths:
+            try:
+                row = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+    has_more = len(rows) > bounded_limit
+    items = rows[:bounded_limit]
+    return {
+        "items": items,
+        "limit": bounded_limit,
+        "cursor": cursor if _EVENT_ID_RE.fullmatch(cursor) else "",
+        "next_cursor": (
+            str(items[-1].get("event_id") or "") if has_more and items else ""
+        ),
+        "has_more": has_more,
+    }
+
+
+def list_operator_audit(limit: int = 100, *, cursor: str = "") -> List[Dict[str, Any]]:
+    return list_operator_audit_page(limit=limit, cursor=cursor)["items"]

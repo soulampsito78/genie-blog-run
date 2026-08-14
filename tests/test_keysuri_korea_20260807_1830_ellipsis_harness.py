@@ -213,6 +213,7 @@ class Korea1830EllipsisHarness(unittest.TestCase):
             kst_date="2026-08-07",
             scheduled_slot="18:30",
             retry_verdict=RETRY_ALLOWED_WITH_WARNING,
+            confirmed_cause="customer-visible ellipsis 검증 실패가 확인되었습니다.",
             summary_ko="warn",
         )
         with mock.patch(
