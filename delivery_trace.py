@@ -112,7 +112,6 @@ def build_customer_email_delivery_fields(
     repo_root: Path | None = None,
 ) -> Dict[str, Any]:
     trace = dict(trace or {}) if attempted else {}
-    status = "smtp_accepted" if send_ok else ("failed" if attempted else "not_sent")
     recipients = dedupe_preserve_order(
         [str(addr or "").strip() for addr in trace.get("envelope_to") or [] if str(addr or "").strip()]
     )
@@ -126,12 +125,31 @@ def build_customer_email_delivery_fields(
     accepted_count = int(trace.get("smtp_accepted_recipient_count") or 0)
     if send_ok and not accepted_count:
         accepted_count = max(0, len(recipients) - len(refused))
+    target_count = len(recipients)
+    refused_count = len(refused)
+    outcome_unknown = bool(trace.get("smtp_outcome_unknown"))
+    submission_started = bool(trace.get("smtp_submission_started"))
+    if not attempted:
+        status = "NOT_SENT"
+    elif outcome_unknown:
+        status = "OUTCOME_UNKNOWN"
+    elif refused_count and accepted_count:
+        status = "PARTIAL_REFUSAL"
+    elif refused_count and target_count and refused_count >= target_count:
+        status = "REFUSED_ALL"
+    elif send_ok and target_count and accepted_count >= target_count:
+        status = "ACCEPTED_ALL"
+    elif submission_started:
+        status = "SUBMITTED"
+    else:
+        status = "NOT_SENT"
+    unknown_count = max(0, target_count - accepted_count - refused_count)
 
     fields = {
         "customer_email_delivery_status": status,
         "customer_email_smtp_attempted": bool(attempted),
-        "customer_email_sent_at_kst": sent_at_kst if send_ok else None,
-        "customer_email_recipient_count": len(recipients),
+        "customer_email_sent_at_kst": sent_at_kst if status == "ACCEPTED_ALL" else None,
+        "customer_email_recipient_count": target_count,
         "customer_email_recipient_domains": recipient_domains(recipients),
         "customer_email_recipients_masked": mask_email_addresses(recipients),
         "customer_email_subject": str(subject or ""),
@@ -145,6 +163,14 @@ def build_customer_email_delivery_fields(
         "smtp_refused_recipients_masked": mask_email_addresses(refused),
         "smtp_partial_refusal": bool(refused),
         "smtp_accepted_recipient_count": accepted_count,
+        "customer_delivery_target_count": target_count,
+        "customer_delivery_accepted_count": accepted_count,
+        "customer_delivery_refused_count": refused_count,
+        "customer_delivery_unknown_count": unknown_count,
+        "customer_delivery_attempted_at": str(trace.get("attempted_at") or ""),
+        "customer_delivery_completed_at": sent_at_kst if status in {"ACCEPTED_ALL", "PARTIAL_REFUSAL", "REFUSED_ALL"} else None,
+        "smtp_outcome_unknown": outcome_unknown,
+        "provider_submission_identifier": str(trace.get("provider_submission_identifier") or ""),
     }
     clean_preheader = sanitize_email_diagnostic(str(preheader or "").strip())
     if clean_preheader:

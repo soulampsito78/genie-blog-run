@@ -16,6 +16,7 @@ from keysuri_service_full_run import keysuri_global_service_email_cid_src
 from main import app
 from programs.registry import list_programs, resolve_program_id
 from tests.test_admin_routes import post_customer_approve_with_confirm
+from tests.admin_approval_test_utils import approve_run_with_snapshot
 
 
 def _keysuri_global_gmail_owner_review_email_html(
@@ -259,27 +260,32 @@ class KeysuriGlobalApproveRunTests(unittest.TestCase):
             "smtp_accepted_recipient_count": 2,
             "smtp_refused_recipients": [],
         }
-        save_run_artifact(
-            _keysuri_global_artifact_meta(run_id),
-            email_html=_keysuri_global_gmail_owner_review_email_html(run_id),
-        )
-        with patch("email_sender.last_send_trace", return_value=trace):
-            with patch("email_sender.last_send_diagnostic", return_value=""):
-                with patch(
-                    "keysuri_customer_delivery.last_keysuri_delivery_result",
-                    return_value=SimpleNamespace(
-                        customer_email_subject="AI 인프라 신호 점검: 6월 12일 글로벌 테크 브리핑",
-                        customer_email_preheader="글로벌 AI·테크 신호 브리핑 · 주요 신호: AI 인프라 신호 점검",
-                    ),
-                ):
-                    updated, status = approve_run(run_id)
+        with tempfile.TemporaryDirectory() as tmp:
+            top = Path(tmp) / "global-top.jpg"
+            top.write_bytes(b"global-top")
+            artifact = _keysuri_global_artifact_meta(run_id)
+            artifact["generated_image_path"] = str(top)
+            save_run_artifact(
+                artifact,
+                email_html=_keysuri_global_gmail_owner_review_email_html(run_id),
+            )
+            with patch("email_sender.last_send_trace", return_value=trace):
+                with patch("email_sender.last_send_diagnostic", return_value=""):
+                    with patch(
+                        "keysuri_customer_delivery.last_keysuri_delivery_result",
+                        return_value=SimpleNamespace(
+                            customer_email_subject="AI 인프라 신호 점검: 6월 12일 글로벌 테크 브리핑",
+                            customer_email_preheader="글로벌 AI·테크 신호 브리핑 · 주요 신호: AI 인프라 신호 점검",
+                        ),
+                    ):
+                        updated, status = approve_run_with_snapshot(run_id)
         self.assertEqual(status, "ok")
         self.assertIsNotNone(updated)
         mock_send.assert_called_once()
         meta = load_run_artifact(run_id) or {}
         self.assertEqual(meta.get("owner_review_status"), "approved")
-        self.assertEqual(meta.get("customer_delivery_status"), "smtp_accepted")
-        self.assertEqual(meta.get("customer_email_delivery_status"), "smtp_accepted")
+        self.assertEqual(meta.get("customer_delivery_status"), "ACCEPTED_ALL")
+        self.assertEqual(meta.get("customer_email_delivery_status"), "ACCEPTED_ALL")
         self.assertEqual(meta.get("customer_email_recipient_count"), 2)
         self.assertEqual(meta.get("customer_email_recipients_masked"), ["su***gp@hanmail.net", "ph***ce@gmail.com"])
         self.assertEqual(meta.get("customer_email_subject"), "AI 인프라 신호 점검: 6월 12일 글로벌 테크 브리핑")
@@ -331,21 +337,26 @@ class KeysuriApproveRunBlockedTests(unittest.TestCase):
     def test_keysuri_korea_approve_run_sends_when_baseline_confirmed(self) -> None:
         # Korea with 041559 baseline confirmed → approve_run sends customer email
         run_id = "20260612_120001_keysuri_korea_tech_aabbccdd"
-        save_run_artifact(
-            _keysuri_korea_artifact_meta_with_baseline(run_id),
-            email_html="<p>키수리 코리아 브리핑</p>",
-        )
-        with patch(
-            "keysuri_customer_delivery.send_keysuri_customer_final_email",
-            return_value=True,
-        ) as mock_send:
-            updated, status = approve_run(run_id)
+        with tempfile.TemporaryDirectory() as tmp:
+            top = Path(tmp) / "top.jpg"
+            bottom = Path(tmp) / "bottom.jpg"
+            top.write_bytes(b"top")
+            bottom.write_bytes(b"bottom")
+            meta = _keysuri_korea_artifact_meta_with_baseline(run_id)
+            meta["generated_image_path"] = str(top)
+            meta["korea_bottom_shot_path"] = str(bottom)
+            save_run_artifact(meta, email_html="<p>키수리 코리아 브리핑</p>")
+            with patch(
+                "keysuri_customer_delivery.send_keysuri_customer_final_email",
+                return_value=True,
+            ) as mock_send:
+                updated, status = approve_run_with_snapshot(run_id)
         self.assertEqual(status, "ok")
         self.assertIsNotNone(updated)
         mock_send.assert_called_once()
         meta = load_run_artifact(run_id) or {}
         self.assertEqual(meta.get("owner_review_status"), "approved")
-        self.assertEqual(meta.get("customer_delivery_status"), "smtp_accepted")
+        self.assertEqual(meta.get("customer_delivery_status"), "ACCEPTED_ALL")
 
 
 class KeysuriCustomerDeliveryHtmlTests(unittest.TestCase):
@@ -523,12 +534,17 @@ class KeysuriApproveRouteTests(unittest.TestCase):
     def test_approve_post_keysuri_global_sends_via_confirm_flow(self, mock_send: MagicMock) -> None:
         mock_send.return_value = True
         run_id = "20260612_140000_keysuri_global_tech_ccddeeff"
-        save_run_artifact(
-            _keysuri_global_artifact_meta(run_id),
-            email_html=_keysuri_global_gmail_owner_review_email_html(run_id),
-        )
-        self.client.post("/admin/login", data={"password": "test-admin-secret"})
-        resp = post_customer_approve_with_confirm(self.client, run_id, note="ok")
+        with tempfile.TemporaryDirectory() as tmp:
+            top = Path(tmp) / "global-top.jpg"
+            top.write_bytes(b"global-top")
+            artifact = _keysuri_global_artifact_meta(run_id)
+            artifact["generated_image_path"] = str(top)
+            save_run_artifact(
+                artifact,
+                email_html=_keysuri_global_gmail_owner_review_email_html(run_id),
+            )
+            self.client.post("/admin/login", data={"password": "test-admin-secret"})
+            resp = post_customer_approve_with_confirm(self.client, run_id, note="ok")
         self.assertEqual(resp.status_code, 303)
         self.assertNotIn("approve_error", resp.headers.get("location", ""))
         mock_send.assert_called_once()

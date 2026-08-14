@@ -10,12 +10,24 @@ count and a human-readable source label, to keep PII out of disk artifacts.
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
+
+from admin_store import (
+    _get_gcs_bucket,
+    _gcs_download_text,
+    _gcs_upload_text,
+    _uses_gcs_backend,
+    admin_artifact_bucket_name,
+)
+
+NOTICE_SCHEMA_VERSION = 1
+NOTICE_GCS_PREFIX = "admin_notices"
 
 NOTICE_TYPES = (
     "delay_notice",
@@ -74,7 +86,8 @@ def repo_root() -> Path:
 
 
 def admin_notices_dir() -> Path:
-    d = repo_root() / "output" / "admin_notices"
+    configured = os.getenv("GENIE_ADMIN_NOTICE_LOCAL_DIR", "").strip()
+    d = Path(configured) if configured else repo_root() / "output" / "admin_notices"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -98,36 +111,83 @@ def _notice_path(notice_id: str) -> Path:
     return admin_notices_dir() / f"{notice_id}.json"
 
 
+def notice_storage_backend_name() -> str:
+    return "gcs" if _uses_gcs_backend() else "local_test_dev"
+
+
+def _ensure_notice_store_allowed() -> None:
+    if _uses_gcs_backend():
+        return
+    allow_local = os.getenv("GENIE_ADMIN_ALLOW_LOCAL_NOTICE_STORE", "").strip().lower()
+    if os.getenv("K_SERVICE", "").strip() and allow_local not in {"1", "true", "yes", "on"}:
+        raise RuntimeError("durable_admin_notice_store_required")
+
+
+def notice_storage_display_path() -> str:
+    bucket = admin_artifact_bucket_name()
+    return f"gs://{bucket}/{NOTICE_GCS_PREFIX}" if bucket else str(admin_notices_dir())
+
+
+def _notice_gcs_key(notice_id: str) -> str:
+    if not validate_notice_id(notice_id):
+        raise ValueError("invalid notice_id")
+    return f"{NOTICE_GCS_PREFIX}/{notice_id}.json"
+
+
 def save_notice(notice: Dict[str, Any]) -> None:
+    _ensure_notice_store_allowed()
     notice_id = str(notice.get("notice_id") or "")
     if not validate_notice_id(notice_id):
         raise ValueError(f"invalid notice_id: {notice_id!r}")
-    path = _notice_path(notice_id)
-    path.write_text(json.dumps(notice, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload = dict(notice)
+    payload["schema_version"] = int(payload.get("schema_version") or NOTICE_SCHEMA_VERSION)
+    payload["storage_backend"] = notice_storage_backend_name()
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    if _uses_gcs_backend():
+        _gcs_upload_text(_notice_gcs_key(notice_id), text, content_type="application/json")
+    else:
+        _notice_path(notice_id).write_text(text, encoding="utf-8")
 
 
 def load_notice(notice_id: str) -> Optional[Dict[str, Any]]:
+    _ensure_notice_store_allowed()
     if not validate_notice_id(notice_id):
         return None
-    path = _notice_path(notice_id)
-    if not path.is_file():
-        return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        if _uses_gcs_backend():
+            raw = _gcs_download_text(_notice_gcs_key(notice_id))
+            if raw is None:
+                return None
+        else:
+            path = _notice_path(notice_id)
+            if not path.is_file():
+                return None
+            raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
 
 
 def list_notices(limit: int = 50) -> List[Dict[str, Any]]:
+    _ensure_notice_store_allowed()
     rows: List[Dict[str, Any]] = []
-    for path in admin_notices_dir().glob("notice_*.json"):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if isinstance(data, dict):
-            rows.append(data)
+    if _uses_gcs_backend():
+        for blob in _get_gcs_bucket().list_blobs(prefix=f"{NOTICE_GCS_PREFIX}/notice_"):
+            if not str(blob.name).endswith(".json"):
+                continue
+            notice_id = str(blob.name).rsplit("/", 1)[-1][:-5]
+            data = load_notice(notice_id)
+            if data:
+                rows.append(data)
+    else:
+        for path in admin_notices_dir().glob("notice_*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(data, dict):
+                rows.append(data)
     rows.sort(key=lambda n: str(n.get("created_at") or ""), reverse=True)
     return rows[:limit]
 
@@ -146,6 +206,7 @@ def create_notice_draft(
         raise ValueError(f"unknown notice_type: {notice_type!r}")
     notice_id = generate_notice_id(notice_type)
     notice: Dict[str, Any] = {
+        "schema_version": NOTICE_SCHEMA_VERSION,
         "notice_id": notice_id,
         "notice_type": notice_type,
         "program_id": str(program_id or "").strip(),
@@ -164,6 +225,7 @@ def create_notice_draft(
         "send_error": None,
         "visible_recipient_policy": VISIBLE_RECIPIENT_POLICY,
         "pii_safe_delivery": True,
+        "storage_backend": notice_storage_backend_name(),
     }
     save_notice(notice)
     return notice

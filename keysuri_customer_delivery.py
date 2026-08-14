@@ -469,14 +469,16 @@ def resolve_keysuri_inline_jpeg_parts(
 def send_keysuri_customer_final_email(
     saved_html: str,
     meta: Dict[str, Any],
+    *,
+    prepared_delivery: Optional[Dict[str, Any]] = None,
 ) -> bool:
     global _last_delivery_result
     mode = str(meta.get("mode") or meta.get("program_id") or "")
-    subject = build_keysuri_customer_final_subject(meta, saved_html)
-    preheader = build_keysuri_customer_final_preheader(meta, saved_html)
-
-    ready, err = customer_delivery_config_ready()
-    if not ready:
+    prepared = dict(prepared_delivery or prepare_keysuri_customer_delivery(saved_html, meta))
+    subject = str(prepared.get("subject") or build_keysuri_customer_final_subject(meta, saved_html))
+    preheader = str(prepared.get("preheader") or build_keysuri_customer_final_preheader(meta, saved_html))
+    if not prepared.get("ok"):
+        err = str(prepared.get("error") or "keysuri_delivery_preparation_failed")
         _last_delivery_result = KeysuriCustomerDeliveryResult(
             sent=False,
             reason=err,
@@ -487,65 +489,10 @@ def send_keysuri_customer_final_email(
         logger.warning("send_keysuri_customer_final_email: blocked (%s)", err)
         return False
 
-    if mode not in _KEYSURI_MODES:
-        _last_delivery_result = KeysuriCustomerDeliveryResult(
-            sent=False,
-            reason="unsupported_mode",
-            customer_delivery_status="not_sent",
-            customer_email_subject=subject,
-            customer_email_preheader=preheader,
-        )
-        return False
-
-    try:
-        html_body = prepare_keysuri_customer_final_html(saved_html, meta=meta)
-    except ValueError as exc:
-        _last_delivery_result = KeysuriCustomerDeliveryResult(
-            sent=False,
-            reason=str(exc),
-            customer_delivery_status="not_sent",
-            customer_email_subject=subject,
-            customer_email_preheader=preheader,
-        )
-        logger.warning("send_keysuri_customer_final_email: %s", exc)
-        return False
-    html_body = _insert_hidden_preheader(html_body, preheader)
-    html_quality = validate_keysuri_html_visible_text_quality(
-        html_body,
-        path="customer_email_html.visible_text",
-    )
-    if html_quality.get("visible_text_ellipsis_blocked"):
-        _last_delivery_result = KeysuriCustomerDeliveryResult(
-            sent=False,
-            reason=KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
-            customer_delivery_status="not_sent",
-            customer_email_subject=subject,
-            customer_email_preheader=preheader,
-        )
-        logger.warning("send_keysuri_customer_final_email: %s", KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED)
-        return False
-
-    inline_parts = resolve_keysuri_inline_jpeg_parts(saved_html, meta)
-    if not inline_parts:
-        if mode == PROGRAM_KOREA and _is_korea_generated_v6(meta):
-            # generated_v6_multi_ref: use the specific reason set during resolution.
-            reason = _last_korea_inline_resolve_reason or KOREA_GENERATED_FILES_UNAVAILABLE
-        elif mode == PROGRAM_KOREA and _resolve_generated_image_path(meta) is not None:
-            reason = _KOREA_BOTTOM_MISSING_REASON
-        else:
-            reason = "missing_generated_inline_image"
-        _last_delivery_result = KeysuriCustomerDeliveryResult(
-            sent=False,
-            reason=reason,
-            customer_delivery_status="not_sent",
-            customer_email_subject=subject,
-            customer_email_preheader=preheader,
-        )
-        logger.warning("send_keysuri_customer_final_email: %s", reason)
-        return False
-
+    html_body = str(prepared["html_body"])
+    inline_parts = list(prepared["inline_jpeg_parts"])
     cid_tokens = [row[1] for row in inline_parts] or _cid_tokens_from_html(saved_html)
-    customer_to = resolve_customer_recipients()["final_recipients"]
+    customer_to = list(prepared["recipients"])
     os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
     sent = send_genie_email(
         html_body,
@@ -563,3 +510,60 @@ def send_keysuri_customer_final_email(
         cid_tokens_used=list(cid_tokens),
     )
     return bool(sent)
+
+
+def prepare_keysuri_customer_delivery(
+    saved_html: str,
+    meta: Dict[str, Any],
+    *,
+    recipients_override: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Prepare the exact KeeSuri payload without submitting it to SMTP."""
+    mode = str(meta.get("mode") or meta.get("program_id") or "")
+    subject = build_keysuri_customer_final_subject(meta, saved_html)
+    preheader = build_keysuri_customer_final_preheader(meta, saved_html)
+    ready, err = customer_delivery_config_ready()
+    if not ready and recipients_override is None:
+        return {"ok": False, "error": err, "subject": subject, "preheader": preheader}
+    if mode not in _KEYSURI_MODES:
+        return {"ok": False, "error": "unsupported_mode", "subject": subject, "preheader": preheader}
+    try:
+        html_body = prepare_keysuri_customer_final_html(saved_html, meta=meta)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc), "subject": subject, "preheader": preheader}
+    html_body = _insert_hidden_preheader(html_body, preheader)
+    html_quality = validate_keysuri_html_visible_text_quality(
+        html_body,
+        path="customer_email_html.visible_text",
+    )
+    if html_quality.get("visible_text_ellipsis_blocked"):
+        return {
+            "ok": False,
+            "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+            "subject": subject,
+            "preheader": preheader,
+        }
+    inline_parts = resolve_keysuri_inline_jpeg_parts(saved_html, meta)
+    if not inline_parts:
+        if mode == PROGRAM_KOREA and _is_korea_generated_v6(meta):
+            reason = _last_korea_inline_resolve_reason or KOREA_GENERATED_FILES_UNAVAILABLE
+        elif mode == PROGRAM_KOREA and _resolve_generated_image_path(meta) is not None:
+            reason = _KOREA_BOTTOM_MISSING_REASON
+        else:
+            reason = "missing_generated_inline_image"
+        return {"ok": False, "error": reason, "subject": subject, "preheader": preheader}
+    recipients = (
+        list(recipients_override)
+        if recipients_override is not None
+        else list(resolve_customer_recipients()["final_recipients"])
+    )
+    if not recipients:
+        return {"ok": False, "error": "missing_customer_to", "subject": subject, "preheader": preheader}
+    return {
+        "ok": True,
+        "html_body": html_body,
+        "subject": subject,
+        "preheader": preheader,
+        "inline_jpeg_parts": list(inline_parts),
+        "recipients": recipients,
+    }

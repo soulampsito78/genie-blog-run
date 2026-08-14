@@ -36,11 +36,14 @@ def post_customer_approve_with_confirm(
     if include_nonce and nonce is None:
         match = re.search(r'name="approve_nonce" value="([^"]+)"', confirm_resp.text)
         nonce = match.group(1) if match else ""
+    snapshot_match = re.search(r'name="approval_snapshot_id" value="([^"]+)"', confirm_resp.text)
     data: dict[str, str] = {"approve_note": note}
     if include_nonce:
         data["approve_nonce"] = nonce or ""
     if include_checkbox:
         data["customer_send_confirm"] = "1"
+    if snapshot_match:
+        data["approval_snapshot_id"] = snapshot_match.group(1)
     return client.post(f"/admin/runs/{run_id}/approve", data=data, follow_redirects=False)
 
 
@@ -1701,12 +1704,16 @@ class AdminApprovalHardeningTests(unittest.TestCase):
         match = re.search(r'name="approve_nonce" value="([^"]+)"', confirm_resp.text)
         self.assertIsNotNone(match)
         nonce = match.group(1)
+        snapshot_match = re.search(r'name="approval_snapshot_id" value="([^"]+)"', confirm_resp.text)
+        self.assertIsNotNone(snapshot_match)
+        snapshot_id = snapshot_match.group(1)
         first = self.client.post(
             f"/admin/runs/{run_id}/approve",
             data={
                 "approve_note": "once",
                 "approve_nonce": nonce,
                 "customer_send_confirm": "1",
+                "approval_snapshot_id": snapshot_id,
             },
             follow_redirects=False,
         )
@@ -1718,6 +1725,7 @@ class AdminApprovalHardeningTests(unittest.TestCase):
                 "approve_note": "twice",
                 "approve_nonce": nonce,
                 "customer_send_confirm": "1",
+                "approval_snapshot_id": snapshot_id,
             },
             follow_redirects=False,
         )

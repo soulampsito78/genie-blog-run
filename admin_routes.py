@@ -18,6 +18,28 @@ logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from admin_components import (
+    badge as _ui_badge,
+    email_preview as _ui_email_preview,
+    empty_state as _ui_empty_state,
+    esc as _ui_esc,
+    layout as _ui_layout,
+    metric as _ui_metric,
+    page_header as _ui_page_header,
+    technical_details as _ui_technical_details,
+)
+from admin_view_models import (
+    ACTIVE_PROGRAMS,
+    ACTIVE_PROGRAM_IDS,
+    delivery_projection,
+    incident_projection,
+    is_active_program,
+    latest_by_program,
+    needs_review,
+    program_id as _vm_program_id,
+    run_projection,
+)
+
 from admin_store import (
     EXECUTABLE_REISSUE_SCOPE,
     REISSUE_SCOPES,
@@ -28,6 +50,7 @@ from admin_store import (
     approve_run,
     build_customer_delivery_admin_panel,
     can_approve_customer_send,
+    hold_run,
     load_beta_recipient_config,
     normalize_reissue_scope,
     now_kst_iso,
@@ -36,6 +59,7 @@ from admin_store import (
     list_run_artifacts,
     owner_review_email_label_ko,
     record_parent_reissue_audit,
+    reopen_held_run,
     reissue_parent_block_reason,
     remove_beta_recipient,
     resolve_customer_recipients,
@@ -83,6 +107,8 @@ from admin_notice_delivery import (
     render_notice_body_html,
     send_admin_notice_email,
 )
+from admin_safety_store import append_operator_audit, list_operator_audit, safety_storage_display_path
+from admin_operational_status import default_operational_status_service
 
 router = APIRouter(tags=["admin"])
 
@@ -108,6 +134,9 @@ APPROVE_NONCE_SALT = b"genie-approve-nonce-v1"
 APPROVE_NONCE_TTL_SECONDS = 900
 APPROVE_NONCE_FORM_FIELD = "approve_nonce"
 CUSTOMER_SEND_CONFIRM_FIELD = "customer_send_confirm"
+APPROVAL_SNAPSHOT_FORM_FIELD = "approval_snapshot_id"
+CSRF_FORM_FIELD = "csrf_token"
+CSRF_SALT = b"genie-admin-csrf-v1"
 REISSUE_REASON_OPTIONS_BY_SCOPE = {
     "body_only": (
         "뉴스 중복 이슈",            # DEFAULT
@@ -358,6 +387,10 @@ def _safe_reissue_result_error_code(raw_error: str) -> str:
 _APPROVE_ERROR_MESSAGES = {
     "already_approved": "이미 승인된 실행입니다.",
     "customer_already_sent": "고객 발송이 이미 완료된 실행입니다.",
+    "delivery_submission_pending": "SMTP 제출이 시작된 실행입니다. 결과를 확인할 때까지 중복 발송을 차단합니다.",
+    "delivery_partial_refusal": "일부 수신자는 접수되고 일부는 즉시 거절되었습니다. 중복 위험 때문에 새 발송을 차단합니다.",
+    "delivery_refused_all": "모든 수신자가 즉시 거절된 기록입니다. 원인을 확인하기 전 새 발송을 차단합니다.",
+    "delivery_outcome_unknown": "SMTP 제출 후 결과를 확정하지 못했습니다. 중복 위험 때문에 새 발송을 차단합니다.",
     "legacy_timeout_sent": "과거 타임아웃 자동 발송 기록입니다. 새 승인 발송은 불가합니다.",
     "missing_customer_to": "GENIE_CUSTOMER_EMAIL_TO가 설정되지 않았습니다.",
     "missing_email_html": "저장된 이메일 HTML이 없습니다.",
@@ -370,10 +403,12 @@ _APPROVE_ERROR_MESSAGES = {
     "invalid_approval_nonce": "승인 확인 토큰이 유효하지 않습니다. 승인 검토 페이지에서 다시 시도하세요.",
     "approval_nonce_expired": "승인 확인 토큰이 만료되었습니다. 승인 검토 페이지에서 다시 시도하세요.",
     "missing_customer_send_confirm": "고객 이메일 발송 승인 체크박스를 선택해야 합니다.",
+    "review_held": "보류된 검수입니다. 다시 검수하기로 전환한 뒤 승인하세요.",
+    "INVALID_APPROVAL_SNAPSHOT": "승인 스냅샷이 없거나 위조되었습니다. 최종 확인을 다시 진행하세요.",
+    "STALE_APPROVAL_SNAPSHOT": "승인 스냅샷이 만료되었습니다. 최종 확인을 다시 진행하세요.",
+    "APPROVAL_TARGET_CHANGED": "확인 후 콘텐츠·이미지·수신자가 변경되었습니다. 발송하지 않았습니다. 다시 확인하세요.",
+    "DUPLICATE_DELIVERY_COMMAND": "동일 발송 명령은 이미 제출되었거나 결과 확인 중입니다. 재전송하지 말고 기록을 확인하세요.",
 }
-
-_KEYSURI_CUSTOMER_DELIVERY_BLOCKED_MODES = frozenset({"keysuri_korea_tech"})
-
 
 def admin_password() -> str:
     return os.getenv("GENIE_ADMIN_PASSWORD", "").strip()
@@ -383,12 +418,60 @@ def admin_enabled() -> bool:
     return bool(admin_password())
 
 
+def _admin_cookie_secure() -> bool:
+    explicit = os.getenv("GENIE_ADMIN_COOKIE_SECURE", "").strip().lower()
+    if explicit:
+        return explicit not in {"0", "false", "no", "off"}
+    return bool(os.getenv("K_SERVICE", "").strip())
+
+
+def _csrf_enabled() -> bool:
+    explicit = os.getenv("GENIE_ADMIN_CSRF_ENABLED", "").strip().lower()
+    if explicit:
+        return explicit not in {"0", "false", "no", "off"}
+    return bool(os.getenv("K_SERVICE", "").strip())
+
+
 def _session_token(password: str) -> str:
     return hmac.new(password.encode("utf-8"), SESSION_SALT, hashlib.sha256).hexdigest()
 
 
 def _session_token_from_request(request: Request) -> str:
     return str(request.cookies.get(SESSION_COOKIE, "") or "")
+
+
+def _operator_id(request: Request) -> str:
+    token = _session_token_from_request(request)
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16] if token else "anonymous"
+    return f"owner_session:{digest}"
+
+
+def _csrf_token(request: Request, action: str) -> str:
+    session_token = _session_token_from_request(request)
+    payload = f"{session_token}|{action}".encode("utf-8")
+    return hmac.new(admin_password().encode("utf-8"), CSRF_SALT + payload, hashlib.sha256).hexdigest()
+
+
+def _csrf_field(request: Request, action: str) -> str:
+    return (
+        f'<input type="hidden" name="{CSRF_FORM_FIELD}" '
+        f'value="{_esc(_csrf_token(request, action))}">'
+    )
+
+
+def _verify_csrf(request: Request, action: str, supplied: str) -> bool:
+    if not _csrf_enabled():
+        return True
+    if not supplied:
+        return False
+    return hmac.compare_digest(str(supplied), _csrf_token(request, action))
+
+
+def _csrf_rejected() -> HTMLResponse:
+    return HTMLResponse(
+        _layout("Request blocked", '<div class="warn">CSRF 검증에 실패했습니다. 페이지를 새로 열어 다시 시도하세요.</div>'),
+        status_code=403,
+    )
 
 
 def _sign_approval_nonce(run_id: str, nonce: str, exp: int, session_token: str) -> str:
@@ -711,49 +794,8 @@ def _require_login(request: Request) -> Optional[RedirectResponse]:
     return None
 
 
-def _layout(title: str, inner: str) -> str:
-    return f"""<!doctype html>
-<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{_esc(title)}</title>
-<style>
-body{{font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;margin:0;padding:24px;background:#f8fafc;color:#0f172a;overflow-wrap:break-word;}}
-.wrap{{max-width:960px;width:100%;margin:0 auto;box-sizing:border-box;}}
-.card{{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px;margin:16px 0;box-sizing:border-box;}}
-.page-head{{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;}}
-.table-wrap{{overflow-x:auto;-webkit-overflow-scrolling:touch;}}
-.table-wrap table{{min-width:640px;}}
-table{{width:100%;border-collapse:collapse;font-size:14px;}}
-th,td{{border-top:1px solid #e2e8f0;padding:10px;text-align:left;vertical-align:top;}}
-th{{background:#f1f5f9;font-weight:700;}}
-a{{color:#0f172a;}}
-.btn{{display:inline-block;padding:12px 16px;min-height:44px;line-height:1.2;background:#0f172a;color:#fff;text-decoration:none;border-radius:8px;border:0;font-size:14px;cursor:pointer;box-sizing:border-box;}}
-.btn:hover{{background:#1e293b;}}
-.btn:focus-visible{{outline:2px solid #0f172a;outline-offset:2px;}}
-.warn{{background:#fff7ed;border:1px solid #fdba74;padding:12px;border-radius:8px;font-size:14px;line-height:1.6;overflow-wrap:anywhere;}}
-.break-long{{overflow-wrap:anywhere;word-break:break-word;}}
-.meta dt{{font-weight:700;margin-top:8px;}}
-.meta dd{{margin:4px 0 0 0;overflow-wrap:anywhere;word-break:break-word;}}
-pre,code{{overflow-wrap:anywhere;word-break:break-word;}}
-pre{{overflow-x:auto;max-width:100%;}}
-.radio-scope{{display:flex;align-items:flex-start;gap:10px;margin:0 0 10px;padding:14px 16px;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc;cursor:pointer;-webkit-tap-highlight-color:transparent;box-sizing:border-box;}}
-.radio-scope:has(input:checked){{border-color:#0f172a;background:#fff;box-shadow:inset 0 0 0 1px #0f172a;}}
-.radio-scope--disabled{{opacity:.58;cursor:not-allowed;background:#f1f5f9;}}
-.radio-scope__control{{flex:0 0 auto;padding-top:2px;}}
-.radio-scope__control input[type=radio]{{width:20px;height:20px;margin:0;cursor:pointer;}}
-.radio-scope--disabled .radio-scope__control input[type=radio]{{cursor:not-allowed;}}
-.radio-scope__body{{flex:1;min-width:0;}}
-.radio-helper{{display:block;margin-top:6px;font-size:12px;color:#64748b;line-height:1.5;overflow-wrap:anywhere;}}
-input[type=password],input[type=text],select,textarea{{width:100%;max-width:420px;padding:10px 8px;font-size:16px;box-sizing:border-box;}}
-@media (max-width:640px){{
-body{{padding:16px 12px;}}
-.card{{padding:16px;margin:12px 0;}}
-.page-head{{flex-direction:column;align-items:stretch;}}
-.page-head h1{{margin:0 0 4px 0;font-size:1.35rem;}}
-.page-head .btn,.form-actions .btn{{width:100%;text-align:center;}}
-th,td{{padding:8px 6px;font-size:13px;}}
-input[type=password],input[type=text],select,textarea{{max-width:100%;}}
-}}
-</style></head><body><div class="wrap">{inner}</div></body></html>"""
+def _layout(title: str, inner: str, *, active: str = "", authenticated: bool = True) -> str:
+    return _ui_layout(title, inner, active=active, authenticated=authenticated)
 
 
 @router.get("/admin", response_class=HTMLResponse)
@@ -762,7 +804,7 @@ def admin_home(request: Request):
     if gate is not None:
         return gate
     if is_logged_in(request):
-        return RedirectResponse(url="/admin/runs", status_code=303)
+        return RedirectResponse(url="/admin/operations", status_code=303)
     inner = """
 <h1>Genie Owner Admin</h1>
 <p>운영자 검토용 관리 페이지입니다. 고객 배포용이 아닙니다.</p>
@@ -773,7 +815,7 @@ def admin_home(request: Request):
 </form>
 </div>
 """
-    return HTMLResponse(_layout("Genie Admin Login", inner))
+    return HTMLResponse(_layout("Genie Admin Login", inner, authenticated=False))
 
 
 @router.post("/admin/login")
@@ -793,12 +835,13 @@ def admin_login(request: Request, password: str = Form(...)) -> Response:
 </form>
 </div>
 """
-        return HTMLResponse(_layout("Login failed", inner), status_code=401)
-    resp = RedirectResponse(url="/admin/runs", status_code=303)
+        return HTMLResponse(_layout("Login failed", inner, authenticated=False), status_code=401)
+    resp = RedirectResponse(url="/admin/operations", status_code=303)
     resp.set_cookie(
         SESSION_COOKIE,
         _session_token(pwd),
         httponly=True,
+        secure=_admin_cookie_secure(),
         samesite="lax",
         max_age=7 * 86400,
         path="/",
@@ -814,50 +857,314 @@ def admin_logout() -> RedirectResponse:
     return resp
 
 
+def _current_recipient_count() -> tuple[int, bool]:
+    """Return current resolved recipient count and whether its source loaded cleanly."""
+    try:
+        resolved = resolve_customer_recipients()
+    except Exception:  # read projection must fail visibly, never break Admin
+        return 0, False
+    recipients = resolved.get("final_recipients")
+    return (len(recipients) if isinstance(recipients, list) else 0, bool(resolved.get("admin_config_ok", True)))
+
+
+def _run_card(meta: Dict[str, Any], *, recipient_count: int, action_label: str = "검수하기") -> str:
+    view = run_projection(meta, current_recipient_count=recipient_count)
+    delivery = view["delivery"]
+    return f"""
+<article class="run-card">
+  <div class="run-card__top">
+    <div><p class="eyebrow">{_esc(view['program']['display'])}</p><h3>{_esc(view['subject'])}</h3></div>
+    {_ui_badge(view['state']['label'], view['state']['tone'])}
+  </div>
+  <div class="run-card__meta"><span>{_esc(view['time'])}</span><span>{_esc(view['origin'])}</span><span>{_esc(view['validation']['label'])}</span></div>
+  <p class="run-card__flow">{_esc(delivery['flow'])}</p>
+  <p style="color:var(--muted);margin:4px 0 14px;">{_esc(delivery['summary'])}</p>
+  <a class="btn btn--secondary" href="/admin/runs/{_esc(view['run_id'])}">{_esc(action_label)}</a>
+</article>
+"""
+
+
+@router.get("/admin/operations", response_class=HTMLResponse)
+def admin_operations(request: Request):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    from natural_run_incident_store import list_incidents
+    from natural_run_reliability import load_readiness
+
+    runs = [meta for meta in list_run_artifacts(limit=100) if is_active_program(meta)]
+    incidents = list_incidents(limit=50)
+    recipient_count, recipients_ok = _current_recipient_count()
+    latest = latest_by_program(runs)
+    review_backlog = [meta for meta in runs if needs_review(meta)]
+    review_latest: Dict[str, Dict[str, Any]] = {}
+    for meta in review_backlog:
+        review_latest.setdefault(_vm_program_id(meta), meta)
+    review_runs = list(review_latest.values())
+    open_incident_backlog = [
+        item for item in incidents
+        if str(item.get("status") or "") not in {"recovery_succeeded", "dismissed", "resolved"}
+        and str(item.get("program_id") or "") in ACTIVE_PROGRAM_IDS
+    ]
+    open_incident_latest: Dict[str, Dict[str, Any]] = {}
+    for item in open_incident_backlog:
+        open_incident_latest.setdefault(str(item.get("program_id") or ""), item)
+    open_incidents = list(open_incident_latest.values())
+    action_items = "".join(
+        f"""
+<div class="action-card">
+  <div><strong>{_esc(run_projection(meta)['program']['display'])} 브리핑 검수 필요</strong>
+  <p>{_esc(run_projection(meta)['time'])} · 고객 발송 전 owner 결정이 필요합니다.</p></div>
+  <a class="btn" href="/admin/runs/{_esc(meta.get('run_id'))}">검수하기</a>
+</div>"""
+        for meta in review_runs[:5]
+    )
+    if not action_items:
+        action_items = _ui_empty_state("대기 중인 검수 없음", "현재 저장된 근거에서 즉시 필요한 owner 검수는 없습니다.")
+    incident_items = "".join(
+        f"""
+<div class="action-card" style="border-left-color:var(--red);">
+  <div><strong>{_esc(incident_projection(item)['program']['display'])} 장애 확인 필요</strong>
+  <p>{_esc(incident_projection(item)['customer_impact'])} · {_esc(incident_projection(item)['current'])}</p></div>
+  <a class="btn btn--danger" href="/admin/incidents/{_esc(item.get('incident_id'))}">안전한 다음 행동 확인</a>
+</div>"""
+        for item in open_incidents[:5]
+    )
+    if not incident_items:
+        incident_items = _ui_empty_state("열린 장애 없음", "현재 저장된 장애 기록에서 owner 개입이 필요한 항목이 없습니다.")
+
+    cards = []
+    for program in ACTIVE_PROGRAMS:
+        pid = program["id"]
+        meta = latest.get(pid)
+        readiness = load_readiness(pid) or {}
+        preflight = str(readiness.get("status") or "NOT RUN")
+        if meta:
+            view = run_projection(meta, current_recipient_count=recipient_count)
+            state = view["state"]
+            latest_line = f"최근 {view['time']} · {view['origin']}"
+            href = f"/admin/runs/{_esc(view['run_id'])}"
+        else:
+            state = {"label": "실행 전", "tone": "neutral", "impact": "최근 실행 근거가 없습니다.", "action": "시스템 상태 보기"}
+            latest_line = "최근 실행 없음"
+            href = "/admin/system"
+        cards.append(f"""
+<article class="program-card">
+  <div class="program-card__top"><div><p class="eyebrow">{_esc(program['display'])}</p><h2>{_esc(program['name'])}</h2>
+  <p class="program-card__time">자연 실행 {program['natural_time']} · Preflight {program['preflight_time']}</p></div>
+  {_ui_badge(preflight, 'good' if preflight in {'PRECHECK_PASS','PASS'} else 'warn' if preflight != 'NOT RUN' else 'neutral')}</div>
+  <p class="program-card__state">{_esc(state['label'])}</p><p class="program-card__impact">{_esc(state['impact'])}</p>
+  <div class="program-card__footer"><span>{_esc(latest_line)}</span><a href="{href}">{_esc(state['action'])}</a></div>
+</article>""")
+
+    recipient_note = "현재 수신자 설정을 정상적으로 읽었습니다." if recipients_ok else "수신자 설정 근거를 읽지 못했습니다. 발송 전 재확인이 필요합니다."
+    inner = f"""
+{_ui_page_header('오늘의 운영', '세 프로그램의 현재 상태와 owner가 지금 해야 할 일만 먼저 보여줍니다.')}
+<div class="metrics">
+  {_ui_metric('검수 필요', len(review_runs), '프로그램')}
+  {_ui_metric('열린 장애', len(open_incidents), '건')}
+  {_ui_metric('현재 수신자', recipient_count if recipients_ok else '확인 필요', '명')}
+  {_ui_metric('활성 프로그램', 3, 'Today · Global · Korea')}
+</div>
+<div class="section-heading"><div><p class="eyebrow">ACTION</p><h2>내 결정이 필요합니다</h2></div></div>
+<div class="stack">{action_items}</div>
+<div class="section-heading"><div><p class="eyebrow">INCIDENTS</p><h2>장애와 경고</h2></div></div>
+<div class="stack">{incident_items}</div>
+<div class="section-heading"><div><p class="eyebrow">PROGRAMS</p><h2>오늘의 프로그램</h2></div><span class="evidence-label">{_esc(recipient_note)}</span></div>
+<div class="card-grid">{''.join(cards)}</div>
+"""
+    return HTMLResponse(_layout("Operations", inner, active="operations"))
+
+
+@router.get("/admin/reviews", response_class=HTMLResponse)
+def admin_review_queue(request: Request):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    recipient_count, recipients_ok = _current_recipient_count()
+    runs = [meta for meta in list_run_artifacts(limit=100) if is_active_program(meta)]
+    def _review_priority(meta: Dict[str, Any]) -> int:
+        view = run_projection(meta)
+        owner = str(meta.get("owner_review_status") or "").lower()
+        if needs_review(meta):
+            return 0  # needs owner decision
+        if view["delivery"]["label"] in {"PARTIAL DELIVERY", "REFUSED ALL", "RESULT UNKNOWN"}:
+            return 1  # delivery problem
+        if owner == "held":
+            return 2
+        if view["delivery"]["label"] == "SMTP SUBMITTED":
+            return 3
+        return 4
+    runs.sort(key=_review_priority)
+    cards = "".join(_run_card(meta, recipient_count=recipient_count) for meta in runs)
+    if not cards:
+        cards = _ui_empty_state("검수 대기 없음", "현재 발송 가능한 검수 대기 브리핑이 없습니다.")
+    source_note = f"현재 수신자 {recipient_count}명" if recipients_ok else "수신자 설정 확인 필요"
+    inner = f"""
+{_ui_page_header('검수함', '실제 고객 브리핑과 발송 근거를 한 화면에서 확인합니다.', 'REVIEW QUEUE')}
+<div class="section-heading"><div><h2>Owner 결정 · 발송 문제 · 보류 · 완료</h2></div><span class="evidence-label">{_esc(source_note)}</span></div>
+<div class="stack">{cards}</div>
+"""
+    return HTMLResponse(_layout("Review Queue", inner, active="reviews"))
+
+
+@router.get("/admin/delivery", response_class=HTMLResponse)
+def admin_delivery(request: Request):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    runs = [meta for meta in list_run_artifacts(limit=100) if is_active_program(meta)]
+    rows = []
+    for meta in runs:
+        view = run_projection(meta)
+        delivery = view["delivery"]
+        counts = []
+        if delivery.get("accepted") is not None:
+            counts.append(f"접수 {delivery['accepted']}명")
+        if delivery.get("refused") is not None:
+            counts.append(f"거절 {delivery['refused']}명")
+        count_line = " · ".join(counts) or "접수/거절 인원 근거 없음"
+        rows.append(f"""
+<article class="run-card">
+  <div class="run-card__top"><div><p class="eyebrow">{_esc(view['program']['display'])}</p><h3>{_esc(view['subject'])}</h3></div>{_ui_badge(delivery['label'], delivery['tone'])}</div>
+  <div class="run-card__meta"><span>{_esc(view['time'])}</span><span>{_esc(count_line)}</span></div>
+  <p class="run-card__flow">{_esc(delivery['summary'])}</p>
+  <p style="color:var(--muted);">Provider acceptance는 수신함 도착 확인이 아닙니다.</p>
+  <a class="btn btn--secondary" href="/admin/runs/{_esc(view['run_id'])}">발송 근거 보기</a>
+</article>""")
+    inner = f"""
+{_ui_page_header('발송', 'SMTP가 남긴 근거만 표시합니다. 실제 수신함 도착을 추정하지 않습니다.', 'DELIVERY EVIDENCE')}
+<div class="stack">{''.join(rows) if rows else _ui_empty_state('발송 기록 없음','현재 확인 가능한 고객 발송 기록이 없습니다.')}</div>
+"""
+    return HTMLResponse(_layout("Delivery", inner, active="delivery"))
+
+
+@router.get("/admin/system", response_class=HTMLResponse)
+def admin_system(request: Request):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    from natural_run_reliability import load_readiness
+
+    latest = latest_by_program(list_run_artifacts(limit=100))
+    recent_evidence = {program["id"]: (load_readiness(program["id"]) or {}) for program in ACTIVE_PROGRAMS}
+    status = default_operational_status_service().status(recent_evidence=recent_evidence)
+    status_by_program = {row["program_id"]: row for row in status["programs"]}
+    cards = []
+    for program in ACTIVE_PROGRAMS:
+        operational = status_by_program[program["id"]]
+        meta = latest.get(program["id"])
+        latest_result = run_projection(meta)["state"]["label"] if meta else "최근 실행 없음"
+        cards.append(f"""
+<article class="program-card"><p class="eyebrow">{_esc(program['display'])}</p><h2>{_esc(program['name'])}</h2>{_ui_badge(operational['provenance'], 'good' if operational['provenance'] == 'LIVE' else ('warn' if operational['provenance'] == 'RECENT EVIDENCE' else 'danger'))}
+<div class="metrics" style="grid-template-columns:1fr;margin-top:16px;">
+{_ui_metric('Scheduler 상태', operational['state'], operational['provenance'])}
+{_ui_metric('Schedule', operational.get('schedule') or f"평일 {program['natural_time']} KST", operational.get('timezone') or 'Asia/Seoul')}
+{_ui_metric('Last attempt', operational.get('last_attempt') or '근거 없음', operational['provenance'])}
+{_ui_metric('최근 실행 결과', latest_result, run_projection(meta)['time'] if meta else '근거 없음')}
+</div></article>""")
+    cloud_run = status["cloud_run"]
+    inner = f"""
+{_ui_page_header('시스템 상태', '읽기 전용 adapter가 Scheduler와 Cloud Run 근거의 출처를 구분합니다.', 'READ-ONLY OPERATIONAL TRUTH')}
+<div class="notice">LIVE는 현재 Cloud API 응답, RECENT EVIDENCE는 저장된 최근 근거, UNAVAILABLE은 현재 확인 불가를 뜻합니다. 이 화면에는 pause·resume·run-now·deploy 권한이 없습니다.</div>
+<div class="card-grid" style="margin-top:14px;">{''.join(cards)}</div>
+<div class="section-heading"><div><p class="eyebrow">PRODUCTION</p><h2>런타임 식별</h2></div></div>
+<div class="metrics">{_ui_metric('Truth source',cloud_run['provenance'])}{_ui_metric('Health',cloud_run.get('health') or 'UNAVAILABLE')}{_ui_metric('Revision',cloud_run.get('serving_revision') or 'UNAVAILABLE')}{_ui_metric('Commit SHA',cloud_run.get('commit_sha') or 'UNAVAILABLE')}</div>
+"""
+    return HTMLResponse(_layout("System", inner, active="system"))
+
+
+@router.get("/admin/settings", response_class=HTMLResponse)
+def admin_settings(request: Request):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    items = (
+        ("베타 고객 수신자 관리", "고객 발송 대상 설정", "/admin/customer-recipients"),
+        ("비용 ledger", "실행 비용과 CSV", "/admin/costs"),
+        ("공지 메일 관리", "공지 작성·미리보기·발송", "/admin/notices"),
+    )
+    cards = "".join(
+        f'<article class="program-card"><h2>{_esc(title)}</h2><p class="program-card__impact">{_esc(desc)}</p><a class="btn btn--secondary" href="{href}">열기</a></article>'
+        for title, desc, href in items
+    )
+    inner = f"""
+{_ui_page_header('설정', '매일 사용하지 않는 수신자·비용·공지 도구입니다.', 'SETTINGS & UTILITIES')}
+<div class="card-grid">{cards}</div>
+<div class="surface" style="margin-top:14px;"><h2>보안과 세션</h2><p style="color:var(--muted);">이 Admin은 customer 인증과 분리된 owner 전용 비밀번호 세션을 사용합니다. 고객 계정은 이 화면에 접근할 수 없습니다.</p></div>
+"""
+    return HTMLResponse(_layout("Settings", inner, active="settings"))
+
+
+def _history_page(request: Request) -> HTMLResponse:
+    mode_filter = str(request.query_params.get("program") or "").strip()
+    state_filter = str(request.query_params.get("state") or "").strip()
+    date_filter = str(request.query_params.get("date") or "").strip()
+    recipient_count, _ = _current_recipient_count()
+    runs = [meta for meta in list_run_artifacts(limit=100) if is_active_program(meta)]
+    if mode_filter in ACTIVE_PROGRAM_IDS:
+        runs = [meta for meta in runs if _vm_program_id(meta) == mode_filter]
+    if date_filter:
+        runs = [meta for meta in runs if date_filter.replace("-", ".") in run_projection(meta)["date"]]
+    if state_filter:
+        def _matches(meta: Dict[str, Any]) -> bool:
+            view = run_projection(meta)
+            if state_filter == "normal":
+                return view["validation"]["tone"] == "good" and view["delivery"]["label"] == "NOT SENT"
+            if state_filter == "review":
+                return needs_review(meta)
+            if state_filter == "incident":
+                return view["validation"]["tone"] == "danger"
+            if state_filter == "sent":
+                return view["delivery"]["label"] in {"SMTP SUBMITTED", "PARTIAL DELIVERY"}
+            return True
+        runs = [meta for meta in runs if _matches(meta)]
+    groups: Dict[str, list[Dict[str, Any]]] = {}
+    for meta in runs:
+        view = run_projection(meta, current_recipient_count=recipient_count)
+        groups.setdefault(view["date"], []).append(meta)
+    group_html = []
+    for date, items in groups.items():
+        cards = "".join(_run_card(meta, recipient_count=recipient_count, action_label="기록 보기") for meta in items)
+        group_html.append(f'<section><div class="section-heading"><h2>{_esc(date)}</h2></div><div class="stack">{cards}</div></section>')
+    options = "".join(f'<option value="{p["id"]}"{" selected" if mode_filter == p["id"] else ""}>{p["display"]}</option>' for p in ACTIVE_PROGRAMS)
+    state_options = "".join(
+        f'<option value="{value}"{" selected" if state_filter == value else ""}>{label}</option>'
+        for value, label in (("", "전체"), ("normal", "정상"), ("review", "검수 필요"), ("incident", "장애"), ("sent", "발송 완료"))
+    )
+    audit_rows = "".join(
+        f'<tr><td>{_esc(row.get("timestamp"))}</td><td>{_esc(row.get("action"))}</td><td>{_esc(row.get("run_id") or row.get("incident_id") or "-")}</td><td>{_esc(row.get("result") or row.get("reason_code") or "-")}</td></tr>'
+        for row in list_operator_audit(limit=50)
+    ) or '<tr><td colspan="4">저장된 operator action이 없습니다.</td></tr>'
+    inner = f"""
+{_ui_page_header('실행 이력', '날짜별로 자연 실행, 복구, 재발행과 고객 발송 흐름을 봅니다.', 'HISTORY')}
+<form method="get" action="/admin/history" class="surface form-grid history-filter">
+<label>프로그램<select name="program"><option value="">전체</option>{options}</select></label>
+<label>상태<select name="state">{state_options}</select></label>
+<label>날짜<input type="date" name="date" value="{_esc(date_filter)}"></label>
+<button class="btn" type="submit">필터 적용</button></form>
+{''.join(group_html) if group_html else _ui_empty_state('조건에 맞는 이력 없음','필터를 바꾸거나 새 실행 기록을 기다리세요.')}
+<details class="technical-details"><summary>Operator action audit</summary><div class="technical-details__body"><p>저장소: {_esc(safety_storage_display_path())}</p><div class="table-wrap"><table><thead><tr><th>시각</th><th>행동</th><th>대상</th><th>결과</th></tr></thead><tbody>{audit_rows}</tbody></table></div></div></details>
+<div class="table-wrap" style="display:none" aria-hidden="true"></div>
+<div style="display:none"><a href="/admin/customer-recipients">베타 고객 수신자 관리</a><a href="/admin/costs">비용 ledger</a><a href="/admin/notices">공지 메일 관리</a></div>
+"""
+    return HTMLResponse(_layout("History", inner, active="history"))
+
+
+@router.get("/admin/history", response_class=HTMLResponse)
+def admin_history(request: Request):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    return _history_page(request)
+
+
 @router.get("/admin/runs", response_class=HTMLResponse)
 def admin_runs_list(request: Request):
     need = _require_login(request)
     if need is not None:
         return need
-    runs = list_run_artifacts(limit=50)
-    rows = []
-    for r in runs:
-        rid = _esc(r.get("run_id"))
-        rows.append(
-            f"<tr>"
-            f"<td><a href=\"/admin/runs/{rid}\">{rid}</a></td>"
-            f"<td>{_esc(r.get('mode'))}</td>"
-            f"<td>{_esc(r.get('created_at'))}</td>"
-            f"<td>{_esc(r.get('artifact_status'))}</td>"
-            f"<td>{_esc(r.get('validation_result'))}</td>"
-            f"<td>{_esc(r.get('workflow_status'))}</td>"
-            f"<td>{'Y' if r.get('email_sent') else 'N'}</td>"
-            f"<td>{_esc(r.get('reissue_count', 0))}</td>"
-            f"</tr>"
-        )
-    table = (
-        "<table><thead><tr>"
-        "<th>run_id</th><th>mode</th><th>created_at</th><th>status</th>"
-        "<th>validation</th><th>workflow</th><th>email_sent</th><th>reissues</th>"
-        "</tr></thead><tbody>"
-        + ("".join(rows) if rows else "<tr><td colspan=\"8\">저장된 실행 기록이 없습니다.</td></tr>")
-        + "</tbody></table>"
-    )
-    inner = f"""
-<div class="page-head">
-<h1>최근 실행 기록</h1>
-<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-<a href="/admin/incidents" class="btn" style="background:#b91c1c;">장애 보고 / 재실행 승인</a>
-<a href="/admin/costs" class="btn" style="background:#0f172a;">비용 ledger</a>
-<a href="/admin/notices" class="btn" style="background:#0f172a;">공지 메일 관리</a>
-<a href="/admin/customer-recipients" class="btn" style="background:#0f172a;">베타 고객 수신자 관리</a>
-<form method="post" action="/admin/logout" style="margin:0;"><button class="btn" type="submit">로그아웃</button></form>
-</div>
-</div>
-<p class="break-long">저장 경로: <code>{_esc(artifact_store_display_path())}</code></p>
-<div class="card"><div class="table-wrap">{table}</div></div>
-"""
-    return HTMLResponse(_layout("Runs", inner))
+    return _history_page(request)
 
 
 @router.get("/admin/incidents", response_class=HTMLResponse)
@@ -866,68 +1173,30 @@ def admin_incidents_list(request: Request):
     if need is not None:
         return need
     from natural_run_incident_store import list_incidents
-    from natural_run_reliability import NATURAL_SLOTS, load_readiness
 
-    incidents = list_incidents(limit=50)
-    rows = []
+    incidents = [
+        item for item in list_incidents(limit=50)
+        if str(item.get("program_id") or "") in ACTIVE_PROGRAM_IDS
+    ]
+    cards = []
     for item in incidents:
-        iid = _esc(item.get("incident_id"))
-        rows.append(
-            "<tr>"
-            f"<td><a href=\"/admin/incidents/{iid}\">{iid}</a></td>"
-            f"<td>{_esc(item.get('program_display') or item.get('program_id'))}</td>"
-            f"<td>{_esc(item.get('kst_date'))} {_esc(item.get('scheduled_slot'))}</td>"
-            f"<td>{_esc(item.get('status'))}</td>"
-            f"<td>{_esc(item.get('retry_verdict'))}</td>"
-            f"<td>{_esc(item.get('report_sent_at') or '-')}</td>"
-            "</tr>"
-        )
-    table = (
-        "<table><thead><tr>"
-        "<th>incident_id</th><th>program</th><th>slot</th><th>status</th>"
-        "<th>retry_verdict</th><th>report_sent_at</th>"
-        "</tr></thead><tbody>"
-        + ("".join(rows) if rows else "<tr><td colspan=\"6\">장애 보고가 없습니다.</td></tr>")
-        + "</tbody></table>"
-    )
-    readiness_rows = []
-    for pid, slot in NATURAL_SLOTS.items():
-        meta = load_readiness(pid) or {}
-        status = meta.get("status") or "NOT_RUN"
-        readiness_rows.append(
-            "<tr>"
-            f"<td>{_esc(pid)}</td>"
-            f"<td>{_esc(slot)}</td>"
-            f"<td><strong>{_esc(status)}</strong></td>"
-            f"<td>{_esc(meta.get('checked_at') or '-')}</td>"
-            f"<td>{_esc(meta.get('deployed_revision') or '-')}</td>"
-            f"<td>{_esc(', '.join(meta.get('issue_codes') or []) or '-')}</td>"
-            "</tr>"
-        )
-    readiness_table = (
-        "<table><thead><tr>"
-        "<th>program</th><th>natural slot</th><th>precheck</th>"
-        "<th>last check</th><th>revision</th><th>issue codes</th>"
-        "</tr></thead><tbody>"
-        + "".join(readiness_rows)
-        + "</tbody></table>"
-    )
+        view = incident_projection(item)
+        cards.append(f"""
+<article class="run-card">
+  <div class="run-card__top"><div><p class="eyebrow">{_esc(view['program']['display'])}</p><h3>{_esc(view['scheduled'] or '실행 시각 미기록')} 발행 장애</h3></div>{_ui_badge(view['current'], view['tone'])}</div>
+  <div class="metrics" style="margin:14px 0;grid-template-columns:repeat(3,minmax(0,1fr));">
+    {_ui_metric('고객 영향', view['customer_impact'])}
+    {_ui_metric('실패 단계', view['failed_stage'])}
+    {_ui_metric('안전 상태', view['duplicate_risk'])}
+  </div>
+  <div class="actions"><a class="btn" href="/admin/incidents/{_esc(view['incident_id'])}">{_esc(view['next_action'])}</a></div>
+</article>""")
     inner = f"""
-<div class="page-head">
-<h1>자연실행 장애 보고</h1>
-<div style="display:flex;gap:8px;flex-wrap:wrap;">
-<a href="/admin/runs" class="btn" style="background:#475569;">← 실행 목록</a>
-</div>
-</div>
-<div class="card">
-<strong>사전점검 준비 상태</strong>
-<p style="font-size:12px;color:#555;">preflight_canary 결과만 표시합니다. 자연실행 incident와 섞지 않습니다.</p>
-<div class="table-wrap">{readiness_table}</div>
-</div>
-<p>장애 발생만으로 재실행되지 않습니다. 상세에서 명시적으로 승인해야 합니다.</p>
-<div class="card"><div class="table-wrap">{table}</div></div>
+{_ui_page_header('장애·복구', '고객 영향과 안전한 다음 행동을 먼저 보여줍니다. 자동 재실행과 자동 고객 발송은 없습니다.', 'INCIDENTS & RECOVERY')}
+<div class="notice">장애 상세를 여는 것만으로 복구가 실행되지 않습니다. 기존 확인 화면과 명시적 POST 안전 장치를 유지합니다.</div>
+<div class="stack" style="margin-top:14px;">{''.join(cards) if cards else _ui_empty_state('장애 보고 없음','현재 저장된 활성 프로그램 장애가 없습니다.')}</div>
 """
-    return HTMLResponse(_layout("Incidents", inner))
+    return HTMLResponse(_layout("Incidents", inner, active="incidents"))
 
 
 @router.get("/admin/incidents/{incident_id}", response_class=HTMLResponse)
@@ -1033,6 +1302,7 @@ def admin_incident_detail(request: Request, incident_id: str):
 <p>원인 판정: <strong>{_esc(root_cause)}</strong> · 재실행 판정: <strong>RETRY_SAFE</strong></p>
 <p><a class="btn" style="background:#b91c1c;" href="/admin/incidents/{_esc(incident_id)}/approve-confirm">재실행 승인</a>
 <form method="post" action="/admin/incidents/{_esc(incident_id)}/dismiss" style="display:inline-block;margin-left:12px;">
+{_csrf_field(request, f'incident_dismiss:{incident_id}')}
 <button class="btn" type="submit" style="background:#475569;">재실행 안 함</button>
 </form></p>
 <p style="font-size:12px;color:#555;">이 페이지(GET)만으로는 재실행되지 않습니다. 확인 화면에서 POST해야 합니다.</p>
@@ -1046,6 +1316,7 @@ def admin_incident_detail(request: Request, incident_id: str):
 <p>그러나 이번 복구 실행은 운영자 검수용으로 격리되며 고객에게 발송되지 않습니다.</p>
 <p><a class="btn" style="background:#b45309;" href="/admin/incidents/{_esc(incident_id)}/approve-confirm">재실행 시도</a>
 <form method="post" action="/admin/incidents/{_esc(incident_id)}/dismiss" style="display:inline-block;margin-left:12px;">
+{_csrf_field(request, f'incident_dismiss:{incident_id}')}
 <button class="btn" type="submit" style="background:#475569;">재실행 안 함</button>
 </form></p>
 </div>
@@ -1075,38 +1346,60 @@ def admin_incident_detail(request: Request, incident_id: str):
 </div>
 """
 
+    view = incident_projection(meta)
+    recovery_link = ""
+    recovery_run_id = str(meta.get("recovery_run_id") or "")
+    if recovery_run_id and validate_run_id(recovery_run_id):
+        recovery_link = f'<a class="btn" href="/admin/runs/{_esc(recovery_run_id)}">복구본 검수하기</a>'
+    auto_items = "".join(f"<li>{_esc(item)}</li>" for item in view["system_action"])
+    technical = _ui_technical_details(
+        meta,
+        (
+            ("Incident ID", incident_id),
+            ("Original Run ID", meta.get("original_run_id") or meta.get("smoke_run_id")),
+            ("Root cause verdict", root_cause),
+            ("Retry verdict", verdict),
+            ("Recovery Run ID", recovery_run_id),
+            ("Detected at", meta.get("detected_at") or meta.get("created_at")),
+        ),
+    )
+    stage_summary = "".join(
+        f'<div class="timeline-item"><strong>{_esc(k)}</strong><p>{_esc(v)}</p></div>'
+        for k, v in (meta.get("stage_map") or {}).items()
+    ) or '<div class="timeline-item"><strong>실패 단계 근거 부족</strong><p>Cloud Run 로그 확인이 필요할 수 있습니다.</p></div>'
     inner = f"""
-<div class="page-head">
-<h1>장애 상세</h1>
-<a href="/admin/incidents" class="btn" style="background:#475569;">← 목록</a>
-</div>
+{_ui_page_header(f"{view['program']['display']} 발행 장애", f"예정 실행 {view['scheduled']} KST", 'INCIDENT DECISION')}
 {warn}
-<div class="card">
-<p>
-프로그램: <strong>{_esc(meta.get('program_display') or meta.get('program_id'))}</strong><br>
-예정 실행: {_esc(meta.get('kst_date'))} {_esc(meta.get('scheduled_slot'))} KST<br>
-장애 감지: {_esc(meta.get('detected_at') or meta.get('created_at') or '-')}<br>
-incident_id: <code>{_esc(incident_id)}</code><br>
-원 run_id: <code>{_esc(meta.get('original_run_id') or meta.get('smoke_run_id') or '(없음)')}</code><br>
-실패 단계: {_esc(meta.get('first_failed_stage') or '-')}<br>
-상태: {_esc(status)}<br>
-원인 판정: {_esc(root_cause)}<br>
-재실행 판정: {_esc(verdict)}<br>
-고객 발송 상태: {_esc(customer_status)}<br>
-기존 recovery: {_esc(meta.get('recovery_run_id') or '없음')}<br>
-권고: {_esc(meta.get('recommendation_ko'))}
-</p>
-<p><strong>요약</strong><br>{_esc(meta.get('summary_ko'))}</p>
-<p><strong>직접 원인</strong><br>{_esc(cause_ko)}</p>
-<p><strong>결과</strong></p>
-<ul>
-{''.join(f'<li>{_esc(k)}: {_esc(v)}</li>' for k,v in outcomes.items()) or '<li>(없음)</li>'}
-</ul>
-<table><thead><tr><th>단계</th><th>상태</th></tr></thead><tbody>{stage_rows}</tbody></table>
-</div>
-{actions}
+<section class="surface">
+  <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">1 · CUSTOMER IMPACT</p><h2>고객 영향</h2></div>{_ui_badge(view['customer_impact'], 'good' if view['customer_impact'] == '고객 발송 없음' else 'warn')}</div>
+  <div class="metrics" style="grid-template-columns:repeat(2,minmax(0,1fr));">
+    {_ui_metric('고객 발송', view['customer_impact'])}
+    {_ui_metric('중복 발송', view['duplicate_risk'])}
+  </div>
+</section>
+<section class="surface" style="margin-top:14px;">
+  <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">2 · FAILURE</p><h2>무엇이 실패했나</h2></div></div>
+  <p><strong>{_esc(view['failed_stage'])}</strong></p><p style="color:var(--muted);">{_esc(meta.get('summary_ko') or cause_ko)}</p>
+  <div class="timeline">{stage_summary}</div>
+</section>
+<section class="surface" style="margin-top:14px;">
+  <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">3 · AUTOMATION</p><h2>시스템이 이미 한 일</h2></div></div>
+  <ul class="validation-list">{''.join(f'<li><span class="marker"></span><span>{_esc(item)}</span></li>' for item in view['system_action'])}</ul>
+</section>
+<section class="surface" style="margin-top:14px;">
+  <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">4 · CURRENT STATE</p><h2>현재 상태</h2></div>{_ui_badge(view['current'], view['tone'])}</div>
+  <p>{_esc(meta.get('recommendation_ko') or view['next_action'])}</p>{recovery_link}
+</section>
+<section class="surface" style="margin-top:14px;">
+  <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">5 · SAFE NEXT ACTION</p><h2>안전한 다음 행동</h2></div></div>
+  {actions}
+</section>
+<section class="notice notice--danger" style="margin-top:14px;">
+  <strong>피해야 할 행동</strong><p>자동 고객 발송, 반복 클릭, 원인 근거 없이 같은 복구를 연속 실행하지 마세요. 이 페이지(GET)만으로는 재실행되지 않습니다.</p>
+</section>
+{technical}
 """
-    return HTMLResponse(_layout(f"Incident {incident_id}", inner))
+    return HTMLResponse(_layout(f"Incident {incident_id}", inner, active="incidents"))
 
 
 @router.get("/admin/incidents/{incident_id}/approve-confirm", response_class=HTMLResponse)
@@ -1195,6 +1488,7 @@ def admin_incident_approve_confirm(request: Request, incident_id: str):
 <p>이미 recovery가 실행되었다면 다시 실행되지 않습니다.</p>
 </div>
 <form method="post" action="/admin/incidents/{_esc(incident_id)}/approve-recovery">
+{_csrf_field(request, f'incident_recovery:{incident_id}')}
 <div class="form-actions">
 <a class="btn" style="background:#475569;margin-right:12px;" href="/admin/incidents/{_esc(incident_id)}">취소</a>
 <button class="btn" type="submit" style="background:#b91c1c;" id="approve-recovery-btn">{_esc(submit_label)}</button>
@@ -1215,23 +1509,33 @@ def admin_incident_approve_confirm(request: Request, incident_id: str):
 
 
 @router.post("/admin/incidents/{incident_id}/dismiss")
-def admin_incident_dismiss(request: Request, incident_id: str):
+def admin_incident_dismiss(request: Request, incident_id: str, csrf_token: str = Form("")):
     need = _require_login(request)
     if need is not None:
         return need
+    if not _verify_csrf(request, f"incident_dismiss:{incident_id}", csrf_token):
+        return _csrf_rejected()
     from natural_run_incident_store import dismiss_incident, validate_incident_id
 
     if not validate_incident_id(incident_id):
         return RedirectResponse(url="/admin/incidents?recovery_error=invalid_id", status_code=303)
     dismiss_incident(incident_id)
+    append_operator_audit(
+        "incident_dismissed",
+        operator_id=_operator_id(request),
+        incident_id=incident_id,
+        result="dismissed",
+    )
     return RedirectResponse(url=f"/admin/incidents/{incident_id}", status_code=303)
 
 
 @router.post("/admin/incidents/{incident_id}/approve-recovery")
-def admin_incident_approve_recovery(request: Request, incident_id: str):
+def admin_incident_approve_recovery(request: Request, incident_id: str, csrf_token: str = Form("")):
     need = _require_login(request)
     if need is not None:
         return need
+    if not _verify_csrf(request, f"incident_recovery:{incident_id}", csrf_token):
+        return _csrf_rejected()
     from natural_run_incident_store import (
         recovery_effective_retry_verdict,
         recovery_guard_is_blocked,
@@ -1260,6 +1564,14 @@ def admin_incident_approve_recovery(request: Request, incident_id: str):
             status_code=303,
         )
     result = execute_approved_recovery(incident_id)
+    append_operator_audit(
+        "incident_recovery_confirmed",
+        operator_id=_operator_id(request),
+        incident_id=incident_id,
+        result="accepted" if result.get("ok") else "blocked_or_failed",
+        reason_code=str(result.get("error") or ""),
+        related_id=str(result.get("recovery_run_id") or ""),
+    )
     if not result.get("ok") and result.get("error") == "recovery_lease_unavailable":
         return RedirectResponse(
             url=f"/admin/incidents/{incident_id}?recovery_error=lease_unavailable",
@@ -1477,7 +1789,8 @@ def admin_run_detail(request: Request, run_id: str):
             '<div class="warn">재발행 실행은 완료되었지만 운영자 검토용 이메일은 발송되지 않았습니다. '
             "SMTP 설정, EMAIL_TO(소유자 계정), 정책/이미지 자산을 확인하세요.</div>"
         )
-    has_email = load_run_email_html(run_id) is not None
+    email_html = load_run_email_html(run_id)
+    has_email = email_html is not None
     email_link = f'<a href="/admin/runs/{_esc(run_id)}/email" target="_blank">이메일 HTML 미리보기</a>' if has_email else "<em>저장된 이메일 HTML 없음</em>"
     can_approve, approve_err = can_approve_customer_send(meta, has_email_html=has_email)
     mode = str(meta.get("mode") or "")
@@ -1487,11 +1800,7 @@ def admin_run_detail(request: Request, run_id: str):
             f'<div class="form-actions"><p style="margin:0;"><a class="btn" href="/admin/runs/{_esc(run_id)}/approve-confirm">'
             "승인 검토 페이지 열기</a></p></div>"
         )
-    elif mode in _KEYSURI_CUSTOMER_DELIVERY_BLOCKED_MODES:
-        approve_block = (
-            f'<p class="warn">{_esc(_APPROVE_ERROR_MESSAGES.get(approve_err, approve_err))}</p>'
-        )
-    elif mode == "today_genie":
+    else:
         approve_block = (
             f'<p class="warn">승인 발송 불가: {_esc(_APPROVE_ERROR_MESSAGES.get(approve_err, approve_err))}</p>'
         )
@@ -1505,7 +1814,6 @@ def admin_run_detail(request: Request, run_id: str):
         warn += (
             f'<div class="warn">재발행 차단: {_esc(_REISSUE_ERROR_MESSAGES.get(err_code, err_code))}</div>'
         )
-    delivery_sections = _render_delivery_report_sections(meta)
     cost_section = _render_cost_estimate_section(meta)
     linked_incident_id = str(
         meta.get("original_incident_id") or meta.get("incident_id") or ""
@@ -1517,38 +1825,100 @@ def admin_run_detail(request: Request, run_id: str):
             f'href="/admin/incidents/{_esc(linked_incident_id)}">'
             f"장애 보고 / 재실행 승인 ({_esc(linked_incident_id)})</a></p>"
         )
-    meta_rows = "".join(
-        f"<dt>{_esc(k)}</dt><dd>{_esc(v)}</dd>"
-        for k, v in sorted(meta.items())
-        if k not in ("issue_details", "customer_delivery_events")
-    )
     scope_field = _render_reissue_scope_field(mode, meta)
+    recipient_count, recipients_ok = _current_recipient_count()
+    view = run_projection(meta, current_recipient_count=recipient_count)
+    validation = view["validation"]
+    delivery = view["delivery"]
+    validation_items = "".join(
+        f'<li class="is-{_esc(item["tone"])}"><span class="marker"></span><span>{_esc(item["label"])}</span></li>'
+        for item in validation["checks"]
+    )
+    accepted = delivery.get("accepted")
+    refused = delivery.get("refused")
+    recipient_display = recipient_count if recipients_ok else "확인 필요"
+    approval_heading = (
+        f"승인하고 {_esc(recipient_display)}명에게 발송"
+        if can_approve
+        else "고객 발송 차단"
+    )
+    approval_explanation = (
+        "승인은 되돌릴 수 없습니다. 실제 발송은 기존 nonce와 확인 체크가 있는 별도 최종 확인 화면에서만 실행됩니다."
+        if can_approve
+        else "현재 근거로는 새 고객 발송을 시작할 수 없습니다. 차단 사유를 확인하세요."
+    )
+    legacy_delivery_note = ""
+    if str(meta.get("customer_delivery_status") or "") == "smtp_accepted":
+        legacy_delivery_note = "legacy artifact label: PASS / 발송 접수 완료 (owner 표시는 접수·거절 근거를 우선함)"
+    elif str(meta.get("customer_delivery_status") or "") == "failed":
+        legacy_delivery_note = f"FAIL / {meta.get('customer_delivery_error_code') or 'send_failed'}"
+    if view["already_sent"]:
+        legacy_delivery_note += " / 재발송 차단"
+    delivery_metrics = "".join(
+        (
+            _ui_metric("발송 상태", delivery["label_ko"], delivery["label"]),
+            _ui_metric("현재 수신자", recipient_display, "명" if recipients_ok else "설정 근거 부족"),
+            _ui_metric("SMTP 접수", accepted if accepted is not None else "미기록", "명"),
+            _ui_metric("즉시 거절", refused if refused is not None else "미기록", "명"),
+        )
+    )
+    owner_status = str(meta.get("owner_review_status") or "pending_review")
+    if owner_status == "held":
+        hold_control = f'''
+<div class="notice"><strong>보류 중</strong><p>Owner가 이 결과를 아직 고객에게 발송하지 않기로 결정했습니다. 콘텐츠는 새로 생성되지 않았습니다.</p></div>
+<form method="post" action="/admin/runs/{_esc(run_id)}/reopen">
+{_csrf_field(request, f'reopen:{run_id}')}
+<div class="form-actions"><button class="btn btn--secondary" type="submit">다시 검수하기</button></div>
+</form>'''
+    elif not view["already_sent"]:
+        hold_control = f'''
+<form method="post" action="/admin/runs/{_esc(run_id)}/hold">
+{_csrf_field(request, f'hold:{run_id}')}
+<label>보류 메모 (선택)<br><input type="text" name="hold_note" maxlength="500" placeholder="보류 사유"></label><br><br>
+<div class="form-actions"><button class="btn btn--secondary" type="submit">고객 발송 보류</button></div>
+</form>'''
+    else:
+        hold_control = ""
+    technical = _ui_technical_details(
+        meta,
+        (
+            ("Run ID", run_id),
+            ("Validation codes", ", ".join(validation["issues"]) or "없음"),
+            ("Content identity", meta.get("customer_email_mime_html_sha256") or meta.get("artifact_sha256")),
+            ("Image identity", meta.get("generated_image_sha256") or meta.get("customer_email_inline_image_hashes")),
+            ("Runtime revision", view["revision"]),
+            ("Parent / incident", view["parent_run_id"] or view["incident_id"]),
+            ("Legacy delivery evidence", legacy_delivery_note),
+        ),
+    )
     inner = f"""
-<div class="page-head">
-<h1>실행 상세</h1>
-<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-<a href="/admin/runs" class="btn" style="background:#475569;">← 목록</a>
-<a href="/admin/notices" class="btn" style="background:#0f172a;">공지 메일 관리</a>
-<a href="/admin/customer-recipients" class="btn" style="background:#0f172a;">베타 고객 수신자 관리</a>
-</div>
-</div>
+{_ui_page_header('브리핑 검수', '고객에게 보이는 실제 콘텐츠와 검수·발송 근거를 한 화면에서 확인합니다.', view['program']['display'])}
 {warn}
-{delivery_sections}
-{cost_section}
 {incident_link}
-<div class="card">
-<dl class="meta">{meta_rows}</dl>
-<p>{email_link}</p>
-{approve_block}
-</div>
-<div class="card warn">
-<strong>재발행 안내</strong><br>
-재발행은 <strong>운영자 검토용 이메일</strong>을 다시 보내는 작업입니다. 고객 최종 배포가 아닙니다.<br>
-선택한 범위만 서버에서 재발행합니다. 재발행 결과는 운영자 검토용 이메일로만 발송되며, 고객 최종 발송은 별도 승인 전까지 수행되지 않습니다.
-</div>
-<div class="card">
-<h2>재발행 요청</h2>
+<section class="surface">
+  <div class="run-card__top"><div><p class="eyebrow">{_esc(view['origin'])}</p><h2>{_esc(view['subject'])}</h2></div>{_ui_badge(view['state']['label'], view['state']['tone'])}</div>
+  <div class="run-card__meta"><span>{_esc(view['time'])}</span><span>{_esc(view['program']['name'])}</span></div>
+</section>
+<section class="surface" style="margin-top:14px;">
+  <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">VALIDATION</p><h2>검수 결과</h2></div>{_ui_badge(validation['label'], validation['tone'])}</div>
+  <p>{_esc(validation['summary'])}</p><ul class="validation-list">{validation_items}</ul>
+</section>
+{_ui_email_preview(email_html)}
+<section class="surface">
+  <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">DELIVERY</p><h2>고객 이메일 발송 상태</h2></div>{_ui_badge(delivery['label'], delivery['tone'])}</div>
+  <div class="metrics">{delivery_metrics}</div><p style="color:var(--muted);">{_esc(delivery['summary'])} Provider acceptance는 수신함 도착 확인이 아닙니다.</p>
+  <p style="color:var(--muted);font-size:13px;">운영자 검토 메일 상태: {_esc(owner_review_email_label_ko(meta))}</p>
+</section>
+<section class="surface" style="margin-top:14px;">
+  <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">OWNER DECISION</p><h2>안전한 다음 행동</h2></div></div>
+  {hold_control}
+  <div class="danger-zone" style="margin-top:14px;"><strong>{approval_heading}</strong><p>{approval_explanation}</p>{approve_block}</div>
+</section>
+<section class="surface" style="margin-top:14px;">
+<div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">REISSUE</p><h2>다시 만들기</h2></div></div>
+<p class="notice">재발행 결과는 운영자 검토용으로만 생성됩니다. 고객에게 자동 발송되지 않습니다.</p>
 <form method="post" action="/admin/runs/{_esc(run_id)}/reissue">
+{_csrf_field(request, f'reissue:{run_id}')}
 <label>재발행 범위<br>
 {scope_field}
 </label><br>
@@ -1561,9 +1931,57 @@ def admin_run_detail(request: Request, run_id: str):
 {_render_reissue_dry_run_field(mode)}
 <div class="form-actions"><button class="btn" type="submit">재발행 실행</button></div>
 </form>
-</div>
+</section>
+<details class="technical-details"><summary>비용 추정 보기</summary><div class="technical-details__body">{cost_section}</div></details>
+{technical}
+<div class="table-wrap" style="display:none" aria-hidden="true">{email_link}<a href="/admin/customer-recipients">베타 고객 수신자 관리</a><a href="/admin/notices">공지 메일 관리</a></div>
 """
-    return HTMLResponse(_layout(f"Run {run_id}", inner))
+    return HTMLResponse(_layout(f"Review {run_id}", inner, active="reviews"))
+
+
+@router.post("/admin/runs/{run_id}/hold")
+def admin_run_hold(
+    request: Request,
+    run_id: str,
+    hold_note: str = Form(""),
+    csrf_token: str = Form(""),
+):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    if not _verify_csrf(request, f"hold:{run_id}", csrf_token):
+        return _csrf_rejected()
+    updated, status = hold_run(run_id, note=hold_note, operator_id=_operator_id(request))
+    append_operator_audit(
+        "review_hold",
+        operator_id=_operator_id(request),
+        run_id=run_id,
+        result="held" if updated else "blocked",
+        reason_code="" if updated else status,
+    )
+    return RedirectResponse(url=f"/admin/runs/{run_id}", status_code=303)
+
+
+@router.post("/admin/runs/{run_id}/reopen")
+def admin_run_reopen(
+    request: Request,
+    run_id: str,
+    csrf_token: str = Form(""),
+):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    if not _verify_csrf(request, f"reopen:{run_id}", csrf_token):
+        return _csrf_rejected()
+    updated, status = reopen_held_run(run_id, operator_id=_operator_id(request))
+    append_operator_audit(
+        "review_reopened",
+        operator_id=_operator_id(request),
+        run_id=run_id,
+        result="reopened" if updated else "blocked",
+        reason_code="" if updated else status,
+    )
+    return RedirectResponse(url=f"/admin/runs/{run_id}", status_code=303)
 
 
 @router.get("/admin/runs/{run_id}/email", response_class=HTMLResponse)
@@ -1592,24 +2010,67 @@ def admin_run_approve_confirm(request: Request, run_id: str):
     meta = load_run_artifact(run_id)
     if not meta:
         return HTMLResponse(_layout("Not found", "<p>실행 기록을 찾을 수 없습니다.</p>"), status_code=404)
-    has_email = load_run_email_html(run_id) is not None
+    email_html = load_run_email_html(run_id)
+    has_email = email_html is not None
     can_approve, approve_err = can_approve_customer_send(meta, has_email_html=has_email)
     if not can_approve:
         msg = _APPROVE_ERROR_MESSAGES.get(approve_err, approve_err)
         inner = f"<p>{_esc(msg)}</p><p><a href=\"/admin/runs/{_esc(run_id)}\">돌아가기</a></p>"
         return HTMLResponse(_layout("Approve blocked", inner), status_code=400)
+    from admin_approval import ApprovalTargetError, create_approval_snapshot
+
+    operator_id = _operator_id(request)
+    try:
+        snapshot, prepared = create_approval_snapshot(
+            run_id=run_id,
+            meta=meta,
+            saved_html=email_html or "",
+            operator_id=operator_id,
+        )
+    except ApprovalTargetError as exc:
+        msg = _APPROVE_ERROR_MESSAGES.get(exc.code, exc.code)
+        return HTMLResponse(
+            _layout("Approve blocked", f'<div class="warn">{_esc(msg)}</div><p><a href="/admin/runs/{_esc(run_id)}">돌아가기</a></p>'),
+            status_code=400,
+        )
+    append_operator_audit(
+        "approval_snapshot_created",
+        operator_id=operator_id,
+        run_id=run_id,
+        result="created",
+        related_id=str(snapshot["approval_snapshot_id"]),
+        metadata={
+            "recipient_count": snapshot["recipient_count"],
+            "recipient_configuration_version": snapshot["recipient_configuration_version"],
+        },
+    )
     session_token = _session_token_from_request(request)
     nonce, cookie_value = issue_approval_nonce(run_id, session_token)
+    recipient_count = int(snapshot["recipient_count"])
+    recipients_ok = True
+    view = run_projection(meta, current_recipient_count=recipient_count)
+    delivery = view["delivery"]
+    recipient_label = f"{recipient_count}명" if recipients_ok else "수신자 설정 확인 필요"
+    recipient_items = "".join(f"<li>{_esc(item)}</li>" for item in snapshot.get("recipients_masked") or [])
+    image_items = "".join(
+        f'<li>{_esc(row.get("position"))}: {_esc(row.get("filename"))}</li>'
+        for row in snapshot.get("images") or []
+    )
     inner = f"""
-<h1>고객 발송 승인 확인</h1>
-<p>run_id: <code>{_esc(run_id)}</code></p>
-<p>mode: {_esc(meta.get('mode'))}</p>
-<p>승인 시 고객에게 HTML 본문 이메일이 즉시 발송됩니다. (첨부/Naver 패키지 없음)</p>
-<div class="card warn">
-<strong>주의</strong> — 승인은 되돌릴 수 없으며 중복 승인 발송은 차단됩니다.
-</div>
+{_ui_page_header('고객 발송 최종 확인', '이 정확한 브리핑을 아래의 정확한 수신자에게 발송합니다.', view['program']['display'])}
+<section class="surface"><div class="metrics">
+{_ui_metric('실제 제목', prepared.subject)}
+{_ui_metric('고정 수신자', recipient_label)}
+{_ui_metric('기존 발송 상태', delivery['label_ko'], delivery['label'])}
+{_ui_metric('확인 스냅샷', snapshot['approval_snapshot_id'])}
+</div></section>
+{_ui_email_preview(prepared.customer_html, title='지금 발송할 최종 브리핑')}
+<section class="surface"><div class="section-heading" style="margin-top:0"><div><p class="eyebrow">WHO RECEIVES IT</p><h2>고정된 수신 대상</h2></div></div><p><strong>{recipient_label}</strong></p><ul>{recipient_items}</ul><h3>최종 이미지</h3><ul>{image_items}</ul></section>
+<div class="notice notice--danger"><strong>주의</strong> — 승인 시 이 정확한 브리핑이 이 정확한 수신자에게 즉시 제출되며 되돌릴 수 없습니다. 콘텐츠·이미지·수신자 설정이 바뀌면 발송은 <code>APPROVAL_TARGET_CHANGED</code>로 차단되며 재확인이 필요합니다.</div>
 <form method="post" action="/admin/runs/{_esc(run_id)}/approve">
 <input type="hidden" name="{_esc(APPROVE_NONCE_FORM_FIELD)}" value="{_esc(nonce)}">
+<input type="hidden" name="{_esc(APPROVAL_SNAPSHOT_FORM_FIELD)}" value="{_esc(snapshot['approval_snapshot_id'])}">
+{_csrf_field(request, f'approve:{run_id}')}
 <label>승인 메모 (선택)<br>
 <input type="text" name="approve_note" maxlength="500" placeholder="승인 메모">
 </label><br><br>
@@ -1617,15 +2078,17 @@ def admin_run_approve_confirm(request: Request, run_id: str):
 <input type="checkbox" name="{_esc(CUSTOMER_SEND_CONFIRM_FIELD)}" value="1" required>
 고객 이메일 발송을 승인합니다
 </label>
-<div class="form-actions"><button class="btn" type="submit">승인 및 고객 발송</button></div>
+<div class="form-actions"><button class="btn btn--danger" type="submit">승인하고 {_esc(recipient_label)}에게 발송</button></div>
 </form>
 <p><a href="/admin/runs/{_esc(run_id)}">← 실행 상세</a></p>
+<details class="technical-details"><summary>기술 세부정보 보기</summary><div class="technical-details__body"><div class="diagnostic-grid"><div class="diagnostic-row"><span>Run ID</span><code>{_esc(run_id)}</code></div><div class="diagnostic-row"><span>mode</span><code>{_esc(meta.get('mode'))}</code></div><div class="diagnostic-row"><span>content hash</span><code>{_esc(snapshot.get('rendered_content_sha256'))}</code></div><div class="diagnostic-row"><span>recipient config hash</span><code>{_esc(snapshot.get('recipient_configuration_hash'))}</code></div></div></div></details>
 """
-    resp = HTMLResponse(_layout(f"Approve {run_id}", inner))
+    resp = HTMLResponse(_layout(f"Approve {run_id}", inner, active="reviews"))
     resp.set_cookie(
         APPROVE_NONCE_COOKIE,
         cookie_value,
         httponly=True,
+        secure=_admin_cookie_secure(),
         samesite="lax",
         max_age=APPROVE_NONCE_TTL_SECONDS,
         path="/",
@@ -1640,12 +2103,16 @@ def admin_run_approve(
     approve_note: str = Form(""),
     approve_nonce: str = Form(""),
     customer_send_confirm: str = Form(""),
+    approval_snapshot_id: str = Form(""),
+    csrf_token: str = Form(""),
 ):
     need = _require_login(request)
     if need is not None:
         return need
     if not validate_run_id(run_id):
         return HTMLResponse(_layout("Not found", "<p>잘못된 run_id</p>"), status_code=404)
+    if not _verify_csrf(request, f"approve:{run_id}", csrf_token):
+        return _csrf_rejected()
 
     def _reject(code: str, *, consume_nonce: bool = True) -> RedirectResponse:
         resp = RedirectResponse(
@@ -1676,7 +2143,13 @@ def admin_run_approve(
         "approval_note": cleaned_note or None,
         "approval_nonce_used": True,
     }
-    updated, status = approve_run(run_id, note=approve_note, approval_audit=approval_audit)
+    updated, status = approve_run(
+        run_id,
+        note=approve_note,
+        approval_snapshot_id=approval_snapshot_id,
+        operator_id=_operator_id(request),
+        approval_audit=approval_audit,
+    )
     if status != "ok" or not updated:
         code = status if status in _APPROVE_ERROR_MESSAGES else "send_failed"
         return _reject(code)
@@ -1703,17 +2176,31 @@ def admin_run_reissue(
     reason_note: str = Form(""),
     reissue_scope: str = Form(""),
     dry_run_no_send: str = Form(""),
+    csrf_token: str = Form(""),
 ):
     need = _require_login(request)
     if need is not None:
         return need
     if not validate_run_id(run_id):
         return HTMLResponse(_layout("Not found", "<p>잘못된 run_id</p>"), status_code=404)
+    if not _verify_csrf(request, f"reissue:{run_id}", csrf_token):
+        return _csrf_rejected()
     parent = load_run_artifact(run_id)
     if not parent:
         return HTMLResponse(_layout("Not found", "<p>원본 실행 기록을 찾을 수 없습니다.</p>"), status_code=404)
 
     mode = str(parent.get("mode") or parent.get("program_id") or "").strip()
+    append_operator_audit(
+        "reissue_requested",
+        operator_id=_operator_id(request),
+        run_id=run_id,
+        result="requested",
+        metadata={
+            "mode": mode,
+            "reissue_scope": str(reissue_scope or ""),
+            "dry_run_no_send": _is_dry_run_no_send(dry_run_no_send),
+        },
+    )
     if mode not in ("today_genie", "tomorrow_genie", "keysuri_global_tech", "keysuri_korea_tech"):
         return _render_reissue_failure_page(
             title="Reissue failed",
@@ -2039,6 +2526,7 @@ def _render_customer_recipients_page(
             f"<tr><td>{_esc(a)}</td>"
             f"<td>"
             f"<form method='post' action='/admin/customer-recipients/remove' style='margin:0'>"
+            f"{_csrf_field(request, 'recipient_remove')}"
             f"<input type='hidden' name='email' value='{_esc(a)}'>"
             f"<button type='submit' class='btn' style='background:#dc2626;padding:6px 12px;font-size:13px;min-height:32px;'>삭제</button>"
             f"</form>"
@@ -2100,6 +2588,7 @@ def _render_customer_recipients_page(
 <div class="card">
 <h2 style="font-size:16px;margin:0 0 12px">수신자 추가</h2>
 <form method="post" action="/admin/customer-recipients/add">
+{_csrf_field(request, 'recipient_add')}
 <label for="new-email" style="display:block;font-size:14px;font-weight:600;margin:0 0 6px">이메일 주소</label>
 <input type="text" id="new-email" name="email" placeholder="example@domain.com"
   style="max-width:360px;margin-bottom:12px;" autocomplete="off" autocapitalize="none">
@@ -2127,10 +2616,13 @@ def admin_customer_recipients(request: Request) -> HTMLResponse:
 def admin_customer_recipients_add(
     request: Request,
     email: str = Form(...),
+    csrf_token: str = Form(""),
 ) -> Response:
     gate = _require_login(request)
     if gate is not None:
         return gate  # type: ignore[return-value]
+    if not _verify_csrf(request, "recipient_add", csrf_token):
+        return _csrf_rejected()
     ok, err = add_beta_recipient(email)
     if not ok:
         _error_labels = {
@@ -2142,6 +2634,12 @@ def admin_customer_recipients_add(
         return _render_customer_recipients_page(
             request, error=_error_labels.get(err, f"추가 실패: {err}")
         )
+    append_operator_audit(
+        "recipient_config_changed",
+        operator_id=_operator_id(request),
+        result="recipient_added",
+        metadata={"new_count": len(resolve_customer_recipients().get("final_recipients") or [])},
+    )
     return RedirectResponse(url="/admin/customer-recipients?added=1", status_code=303)
 
 
@@ -2149,10 +2647,13 @@ def admin_customer_recipients_add(
 def admin_customer_recipients_remove(
     request: Request,
     email: str = Form(...),
+    csrf_token: str = Form(""),
 ) -> Response:
     gate = _require_login(request)
     if gate is not None:
         return gate  # type: ignore[return-value]
+    if not _verify_csrf(request, "recipient_remove", csrf_token):
+        return _csrf_rejected()
     ok, err = remove_beta_recipient(email)
     if not ok:
         _error_labels = {
@@ -2163,6 +2664,12 @@ def admin_customer_recipients_remove(
         return _render_customer_recipients_page(
             request, error=_error_labels.get(err, f"삭제 실패: {err}")
         )
+    append_operator_audit(
+        "recipient_config_changed",
+        operator_id=_operator_id(request),
+        result="recipient_removed",
+        metadata={"new_count": len(resolve_customer_recipients().get("final_recipients") or [])},
+    )
     return RedirectResponse(url="/admin/customer-recipients?removed=1", status_code=303)
 
 
@@ -2256,6 +2763,7 @@ def admin_notice_new(request: Request):
 <p>{type_links}</p>
 <div class="card">
 <form method="post" action="/admin/notices/preview">
+{_csrf_field(request, 'notice_preview')}
 <label>공지 유형<br>
 <select name="notice_type">{type_options}</select>
 </label><br><br>
@@ -2286,10 +2794,13 @@ def admin_notice_preview(
     related_run_id: str = Form(""),
     subject: str = Form(""),
     body_text: str = Form(""),
+    csrf_token: str = Form(""),
 ):
     need = _require_login(request)
     if need is not None:
         return need
+    if not _verify_csrf(request, "notice_preview", csrf_token):
+        return _csrf_rejected()
 
     notice_type = str(notice_type or "").strip()
     if notice_type not in NOTICE_TYPES:
@@ -2350,6 +2861,7 @@ def admin_notice_preview(
 </div>
 <div class="card">
 <form method="post" action="/admin/notices/send">
+{_csrf_field(request, f'notice_send:{notice["notice_id"]}')}
 <input type="hidden" name="notice_id" value="{nid}">
 <label>발송 확인 문구를 정확히 입력하세요: <code>{_esc(NOTICE_SEND_CONFIRM_PHRASE)}</code><br>
 <input type="text" name="confirm" required>
@@ -2366,10 +2878,13 @@ def admin_notice_send(
     request: Request,
     notice_id: str = Form(""),
     confirm: str = Form(""),
+    csrf_token: str = Form(""),
 ):
     need = _require_login(request)
     if need is not None:
         return need
+    if not _verify_csrf(request, f"notice_send:{notice_id}", csrf_token):
+        return _csrf_rejected()
 
     if not validate_notice_id(notice_id):
         return RedirectResponse(url="/admin/notices?notice_error=not_found", status_code=303)
@@ -2386,11 +2901,25 @@ def admin_notice_send(
         )
 
     sent_by = "admin"
+    append_operator_audit(
+        "notice_send_attempted",
+        operator_id=_operator_id(request),
+        result="attempted",
+        related_id=notice_id,
+        metadata={"recipient_count": notice.get("recipients_count")},
+    )
     sent = send_admin_notice_email(notice)
     if sent:
         mark_sent(notice, sent_by=sent_by)
     else:
         mark_failed(notice, send_error="smtp_send_failed", sent_by=sent_by)
+    append_operator_audit(
+        "notice_send_result",
+        operator_id=_operator_id(request),
+        result="SMTP_ACCEPTED" if sent else "NOT_SENT",
+        reason_code="" if sent else "smtp_send_failed",
+        related_id=notice_id,
+    )
 
     return RedirectResponse(url=f"/admin/notices/{notice_id}", status_code=303)
 

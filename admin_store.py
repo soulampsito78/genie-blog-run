@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import secrets
@@ -24,7 +25,7 @@ _RUN_ID_RE = re.compile(
 )
 
 OWNER_REVIEW_STATUSES = frozenset(
-    {"pending_review", "approved", "reopened", "approval_expired_manual_required"}
+    {"pending_review", "held", "approved", "reopened", "approval_expired_manual_required"}
 )
 LEGACY_OWNER_REVIEW_STATUSES = frozenset({"auto_sent_after_timeout"})
 REISSUE_SCOPES = frozenset({"body_only", "image_only", "body_and_image"})
@@ -128,6 +129,12 @@ CUSTOMER_DELIVERY_STATUSES = frozenset(
         "unknown",
         "customer_sent_after_approval",
         "sent_after_owner_approval",
+        "NOT_SENT",
+        "SUBMITTED",
+        "ACCEPTED_ALL",
+        "PARTIAL_REFUSAL",
+        "REFUSED_ALL",
+        "OUTCOME_UNKNOWN",
     }
 )
 _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED = frozenset(
@@ -136,6 +143,11 @@ _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED = frozenset(
         "sent_after_owner_approval",
         "smtp_accepted",
         "delivery_confirmed",
+        "ACCEPTED_ALL",
+        "PARTIAL_REFUSAL",
+        "REFUSED_ALL",
+        "OUTCOME_UNKNOWN",
+        "SUBMITTED",
     }
 )
 LEGACY_CUSTOMER_DELIVERY_STATUSES = frozenset({"sent_after_timeout"})
@@ -549,7 +561,9 @@ def _panel_delivery_grade(meta: Dict[str, Any]) -> tuple[str, str, str]:
 def _panel_double_send_blocked(meta: Dict[str, Any]) -> str:
     delivery_status = str(meta.get("customer_delivery_status") or "not_sent").strip()
     owner_status = str(meta.get("owner_review_status") or "").strip()
-    if delivery_status in _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED or owner_status == "approved":
+    if delivery_status in _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED or delivery_status.upper() in {
+        "SUBMITTED", "ACCEPTED_ALL", "PARTIAL_REFUSAL", "REFUSED_ALL", "OUTCOME_UNKNOWN"
+    } or owner_status == "approved":
         return "예 — 이미 발송됨 / 재발송 차단"
     return "아니오"
 
@@ -867,9 +881,41 @@ def can_approve_customer_send(meta: Dict[str, Any], *, has_email_html: bool) -> 
     mode = str(meta.get("mode") or "")
     if mode not in APPROVABLE_MODES:
         return False, "unsupported_mode"
+    if _is_legacy_timeout_artifact(meta):
+        return False, "legacy_timeout_sent"
+    owner_status = str(meta.get("owner_review_status") or "pending_review")
+    if owner_status == "held":
+        return False, "review_held"
+    delivery = str(meta.get("customer_delivery_status") or "not_sent")
+    if delivery in LEGACY_CUSTOMER_DELIVERY_STATUSES:
+        return False, "legacy_timeout_sent"
+    canonical_delivery_blocks = {
+        "SUBMITTED": "delivery_submission_pending",
+        "PARTIAL_REFUSAL": "delivery_partial_refusal",
+        "REFUSED_ALL": "delivery_refused_all",
+        "OUTCOME_UNKNOWN": "delivery_outcome_unknown",
+    }
+    if delivery.upper() in canonical_delivery_blocks:
+        return False, canonical_delivery_blocks[delivery.upper()]
+    if owner_status == "approved":
+        return False, "already_approved"
+    if delivery in _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED or delivery.upper() in {
+        "ACCEPTED_ALL"
+    }:
+        return False, "customer_already_sent"
+    if delivery.lower() not in ("not_sent", "", "failed"):
+        return False, "customer_already_sent"
+    if owner_status not in OWNER_REVIEW_STATUSES:
+        return False, "invalid_owner_review_status"
+    vr = str(meta.get("validation_result") or "")
+    if vr == "block" or str(meta.get("artifact_status") or "") == "failed":
+        return False, "not_approvable"
+    if not has_email_html:
+        return False, "missing_email_html"
     if mode == "keysuri_korea_tech":
         # Korea delivery requires 041559 bottom QA baseline metadata confirmed.
-        # If bottom image metadata is absent or wrong, delivery is blocked.
+        # Check immutable run state first so an ambiguous/previous submission is
+        # always explained and blocked as a duplicate-risk condition.
         baseline_ok, baseline_err = _keysuri_korea_bottom_baseline_confirmed(meta)
         if not baseline_ok:
             return False, baseline_err
@@ -884,25 +930,6 @@ def can_approve_customer_send(meta: Dict[str, Any], *, has_email_html: bool) -> 
         ready, err = customer_delivery_config_ready()
         if not ready:
             return False, err
-    if _is_legacy_timeout_artifact(meta):
-        return False, "legacy_timeout_sent"
-    owner_status = str(meta.get("owner_review_status") or "pending_review")
-    if owner_status == "approved":
-        return False, "already_approved"
-    delivery = str(meta.get("customer_delivery_status") or "not_sent")
-    if delivery in LEGACY_CUSTOMER_DELIVERY_STATUSES:
-        return False, "legacy_timeout_sent"
-    if delivery in _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED:
-        return False, "customer_already_sent"
-    if delivery not in ("not_sent", "", "failed"):
-        return False, "customer_already_sent"
-    if owner_status not in OWNER_REVIEW_STATUSES:
-        return False, "invalid_owner_review_status"
-    vr = str(meta.get("validation_result") or "")
-    if vr == "block" or str(meta.get("artifact_status") or "") == "failed":
-        return False, "not_approvable"
-    if not has_email_html:
-        return False, "missing_email_html"
     if mode == "today_genie":
         from today_geenee_customer_delivery import customer_delivery_config_ready
 
@@ -916,7 +943,7 @@ def _record_customer_delivery_attempt(meta: Dict[str, Any], *, attempted_at: str
     meta["customer_delivery_attempted_at"] = attempted_at
     meta["customer_delivery_attempt_count"] = int(meta.get("customer_delivery_attempt_count") or 0) + 1
     meta["customer_delivery_event_source"] = "approve_run"
-    meta["customer_delivery_status"] = "send_attempted"
+    meta["customer_delivery_status"] = "SUBMITTED"
     meta["customer_delivery_last_event_at"] = attempted_at
 
 
@@ -1012,9 +1039,11 @@ def approve_run(
     run_id: str,
     note: str = "",
     *,
+    approval_snapshot_id: str = "",
+    operator_id: str = "",
     approval_audit: Optional[Dict[str, Any]] = None,
 ) -> tuple[Optional[Dict[str, Any]], str]:
-    """Approve run and send customer final email immediately (today_genie HTML body only)."""
+    """Verify a frozen target, reserve one command, then submit exactly that payload."""
     meta = load_run_artifact(run_id)
     if not meta:
         return None, "not_found"
@@ -1023,9 +1052,79 @@ def approve_run(
     ok, msg = can_approve_customer_send(meta, has_email_html=bool(saved_html.strip()))
     if not ok:
         return None, msg
+    if not approval_snapshot_id or not operator_id:
+        return None, "INVALID_APPROVAL_SNAPSHOT"
+
+    from admin_approval import ApprovalTargetError, verify_approval_snapshot
+    from admin_safety_store import (
+        append_operator_audit,
+        complete_delivery_command,
+        delivery_command_id_for_snapshot,
+        reserve_delivery_command,
+    )
+
+    try:
+        snapshot, prepared = verify_approval_snapshot(
+            snapshot_id=approval_snapshot_id,
+            run_id=run_id,
+            meta=meta,
+            saved_html=saved_html,
+            operator_id=operator_id,
+        )
+    except ApprovalTargetError as exc:
+        append_operator_audit(
+            "customer_send_blocked",
+            operator_id=operator_id,
+            run_id=run_id,
+            result="blocked",
+            reason_code=exc.code,
+            related_id=approval_snapshot_id,
+        )
+        return None, exc.code
+
+    append_operator_audit(
+        "approval_confirmed",
+        operator_id=operator_id,
+        run_id=run_id,
+        result="confirmed",
+        related_id=approval_snapshot_id,
+    )
+
+    command_id = delivery_command_id_for_snapshot(approval_snapshot_id)
+    command_created, _ = reserve_delivery_command(
+        command_id=command_id,
+        snapshot_id=approval_snapshot_id,
+        run_id=run_id,
+        operator_id=operator_id,
+    )
+    if not command_created:
+        append_operator_audit(
+            "customer_send_blocked",
+            operator_id=operator_id,
+            run_id=run_id,
+            result="blocked",
+            reason_code="DUPLICATE_DELIVERY_COMMAND",
+            related_id=command_id,
+        )
+        return None, "DUPLICATE_DELIVERY_COMMAND"
+
+    append_operator_audit(
+        "customer_send_attempted",
+        operator_id=operator_id,
+        run_id=run_id,
+        result="submitted_to_application_boundary",
+        related_id=command_id,
+        metadata={"target_count": len(prepared.recipients)},
+    )
 
     attempted_at = now_kst_iso()
-    update_run_artifact(run_id, lambda m: _record_customer_delivery_attempt(m, attempted_at=attempted_at))
+    def _attempt(m: Dict[str, Any]) -> None:
+        _record_customer_delivery_attempt(m, attempted_at=attempted_at)
+        m["approval_snapshot_id"] = approval_snapshot_id
+        m["delivery_command_id"] = command_id
+        m["customer_delivery_target_count"] = len(prepared.recipients)
+
+    update_run_artifact(run_id, _attempt)
     from email_sender import last_send_diagnostic, last_send_trace, reset_last_send_state
 
     reset_last_send_state()
@@ -1035,14 +1134,35 @@ def approve_run(
     if mode == "today_genie":
         from today_geenee_customer_delivery import send_today_geenee_customer_final_email
 
-        send_ok = send_today_geenee_customer_final_email(saved_html, meta)
+        send_ok = send_today_geenee_customer_final_email(
+            saved_html,
+            meta,
+            prepared_delivery={
+                "ok": True,
+                "html_body": prepared.customer_html,
+                "subject": prepared.subject,
+                "inline_jpeg_parts": prepared.inline_jpeg_parts,
+                "recipients": prepared.recipients,
+            },
+        )
     elif mode in ("keysuri_global_tech", "keysuri_korea_tech"):
         from keysuri_customer_delivery import (
             last_keysuri_delivery_result,
             send_keysuri_customer_final_email,
         )
 
-        send_ok = send_keysuri_customer_final_email(saved_html, meta)
+        send_ok = send_keysuri_customer_final_email(
+            saved_html,
+            meta,
+            prepared_delivery={
+                "ok": True,
+                "html_body": prepared.customer_html,
+                "subject": prepared.subject,
+                "preheader": "",
+                "inline_jpeg_parts": prepared.inline_jpeg_parts,
+                "recipients": prepared.recipients,
+            },
+        )
         keysuri_delivery_result = last_keysuri_delivery_result()
     else:
         return None, "unsupported_mode"
@@ -1059,59 +1179,99 @@ def approve_run(
             getattr(keysuri_delivery_result, "customer_email_preheader", "") or ""
         ).strip()
 
-    if not send_ok:
-        diag = sanitize_delivery_error_summary(send_diagnostic or "Customer email send failed.")
-        delivery_fields = build_customer_email_delivery_fields(
-            attempted=True,
-            send_ok=False,
-            subject=customer_subject,
-            trace=send_trace,
-            diagnostic=diag,
-            preheader=customer_preheader,
-            repo_root=repo_root(),
-        )
-
-        def _fail(m: Dict[str, Any]) -> None:
-            _record_customer_delivery_failure(
-                m,
-                attempted_at=attempted_at,
-                error_summary=diag,
-                error_code="send_failed",
-            )
-            m.update(delivery_fields)
-
-        update_run_artifact(run_id, _fail)
-        return None, "send_failed"
-
     cleaned_note = note.strip()
     sent_ts = now_kst_iso()
+    traced = dict(send_trace or {})
+    traced["attempted_at"] = attempted_at
+    traced.setdefault("envelope_to", list(prepared.recipients))
+    if send_ok:
+        traced.setdefault("smtp_submission_started", True)
+        traced.setdefault("smtp_submission_completed", True)
     delivery_fields = build_customer_email_delivery_fields(
         attempted=True,
-        send_ok=True,
-        subject=customer_subject,
-        trace=send_trace,
+        send_ok=bool(send_ok),
+        subject=customer_subject or prepared.subject,
+        trace=traced,
         diagnostic=send_diagnostic,
         preheader=customer_preheader,
         sent_at_kst=sent_ts,
         repo_root=repo_root(),
     )
+    result_code = str(delivery_fields.get("customer_email_delivery_status") or "OUTCOME_UNKNOWN")
+    complete_delivery_command(
+        command_id,
+        result_code=result_code,
+        safe_metadata={
+            "target_count": delivery_fields.get("customer_delivery_target_count"),
+            "accepted_count": delivery_fields.get("customer_delivery_accepted_count"),
+            "refused_count": delivery_fields.get("customer_delivery_refused_count"),
+            "unknown_count": delivery_fields.get("customer_delivery_unknown_count"),
+        },
+    )
+    append_operator_audit(
+        "customer_send_result",
+        operator_id=operator_id,
+        run_id=run_id,
+        result=result_code,
+        related_id=command_id,
+        metadata={
+            "target_count": delivery_fields.get("customer_delivery_target_count"),
+            "accepted_count": delivery_fields.get("customer_delivery_accepted_count"),
+            "refused_count": delivery_fields.get("customer_delivery_refused_count"),
+            "unknown_count": delivery_fields.get("customer_delivery_unknown_count"),
+            "provider_exactly_once": False,
+        },
+    )
 
     def _mut(m: Dict[str, Any]) -> None:
-        m["owner_review_status"] = "approved"
+        m["owner_review_status"] = "approved" if result_code != "NOT_SENT" else "pending_review"
         m["owner_reviewed_at"] = sent_ts
         m["approved_at"] = sent_ts
         m["owner_review_note"] = cleaned_note or None
         m["approved_by"] = "owner_admin"
         m["customer_delivery_reason"] = "owner_approved"
-        m["customer_sent_at"] = sent_ts
-        _record_customer_delivery_smtp_accepted(m, completed_at=sent_ts)
+        m["customer_sent_at"] = sent_ts if result_code in {"ACCEPTED_ALL", "PARTIAL_REFUSAL"} else None
         m.update(delivery_fields)
-        _update_sent_news_log_after_customer_success(m, sent_at=sent_ts)
+        m["customer_delivery_status"] = result_code
+        if result_code == "ACCEPTED_ALL":
+            m["customer_delivery_legacy_status"] = "customer_sent_after_approval"
+        m["approval_snapshot_id"] = approval_snapshot_id
+        m["delivery_command_id"] = command_id
+        m["provider_exactly_once"] = False
+        m["application_duplicate_submission_block"] = True
+        append_customer_delivery_event(
+            m,
+            {
+                "status": result_code,
+                "event_type": "smtp_submission_result",
+                "source": "approve_run",
+                "summary": (
+                    "Immediate SMTP evidence recorded; inbox receipt is not confirmed."
+                ),
+                "at": sent_ts,
+                "target_count": delivery_fields.get("customer_delivery_target_count"),
+                "accepted_count": delivery_fields.get("customer_delivery_accepted_count"),
+                "refused_count": delivery_fields.get("customer_delivery_refused_count"),
+                "unknown_count": delivery_fields.get("customer_delivery_unknown_count"),
+            },
+        )
+        if result_code in {"ACCEPTED_ALL", "PARTIAL_REFUSAL"}:
+            _update_sent_news_log_after_customer_success(m, sent_at=sent_ts)
+        if result_code == "NOT_SENT":
+            _record_customer_delivery_failure(
+                m,
+                attempted_at=attempted_at,
+                error_summary=send_diagnostic or "Customer email was not submitted.",
+                error_code="send_failed",
+            )
+            m["customer_delivery_status"] = "NOT_SENT"
         if approval_audit:
             for key, value in approval_audit.items():
                 m[key] = value
 
     updated = update_run_artifact(run_id, _mut)
+    if result_code == "NOT_SENT":
+        return None, "send_failed"
     return updated, "ok"
 
 
@@ -1489,6 +1649,7 @@ def save_beta_recipient_config(
     *,
     disabled_recipients: Optional[List[str]] = None,
     updated_by: str = "admin",
+    version: int = 1,
 ) -> None:
     """Persist admin-managed beta recipient config to GCS (or local fallback)."""
     payload = {
@@ -1496,7 +1657,7 @@ def save_beta_recipient_config(
         "disabled_recipients": [str(r).strip().lower() for r in (disabled_recipients or [])],
         "updated_at": now_kst_iso(),
         "updated_by": updated_by,
-        "version": 1,
+        "version": max(1, int(version)),
     }
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     if _uses_gcs_backend():
@@ -1561,13 +1722,26 @@ def resolve_customer_recipients() -> Dict[str, Any]:
         parts.append(f"admin_config({admin_count})")
     source_summary = "+".join(parts) if parts else "empty"
 
+    config_version = int(cfg.get("version") or 1)
+    config_identity = {
+        "env_recipients": env_valid,
+        "admin_recipients": admin_valid,
+        "disabled_recipients": sorted(disabled_set),
+        "final_recipients": final,
+        "admin_version": config_version,
+    }
+    config_hash = hashlib.sha256(
+        json.dumps(config_identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     return {
         "final_recipients": final,
         "env_recipients": env_valid,
         "admin_recipients": admin_valid,
         "invalid_entries": invalid,
         "source_summary": source_summary,
-        "admin_config_ok": True,
+        "admin_config_ok": bool(cfg.get("load_ok", True)),
+        "recipient_configuration_version": f"env+admin:v{config_version}",
+        "recipient_configuration_hash": config_hash,
     }
 
 
@@ -1589,7 +1763,11 @@ def add_beta_recipient(email: str) -> tuple[bool, str]:
     if norm in current:
         return False, "already_exists"
     current.append(norm)
-    save_beta_recipient_config(current, disabled_recipients=cfg.get("disabled_recipients", []))
+    save_beta_recipient_config(
+        current,
+        disabled_recipients=cfg.get("disabled_recipients", []),
+        version=int(cfg.get("version") or 1) + 1,
+    )
     return True, ""
 
 
@@ -1609,5 +1787,50 @@ def remove_beta_recipient(email: str) -> tuple[bool, str]:
     if norm not in current:
         return False, "not_found"
     updated = [r for r in current if r != norm]
-    save_beta_recipient_config(updated, disabled_recipients=cfg.get("disabled_recipients", []))
+    save_beta_recipient_config(
+        updated,
+        disabled_recipients=cfg.get("disabled_recipients", []),
+        version=int(cfg.get("version") or 1) + 1,
+    )
     return True, ""
+
+
+def hold_run(run_id: str, *, note: str = "", operator_id: str = "owner_admin") -> tuple[Optional[Dict[str, Any]], str]:
+    """Durably record the owner's explicit do-not-send-yet decision."""
+    meta = load_run_artifact(run_id)
+    if not meta:
+        return None, "not_found"
+    owner_status = str(meta.get("owner_review_status") or "pending_review")
+    if owner_status == "held":
+        return None, "already_held"
+    if owner_status not in {"pending_review", "reopened"}:
+        return None, "invalid_owner_review_status"
+    delivery = str(meta.get("customer_delivery_status") or "not_sent").upper()
+    if delivery not in {"NOT_SENT", "FAILED", ""}:
+        return None, "customer_already_sent"
+    ts = now_kst_iso()
+
+    def _mut(row: Dict[str, Any]) -> None:
+        row["owner_review_status"] = "held"
+        row["review_held_at"] = ts
+        row["review_held_by"] = operator_id
+        row["review_hold_note"] = str(note or "").strip()[:500] or None
+
+    return update_run_artifact(run_id, _mut), "ok"
+
+
+def reopen_held_run(run_id: str, *, operator_id: str = "owner_admin") -> tuple[Optional[Dict[str, Any]], str]:
+    """Reopen a held review without generating or mutating briefing content."""
+    meta = load_run_artifact(run_id)
+    if not meta:
+        return None, "not_found"
+    if str(meta.get("owner_review_status") or "") != "held":
+        return None, "not_held"
+    ts = now_kst_iso()
+
+    def _mut(row: Dict[str, Any]) -> None:
+        row["owner_review_status"] = "reopened"
+        row["review_reopened_at"] = ts
+        row["review_reopened_by"] = operator_id
+
+    return update_run_artifact(run_id, _mut), "ok"

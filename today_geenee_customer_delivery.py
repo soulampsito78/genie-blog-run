@@ -290,45 +290,69 @@ def prepare_customer_final_html(
 def send_today_geenee_customer_final_email(
     saved_html: str,
     meta: Dict[str, Any],
+    *,
+    prepared_delivery: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """
     Send approved customer email: text/html body with inline CID JPEG parts only.
     No HTML attachment, no image attachments, no Naver paste body.
     """
-    ready, err = customer_delivery_config_ready()
-    if not ready:
-        logger.warning("send_today_geenee_customer_final_email: blocked (%s)", err)
+    prepared = dict(prepared_delivery or prepare_today_geenee_customer_delivery(saved_html, meta))
+    if not prepared.get("ok"):
+        logger.warning(
+            "send_today_geenee_customer_final_email: blocked (%s)",
+            prepared.get("error") or "today_delivery_preparation_failed",
+        )
         return False
+    os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
+    return send_genie_email(
+        str(prepared["html_body"]),
+        str(prepared["subject"]),
+        inline_jpeg_parts=list(prepared["inline_jpeg_parts"]),
+        attachment_jpeg_parts=[],
+        to_addrs_override=list(prepared["recipients"]),
+    )
 
+
+def prepare_today_geenee_customer_delivery(
+    saved_html: str,
+    meta: Dict[str, Any],
+    *,
+    recipients_override: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Prepare the exact customer payload without submitting it to SMTP."""
+    ready, err = customer_delivery_config_ready()
+    if not ready and recipients_override is None:
+        return {"ok": False, "error": err}
     try:
         html_body = prepare_customer_final_html(
             saved_html,
             review_confirmation_state=REVIEW_CONFIRMATION_STATE_REVIEW_PASSED,
         )
     except ValueError as exc:
-        logger.warning("send_today_geenee_customer_final_email: %s", exc)
-        return False
-
+        return {"ok": False, "error": str(exc)}
     global _LAST_CUSTOMER_IMAGE_RESOLUTION_REASON
     _LAST_CUSTOMER_IMAGE_RESOLUTION_REASON = ""
     inline_parts = _resolve_today_genie_inline_jpeg_parts(meta)
     if inline_parts is None:
-        logger.warning(
-            "send_today_geenee_customer_final_email: image resolution blocked (%s)",
-            _LAST_CUSTOMER_IMAGE_RESOLUTION_REASON or "today_image_resolution_failed",
-        )
-        return False
-
-    subject = build_customer_final_subject(meta, saved_html)
-    customer_to = resolve_customer_recipients()["final_recipients"]
-    os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
-    return send_genie_email(
-        html_body,
-        subject,
-        inline_jpeg_parts=inline_parts,
-        attachment_jpeg_parts=[],
-        to_addrs_override=customer_to,
+        return {
+            "ok": False,
+            "error": _LAST_CUSTOMER_IMAGE_RESOLUTION_REASON or "today_image_resolution_failed",
+        }
+    recipients = (
+        list(recipients_override)
+        if recipients_override is not None
+        else list(resolve_customer_recipients()["final_recipients"])
     )
+    if not recipients:
+        return {"ok": False, "error": "missing_customer_to"}
+    return {
+        "ok": True,
+        "html_body": html_body,
+        "subject": build_customer_final_subject(meta, saved_html),
+        "inline_jpeg_parts": list(inline_parts),
+        "recipients": recipients,
+    }
 
 
 def send_customer_timeout_draft_email(*_args: Any, **_kwargs: Any) -> bool:

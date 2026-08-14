@@ -465,7 +465,13 @@ def send_genie_email(
         with smtplib.SMTP(host, port, timeout=30) as server:
             server.starttls()
             server.login(user, password)
+            # Once DATA/sendmail begins, an exception can be ambiguous: the
+            # provider may have accepted the message before the client lost
+            # the response.  Persist this boundary in the trace so callers do
+            # not treat the outcome as definitely unsent and blindly retry.
+            _LAST_SEND_TRACE["smtp_submission_started"] = True
             refused = server.sendmail(from_addr, list(to_addrs), payload)
+            _LAST_SEND_TRACE["smtp_submission_completed"] = True
         refused = refused or {}
         refused_recipients = [str(addr) for addr in refused.keys()]
         # sendmail() refusal data is immediate SMTP feedback only; delayed bounces are not covered here.
@@ -484,7 +490,28 @@ def send_genie_email(
             use_rich,
         )
         return True
+    except smtplib.SMTPRecipientsRefused as e:
+        refused_map = dict(getattr(e, "recipients", {}) or {})
+        refused_recipients = [str(addr) for addr in refused_map]
+        _LAST_SEND_TRACE.update(
+            {
+                "smtp_submission_completed": True,
+                "smtp_refused_recipients": refused_recipients,
+                "smtp_refused_recipient_count": len(refused_recipients),
+                "smtp_refused": {str(k): str(v) for k, v in refused_map.items()},
+                "smtp_partial_refusal": False,
+                "smtp_accepted_recipient_count": 0,
+                "smtp_outcome_unknown": False,
+            }
+        )
+        _LAST_SEND_DIAGNOSTIC = "SMTPRecipientsRefused: all recipients immediately refused"
+        logger.warning("send_genie_email: all recipients immediately refused")
+        return False
     except (smtplib.SMTPException, OSError) as e:
+        if _LAST_SEND_TRACE.get("smtp_submission_started") and not _LAST_SEND_TRACE.get(
+            "smtp_submission_completed"
+        ):
+            _LAST_SEND_TRACE["smtp_outcome_unknown"] = True
         _LAST_SEND_DIAGNOSTIC = f"{type(e).__name__}: {e}"
         logger.exception("send_genie_email: send failed: %s", e)
         return False

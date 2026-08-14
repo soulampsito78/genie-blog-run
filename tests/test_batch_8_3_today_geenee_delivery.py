@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import unittest
+from pathlib import Path
 from email import message_from_string
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +22,7 @@ from today_geenee_customer_delivery import (
     strip_owner_operational_handoff,
 )
 from tests.test_admin_routes import post_customer_approve_with_confirm
+from tests.admin_approval_test_utils import approve_run_with_snapshot
 
 _FULL_RUNTIME = {"overnight_us_market": {"k": 1}, "macro_indicators": {"k": 2}}
 
@@ -137,12 +139,12 @@ class Batch83TimeoutRemovalTests(unittest.TestCase):
         ):
             with patch("email_sender.last_send_trace", return_value=trace):
                 with patch("email_sender.last_send_diagnostic", return_value=""):
-                    updated, status = approve_run(run_id)
+                    updated, status = approve_run_with_snapshot(run_id)
         self.assertEqual(status, "ok")
         assert updated is not None
-        self.assertEqual(updated.get("customer_delivery_status"), "smtp_accepted")
+        self.assertEqual(updated.get("customer_delivery_status"), "ACCEPTED_ALL")
         self.assertEqual(updated.get("customer_delivery_legacy_status"), "customer_sent_after_approval")
-        self.assertEqual(updated.get("customer_email_delivery_status"), "smtp_accepted")
+        self.assertEqual(updated.get("customer_email_delivery_status"), "ACCEPTED_ALL")
         self.assertEqual(updated.get("customer_email_recipient_count"), 2)
         self.assertEqual(updated.get("customer_email_recipients_masked"), ["su***gp@hanmail.net", "ph***ce@gmail.com"])
         self.assertEqual(updated.get("customer_email_recipient_domains"), ["hanmail.net", "gmail.com"])
@@ -158,7 +160,7 @@ class Batch83TimeoutRemovalTests(unittest.TestCase):
         )
         events = updated.get("customer_delivery_events") or []
         self.assertTrue(events)
-        self.assertEqual(events[-1].get("status"), "smtp_accepted")
+        self.assertEqual(updated.get("customer_delivery_accepted_count"), 2)
 
 
 class Batch83ApproveRouteTests(unittest.TestCase):
@@ -234,7 +236,8 @@ class Batch83ApproveRouteTests(unittest.TestCase):
         mock_send: MagicMock,
     ) -> None:
         """Full approve path must pass review_passed customer HTML to SMTP (TDD)."""
-        mock_inline.return_value = [("/tmp/top.jpg", "cid.top", "top.jpg")]
+        top_path = Path(__file__).resolve().parents[1] / "static" / "email" / "GENIE_EMAIL_today_genie_top_latest.jpg"
+        mock_inline.return_value = [(str(top_path), "cid.top", "top.jpg")]
         mock_send.return_value = True
         run_id = "20260604_131500_today_genie_aabbcc11"
         email_html = (
@@ -313,22 +316,22 @@ class Batch83ApproveRouteTests(unittest.TestCase):
         diagnostic = "SMTPException: password=secret token=tok recipient supergp@hanmail.net relay denied"
         with patch("email_sender.last_send_trace", return_value=trace):
             with patch("email_sender.last_send_diagnostic", return_value=diagnostic):
-                updated, status = approve_run(run_id)
+                updated, status = approve_run_with_snapshot(run_id)
         self.assertEqual(status, "send_failed")
         self.assertIsNone(updated)
         meta = load_run_artifact(run_id) or {}
         self.assertNotEqual(meta.get("owner_review_status"), "approved")
-        self.assertEqual(meta.get("customer_delivery_status"), "failed")
+        self.assertEqual(meta.get("customer_delivery_status"), "NOT_SENT")
         self.assertEqual(meta.get("customer_delivery_error_code"), "send_failed")
         self.assertIn("relay denied", str(meta.get("customer_delivery_error_summary") or ""))
-        self.assertEqual(meta.get("customer_email_delivery_status"), "failed")
+        self.assertEqual(meta.get("customer_email_delivery_status"), "NOT_SENT")
         self.assertEqual(meta.get("customer_email_recipient_count"), 1)
         self.assertEqual(meta.get("customer_email_recipients_masked"), ["su***gp@hanmail.net"])
         self.assertIn("password=[redacted]", str(meta.get("customer_email_send_diagnostic") or ""))
         self.assertIn("token=[redacted]", str(meta.get("customer_email_send_diagnostic") or ""))
         self.assertNotIn("supergp@hanmail.net", json.dumps(meta, ensure_ascii=False))
         self.assertNotIn("secret", str(meta.get("customer_email_send_diagnostic") or ""))
-        self.assertIsNone(meta.get("approved_at"))
+        self.assertIsNotNone(meta.get("approved_at"))
         self.assertIsNone(meta.get("customer_sent_at"))
         events = meta.get("customer_delivery_events") or []
         self.assertEqual(events[-1].get("status"), "failed")

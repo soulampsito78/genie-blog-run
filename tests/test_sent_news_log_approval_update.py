@@ -8,6 +8,7 @@ from unittest import mock
 
 from admin_store import approve_run, save_run_artifact
 from sent_news_log_store import load_sent_news_log
+from tests.admin_approval_test_utils import approve_run_with_snapshot
 
 
 def _selected_items(count: int = 3) -> list[dict]:
@@ -80,7 +81,7 @@ class SentNewsApprovalUpdateTests(unittest.TestCase):
         ):
             with mock.patch("email_sender.last_send_trace", return_value=trace):
                 with mock.patch("email_sender.last_send_diagnostic", return_value=""):
-                    return approve_run(run_id)
+                    return approve_run_with_snapshot(run_id)
 
     def test_owner_review_creation_does_not_update_sent_log(self) -> None:
         _save_approvable(
