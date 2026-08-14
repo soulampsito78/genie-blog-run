@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from keysuri_global_visible_surface import balance_quote_marks
 from keysuri_visible_text_quality import repair_korean_connector_ellipsis_text
 
 PROGRAM_GLOBAL = "keysuri_global_tech"
@@ -228,14 +229,18 @@ def _shorten_core(core: str, *, max_len: int) -> str:
     separators = (" — ", " - ", ": ", "：", "·", ",", "，")
     for sep in separators:
         if sep in text:
-            head = _clean_text(text.split(sep, 1)[0])
+            # Splitting an English title on its comma can cut between the two
+            # halves of a quote pair: the 2026-08-14 Global subject rendered as
+            # "OpenAI introduces ‘Ultrafast" because the closing ’ sat after the
+            # comma. balance_quote_marks drops the orphaned opener.
+            head = balance_quote_marks(_clean_text(text.split(sep, 1)[0]))
             if 12 <= len(head) <= max_len:
                 return head
     cut = text[: max_len + 1]
     for idx in range(len(cut) - 1, 10, -1):
         if cut[idx].isspace():
-            return _clean_text(cut[:idx])
-    return _clean_text(text[:max_len])
+            return balance_quote_marks(_clean_text(cut[:idx]))
+    return balance_quote_marks(_clean_text(text[:max_len]))
 
 
 def _subject_components(

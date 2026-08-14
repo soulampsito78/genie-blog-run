@@ -12,6 +12,10 @@ from keysuri_briefing_content_quality import (
     GLOBAL_STARTUP_FOUNDER_MARKERS,
 )
 from keysuri_contract_preview_quality import _sentence_count
+from keysuri_global_visible_surface import (
+    attach_korean_subject_particle,
+    balance_quote_marks,
+)
 from keysuri_visible_text import (
     KEYSURI_DEEP_DIVE_UNCERTAINTY,
     KEYSURI_THIN_SOURCE_WHAT_HAPPENED_SUFFIX,
@@ -364,7 +368,11 @@ def _natural_korean_subject_phrase(title: str, *, max_len: int = 36) -> str:
     # Prefer the leading entity/clause before the first comma or middot.
     for sep in ("，", ",", "·"):
         if sep in title:
-            head = title.split(sep, 1)[0].strip()
+            # An English title's comma can fall between the halves of a quote
+            # pair — "OpenAI introduces ‘Ultrafast,’ a new mode…" split here
+            # yields a hook holding an orphaned ‘ , which then rendered as
+            # 「OpenAI introduces ‘Ultrafast」 across the 2026-08-14 Global email.
+            head = balance_quote_marks(title.split(sep, 1)[0].strip())
             if 2 <= len(head) <= max_len and not re.search(
                 r"(?:을|를|이|가|은|는|와|과|의|로|으로|및)\s*$", head
             ):
@@ -481,7 +489,13 @@ def _item_specific_checkpoint(item: dict, meta: dict, *, style: str) -> str:
     if style == "what":
         return f"{subject} 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다."
     if style == "decision":
-        return f"{subject}가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다."
+        # 이/가 must agree with the subject's last syllable. A bare category
+        # label subject ends on a consonant — "정책·규제·자본·공급망가" reached the
+        # 2026-08-14 Global email because the particle was hard-coded.
+        return (
+            f"{attach_korean_subject_particle(subject)}"
+            " 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다."
+        )
     return f"{subject} 후속 일정과 공식 발표부터 보면 됩니다."
 
 

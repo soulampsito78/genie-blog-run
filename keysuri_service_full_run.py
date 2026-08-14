@@ -1145,6 +1145,56 @@ def _generated_briefing_top_items(briefing: Optional[dict]) -> List[Dict[str, An
     return [item for item in items if isinstance(item, dict)]
 
 
+KEYSURI_VISIBLE_TEXT_QUALITY_BLOCKED = "keysuri_visible_text_quality_blocked"
+
+
+def _visible_text_quality_block_code(fields: Optional[Mapping[str, Any]]) -> Optional[str]:
+    """Error code when the visible-text walker says block — for ANY reason.
+
+    ``validate_and_repair_keysuri_visible_text_quality`` also raises
+    ``visible_text_dangling_quoted_title_blocked`` /
+    ``visible_text_year_span_blocked`` /
+    ``visible_text_korea_token_duplication_blocked`` and folds them into
+    ``visible_text_quality_status``. The send path used to test only the
+    ellipsis flag, so those three were recorded on the artifact and then
+    ignored. Every terminal flag now stops the owner-review send.
+    """
+    if not isinstance(fields, Mapping):
+        return None
+    if fields.get("visible_text_ellipsis_blocked"):
+        return KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED
+    for code in fields.get("terminal_issue_codes") or []:
+        if str(code or "").strip():
+            return str(code).strip()
+    if str(fields.get("visible_text_quality_status") or "") == "block":
+        return KEYSURI_VISIBLE_TEXT_QUALITY_BLOCKED
+    return None
+
+
+def _global_visible_surface_kwargs(
+    generated_briefing: Optional[dict],
+    subject_fields: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Visible-surface inputs for the final Global QA gate.
+
+    The subject line and the deep dive are customer-visible but live outside
+    ``top_5_news``; the 2026-08-14 Global incident put a mid-quote subject and a
+    copy of ``opening_lead`` in front of the owner because no gate read them.
+    """
+    briefing = generated_briefing if isinstance(generated_briefing, dict) else {}
+    fields = subject_fields if isinstance(subject_fields, Mapping) else {}
+    deep_dive = briefing.get("deep_dive")
+    return {
+        "subject": str(
+            fields.get("owner_email_subject")
+            or fields.get("editorial_subject")
+            or ""
+        ),
+        "deep_dive": deep_dive if isinstance(deep_dive, Mapping) else None,
+        "opening_lead": briefing.get("opening_lead") or "",
+    }
+
+
 def _post_render_qa_diagnostic_fields(qa_result: Any) -> Dict[str, Any]:
     """Safe post-render QA diagnostics for artifacts (no raw Gemini body)."""
     diag = getattr(qa_result, "diagnostics", None)
@@ -3750,6 +3800,7 @@ def run_keysuri_text_only_reissue(
             email_html,
             sanitizer_diagnostics=_global_filler_sanitizer_diagnostics(generated_briefing),
             briefing_items=_generated_briefing_top_items(generated_briefing),
+            **_global_visible_surface_kwargs(generated_briefing, subject_fields),
         )
         post_render_error = KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED
     else:
@@ -4113,6 +4164,7 @@ def run_keysuri_text_and_image_reissue(
             email_html,
             sanitizer_diagnostics=_global_filler_sanitizer_diagnostics(generated_briefing),
             briefing_items=_generated_briefing_top_items(generated_briefing),
+            **_global_visible_surface_kwargs(generated_briefing, subject_fields),
         )
         post_render_error = KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED
     else:
@@ -4676,7 +4728,8 @@ def _run_keysuri_service_full_run_impl(
         generated_briefing,
         root_path="generated_briefing",
     )
-    if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
+    visible_block_code = _visible_text_quality_block_code(visible_text_quality_fields)
+    if visible_block_code:
         block_issue_codes = _extend_unique(
             issue_codes,
             list(visible_text_quality_fields.get("visible_text_quality_issue_codes") or []),
@@ -4691,7 +4744,7 @@ def _run_keysuri_service_full_run_impl(
             called_gemini=True,
             image_outcome=image_outcome,
             email_sent=False,
-            error_code=KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+            error_code=visible_block_code,
         )
         meta.update(visible_text_quality_fields)
         _save_failed_run_artifact(meta, email_html="")
@@ -4704,7 +4757,7 @@ def _run_keysuri_service_full_run_impl(
             "called_gemini": True,
             "called_image_api": image_outcome.called_image_api,
             "email_sent": False,
-            "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+            "error": visible_block_code,
             "issue_codes": block_issue_codes,
         }
 
@@ -4809,7 +4862,8 @@ def _run_keysuri_service_full_run_impl(
         visible_text_quality_fields,
         subject_quality_fields,
     )
-    if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
+    visible_block_code = _visible_text_quality_block_code(visible_text_quality_fields)
+    if visible_block_code:
         block_issue_codes = _extend_unique(
             issue_codes,
             list(visible_text_quality_fields.get("visible_text_quality_issue_codes") or []),
@@ -4824,7 +4878,7 @@ def _run_keysuri_service_full_run_impl(
             called_gemini=True,
             image_outcome=image_outcome,
             email_sent=False,
-            error_code=KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+            error_code=visible_block_code,
         )
         meta.update(visible_text_quality_fields)
         meta.update(subject_fields)
@@ -4838,7 +4892,7 @@ def _run_keysuri_service_full_run_impl(
             "called_gemini": True,
             "called_image_api": image_outcome.called_image_api,
             "email_sent": False,
-            "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+            "error": visible_block_code,
             "issue_codes": block_issue_codes,
         }
     editorial_subject = subject_fields["editorial_subject"]
@@ -4909,7 +4963,8 @@ def _run_keysuri_service_full_run_impl(
         visible_text_quality_fields,
         html_quality_fields,
     )
-    if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
+    visible_block_code = _visible_text_quality_block_code(visible_text_quality_fields)
+    if visible_block_code:
         block_issue_codes = _extend_unique(
             issue_codes,
             list(visible_text_quality_fields.get("visible_text_quality_issue_codes") or []),
@@ -4930,7 +4985,7 @@ def _run_keysuri_service_full_run_impl(
             workflow_status=smoke.preview_overall_status,
             owner_review_url=owner_review_url or None,
             artifact_storage_durable=storage_durable,
-            error_code=KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+            error_code=visible_block_code,
         )
         meta.update(subject_fields)
         meta.update(visible_text_quality_fields)
@@ -4944,7 +4999,7 @@ def _run_keysuri_service_full_run_impl(
             "called_gemini": True,
             "called_image_api": image_outcome.called_image_api,
             "email_sent": False,
-            "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
+            "error": visible_block_code,
             "issue_codes": block_issue_codes,
             "html_path": html_rel,
         }
@@ -4953,6 +5008,7 @@ def _run_keysuri_service_full_run_impl(
             email_html,
             sanitizer_diagnostics=_global_filler_sanitizer_diagnostics(generated_briefing),
             briefing_items=_generated_briefing_top_items(generated_briefing),
+            **_global_visible_surface_kwargs(generated_briefing, subject_fields),
         )
         post_render_error = KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED
     else:

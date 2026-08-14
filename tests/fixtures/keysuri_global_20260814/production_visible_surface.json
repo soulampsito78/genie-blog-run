@@ -1,0 +1,144 @@
+{
+ "_provenance": {
+  "run_id": "20260814_123001_keysuri_global_tech_089c413b",
+  "program_id": "keysuri_global_tech",
+  "trigger_source": "scheduled_service_full_run",
+  "revision": "genie-blog-run-00295-8xl",
+  "commit_sha": "260bfc00134950973e49cd77039d319e82b2677f",
+  "artifact": "gs://gen-lang-client-0667098249-genie-artifacts/admin_runs/20260814_123001_keysuri_global_tech_089c413b.json",
+  "production_validation_result": "pass",
+  "production_visible_text_quality_status": "pass",
+  "production_issue_codes": [],
+  "note": "Production-derived visible-surface evidence, 2026-08-14 12:30 KST KeeSuri Global natural run. Recipients/credentials removed."
+ },
+ "owner_email_subject": "[운영자 검토] OpenAI introduces ‘Ultrafast: 8월 14일 글로벌 테크 브리핑",
+ "email_subject": "OpenAI introduces ‘Ultrafast: 8월 14일 글로벌 테크 브리핑",
+ "subject_top_headline": "OpenAI introduces ‘Ultrafast",
+ "opening_lead": "주인님, 오늘 글로벌 테크 시장은 소프트웨어의 속도 혁신과 하드웨어 인프라를 향한 거대 자본의 결집이 동시에 포착되었습니다. OpenAI가 모델 속도를 14배 끌어올리며 실무 적용의 문턱을 낮추는 동안, NVIDIA는 5,000억 달러 규모의 자본을 동원해 AI 인프라를 새로운 자산군으로 확립하고 있습니다. 기술적 표준화와 자본의 흐름이 맞물리는 중요한 변곡점입니다.",
+ "selected_title": "[키수리 브리핑] 글로벌 테크의 속도 혁신과 거대 자본의 결집",
+ "closing_message": "주인님, 오늘의 핵심 보고를 마칩니다. 전략적 판단에 참고하시기 바랍니다.",
+ "section_heading": "글로벌 테크 TOP 5",
+ "top_5_items": [
+  {
+   "rank": 1,
+   "news_id": "claim-live-techcrunch-ai-6f1bf72c97",
+   "headline": "OpenAI introduces ‘Ultrafast,’ a new mode that makes GPT-5.6 Sol work at 14x the speed",
+   "category": "ai_software_platform",
+   "primary_category": "ai_software_platform",
+   "category_label_ko": "AI·소프트웨어·플랫폼",
+   "summary": "OpenAI is launching a preview of a sped up version of its latest, most powerful model, in an effort to court enterprise users.",
+   "what_happened": "OpenAI is launching a preview of a sped up version of its latest most powerful model in an effort to court enterprise users.",
+   "why_now": "Public tech source (TechCrunch AI) published: OpenAI introduces ‘Ultrafast,’ a new mode that makes GPT-5.6 Sol work at 14x the speed. 「OpenAI introduces ‘Ultrafast」 확인 포인트는 API 공개·엔터프라이즈 도입 일정, 그리고 가격·파트너/고객 발표입니다. 「OpenAI introduces ‘Ultrafast」 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "Public tech source (TechCrunch AI) published: OpenAI introduces ‘Ultrafast,’ a new mode that makes GPT-5.6 Sol work at 14x the speed. 「OpenAI introduces ‘Ultrafast」 확인 포인트는 API 공개·엔터프라이즈 도입 일정, 그리고 가격·파트너/고객 발표입니다. 「OpenAI introduces ‘Ultrafast」 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "AI/software/platform shifts may change vendor shortlists and workflow lock-in. 「OpenAI introduces ‘Ultrafast」 후속은 API 공개·엔터프라이즈 도입 일정 중심으로 보면 됩니다. 「OpenAI introduces ‘Ultrafast」가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "AI/software/platform shifts may change vendor shortlists and workflow lock-in. 「OpenAI introduces ‘Ultrafast」 후속은 API 공개·엔터프라이즈 도입 일정 중심으로 보면 됩니다. 「OpenAI introduces ‘Ultrafast」가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "API 공개·엔터프라이즈 도입 일정; 가격·파트너/고객 발표",
+   "selection_reason": "총점 50점(구조 6, 주인님 12, 사업 4). 「OpenAI introduces ‘Ultrafast」를 AI·소프트웨어·플랫폼 축에서 먼저 볼 신호로 골라 포함했습니다.",
+   "source_name": "TechCrunch AI",
+   "source_domain": "techcrunch.com",
+   "url": "https://techcrunch.com/2026/08/13/openai-introduces-ultrafast-a-new-mode-that-makes-gpt-5-6-sol-work-at-14x-the-speed/"
+  },
+  {
+   "rank": 2,
+   "news_id": "claim-live-nvidia-blog-90efa43513",
+   "headline": "NVIDIA AI Factory Compute Is Becoming an Investable Asset Class",
+   "category": "policy_regulation_capital_supplychain",
+   "primary_category": "policy_regulation_capital_supplychain",
+   "category_label_ko": "정책·규제·자본·공급망",
+   "summary": "We announced partnerships with Apollo, BlackRock, Blackstone, Brookfield, Goldman Sachs and KKR to establish independent financing platforms designed to mobilize over $500 billion of third-party capital to support the buildout of AI infrastructure over time. This is a major milestone for NVIDIA and the AI industry. We have moved from an era in which companies",
+   "what_happened": "We announced partnerships with Apollo, BlackRock, Blackstone, Brookfield, Goldman Sachs and KKR to establish independent financing platforms designed to mobilize over $500 billion of third-party capital to support the buildout of AI infrastructure over time. This is a major milestone for NVIDIA and the AI industry. We have moved from an era in which companies.",
+   "why_now": "Public tech source (NVIDIA Blog) published: NVIDIA AI Factory Compute Is Becoming an Investable Asset Class. 정책·규제·자본·공급망 확인 포인트는 시행 시점·컴플라이언스 범위, 그리고 기업 대응·투자/M&A 후속입니다. 정책·규제·자본·공급망 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "Public tech source (NVIDIA Blog) published: NVIDIA AI Factory Compute Is Becoming an Investable Asset Class. 정책·규제·자본·공급망 확인 포인트는 시행 시점·컴플라이언스 범위, 그리고 기업 대응·투자/M&A 후속입니다. 정책·규제·자본·공급망 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "Policy/capital/supply-chain moves may alter market access and timing. 정책·규제·자본·공급망 후속은 시행 시점·컴플라이언스 범위 중심으로 보면 됩니다. 정책·규제·자본·공급망가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "Policy/capital/supply-chain moves may alter market access and timing. 정책·규제·자본·공급망 후속은 시행 시점·컴플라이언스 범위 중심으로 보면 됩니다. 정책·규제·자본·공급망가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "시행 시점·컴플라이언스 범위; 기업 대응·투자/M&A 후속",
+   "selection_reason": "총점 43점(구조 0, 주인님 12, 사업 4). 오늘 흐름에서 정책·규제·자본·공급망 축과 맞닿는 공식 보도라 포함했습니다.",
+   "source_name": "NVIDIA Blog",
+   "source_domain": "blogs.nvidia.com",
+   "url": "https://blogs.nvidia.com/blog/nvidia-ai-factory-compute/"
+  },
+  {
+   "rank": 3,
+   "news_id": "claim-live-google-ai-blog-d00944e123",
+   "headline": "Bring your spreadsheet data to life with Sheets canvas",
+   "category": "hardware_device_display",
+   "primary_category": "hardware_device_display",
+   "category_label_ko": "하드웨어·디바이스·디스플레이",
+   "summary": "Sheets canvas turns data into interactive dashboards, custom study trackers, seating charts, and more, all with a simple prompt.",
+   "what_happened": "Sheets canvas turns data into interactive dashboards custom study trackers seating charts and more all with a simple prompt.",
+   "why_now": "Public tech source (Google AI Blog) published: Bring your spreadsheet data to life with Sheets canvas. 하드웨어·디바이스·디스플레이 확인 포인트는 출시·유통 일정, 그리고 가격·사용자 접점 변화입니다. 하드웨어·디바이스·디스플레이 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "Public tech source (Google AI Blog) published: Bring your spreadsheet data to life with Sheets canvas. 하드웨어·디바이스·디스플레이 확인 포인트는 출시·유통 일정, 그리고 가격·사용자 접점 변화입니다. 하드웨어·디바이스·디스플레이 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "AI/software/platform shifts may change vendor shortlists and workflow lock-in. 하드웨어·디바이스·디스플레이 후속은 출시·유통 일정 중심으로 보면 됩니다. 하드웨어·디바이스·디스플레이가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "AI/software/platform shifts may change vendor shortlists and workflow lock-in. 하드웨어·디바이스·디스플레이 후속은 출시·유통 일정 중심으로 보면 됩니다. 하드웨어·디바이스·디스플레이가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "출시·유통 일정; 가격·사용자 접점 변화",
+   "selection_reason": "총점 42점(구조 0, 주인님 8, 사업 4). 오늘 흐름에서 하드웨어·디바이스·디스플레이 축과 맞닿는 공식 보도라 포함했습니다.",
+   "source_name": "Google AI Blog",
+   "source_domain": "blog.google",
+   "url": "https://blog.google/products-and-platforms/products/workspace/sheets-canvas-for-google-sheets-spreadsheets/"
+  },
+  {
+   "rank": 4,
+   "news_id": "claim-live-techcrunch-startups-daadc356b3",
+   "headline": "Investors sue Selena Gomez alleging fraud tied to her mental health startup",
+   "category": "hardware_device_display",
+   "primary_category": "hardware_device_display",
+   "category_label_ko": "하드웨어·디바이스·디스플레이",
+   "summary": "The plaintiffs say they invested nearly $1.2 million in the company, and are accusing Gomez of failing to build and market the startup.",
+   "what_happened": "The plaintiffs say they invested nearly $1.2 million in the company, and are accusing Gomez of failing to build and market the startup. TechCrunch 공개 요약에 따르면 「Investors sue Selena Gomez alleging fraud tied to her mental health startup」 관련 변화가 보고되었습니다. 하드웨어·디바이스·디스플레이 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다.",
+   "why_now": "Public tech source (TechCrunch) published: Investors sue Selena Gomez alleging fraud tied to her mental health startup. 하드웨어·디바이스·디스플레이 확인 포인트는 투자 환경·후속 라운드(팔로우온) 흐름, 그리고 창업자 실행 리스크·번 레이트·GTM 후속입니다. 하드웨어·디바이스·디스플레이 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "Public tech source (TechCrunch) published: Investors sue Selena Gomez alleging fraud tied to her mental health startup. 하드웨어·디바이스·디스플레이 확인 포인트는 투자 환경·후속 라운드(팔로우온) 흐름, 그리고 창업자 실행 리스크·번 레이트·GTM 후속입니다. 하드웨어·디바이스·디스플레이 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "Device/display shifts may change edge deployment and consumer-tech spillover. 하드웨어·디바이스·디스플레이 후속은 투자 환경·후속 라운드(팔로우온) 흐름 중심으로 보면 됩니다. 하드웨어·디바이스·디스플레이가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "Device/display shifts may change edge deployment and consumer-tech spillover. 하드웨어·디바이스·디스플레이 후속은 투자 환경·후속 라운드(팔로우온) 흐름 중심으로 보면 됩니다. 하드웨어·디바이스·디스플레이가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "투자 환경·후속 라운드(팔로우온) 흐름; 창업자 실행 리스크·번 레이트·GTM 후속",
+   "selection_reason": "총점 41점(구조 0, 주인님 10, 사업 6). 오늘 흐름에서 하드웨어·디바이스·디스플레이 축과 맞닿는 공식 보도라 포함했습니다.",
+   "source_name": "TechCrunch",
+   "source_domain": "techcrunch.com",
+   "url": "https://techcrunch.com/2026/08/13/investors-sue-selena-gomez-alleging-fraud-tied-to-her-mental-health-startup/"
+  },
+  {
+   "rank": 5,
+   "news_id": "claim-live-datacenter-dynamics-2169c2408e",
+   "headline": "Lightmatter launches 19-company strong initiative to standardize silicon photonics-ready infrastructure",
+   "category": "cybersecurity_cloud_datacenter",
+   "primary_category": "cybersecurity_cloud_datacenter",
+   "category_label_ko": "보안·클라우드·데이터센터",
+   "summary": "Company has also published a 300-page whitepaper to support the project",
+   "what_happened": "Company has also published a 300-page whitepaper to support the project. Datacenter Dynamics 공개 요약에 따르면 「Lightmatter launches 19-company strong initiative to standardize silicon photonics-ready infrastructure」 관련 변화가 보고되었습니다. 보안·클라우드·데이터센터 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다.",
+   "why_now": "Public tech source (Datacenter Dynamics) published: Lightmatter launches 19-company strong initiative to standardize silicon photonics-ready infrastructure. 보안·클라우드·데이터센터 확인 포인트는 캡엑스·리전 확장 발표, 그리고 전력 조달·엔터프라이즈 계약입니다. 보안·클라우드·데이터센터 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "Public tech source (Datacenter Dynamics) published: Lightmatter launches 19-company strong initiative to standardize silicon photonics-ready infrastructure. 보안·클라우드·데이터센터 확인 포인트는 캡엑스·리전 확장 발표, 그리고 전력 조달·엔터프라이즈 계약입니다. 보안·클라우드·데이터센터 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "Device/display shifts may change edge deployment and consumer-tech spillover. 보안·클라우드·데이터센터 후속은 캡엑스·리전 확장 발표 중심으로 보면 됩니다. 보안·클라우드·데이터센터가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "Device/display shifts may change edge deployment and consumer-tech spillover. 보안·클라우드·데이터센터 후속은 캡엑스·리전 확장 발표 중심으로 보면 됩니다. 보안·클라우드·데이터센터가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "캡엑스·리전 확장 발표; 전력 조달·엔터프라이즈 계약",
+   "selection_reason": "총점 41점(구조 4, 주인님 9, 사업 4). 오늘 흐름에서 보안·클라우드·데이터센터 축과 맞닿는 공식 보도라 포함했습니다.",
+   "source_name": "Datacenter Dynamics",
+   "source_domain": "datacenterdynamics.com",
+   "url": "https://www.datacenterdynamics.com/en/news/lightmatter-launches-19-company-strong-initiative-to-standardize-silicon-photonics-ready-infrastructure/"
+  }
+ ],
+ "deep_dive": {
+  "section_heading": "키수리의 딥-다이브",
+  "body": "오늘 눈에 띄는 점은 OpenAI 흐름과 엔비디아 이슈가 동시에 보인다는 것입니다. 한쪽은 산업·인프라 쪽이고, 다른 쪽은 소프트웨어·운영 쪽입니다. 주인님, 오늘 글로벌 테크 시장은 소프트웨어의 속도 혁신과 하드웨어 인프라를 향한 거대 자본의 결집이 동시에 포착되었습니다. OpenAI가 모델 속도를 14배 끌어올리며 실무 적용의 문턱을 낮추는 동안, NVIDIA는 5,000억 달러 규모의 자본을 동원해 AI 인프라를 새로운 자산군으로 확립하고 있습니다. 기술적 표준화와 자본의 흐름이 맞물리는 중요한 변곡점입니다. 향후 공식 발표를 통해 세부 내용이 보완될 가능성이 있습니다.",
+  "key_implications": [
+   "Public tech source (TechCrunch AI) published: OpenAI introduces ‘Ultrafast,’ a new mode that makes GPT-5.6 Sol work at 14x the speed",
+   "Public tech source (NVIDIA Blog) published: NVIDIA AI Factory Compute Is Becoming an Investable Asset Class",
+   "Public tech source (Google AI Blog) published: Bring your spreadsheet data to life with Sheets canvas"
+  ],
+  "source_ids": [
+   "live-techcrunch-ai-6f1bf72c97"
+  ],
+  "confidence_label": "reported",
+  "uncertainty": "향후 공식 발표를 통해 세부 내용이 보완될 가능성이 있습니다.",
+  "linked_signal_titles": [
+   "OpenAI introduces ‘Ultrafast,’ a new mode that makes GPT-5.6 Sol work at 14x the speed",
+   "NVIDIA AI Factory Compute Is Becoming an Investable Asset Class"
+  ],
+  "linked_signal_ids": [
+   "claim-live-techcrunch-ai-6f1bf72c97",
+   "claim-live-nvidia-blog-90efa43513"
+  ]
+ },
+ "one_line_checkpoint": {
+  "section_heading": "원-라인 체크포인트",
+  "body": "[키수리 브리핑] 글로벌 테크의 속도 혁신과 거대 자본의 결집"
+ }
+}

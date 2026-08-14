@@ -53,6 +53,7 @@ from keysuri_korea_longform_ux import (
     korea_warm_farewell_missing,
     max_paragraph_length,
 )
+from keysuri_global_visible_surface import evaluate_global_visible_surface
 from keysuri_source_text_normalization import (
     LEGIT_QUOTED,
     LEGIT_SENTENCE_FINAL,
@@ -1745,6 +1746,9 @@ def validate_global_post_render_visible_quality(
     *,
     sanitizer_diagnostics: Optional[Dict[str, Any]] = None,
     briefing_items: Optional[Sequence[Mapping[str, Any]]] = None,
+    subject: Any = "",
+    deep_dive: Optional[Mapping[str, Any]] = None,
+    opening_lead: Any = "",
 ) -> BriefingContentQualityResult:
     """Public, self-contained entry point for the real owner-review send path.
 
@@ -1881,11 +1885,38 @@ def validate_global_post_render_visible_quality(
                     excerpt=marker,
                 )
             )
+    # Deterministic visible-surface gate (2026-08-14 Global remediation).
+    # Runs on the FINAL rendered plain text plus the item structures that
+    # produced it, so the checked surface is exactly what the customer reads.
+    surface = evaluate_global_visible_surface(
+        subject=subject,
+        items=briefing_items or [],
+        deep_dive=deep_dive,
+        opening_lead=opening_lead,
+        plain_text=plain,
+    )
+    for finding in surface["findings"]:
+        if finding["severity"] != "block":
+            continue
+        issues.append(
+            BriefingContentIssue(
+                finding["issue_code"],
+                f"{finding['section']}: {finding['detail']}",
+                section=finding["section"].split("[")[0].split(".")[0] or "visible_body",
+                excerpt=finding["excerpt"],
+            )
+        )
+
     result = BriefingContentQualityResult(ok=len(issues) == 0, issues=issues, warnings=[])
     san = sanitizer_diagnostics if isinstance(sanitizer_diagnostics, dict) else {}
     result.diagnostics = {
         "final_visible_email_text_checked": True,
         "checked_surface": "email_visible_text",
+        "visible_surface_gate": surface["diagnostics"],
+        "visible_surface_issue_codes": surface["issue_codes"],
+        "visible_surface_review_findings": [
+            f for f in surface["findings"] if f["severity"] == "review"
+        ],
         "issue_codes": [i.code for i in issues],
         "repeated_phrases": repeated_diag,
         "affected_sections": sorted({i.section for i in issues if i.section}),

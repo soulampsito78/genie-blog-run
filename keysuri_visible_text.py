@@ -725,6 +725,21 @@ def repair_korea_adjacent_token_duplication(text: str) -> str:
     return re.sub(r"\s+", " ", out).strip()
 
 
+def _quote_mark_count(text: str, mark: str) -> int:
+    """Occurrences of ``mark`` that act as a delimiter, not as an apostrophe."""
+    total = 0
+    for idx, char in enumerate(text):
+        if char != mark:
+            continue
+        if mark in "’‘'":
+            before = text[idx - 1] if idx > 0 else ""
+            after = text[idx + 1] if idx + 1 < len(text) else ""
+            if before.isalnum() and after.isalnum():
+                continue
+        total += 1
+    return total
+
+
 def contains_dangling_quoted_title_fragment(text: str) -> bool:
     """True when visible prose wraps an incomplete title in 「」 quotes."""
     blob = str(text or "")
@@ -739,6 +754,17 @@ def contains_dangling_quoted_title_fragment(text: str) -> bool:
         if re.search(r"(?:와|과|의|를|을|이|가|은|는|로|으로|및)\s*$", inner):
             return True
         if inner.endswith(("‘", "“", "'", '"', "·", ",")):
+            return True
+        # An orphaned quote mark anywhere inside the wrapper — not only as the
+        # last character — means the title was cut mid-quote. The 2026-08-14
+        # Global email rendered 「OpenAI introduces ‘Ultrafast」 and passed the
+        # trailing-character check above because the fragment ends on a word.
+        # U+2019 doubles as the English apostrophe, so word-internal marks
+        # ("The builder’s guide") are not counted as closers.
+        for opener, closer in (("‘", "’"), ("“", "”"), ("『", "』")):
+            if _quote_mark_count(inner, opener) != _quote_mark_count(inner, closer):
+                return True
+        if inner.count('"') % 2 == 1:
             return True
     return False
 

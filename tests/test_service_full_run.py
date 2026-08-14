@@ -195,6 +195,25 @@ def _generated_briefing_with_top_count(items: list[dict], program_id: str = PROG
     }
 
 
+# Distinct sentence endings per item. Five items sharing one sentence tail is
+# the repeated-template-skeleton defect the Global visible-surface gate blocks,
+# so the fixture must not reproduce it either.
+_LIVE_RESELECTION_WHY: tuple[str, ...] = (
+    "설비 조달 일정이 앞당겨질 수 있습니다.",
+    "국내 협력사 계약 단가에 먼저 반영됩니다.",
+    "전력 조달 조건을 다시 계산해야 합니다.",
+    "사내 도입 검토 순서를 바꿀 만한 신호입니다.",
+    "규제 대응 일정과 맞물려 움직입니다.",
+)
+_LIVE_RESELECTION_IMPLICATION: tuple[str, ...] = (
+    "도입 비용을 먼저 점검하시면 됩니다.",
+    "계약 갱신 시점을 함께 보시면 좋습니다.",
+    "예산 배분 우선순위를 조정할 근거가 됩니다.",
+    "협력사 대응 여력을 확인해 두실 필요가 있습니다.",
+    "내부 보고 라인에 미리 공유해 두시면 좋습니다.",
+)
+
+
 def _live_reselection_items(prefix: str = "live") -> list[dict]:
     """Fresh, parent-disjoint candidate selection for reissue reselection tests."""
     out = []
@@ -211,8 +230,12 @@ def _live_reselection_items(prefix: str = "live") -> list[dict]:
                 # generic templates and trip the content gate as a fixture
                 # artifact rather than a real defect.
                 "summary": f"라이브 신호 {idx} 관련 공식 발표가 {idx}건 확인되었습니다.",
-                "why_it_matters": f"라이브 신호 {idx}는 {idx}분기 인프라 투자 계획에 직접 영향을 줍니다.",
-                "business_implication": f"주인님께서는 라이브 신호 {idx}의 도입 비용을 {idx}순위로 점검하시면 됩니다.",
+                "why_it_matters": (
+                    f"라이브 신호 {idx} 관련 {_LIVE_RESELECTION_WHY[idx - 1]}"
+                ),
+                "business_implication": (
+                    f"주인님께서는 라이브 신호 {idx}의 {_LIVE_RESELECTION_IMPLICATION[idx - 1]}"
+                ),
                 "source_ids": [f"{prefix}-src-{idx}"],
                 "source_name": f"Live Source {idx}",
                 "source_url": f"https://example.com/{prefix}-{idx}",
@@ -248,8 +271,10 @@ def _briefing_for_live_items(items: list[dict], program_id: str = PROGRAM_GLOBAL
         "top_5_news": {"news_scope": news_scope, "section_heading": section_heading, "items": items},
         "deep_dive": {
             "section_heading": "키수리의 딥-다이브",
-            "body": "Live operators should watch fresh infrastructure and platform signals.",
-            "key_implications": ["Fresh signal", "Platform pressure"],
+            # Korean prose: the Global visible-surface gate blocks a
+            # customer-visible deep dive written as raw English sentences.
+            "body": "인프라와 플랫폼 신호를 새로 짚어 보겠습니다.",
+            "key_implications": ["신규 신호", "플랫폼 압력"],
             "source_ids": sids,
             "confidence_label": "reported",
         },

@@ -661,6 +661,16 @@ def classify_global_tech_category(
         if any(kw in lower for kw in CONSUMER_MOBILE_DEVICE_KEYWORDS):
             return "hardware_device_display", [], 0.4, "consumer_device_keyword_fallback"
         legacy = (feed_default or "market_signal").strip()
+        # A feed default that is ALREADY a canonical category must pass through
+        # unchanged. The legacy alias table below only knows the eight
+        # pre-taxonomy aliases, so before this guard a canonical default fell to
+        # the `.get()` fallback and was silently rewritten — the 2026-08-14 12:30
+        # Global run classified "Bring your spreadsheet data to life with Sheets
+        # canvas" (feed default `ai_software_platform`) as
+        # `hardware_device_display`, giving a workspace-software item a
+        # 하드웨어·디바이스·디스플레이 label.
+        if legacy in GLOBAL_TECH_CATEGORIES:
+            return legacy, [], 0.35, f"feed_default_canonical:{legacy}"
         mapped = {
             "ai_product": AI_PRIMARY_CATEGORY,
             "bigtech": AI_PRIMARY_CATEGORY,
@@ -670,7 +680,10 @@ def classify_global_tech_category(
             "startup": "policy_regulation_capital_supplychain",
             "security": "cybersecurity_cloud_datacenter",
             "market_signal": AI_PRIMARY_CATEGORY,
-        }.get(legacy, "hardware_device_display")
+        # An unknown alias carries no hardware evidence whatsoever; defaulting it
+        # to a physical device/display claim was an unfounded assertion about the
+        # item. Fall back to the same neutral category `market_signal` uses.
+        }.get(legacy, AI_PRIMARY_CATEGORY)
         return mapped, [], 0.35, f"feed_default_mapped:{legacy}"
     primary, top_hits = hits[0][0], hits[0][1]
     secondary = [cat for cat, n in hits[1:4] if n >= 1]
