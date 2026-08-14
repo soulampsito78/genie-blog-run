@@ -148,6 +148,18 @@ def sanitize_quality_sample(value: Any, *, max_chars: int = 120) -> str:
     sample = _EMAIL_RE.sub(r"\1***\2", sample)
     if len(sample) <= max_chars:
         return sample
+    # A terminal quote fragment often appears in deterministic padding after a
+    # long model paragraph.  Keep the bounded window around that fragment, not
+    # a harmless prefix that hides the actual blocker.
+    if contains_dangling_quoted_title_fragment(sample):
+        quote = re.search(r"「|」", sample)
+        if quote:
+            center = quote.start()
+            half = max_chars // 2
+            start = max(0, center - half)
+            end = min(len(sample), start + max_chars)
+            start = max(0, end - max_chars)
+            return sample[start:end].strip()
     # Prefer a window centered on the first residual ellipsis so production
     # forensics are not truncated to a harmless prefix (Aug 11 Global 12:30).
     match = _ELLIPSIS_RE.search(sample)
@@ -376,7 +388,13 @@ def _walk_and_repair(node: Any, *, path: str, fields: Dict[str, Any]) -> Any:
                     _append_sample(fields, path=child_path, before=next_value)
                 if contains_dangling_quoted_title_fragment(next_value):
                     fields["visible_text_dangling_quoted_title_blocked"] = True
-                    _append_sample(fields, path=child_path, before=next_value)
+                    _append_sample(
+                        fields,
+                        path=child_path,
+                        before=next_value,
+                        source_id=context_source_id,
+                        validator_result="block",
+                    )
                 span_repaired, span_diag = repair_year_span_duration(next_value)
                 if span_diag.get("resolution") == "removed_derived_duration":
                     fields["visible_text_year_span_repaired"] = True

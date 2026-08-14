@@ -109,9 +109,11 @@ from service_full_run_contract import (
 from service_image_api import invoke_vertex_image_generation
 from memory_observability import (
     configured_memory_limit_gib,
+    mark_memory_stage_not_reached,
     memory_evidence_scope,
     record_memory_stage,
     record_memory_stage_if_absent,
+    record_memory_stage_reached,
 )
 from today_genie_execution_identity import EXECUTION_CLASS_NATURAL_SCHEDULED
 
@@ -293,7 +295,15 @@ def attach_bounded_post_generation_failure_evidence(
     # Bound visible-text quality samples already attached by callers.
     samples = meta.get("visible_text_quality_samples")
     if isinstance(samples, list) and len(samples) > 8:
-        meta["visible_text_quality_samples"] = samples[:8]
+        # Keep terminal evidence ahead of repaired history while preserving
+        # stable traversal order inside each group.
+        terminal = [
+            sample
+            for sample in samples
+            if isinstance(sample, dict) and sample.get("validator_result") == "block"
+        ]
+        non_terminal = [sample for sample in samples if sample not in terminal]
+        meta["visible_text_quality_samples"] = (terminal + non_terminal)[:8]
     elif not samples:
         sample = meta.get("visible_text_quality_sample") or meta.get(
             "visible_text_ellipsis_sample"
@@ -4450,6 +4460,16 @@ def run_keysuri_service_full_run(
                 _run_context=run_context,
             )
         except Exception as exc:
+            if not memory_recorder.has_stage("after_image_generation"):
+                memory_recorder.mark_not_reached(
+                    "after_image_generation",
+                    reason="not_reached_due_to_exception",
+                )
+            if not memory_recorder.has_stage("before_owner_smtp"):
+                memory_recorder.mark_not_reached(
+                    "before_owner_smtp",
+                    reason="not_reached_due_to_exception",
+                )
             memory_recorder.record("request_end")
             exception_evidence = memory_recorder.evidence()
             exception_run_id = str(run_context.get("run_id") or "")
@@ -4488,6 +4508,22 @@ def run_keysuri_service_full_run(
             )
             raise
 
+        if not memory_recorder.has_stage("after_image_generation"):
+            memory_recorder.mark_not_reached(
+                "after_image_generation",
+                reason="not_reached_before_image_generation",
+            )
+        if not memory_recorder.has_stage("before_owner_smtp"):
+            if str(result.get("validation_result") or "").lower() == "block":
+                smtp_reason = "not_reached_due_to_validation_block"
+            elif not send_owner_email:
+                smtp_reason = "send_not_requested"
+            else:
+                smtp_reason = "not_reached_due_to_prior_failure"
+            memory_recorder.mark_not_reached(
+                "before_owner_smtp",
+                reason=smtp_reason,
+            )
         memory_recorder.record("request_end")
         evidence = memory_recorder.evidence()
         result["memory_stage_evidence"] = evidence
@@ -4739,8 +4775,11 @@ def _run_keysuri_service_full_run_impl(
     except TypeError:
         # Backward-compatible with a pid-only injected image_canary_runner.
         image_outcome = canary_fn(pid)
+    record_memory_stage_reached(
+        "after_image_generation",
+        image_status=str(image_outcome.image_generation_status or "unknown"),
+    )
     if not image_outcome.ok:
-        record_memory_stage("after_image_generation")
         meta = build_service_artifact_fields(
             run_id=run_id,
             mode=pid,
@@ -4908,7 +4947,10 @@ def _run_keysuri_service_full_run_impl(
             bottom_image_status = "placeholder"
             issue_codes.extend(bottom_issues)
 
-    record_memory_stage("after_image_generation")
+    record_memory_stage_reached(
+        "after_image_generation",
+        image_status=str(image_outcome.image_generation_status or "unknown"),
+    )
 
     contract_fixture_preview = _build_service_contract_fixture(
         pid,
@@ -5134,19 +5176,27 @@ def _run_keysuri_service_full_run_impl(
     email_sent = False
     smtp_attempted = False
     subject = owner_subject
-    record_memory_stage("before_owner_smtp")
     if send_owner_email:
         if os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip() not in ("1", "true", "yes"):
             issue_codes.append("owner_review_send_gate_off")
+            mark_memory_stage_not_reached(
+                "before_owner_smtp",
+                reason="owner_review_send_gate_off",
+            )
         else:
             smtp_attempted = True
             sender = send_fn or send_genie_email
             if pid == PROGRAM_GLOBAL:
                 if not gen_image_abs.is_file():
                     issue_codes.append("generated_image_missing_for_cid_email")
+                    mark_memory_stage_not_reached(
+                        "before_owner_smtp",
+                        reason="not_reached_due_to_missing_image",
+                    )
                 else:
                     os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
                     inline_parts = inline_jpeg_parts_for_global_service_email(gen_image_abs, run_id)
+                    record_memory_stage_reached("before_owner_smtp")
                     email_sent = bool(
                         sender(
                             email_html,
@@ -5158,6 +5208,10 @@ def _run_keysuri_service_full_run_impl(
             elif pid == PROGRAM_KOREA:
                 if not gen_image_abs.is_file():
                     issue_codes.append("generated_image_missing_for_cid_email")
+                    mark_memory_stage_not_reached(
+                        "before_owner_smtp",
+                        reason="not_reached_due_to_missing_image",
+                    )
                 else:
                     os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
                     inline_parts = inline_jpeg_parts_for_korea_service_email(
@@ -5165,6 +5219,7 @@ def _run_keysuri_service_full_run_impl(
                         run_id,
                         bottom_image_path=bottom_image_path,
                     )
+                    record_memory_stage_reached("before_owner_smtp")
                     email_sent = bool(
                         sender(
                             email_html,
@@ -5174,7 +5229,13 @@ def _run_keysuri_service_full_run_impl(
                         )
                     )
             else:
+                record_memory_stage_reached("before_owner_smtp")
                 email_sent = bool(sender(email_html, subject))
+    else:
+        mark_memory_stage_not_reached(
+            "before_owner_smtp",
+            reason="send_not_requested",
+        )
 
     meta = build_service_artifact_fields(
         run_id=run_id,

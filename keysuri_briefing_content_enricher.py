@@ -25,6 +25,7 @@ from keysuri_visible_text import (
     dedupe_repeated_paragraph,
     dedupe_sentences_in_paragraph,
     looks_like_internal_owner_copy,
+    normalize_visible_title,
     normalize_visible_text,
     sanitize_visible_impact_line,
     strip_watch_arrow_prefixes,
@@ -198,6 +199,41 @@ def _get_field(item: dict, *keys: str) -> str:
     if raw is None:
         return ""
     return normalize_visible_text(raw, style="inline")
+
+
+def _get_title_field(item: dict, *keys: str) -> str:
+    """Read a title while preserving balanced source-owned quote marks."""
+    raw = _raw_field(item, *keys)
+    if raw is None:
+        return ""
+    return normalize_visible_title(raw)
+
+
+def _grounded_title(item: dict, meta: dict) -> str:
+    """Return a safe item title, falling back only to grounded source text.
+
+    A model title that is already quote-damaged is never completed with
+    invented words.  When the canonical source statement/headline is present
+    and balanced, use it; otherwise omit the quoted title padding.
+    """
+    item_title = _get_title_field(item, "korean_title", "headline")
+    source_title = normalize_visible_title(
+        meta.get("statement")
+        or meta.get("korean_title")
+        or meta.get("headline")
+        or meta.get("title")
+    )
+
+    def _safe(title: str) -> bool:
+        return bool(title) and not contains_dangling_quoted_title_fragment(
+            f"「{title}」"
+        )
+
+    if _safe(item_title):
+        return item_title
+    if _safe(source_title):
+        return source_title
+    return ""
 
 
 def _set_field(item: dict, key: str, value: str) -> None:
@@ -414,7 +450,7 @@ def _item_title_hook(item: dict, meta: dict, *, max_len: int = 36) -> str:
         structured = _text(item.get(key) or meta.get(key))
         if structured and len(structured) <= max_len:
             return structured.rstrip(".")
-    title = _get_field(item, "korean_title", "headline") or _text(meta.get("statement"))
+    title = _grounded_title(item, meta)
     return _natural_korean_subject_phrase(title, max_len=max_len)
 
 
@@ -471,9 +507,7 @@ def _item_specific_checkpoint(item: dict, meta: dict, *, style: str) -> str:
     """
     hook = _item_title_hook(item, meta)
     checkpoint_a, checkpoint_b = _concrete_next_watch_pair(meta, item)
-    full_title = _text(
-        _get_field(item, "korean_title", "headline") or meta.get("statement")
-    ).rstrip(".")
+    full_title = _grounded_title(item, meta).rstrip(".")
     # Prefer a clean subject phrase; otherwise use the complete title unquoted,
     # or omit the title wrapper entirely.
     if hook and not contains_dangling_quoted_title_fragment(f"「{hook}」"):
@@ -501,7 +535,7 @@ def _item_specific_checkpoint(item: dict, meta: dict, *, style: str) -> str:
 
 def _build_selection_reason(item: dict, meta: dict) -> str:
     existing = _get_field(item, "selection_reason", "selection_rationale")
-    title = _get_field(item, "korean_title", "headline") or _text(meta.get("statement"))
+    title = _grounded_title(item, meta)
     category = _category_label(meta, item)
     source = _text(meta.get("source_name") or item.get("source_name"))
     hook = _item_title_hook(item, meta)
@@ -524,7 +558,7 @@ def _build_selection_reason(item: dict, meta: dict) -> str:
 
 def _build_what_happened(item: dict, meta: dict) -> Tuple[str, bool]:
     existing = _get_field(item, "what_happened", "summary")
-    title = _get_field(item, "korean_title", "headline") or _text(meta.get("statement"))
+    title = _grounded_title(item, meta)
     source = _text(meta.get("source_name") or item.get("source_name"))
     thin = _is_thin_source(meta, existing)
     # Never pad the same disclaimer into every item ("공개된 요약 범위 안에서만
@@ -666,7 +700,11 @@ def _build_next_watch(item: dict, meta: dict) -> str:
 
 
 def _short_title(item: dict) -> str:
-    title = _get_field(item, "korean_title", "headline")
+    title = _get_title_field(item, "korean_title", "headline")
+    if contains_dangling_quoted_title_fragment(f"「{title}」"):
+        title = balance_quote_marks(title)
+    if contains_dangling_quoted_title_fragment(f"「{title}」"):
+        return ""
     if len(title) > 48:
         cut = title[:48].rstrip()
         if " " in cut:

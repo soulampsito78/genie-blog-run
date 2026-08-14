@@ -64,6 +64,20 @@ _RUN_MEMORY_SOURCES = frozenset(
         "upstream:resource_getrusage",
     }
 )
+_RUN_MEMORY_NOT_REACHED_REASONS = frozenset(
+    {
+        "not_reached_due_to_validation_block",
+        "not_reached_before_image_generation",
+        "not_reached_due_to_prior_failure",
+        "not_reached_due_to_exception",
+        "not_reached_due_to_missing_image",
+        "owner_review_send_gate_off",
+        "send_not_requested",
+    }
+)
+_RUN_MEMORY_IMAGE_STATUSES = frozenset(
+    {"generated", "failed", "not_implemented", "not_attempted", "unknown"}
+)
 
 _RUN_LIST_SUMMARY_KEYS = (
     "run_id",
@@ -1018,27 +1032,44 @@ def _bounded_nonnegative_int(value: Any) -> int:
 
 
 def _normalize_run_memory_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
-    """Allowlist the small numeric evidence contract before persistence."""
+    """Allowlist bounded numeric samples plus explicit stage reachability."""
     stages_in = evidence.get("stages")
-    stages: Dict[str, Dict[str, int]] = {}
+    stages: Dict[str, Dict[str, Any]] = {}
     if isinstance(stages_in, dict):
         for stage in _RUN_MEMORY_STAGE_NAMES:
             sample = stages_in.get(stage)
             if not isinstance(sample, dict):
                 continue
+            if sample.get("reached") is False:
+                reason = str(sample.get("reason") or "not_reached")
+                if reason not in _RUN_MEMORY_NOT_REACHED_REASONS:
+                    reason = "not_reached_due_to_prior_failure"
+                stages[stage] = {"reached": False, "reason": reason}
+                continue
             rss_kib = _bounded_nonnegative_int(sample.get("rss_kib"))
             hwm_kib = max(
                 rss_kib, _bounded_nonnegative_int(sample.get("hwm_kib"))
             )
-            stages[stage] = {
+            row: Dict[str, Any] = {
                 "rss_kib": rss_kib,
                 "hwm_kib": hwm_kib,
             }
+            if sample.get("reached") is True:
+                row["reached"] = True
+            if stage == "after_image_generation" and sample.get("reached") is True:
+                image_status = str(sample.get("image_status") or "unknown")
+                row["image_status"] = (
+                    image_status
+                    if image_status in _RUN_MEMORY_IMAGE_STATUSES
+                    else "unknown"
+                )
+            stages[stage] = row
     source = str(evidence.get("source") or "unavailable")[:80]
     if source not in _RUN_MEMORY_SOURCES:
         source = "unavailable"
     peak_hwm_kib = max(
-        (sample["hwm_kib"] for sample in stages.values()), default=0
+        (_bounded_nonnegative_int(sample.get("hwm_kib")) for sample in stages.values()),
+        default=0,
     )
     configured_limit_kib = _bounded_nonnegative_int(
         evidence.get("configured_limit_kib")

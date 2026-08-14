@@ -144,6 +144,25 @@ def normalize_visible_text(value: Any, *, style: str = "inline") -> str:
     return render_visible_lines(value, style=style)
 
 
+def normalize_visible_title(value: Any) -> str:
+    """Normalize a title without deleting meaningful boundary quote marks.
+
+    Generic prose normalization historically stripped one leading and one
+    trailing ASCII quote independently.  A mixed, but balanced, headline such
+    as ``'A' ... "B"`` therefore became ``A' ... "B`` before it was wrapped in
+    Korean title quotes.  Titles need whitespace/entity cleanup, but quote
+    ownership must remain with the source text.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        return normalize_visible_text(value, style="inline")
+    text = html_module.unescape(value.strip())
+    text = text.replace("\\'", "'").replace('\\"', '"')
+    text = re.sub(r"\s+", " ", text).strip()
+    return repair_obvious_korean_quality_artifacts(text)
+
+
 def contains_visible_repr_artifacts(text: str) -> bool:
     blob = str(text or "")
     if not blob:
@@ -745,7 +764,10 @@ def contains_dangling_quoted_title_fragment(text: str) -> bool:
     blob = str(text or "")
     if not blob:
         return False
-    if "「" in blob and "」" not in blob:
+    # Either direction is invalid: a closing-only fragment is just as broken
+    # as an opening-only fragment.  Equal counts still allow multiple complete
+    # quoted titles in one sentence.
+    if blob.count("「") != blob.count("」"):
         return True
     for match in re.finditer(r"「([^」]{1,80})」", blob):
         inner = match.group(1).strip()
@@ -753,7 +775,10 @@ def contains_dangling_quoted_title_fragment(text: str) -> bool:
             return True
         if re.search(r"(?:와|과|의|를|을|이|가|은|는|로|으로|및)\s*$", inner):
             return True
-        if inner.endswith(("‘", "“", "'", '"', "·", ",")):
+        # A balanced nested title may legitimately end on its closer, e.g.
+        # 「'A' ... "B"」.  Punctuation tails are incomplete, while quote tails
+        # are decided by the balance checks below.
+        if inner.endswith(("·", ",")):
             return True
         # An orphaned quote mark anywhere inside the wrapper — not only as the
         # last character — means the title was cut mid-quote. The 2026-08-14
@@ -764,6 +789,8 @@ def contains_dangling_quoted_title_fragment(text: str) -> bool:
         for opener, closer in (("‘", "’"), ("“", "”"), ("『", "』")):
             if _quote_mark_count(inner, opener) != _quote_mark_count(inner, closer):
                 return True
+        if _quote_mark_count(inner, "'") % 2 == 1:
+            return True
         if inner.count('"') % 2 == 1:
             return True
     return False

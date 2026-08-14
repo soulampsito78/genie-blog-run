@@ -3362,6 +3362,19 @@ class KeysuriServiceFullRunTests(unittest.TestCase):
         self.assertTrue(payload.get("called_image_api"))
         self.assertEqual(payload.get("image_source"), IMAGE_SOURCE_GENERATED)
         self.assertTrue(payload.get("email_sent"))
+        memory_stages = (payload.get("memory_stage_evidence") or {}).get("stages") or {}
+        self.assertEqual(
+            memory_stages.get("after_image_generation", {}).get("image_status"),
+            "generated",
+        )
+        self.assertTrue(
+            memory_stages.get("after_image_generation", {}).get("reached")
+        )
+        self.assertTrue(memory_stages.get("before_owner_smtp", {}).get("reached"))
+        self.assertGreater(
+            int(memory_stages.get("before_owner_smtp", {}).get("rss_kib") or 0),
+            0,
+        )
         mock_save.assert_called_once()
         mock_send.assert_called_once()
         send_kwargs = mock_send.call_args.kwargs

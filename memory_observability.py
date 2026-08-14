@@ -2,7 +2,8 @@
 
 Linux ``/proc/self/status`` is authoritative in Cloud Run.  A stdlib-only
 ``resource`` fallback keeps local tests useful on platforms without ``/proc``.
-Only numeric KiB values and allowlisted stage names are retained.
+Only numeric KiB values, allowlisted stage names, and bounded reachability
+status are retained.
 """
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -105,13 +106,13 @@ def read_process_memory_kib() -> Dict[str, object]:
 class MemoryEvidenceRecorder:
     """Per-request recorder; never caches request bodies, HTML, or images."""
 
-    stages: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    stages: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     source: str = "unavailable"
 
     def has_stage(self, stage: str) -> bool:
         return stage in self.stages
 
-    def record(self, stage: str) -> Dict[str, int]:
+    def record(self, stage: str) -> Dict[str, Any]:
         if stage not in MEMORY_STAGE_NAMES:
             raise ValueError(f"unsupported memory stage: {stage}")
         sample = read_process_memory_kib()
@@ -129,6 +130,34 @@ class MemoryEvidenceRecorder:
             numeric["hwm_kib"],
         )
         return dict(numeric)
+
+    def record_reached(
+        self, stage: str, *, image_status: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Record a measured stage and its bounded execution state."""
+        numeric = self.record(stage)
+        row: Dict[str, Any] = {**numeric, "reached": True}
+        if stage == "after_image_generation" and image_status:
+            row["image_status"] = str(image_status)[:40]
+        self.stages[stage] = row
+        return dict(row)
+
+    def mark_not_reached(self, stage: str, *, reason: str) -> Dict[str, Any]:
+        """Persist an explicit non-measurement without inventing RSS/HWM."""
+        if stage not in MEMORY_STAGE_NAMES:
+            raise ValueError(f"unsupported memory stage: {stage}")
+        row: Dict[str, Any] = {
+            "reached": False,
+            "reason": str(reason or "not_reached")[:80],
+        }
+        if len(self.stages) < MAX_MEMORY_STAGES or stage in self.stages:
+            self.stages[stage] = row
+        logger.info(
+            "process_memory stage=%s reached=false reason=%s",
+            stage,
+            row["reason"],
+        )
+        return dict(row)
 
     def record_numeric_sample(
         self, stage: str, *, rss_kib: object, hwm_kib: object, source: str = "upstream"
@@ -154,7 +183,10 @@ class MemoryEvidenceRecorder:
 
     def evidence(self) -> Dict[str, object]:
         rows = {key: dict(value) for key, value in self.stages.items()}
-        peak = max((row["hwm_kib"] for row in rows.values()), default=0)
+        peak = max(
+            (int(row.get("hwm_kib") or 0) for row in rows.values()),
+            default=0,
+        )
         limit = configured_memory_limit_kib()
         return {
             "source": self.source,
@@ -186,7 +218,7 @@ def current_memory_recorder() -> Optional[MemoryEvidenceRecorder]:
     return _CURRENT_RECORDER.get()
 
 
-def record_memory_stage(stage: str) -> Dict[str, int]:
+def record_memory_stage(stage: str) -> Dict[str, Any]:
     recorder = current_memory_recorder()
     if recorder is None:
         sample = read_process_memory_kib()
@@ -202,6 +234,35 @@ def record_memory_stage(stage: str) -> Dict[str, int]:
         )
         return numeric
     return recorder.record(stage)
+
+
+def record_memory_stage_reached(
+    stage: str, *, image_status: Optional[str] = None
+) -> Dict[str, Any]:
+    recorder = current_memory_recorder()
+    if recorder is None:
+        numeric = record_memory_stage(stage)
+        row: Dict[str, Any] = {**numeric, "reached": True}
+        if stage == "after_image_generation" and image_status:
+            row["image_status"] = str(image_status)[:40]
+        return row
+    return recorder.record_reached(stage, image_status=image_status)
+
+
+def mark_memory_stage_not_reached(stage: str, *, reason: str) -> Dict[str, Any]:
+    recorder = current_memory_recorder()
+    if recorder is None:
+        row: Dict[str, Any] = {
+            "reached": False,
+            "reason": str(reason or "not_reached")[:80],
+        }
+        logger.info(
+            "process_memory stage=%s reached=false reason=%s",
+            stage,
+            row["reason"],
+        )
+        return row
+    return recorder.mark_not_reached(stage, reason=reason)
 
 
 def record_memory_stage_if_absent(stage: str) -> Dict[str, int]:

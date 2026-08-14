@@ -1,0 +1,30 @@
+{
+  "run_id": "20260814_233109_keysuri_korea_tech_14b79457",
+  "program_id": "keysuri_korea_tech",
+  "rank": 2,
+  "source_id": "claim-live-yna-industry-b25233e153",
+  "source_name": "연합뉴스 산업",
+  "primary_category": "korea_policy_regulation",
+  "category_display_label": "국내 정책 / 규제 / 공공",
+  "canonical_source_headline": "'美 투자 압박' 보도에 靑 \"통상현안 수시로 대응\"",
+  "legacy_generated_title": "美 투자 압박' 보도에 靑 \"통상현안 수시로 대응",
+  "exact_offending_sentence": "연합뉴스 산업 공개 요약에 따르면 「美 투자 압박' 보도에 靑 \"통상현안 수시로 대응」 관련 변화가 보고되었습니다.",
+  "field_paths": [
+    "generated_briefing.top_5_news.items[1].what_happened",
+    "generated_briefing.top_5_news.items[1].briefing_item.what_happened"
+  ],
+  "terminal_issue_codes": [
+    "keysuri_dangling_quoted_title_fragment_blocked"
+  ],
+  "repair_history_issue_codes": [
+    "keysuri_korean_connector_ellipsis_repaired",
+    "keysuri_korean_repeated_token_repaired"
+  ],
+  "quote_codepoints": [
+    "U+300C",
+    "U+0027",
+    "U+0022",
+    "U+300D"
+  ],
+  "render_state": "blocked_before_html_render"
+}
