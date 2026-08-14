@@ -1158,7 +1158,15 @@ def build_korea_one_line_checkpoint(
     *,
     existing: str = "",
 ) -> str:
-    """Synthesize a Korea-market observation from global+domestic TOP5 (not item recap)."""
+    """Synthesize a Korea-market observation from global+domestic TOP5 (not item recap).
+
+    Model-authored checkpoints are kept when they are substantive, but they are
+    customer-visible prose and must clear the same normalizer as every other
+    Korea visible field: 2026-08-14 shipped a model checkpoint containing the
+    compact label "AI/로봇", which post-render QA correctly blocked
+    (korea_visible_text_customer_slash_label_artifact) because this passthrough
+    returned the raw text unnormalized.
+    """
     existing = remove_truncated_headline_fragments(_text(existing))
     thin_markers = (
         "먼저 보시면 됩니다",
@@ -1171,7 +1179,7 @@ def build_korea_one_line_checkpoint(
     if existing and not any(marker in existing for marker in thin_markers):
         if "한국" in existing or "국내" in existing or "글로벌" in existing:
             if len(existing) >= 28:
-                return existing
+                return sanitize_korea_customer_prose(existing)
 
     items = [i for i in top5_items if isinstance(i, dict)][:5]
     theme = _theme_phrase(items)
@@ -1195,7 +1203,7 @@ def build_korea_one_line_checkpoint(
     else:
         move = "구조 변화 판단 압력이 앞으로 이동"
 
-    return (
+    return sanitize_korea_customer_prose(
         f"글로벌·국내 TOP5를 종합하면, {axis} 축에서 한국 시장의 관건은 {move}하고 있습니다. "
         f"내일은 관련 지표부터 먼저 확인하고, 숫자가 확정되기 전까지는 판단을 보류하시면 됩니다."
     )
