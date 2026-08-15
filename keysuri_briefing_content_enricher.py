@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import copy
 import re
-from typing import Any, Dict, List, Optional, Tuple  # Any used for next_watch list input
+from typing import Any, Dict, List, Optional, Set, Tuple  # Any used for next_watch list input
 
 from keysuri_briefing_content_quality import (
     GLOBAL_COMMON_FILLER_SENTENCES,
@@ -172,6 +172,134 @@ _KOREA_CATEGORY_KO: Dict[str, str] = {
 }
 
 _KOREA_EVENING_CONTEXT = "오늘 한국 시장·정책·공급망에서 의미가 커진 시점입니다."
+
+# Strong, mutually distinct vertical markers used only to keep an item's
+# generated context attached to that same item's grounded identity.  Generic
+# words such as ``AI``, ``전력`` and ``정책`` are deliberately absent: they are
+# too broad to prove a contradiction.  This is a deterministic finalizer seam,
+# not a delivery validator.
+_KOREA_VERTICAL_MARKERS: Dict[str, Tuple[str, ...]] = {
+    "korea_semiconductor": (
+        "반도체",
+        "npu",
+        "파운드리",
+        "패키징",
+        "웨이퍼",
+        "소부장",
+        "후공정",
+        "dx-m1",
+    ),
+    "korea_battery_energy": (
+        "배터리",
+        "2차전지",
+        "전기차",
+        "에너지 기술",
+        "에너지 시장",
+        "태양광",
+        "풍력",
+        "ess",
+        "충전",
+        "그리드",
+    ),
+    "korea_robotics_manufacturing": (
+        "로봇",
+        "피지컬 ai",
+        "스마트팩토리",
+        "amr",
+        "휴머노이드",
+        "자동화",
+    ),
+}
+
+
+def _korea_vertical_domains(text: Any) -> Set[str]:
+    """Return strong semantic verticals present in visible text."""
+    value = _text(text).lower()
+    domains: Set[str] = set()
+    for category, markers in _KOREA_VERTICAL_MARKERS.items():
+        for marker in markers:
+            token = marker.lower()
+            if token.isascii() and token.isalnum():
+                if re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", value):
+                    domains.add(category)
+                    break
+            elif token in value:
+                domains.add(category)
+                break
+    return domains
+
+
+def _strip_foreign_korea_context(
+    text: str,
+    *,
+    expected_category: str,
+    identity_domains: Set[str],
+) -> str:
+    """Drop only sentences that introduce a vertical absent from this item."""
+    value = _text(text)
+    if not value or expected_category not in identity_domains:
+        return value
+    kept: List[str] = []
+    for sentence in re.split(r"(?<=[.!?;])\s+", value):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        foreign = _korea_vertical_domains(sentence) - identity_domains
+        if not foreign:
+            kept.append(sentence)
+    return " ".join(kept).strip()
+
+
+def _repair_korea_item_context(item: dict, meta: dict) -> dict:
+    """Bind context prose to this item's grounded category/source identity.
+
+    Model-authored sentences that remain in the item's real domain are kept
+    byte-for-byte.  Only a sentence carrying a strong foreign vertical absent
+    from the same source/title/what-happened evidence is removed; the existing
+    builders then add the authoritative category-specific fallback if needed.
+    """
+    expected_category = _text(meta.get("primary_category") or item.get("primary_category"))
+    if expected_category not in _KOREA_VERTICAL_MARKERS:
+        return item
+    identity_text = " ".join(
+        _text(value)
+        for value in (
+            meta.get("statement"),
+            meta.get("headline"),
+            meta.get("summary"),
+            _get_title_field(item, "korean_title", "headline"),
+            _get_field(item, "what_happened", "summary"),
+        )
+        if _text(value)
+    )
+    identity_domains = _korea_vertical_domains(identity_text)
+    if expected_category not in identity_domains:
+        return item
+
+    out = copy.deepcopy(item)
+    for field in (
+        "selection_reason",
+        "selection_rationale",
+        "why_now",
+        "why_it_matters",
+        "owner_angle",
+        "business_implication",
+        "next_watch",
+        "next_check_point",
+        "owner_action_line",
+        "next_day_impact_line",
+    ):
+        current = _get_field(out, field)
+        if not current:
+            continue
+        repaired = _strip_foreign_korea_context(
+            current,
+            expected_category=expected_category,
+            identity_domains=identity_domains,
+        )
+        if repaired != current:
+            _set_field(out, field, repaired)
+    return out
 
 
 def _text(value: Any) -> str:
@@ -998,7 +1126,7 @@ def _build_korea_next_watch(item: dict, meta: dict) -> str:
 
 
 def enrich_korea_top5_item_content(item: dict, *, meta: dict) -> dict:
-    out = copy.deepcopy(item)
+    out = _repair_korea_item_context(copy.deepcopy(item), meta)
     selection_reason = _build_korea_selection_reason(out, meta)
     what_happened, thin = _build_what_happened(out, meta)
     why_now = _build_korea_why_now(out, meta)

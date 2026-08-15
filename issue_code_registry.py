@@ -554,6 +554,7 @@ _GRADED_REVIEW_CODES = frozenset(
         "invalid_judgment_label",
         "korea_checkpoint_lacks_confirm_and_hold",
         "korea_checkpoint_strategy_too_generic",
+        "keysuri_cross_field_context_mismatch",
         "korea_closing_internal_label_leak",
         "korea_closing_memo_too_thin",
         "korea_closing_paragraph_too_long",

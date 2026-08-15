@@ -61,8 +61,9 @@ CATEGORY_KEYWORD_GROUPS: Dict[str, Tuple[str, ...]] = {
         "enterprise ai", "rag", "에이전트", "agent", "국산 ai", "ai 서비스",
     ),
     "korea_semiconductor": (
-        "hbm", "dram", "nand", "파운드리", "반도체", "삼성전자", "sk하이닉스", "sk hynix",
-        "samsung", "웨이퍼", "패키징", "장비", "소재", "메모리", "칩",
+        "hbm", "dram", "nand", "npu", "온디바이스 ai", "ai 반도체", "시스템 반도체",
+        "파운드리", "반도체", "삼성전자", "sk하이닉스", "sk hynix", "samsung",
+        "웨이퍼", "패키징", "장비", "소재", "메모리", "칩",
     ),
     "korea_robotics_manufacturing": (
         "로봇", "robot", "스마트팩토리", "자동화", "협동로봇", "amr", "물류로봇",
@@ -925,9 +926,17 @@ def classify_korea_tech_category(
             "scope:local_economy_not_tech_infra",
         )
 
+    # ``전력`` inside ``초저전력 NPU`` describes chip power efficiency, not an
+    # energy-market article.  The 2026-08-15 DeepX production item had one
+    # semiconductor hit and this incidental one battery hit; alphabetical
+    # tie-breaking then mislabeled the NPU item as battery/energy.  Keep the
+    # broad energy keyword for grid articles, but exclude the chip-specific
+    # low-power compound before counting category evidence.
+    category_text = re.sub(r"(?:초)?저전력", "", lower)
     hits: List[Tuple[str, int]] = []
     for cat, keywords in CATEGORY_KEYWORD_GROUPS.items():
-        count = sum(1 for kw in keywords if kw in lower)
+        haystack = category_text if cat == "korea_battery_energy" else lower
+        count = sum(1 for kw in keywords if kw in haystack)
         if count:
             hits.append((cat, count))
     # Downgrade semiconductor when only chaebol names appear without real chip signal.

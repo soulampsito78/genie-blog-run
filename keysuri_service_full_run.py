@@ -3485,6 +3485,7 @@ def _adjudicate_and_send_owner_surface(
     inline_parts: Optional[List[Tuple[str, str, str]]] = None,
     send_fn: Optional[Callable[..., bool]] = None,
     extra_findings: Optional[List[Mapping[str, Any]]] = None,
+    structured_briefing: Optional[Mapping[str, Any]] = None,
     observe_smtp_memory: bool = False,
 ) -> Dict[str, Any]:
     """Adjudicate the final immutable surface once, then execute its policy.
@@ -3500,6 +3501,7 @@ def _adjudicate_and_send_owner_surface(
         visible_quality_fields=visible_quality_fields,
         post_render_result=post_render_qa,
         extra_findings=extra_findings,
+        structured_briefing=structured_briefing,
         owner_review_url=owner_review_url,
     )
     behavior = str(result.get("owner_delivery_behavior") or "")
@@ -3739,6 +3741,7 @@ def run_keysuri_image_only_reissue(
         visible_quality_fields=visible_text_quality_fields,
         post_render_qa=post_render_qa,
         extra_findings=inherited_findings,
+        structured_briefing=parent_briefing,
         send_owner_email=send_owner_email,
         inline_parts=inline_parts,
         send_fn=send_fn,
@@ -4042,6 +4045,7 @@ def run_keysuri_text_only_reissue(
         owner_review_url=owner_review_url,
         visible_quality_fields=visible_text_quality_fields,
         post_render_qa=post_render_qa,
+        structured_briefing=generated_briefing,
         send_owner_email=send_owner_email,
         inline_parts=inline_parts,
         send_fn=send_fn,
@@ -4391,6 +4395,7 @@ def run_keysuri_text_and_image_reissue(
         owner_review_url=owner_review_url,
         visible_quality_fields=visible_text_quality_fields,
         post_render_qa=post_render_qa,
+        structured_briefing=generated_briefing,
         send_owner_email=send_owner_email,
         inline_parts=inline_parts,
         send_fn=send_fn,
@@ -5237,6 +5242,7 @@ def _run_keysuri_service_full_run_impl(
         inline_parts=inline_parts,
         send_fn=send_fn,
         extra_findings=final_surface_findings,
+        structured_briefing=generated_briefing,
         observe_smtp_memory=True,
     )
     smtp_attempted = bool(adjudication.get("smtp_attempted"))

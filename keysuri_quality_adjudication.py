@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import html
 import re
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
 from issue_code_registry import (
     FINDING_SEVERITY_BLOCK,
@@ -208,6 +208,102 @@ def collect_keysuri_findings(
         if isinstance(row, Mapping):
             _append_unique(rows, row)
     return rows
+
+
+def _cross_field_context_findings(
+    program_id: str,
+    structured_briefing: Optional[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Detect one bounded REVIEW finding per contradictory Korea TOP5 item.
+
+    The canonical adjudicator owns the verdict.  This detector compares strong
+    source/title/what-happened vertical evidence with the item's category,
+    selection reason, owner view and follow-up fields.  It does not mutate the
+    candidate and never turns an editorial mismatch into a safety block.
+    """
+    if not str(program_id or "").startswith("keysuri_korea"):
+        return []
+    if not isinstance(structured_briefing, Mapping):
+        return []
+    top = structured_briefing.get("top_5_news")
+    if not isinstance(top, Mapping) or not isinstance(top.get("items"), list):
+        return []
+
+    from keysuri_briefing_content_enricher import (
+        _KOREA_VERTICAL_MARKERS,
+        _korea_vertical_domains,
+    )
+
+    findings: List[Dict[str, Any]] = []
+    for index, raw_item in enumerate(top.get("items") or []):
+        if not isinstance(raw_item, Mapping):
+            continue
+        nested = raw_item.get("briefing_item")
+        nested = nested if isinstance(nested, Mapping) else {}
+
+        def _field(*names: str) -> str:
+            for name in names:
+                value = raw_item.get(name)
+                if value in (None, ""):
+                    value = nested.get(name)
+                if value not in (None, ""):
+                    return _bounded_text(value, 4_000)
+            return ""
+
+        identity_text = " ".join(
+            value
+            for value in (
+                _field("korean_title", "headline", "title"),
+                _field("what_happened", "summary"),
+            )
+            if value
+        )
+        identity_domains = _korea_vertical_domains(identity_text)
+        if not identity_domains:
+            continue
+
+        context_fields = {
+            "category": _field("primary_category", "category"),
+            "category_label": _field("category_label_ko"),
+            "selection_reason": _field("selection_reason", "selection_rationale"),
+            "owner_view": _field("owner_angle", "business_implication"),
+            "follow_up": " ".join(
+                value
+                for value in (
+                    _field("next_watch", "next_check_point", "follow_up"),
+                    _field("owner_action_line"),
+                )
+                if value
+            ),
+        }
+        foreign_domains: Set[str] = set()
+        affected_fields: List[str] = []
+        declared = context_fields["category"]
+        if declared in _KOREA_VERTICAL_MARKERS and declared not in identity_domains:
+            foreign_domains.add(declared)
+            affected_fields.append("category")
+        for field, value in context_fields.items():
+            if field == "category" or not value:
+                continue
+            foreign = _korea_vertical_domains(value) - identity_domains
+            if foreign:
+                foreign_domains.update(foreign)
+                affected_fields.append(field)
+        if not foreign_domains:
+            continue
+        expected = ",".join(sorted(identity_domains))
+        foreign = ",".join(sorted(foreign_domains))
+        findings.append(
+            {
+                "issue_code": "keysuri_cross_field_context_mismatch",
+                "field": f"top_5_news.items[{index}].context",
+                "rank": raw_item.get("rank") or index + 1,
+                "source_id": _field("news_id"),
+                "before": " / ".join(affected_fields),
+                "detail": f"identity={expected}; foreign_context={foreign}",
+            }
+        )
+    return findings
 
 
 def _warning_panel(findings: Sequence[Mapping[str, Any]]) -> str:
@@ -447,6 +543,7 @@ def adjudicate_keysuri_owner_surface(
     visible_quality_fields: Optional[Mapping[str, Any]] = None,
     post_render_result: Any = None,
     extra_findings: Optional[Sequence[Mapping[str, Any]]] = None,
+    structured_briefing: Optional[Mapping[str, Any]] = None,
     owner_review_url: str = "",
 ) -> Dict[str, Any]:
     """The single public KeeSuri content-adjudication entrypoint.
@@ -455,6 +552,9 @@ def adjudicate_keysuri_owner_surface(
     and Korea owner/customer delivery path must enter here exactly once with
     the final immutable subject and HTML surface.
     """
+    structured_findings = _cross_field_context_findings(
+        program_id, structured_briefing
+    )
     result = adjudicate_keysuri_quality(
         program_id=program_id,
         subject=subject,
@@ -462,7 +562,7 @@ def adjudicate_keysuri_owner_surface(
         findings=collect_keysuri_findings(
             visible_quality_fields=visible_quality_fields,
             post_render_result=post_render_result,
-            extra_findings=extra_findings,
+            extra_findings=[*(extra_findings or []), *structured_findings],
         ),
         owner_review_url=owner_review_url,
     )
@@ -562,7 +662,14 @@ def run_keysuri_graded_validation_no_send_proof() -> Dict[str, Any]:
     loaded revision without model, image, SMTP, customer, natural-run, or
     Scheduler side effects.
     """
-    from keysuri_briefing_content_enricher import _build_what_happened
+    from keysuri_briefing_content_enricher import (
+        _build_what_happened,
+        enrich_korea_top5_item_content,
+    )
+    from keysuri_korea_signal_scoring import (
+        CATEGORY_KO_LABELS,
+        classify_korea_tech_category,
+    )
     from keysuri_korea_longform_ux import sanitize_korea_customer_prose
     from keysuri_visible_text import contains_dangling_quoted_title_fragment
 
@@ -575,6 +682,23 @@ def run_keysuri_graded_validation_no_send_proof() -> Dict[str, Any]:
                 {"issue_code": code, "field": "deployed_no_send_proof"}
                 for code in codes
             ],
+        )
+        return {
+            "name": name,
+            "safety_verdict": result["safety_verdict"],
+            "editorial_verdict": result["editorial_verdict"],
+            "owner_delivery_behavior": result["owner_delivery_behavior"],
+            "customer_approval_policy": result["customer_approval_policy"],
+            "review_issue_codes": result["review_issue_codes"],
+            "terminal_issue_codes": result["terminal_issue_codes"],
+        }
+
+    def _structured_case(name: str, item: Mapping[str, Any]) -> Dict[str, Any]:
+        result = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_korea_tech",
+            subject="[운영자 검토] 배포 무발송 증명",
+            email_html="<html><body><p>배포 무발송 품질 증명 표면</p></body></html>",
+            structured_briefing={"top_5_news": {"items": [dict(item)]}},
         )
         return {
             "name": name,
@@ -614,6 +738,42 @@ def run_keysuri_graded_validation_no_send_proof() -> Dict[str, Any]:
             "category_display_label": "국내 정책 / 규제 / 공공",
         },
     )
+    deepx_source = (
+        "딥엑스 NPU 양산 1년 수주. 국산 온디바이스 AI 반도체 DX-M1이 "
+        "9개 국가에서 구매주문을 확보했고 초저전력 AI 반도체 양산을 확대했다."
+    )
+    deepx_category, _, _, deepx_reason = classify_korea_tech_category(deepx_source)
+    deepx_meta = {
+        "statement": "딥엑스 NPU, 양산 1년 만에 9개국서 수주 77건",
+        "summary": deepx_source,
+        "source_name": "공개 기술 매체",
+        "primary_category": deepx_category,
+        "category_label_ko": CATEGORY_KO_LABELS[deepx_category],
+        "category_display_label": CATEGORY_KO_LABELS[deepx_category],
+        "owner_action_line": (
+            "내일 국내 반도체 / 장비 / 소재 관련 파트너·고객·입찰·정책 일정을 점검하세요."
+        ),
+        "next_day_impact_line": "내일 국내 반도체 공급망과 양산 일정을 확인하세요.",
+    }
+    deepx_broken = {
+        "rank": 3,
+        "news_id": "claim-live-platum-sanitized",
+        "korean_title": "딥엑스, 온디바이스 AI 반도체 NPU 양산 1년 만에 9개국서 77건 수주",
+        "what_happened": deepx_source,
+        "why_now": "국내 시스템 반도체 생태계와 후공정 기업에 의미 있는 신호입니다.",
+        "owner_angle": (
+            "딥엑스의 실제 납품과 양산 확대를 확인해야 합니다. "
+            "내일은 배터리·에너지 관련 파트너·고객·입찰 움직임만 보면 됩니다."
+        ),
+        "next_watch": "NPU 추가 수주와 파운드리·패키징 양산 일정을 확인하세요.",
+        "selection_reason": "배터리·에너지 관점에서 오늘 한국에서 의미 있는 신호로 선정했습니다.",
+        "category": "korea_battery_energy",
+        "primary_category": "korea_battery_energy",
+        "category_label_ko": "국내 배터리 / EV / 에너지",
+        "owner_action_line": "내일 국내 배터리 / EV / 에너지 일정을 점검하세요.",
+    }
+    deepx_repaired = enrich_korea_top5_item_content(deepx_broken, meta=deepx_meta)
+    deepx_repaired_twice = enrich_korea_top5_item_content(deepx_repaired, meta=deepx_meta)
     cases = [
         _case("good_global", "keysuri_global_tech", ()),
         _case("bad_global_20260814_1231", "keysuri_global_tech", bad_global_codes),
@@ -630,6 +790,8 @@ def run_keysuri_graded_validation_no_send_proof() -> Dict[str, Any]:
             "keysuri_global_tech",
             ("global_visible_raw_english_prose_blocked",),
         ),
+        _structured_case("deepx_original_wrong_domain", deepx_broken),
+        _structured_case("deepx_after_producer_repair", deepx_repaired),
     ]
     expected = {
         "good_global": (SAFETY_SAFE, EDITORIAL_READY, OWNER_SEND_READY),
@@ -663,6 +825,16 @@ def run_keysuri_graded_validation_no_send_proof() -> Dict[str, Any]:
             EDITORIAL_REVIEW,
             OWNER_SEND_WARNING,
         ),
+        "deepx_original_wrong_domain": (
+            SAFETY_SAFE,
+            EDITORIAL_REVIEW,
+            OWNER_SEND_WARNING,
+        ),
+        "deepx_after_producer_repair": (
+            SAFETY_SAFE,
+            EDITORIAL_READY,
+            OWNER_SEND_READY,
+        ),
     }
     case_pass = all(
         (
@@ -679,6 +851,11 @@ def run_keysuri_graded_validation_no_send_proof() -> Dict[str, Any]:
         and canonical_title in grounded_title_sentence
         and f"「{damaged_title}」" not in grounded_title_sentence
         and not contains_dangling_quoted_title_fragment(grounded_title_sentence)
+        and deepx_category == "korea_semiconductor"
+        and "keyword_hits" in deepx_reason
+        and deepx_repaired == deepx_repaired_twice
+        and "배터리" not in str(deepx_repaired)
+        and "NPU" in str(deepx_repaired)
     )
     return {
         "ok": bool(case_pass and producer_pass),
@@ -692,6 +869,11 @@ def run_keysuri_graded_validation_no_send_proof() -> Dict[str, Any]:
             "dangling_title_resolved": not contains_dangling_quoted_title_fragment(
                 grounded_title_sentence
             ),
+            "deepx_category": deepx_category,
+            "deepx_category_reason": deepx_reason,
+            "deepx_wrong_domain_removed": "배터리" not in str(deepx_repaired),
+            "deepx_semiconductor_context_preserved": "NPU" in str(deepx_repaired),
+            "deepx_repair_idempotent": deepx_repaired == deepx_repaired_twice,
         },
         "side_effects": {
             "model": 0,
