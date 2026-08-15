@@ -95,7 +95,16 @@ _RUN_LIST_SUMMARY_KEYS = (
     "artifact_status",
     "workflow_status",
     "validation_result",
+    "quality_adjudicator",
+    "safety_verdict",
+    "editorial_verdict",
     "terminal_issue_codes",
+    "review_issue_codes",
+    "repaired_issue_codes",
+    "owner_delivery_behavior",
+    "customer_approval_policy",
+    "customer_approval_available",
+    "warning_confirmation_required",
     "issue_codes",
     "validation_issue_codes",
     "email_sent",
@@ -1608,6 +1617,14 @@ def can_approve_customer_send(meta: Dict[str, Any], *, has_email_html: bool) -> 
     vr = str(meta.get("validation_result") or "")
     if vr == "block" or str(meta.get("artifact_status") or "") == "failed":
         return False, "not_approvable"
+    if mode in {"keysuri_global_tech", "keysuri_korea_tech"}:
+        if str(meta.get("safety_verdict") or "") != "SAFE":
+            return False, "keysuri_safety_not_safe"
+        editorial_verdict = str(meta.get("editorial_verdict") or "")
+        if editorial_verdict == "POOR":
+            return False, "keysuri_editorial_poor"
+        if editorial_verdict not in {"READY", "REVIEW"}:
+            return False, "keysuri_editorial_unclassified"
     if not has_email_html:
         return False, "missing_email_html"
     if mode == "keysuri_korea_tech":
@@ -1740,6 +1757,7 @@ def approve_run(
     approval_snapshot_id: str = "",
     operator_id: str = "",
     approval_audit: Optional[Dict[str, Any]] = None,
+    review_warning_confirmed: bool = False,
 ) -> tuple[Optional[Dict[str, Any]], str]:
     """Verify a frozen target, reserve one command, then submit exactly that payload."""
     meta = load_run_artifact(run_id)
@@ -1779,6 +1797,19 @@ def approve_run(
             related_id=approval_snapshot_id,
         )
         return None, exc.code
+
+    if bool(snapshot.get("warning_confirmation_required")) and not bool(
+        review_warning_confirmed
+    ):
+        append_operator_audit(
+            "customer_send_blocked",
+            operator_id=operator_id,
+            run_id=run_id,
+            result="blocked",
+            reason_code="REVIEW_WARNING_CONFIRMATION_REQUIRED",
+            related_id=approval_snapshot_id,
+        )
+        return None, "REVIEW_WARNING_CONFIRMATION_REQUIRED"
 
     append_operator_audit(
         "approval_confirmed",

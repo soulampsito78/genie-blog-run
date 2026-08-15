@@ -11,7 +11,7 @@ import re
 import secrets
 import time
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Mapping, Optional
 from urllib.parse import urlencode
 
 logger = logging.getLogger(__name__)
@@ -149,6 +149,7 @@ APPROVE_NONCE_SALT = b"genie-approve-nonce-v1"
 APPROVE_NONCE_TTL_SECONDS = 900
 APPROVE_NONCE_FORM_FIELD = "approve_nonce"
 CUSTOMER_SEND_CONFIRM_FIELD = "customer_send_confirm"
+REVIEW_WARNING_CONFIRM_FIELD = "review_warning_confirm"
 APPROVAL_SNAPSHOT_FORM_FIELD = "approval_snapshot_id"
 CSRF_FORM_FIELD = "csrf_token"
 CSRF_SALT = b"genie-admin-csrf-v1"
@@ -411,6 +412,10 @@ _APPROVE_ERROR_MESSAGES = {
     "missing_email_html": "저장된 이메일 HTML이 없습니다.",
     "missing_smtp": "SMTP 설정이 없습니다.",
     "not_approvable": "승인할 수 없는 검증 상태입니다.",
+    "keysuri_safety_not_safe": "안전성 판정이 SAFE가 아니어서 고객 발송할 수 없습니다.",
+    "keysuri_editorial_poor": "편집 품질이 POOR인 후보는 고객 승인을 제공하지 않습니다.",
+    "keysuri_editorial_unclassified": "편집 품질 판정이 없어 고객 발송할 수 없습니다.",
+    "REVIEW_WARNING_CONFIRMATION_REQUIRED": "검토 경고를 확인한 뒤 승인해야 합니다.",
     "send_failed": "고객 이메일 발송에 실패했습니다.",
     "unsupported_mode": "승인 발송을 지원하지 않는 mode입니다.",
     "keysuri_customer_delivery_not_ready": "Kee-Suri 고객 발송은 아직 안전 검증 전입니다.",
@@ -1995,6 +2000,71 @@ def admin_cost_ledger_csv(request: Request, month: str = "") -> Response:
     )
 
 
+def _render_keysuri_graded_quality_panel(meta: Mapping[str, Any]) -> str:
+    mode = str(meta.get("mode") or meta.get("program_id") or "")
+    if mode not in {"keysuri_global_tech", "keysuri_korea_tech"}:
+        return ""
+    safety = str(meta.get("safety_verdict") or "미확정")
+    editorial = str(meta.get("editorial_verdict") or "미확정")
+    safety_label = {"SAFE": "안전", "UNSAFE": "위험", "INCONCLUSIVE": "판정 불가"}.get(
+        safety, "미확정"
+    )
+    editorial_label = {"READY": "준비 완료", "REVIEW": "검토 필요", "POOR": "수정 필요"}.get(
+        editorial, "미확정"
+    )
+    findings = [row for row in meta.get("findings") or [] if isinstance(row, Mapping)]
+    rows: List[str] = []
+    for finding in findings[:48]:
+        state = str(finding.get("finding_state") or "")
+        state_label = {
+            "REPAIRED": "자동 수정 완료",
+            "RESIDUAL": "운영자 확인 필요",
+            "TERMINAL": "안전성 차단",
+            "DETECTED": "탐지됨",
+        }.get(state, state or "확인 필요")
+        location = " · ".join(
+            part
+            for part in (
+                str(finding.get("field") or "").strip(),
+                f"{finding.get('rank')}위" if finding.get("rank") not in (None, "") else "",
+                str(finding.get("source_id") or "").strip(),
+            )
+            if part
+        )
+        before = str(finding.get("before") or "").strip()
+        after = str(finding.get("after") or "").strip()
+        sample = ""
+        if before:
+            sample += f'<div><span style="color:var(--muted);">수정 전</span> {_esc(before)}</div>'
+        if after:
+            sample += f'<div><span style="color:var(--muted);">수정 후</span> {_esc(after)}</div>'
+        rows.append(
+            '<li style="margin-bottom:12px;">'
+            f'<strong>{_esc(finding.get("label_ko") or "품질 확인 필요")}</strong> '
+            f'<span class="badge">{_esc(state_label)}</span>'
+            f'{f"<div>{_esc(location)}</div>" if location else ""}{sample}'
+            '</li>'
+        )
+    finding_html = "".join(rows) or "<li>추가 품질 항목 없음</li>"
+    review_help = ""
+    if safety == "SAFE" and editorial == "REVIEW":
+        review_help = (
+            '<div class="notice"><strong>검토 필요 · 고객 발송 전 확인</strong>'
+            '<p>수정 요청, 거절, 또는 경고 확인 후 승인을 선택할 수 있습니다.</p></div>'
+        )
+    return (
+        '<section class="surface" style="margin-top:14px;">'
+        '<div class="section-heading" style="margin-top:0;"><div>'
+        '<p class="eyebrow">GRADED QUALITY</p><h2>안전성과 편집 품질</h2></div></div>'
+        f'<div class="metrics">{_ui_metric("안전성", safety_label, safety)}'
+        f'{_ui_metric("편집 품질", editorial_label, editorial)}</div>{review_help}'
+        f'<h3>항목별 확인</h3><ul>{finding_html}</ul>'
+        '<details class="technical-details"><summary>내부 코드 보기</summary><div class="technical-details__body">'
+        f'<code>{_esc(", ".join(str(code) for code in meta.get("issue_codes") or []) or "없음")}</code>'
+        '</div></details></section>'
+    )
+
+
 @router.get("/admin/runs/{run_id}", response_class=HTMLResponse)
 def admin_run_detail(request: Request, run_id: str):
     need = _require_login(request)
@@ -2067,6 +2137,7 @@ def admin_run_detail(request: Request, run_id: str):
         f'<li class="is-{_esc(item["tone"])}"><span class="marker"></span><span>{_esc(item["label"])}</span></li>'
         for item in validation["checks"]
     )
+    graded_panel = _render_keysuri_graded_quality_panel(meta)
     accepted = delivery.get("accepted")
     refused = delivery.get("refused")
     recipient_display = recipient_count if recipients_ok else "확인 필요"
@@ -2137,6 +2208,7 @@ def admin_run_detail(request: Request, run_id: str):
   <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">VALIDATION</p><h2>검수 결과</h2></div>{_ui_badge(validation['label'], validation['tone'])}</div>
   <p>{_esc(validation['summary'])}</p><ul class="validation-list">{validation_items}</ul>
 </section>
+{graded_panel}
 {_admin_email_preview_for_run(run_id) if has_email else _ui_email_preview(None)}
 <section class="surface">
   <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">DELIVERY</p><h2>고객 이메일 발송 상태</h2></div>{_ui_badge(delivery['label'], delivery['tone'])}</div>
@@ -2149,7 +2221,7 @@ def admin_run_detail(request: Request, run_id: str):
   <div class="danger-zone" style="margin-top:14px;"><strong>{approval_heading}</strong><p>{approval_explanation}</p>{approve_block}</div>
 </section>
 <section class="surface" style="margin-top:14px;">
-<div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">REISSUE</p><h2>다시 만들기</h2></div></div>
+  <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">REISSUE</p><h2>{'수정 요청' if str(meta.get('editorial_verdict') or '') in {'REVIEW', 'POOR'} else '다시 만들기'}</h2></div></div>
 <p class="notice">재발행 결과는 운영자 검토용으로만 생성됩니다. 고객에게 자동 발송되지 않습니다.</p>
 <form method="post" action="/admin/runs/{_esc(run_id)}/reissue">
 {_csrf_field(request, f'reissue:{run_id}')}
@@ -2403,6 +2475,7 @@ def admin_run_approve_confirm(request: Request, run_id: str):
     )
     prepared_subject = prepared.subject
     approval_snapshot_id = str(snapshot["approval_snapshot_id"])
+    warning_confirmation_required = bool(snapshot.get("warning_confirmation_required"))
     # The preview is served separately.  Do not retain either large HTML body
     # while constructing the confirmation-page projection.
     del prepared
@@ -2442,6 +2515,7 @@ def admin_run_approve_confirm(request: Request, run_id: str):
 <input type="checkbox" name="{_esc(CUSTOMER_SEND_CONFIRM_FIELD)}" value="1" required>
 고객 이메일 발송을 승인합니다
 </label>
+{"" if not warning_confirmation_required else f'''<label style="display:block;margin:0 0 16px 0;"><input type="checkbox" name="{_esc(REVIEW_WARNING_CONFIRM_FIELD)}" value="1" required> 편집 경고를 확인했으며 이 상태로 고객 발송하는 데 동의합니다</label>'''}
 <div class="form-actions"><button class="btn btn--danger" type="submit">승인하고 {_esc(recipient_label)}에게 발송</button></div>
 </form>
 <p><a href="/admin/runs/{_esc(run_id)}">← 실행 상세</a></p>
@@ -2470,6 +2544,7 @@ def admin_run_approve(
     approve_note: str = Form(""),
     approve_nonce: str = Form(""),
     customer_send_confirm: str = Form(""),
+    review_warning_confirm: str = Form(""),
     approval_snapshot_id: str = Form(""),
     csrf_token: str = Form(""),
 ):
@@ -2516,6 +2591,7 @@ def admin_run_approve(
         approval_snapshot_id=approval_snapshot_id,
         operator_id=_operator_id(request),
         approval_audit=approval_audit,
+        review_warning_confirmed=bool(str(review_warning_confirm or "").strip()),
     )
     if status != "ok" or not updated:
         code = status if status in _APPROVE_ERROR_MESSAGES else "send_failed"

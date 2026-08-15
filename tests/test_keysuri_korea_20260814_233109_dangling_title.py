@@ -173,6 +173,8 @@ class KoreaProductionDanglingTitleTests(unittest.TestCase):
     def test_07_service_validation_block_persists_image_and_smtp_stage_states(self) -> None:
         fx = _fixture()
         with tempfile.TemporaryDirectory() as td:
+            generated_image = Path(td) / "generated.jpg"
+            generated_image.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
             pack_path = Path(td) / "source_pack.json"
             pack_path.write_text(
                 json.dumps({"program_id": PROGRAM_KOREA, "sources": [], "claims": []}),
@@ -210,7 +212,7 @@ class KoreaProductionDanglingTitleTests(unittest.TestCase):
                 called_image_api=True,
                 image_generation_status="generated",
                 image_source=IMAGE_SOURCE_GENERATED,
-                generated_image_path="output/not-used-before-validation.jpg",
+                generated_image_path=str(generated_image),
             )
             saved_memory: dict = {}
 
@@ -222,6 +224,10 @@ class KoreaProductionDanglingTitleTests(unittest.TestCase):
                 patch("keysuri_service_full_run.generate_run_id", return_value=fx["run_id"]),
                 patch("keysuri_service_full_run.save_run_artifact"),
                 patch("keysuri_service_full_run.save_run_memory_evidence", side_effect=_capture_memory),
+                patch(
+                    "keysuri_service_full_run._watermarked_top_shot_path",
+                    return_value=generated_image,
+                ),
                 patch(
                     "keysuri_service_full_run.build_keysuri_prompt_input",
                     return_value={
@@ -238,23 +244,23 @@ class KoreaProductionDanglingTitleTests(unittest.TestCase):
                     send_owner_email=True,
                     smoke_runner=lambda **_kwargs: smoke,
                     image_canary_runner=lambda *_args, **_kwargs: image,
+                    send_fn=lambda *_args, **_kwargs: True,
                 )
 
-        self.assertEqual(result["validation_result"], "block")
-        self.assertFalse(result["email_sent"])
+        # A grounded punctuation defect is now an editorial REVIEW, not a
+        # content kill-switch.  The owner surface remains available with a
+        # truthful warning, while this test still performs no SMTP call.
+        self.assertEqual(result["validation_result"], "pass")
+        self.assertEqual(result["safety_verdict"], "SAFE")
+        self.assertEqual(result["editorial_verdict"], "REVIEW")
+        self.assertTrue(result["email_sent"])
         image_stage = saved_memory["stages"]["after_image_generation"]
         smtp_stage = saved_memory["stages"]["before_owner_smtp"]
         self.assertTrue(image_stage["reached"])
         self.assertEqual(image_stage["image_status"], "generated")
         self.assertGreater(image_stage["rss_kib"], 0)
         self.assertGreaterEqual(image_stage["hwm_kib"], image_stage["rss_kib"])
-        self.assertEqual(
-            smtp_stage,
-            {
-                "reached": False,
-                "reason": "not_reached_due_to_validation_block",
-            },
-        )
+        self.assertTrue(smtp_stage["reached"])
 
 
 if __name__ == "__main__":

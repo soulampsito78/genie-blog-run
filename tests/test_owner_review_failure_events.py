@@ -642,6 +642,7 @@ class OwnerReviewSmtpFailureEventTests(unittest.TestCase):
                 called_gemini=True,
                 use_gemini=True,
                 contract_preview=True,
+                parse_status="parsed_valid",
                 raw_response_path=str(raw_path),
                 preview_overall_status="PASS_OWNER_REVIEW_READY",
                 validation_status="PASS",

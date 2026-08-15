@@ -29,10 +29,6 @@ from keysuri_service_full_run import (
     inline_jpeg_parts_for_korea_service_email,
     keysuri_global_service_email_cid_token,
 )
-from keysuri_visible_text_quality import (
-    KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
-    validate_keysuri_html_visible_text_quality,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -520,6 +516,21 @@ def prepare_keysuri_customer_delivery(
     mode = str(meta.get("mode") or meta.get("program_id") or "")
     subject = build_keysuri_customer_final_subject(meta, saved_html)
     preheader = build_keysuri_customer_final_preheader(meta, saved_html)
+    if mode in _KEYSURI_MODES:
+        if str(meta.get("safety_verdict") or "") != "SAFE":
+            return {
+                "ok": False,
+                "error": "KEYSURI_SAFETY_NOT_SAFE",
+                "subject": subject,
+                "preheader": preheader,
+            }
+        if str(meta.get("editorial_verdict") or "") == "POOR":
+            return {
+                "ok": False,
+                "error": "KEYSURI_EDITORIAL_POOR",
+                "subject": subject,
+                "preheader": preheader,
+            }
     ready, err = customer_delivery_config_ready()
     if not ready and recipients_override is None:
         return {"ok": False, "error": err, "subject": subject, "preheader": preheader}
@@ -530,17 +541,6 @@ def prepare_keysuri_customer_delivery(
     except ValueError as exc:
         return {"ok": False, "error": str(exc), "subject": subject, "preheader": preheader}
     html_body = _insert_hidden_preheader(html_body, preheader)
-    html_quality = validate_keysuri_html_visible_text_quality(
-        html_body,
-        path="customer_email_html.visible_text",
-    )
-    if html_quality.get("visible_text_ellipsis_blocked"):
-        return {
-            "ok": False,
-            "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
-            "subject": subject,
-            "preheader": preheader,
-        }
     inline_parts = resolve_keysuri_inline_jpeg_parts(saved_html, meta)
     if not inline_parts:
         if mode == PROGRAM_KOREA and _is_korea_generated_v6(meta):

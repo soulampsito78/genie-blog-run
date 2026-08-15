@@ -26,6 +26,7 @@ from keysuri_live_source_smoke import (
     LiveSourceSmokeResult,
     run_keysuri_live_source_smoke,
 )
+from keysuri_quality_adjudication import run_keysuri_graded_validation_no_send_proof
 from genie_schedule_policy import (
     ScheduledWeekendSkip,
     get_kst_now,
@@ -168,9 +169,10 @@ def _list_from_payload(payload: Dict[str, Any], *keys: str) -> list[Any]:
 
 def _keysuri_owner_review_failure_stage(payload: Dict[str, Any]) -> str:
     validation_result = str(payload.get("validation_result") or "").strip().lower()
-    issue_codes = _list_from_payload(payload, "issue_codes", "issues")
+    safety_verdict = str(payload.get("safety_verdict") or "").strip().upper()
+    terminal_codes = _list_from_payload(payload, "terminal_issue_codes")
     error_text = str(payload.get("error") or "").strip().lower()
-    if validation_result == "block" or issue_codes:
+    if validation_result == "block" or safety_verdict in {"UNSAFE", "INCONCLUSIVE"} or terminal_codes:
         return "validation"
     if _bool_from_payload(payload, "smtp_attempted", "owner_email_smtp_attempted") and not _bool_from_payload(
         payload, "email_sent", "owner_review_email_sent"
@@ -952,3 +954,22 @@ def create_keysuri_owner_review_endpoint(
             stage=_keysuri_owner_review_failure_stage(payload),
         )
     return JSONResponse(status_code=status_code, content=payload)
+
+
+@router.post("/internal/jobs/keysuri-graded-validation-proof")
+def keysuri_graded_validation_proof_endpoint(
+    request: Request,
+    x_genie_internal_job_token: Optional[str] = Header(
+        None, alias="X-Genie-Internal-Job-Token"
+    ),
+):
+    """Protected deterministic deployed-revision proof with zero side effects."""
+    auth_fail = _verify_internal_job_token(request, x_genie_internal_job_token)
+    if auth_fail is not None:
+        return auth_fail
+    result = run_keysuri_graded_validation_no_send_proof()
+    result["deployed_revision"] = str(os.getenv("K_REVISION") or "")
+    result["deployed_commit_sha"] = str(
+        os.getenv("COMMIT_SHA") or os.getenv("SOURCE_COMMIT") or ""
+    )
+    return JSONResponse(status_code=200 if result.get("ok") else 500, content=result)

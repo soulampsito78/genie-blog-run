@@ -22,7 +22,8 @@ from zoneinfo import ZoneInfo
 
 from admin_store import _get_gcs_client
 from keysuri_generation_prompt import PROGRAM_GLOBAL, PROGRAM_KOREA
-from keysuri_visible_text_quality import validate_and_repair_keysuri_visible_text_quality
+from issue_code_registry import FINDING_SEVERITY_BLOCK, get_graded_issue_policy
+from keysuri_visible_text_quality import repair_keysuri_visible_text_fields
 from today_genie_execution_identity import (
     EXECUTION_CLASS_PREFLIGHT_CANARY,
     EXECUTION_CLASS_RELIABILITY_CANARY,
@@ -300,17 +301,23 @@ def run_keysuri_reliability_generation(
     repaired = briefing
     vt_fields: Dict[str, Any] = {}
     if briefing:
-        repaired, vt_fields = validate_and_repair_keysuri_visible_text_quality(
+        repaired, vt_fields = repair_keysuri_visible_text_fields(
             briefing, root_path="generated_briefing"
         )
+
+    terminal_quality_codes = [
+        str(code)
+        for code in vt_fields.get("terminal_issue_codes") or []
+        if get_graded_issue_policy(str(code)) is None
+        or get_graded_issue_policy(str(code)).severity == FINDING_SEVERITY_BLOCK
+    ]
 
     validation_pass = bool(
         smoke.ok
         and smoke.called_gemini
         and actual_model
         and smoke.parse_status == "parsed_valid"
-        and vt_fields.get("visible_text_quality_status", "pass") == "pass"
-        and not vt_fields.get("visible_text_ellipsis_blocked")
+        and not terminal_quality_codes
     )
 
     issue_codes = list(smoke.validation_issues or [])

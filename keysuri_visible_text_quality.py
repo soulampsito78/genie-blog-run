@@ -472,7 +472,7 @@ def _finalize_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
     return fields
 
 
-def validate_and_repair_keysuri_visible_text_quality(
+def repair_keysuri_visible_text_fields(
     payload: Any,
     *,
     root_path: str = "generated_briefing",
@@ -480,6 +480,20 @@ def validate_and_repair_keysuri_visible_text_quality(
     fields = _new_quality_fields()
     repaired = _walk_and_repair(copy.deepcopy(payload), path=root_path, fields=fields)
     return repaired, _finalize_fields(fields)
+
+
+def validate_and_repair_keysuri_visible_text_quality(
+    payload: Any,
+    *,
+    root_path: str = "generated_briefing",
+) -> tuple[Any, Dict[str, Any]]:
+    """Compatibility alias for callers outside the delivery path.
+
+    Repair is producer/finalizer-owned.  Final delivery code imports the
+    explicitly named :func:`repair_keysuri_visible_text_fields`; detectors do
+    not silently mutate the rendered candidate.
+    """
+    return repair_keysuri_visible_text_fields(payload, root_path=root_path)
 
 
 def validate_keysuri_html_visible_text_quality(

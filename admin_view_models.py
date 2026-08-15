@@ -191,6 +191,57 @@ def validation_projection(meta: Mapping[str, Any]) -> Dict[str, Any]:
             "top_image_cid",
         )
     )
+    pid = program_id(meta)
+    safety = str(meta.get("safety_verdict") or "")
+    editorial = str(meta.get("editorial_verdict") or "")
+    if pid in {"keysuri_global_tech", "keysuri_korea_tech"} and safety:
+        if safety == "SAFE" and editorial == "READY":
+            return {
+                "label": "검수 준비 완료",
+                "tone": "good",
+                "summary": "안전성 확인과 편집 검토를 통과했습니다. 고객 발송은 별도 승인 후에만 가능합니다.",
+                "checks": [
+                    {"label": "안전성: 안전", "tone": "good"},
+                    {"label": "편집 품질: 준비 완료", "tone": "good"},
+                    {"label": "고객 발송: 운영자 승인 필요", "tone": "warn"},
+                ],
+                "issues": issues,
+            }
+        if safety == "SAFE" and editorial == "REVIEW":
+            return {
+                "label": "검토 필요",
+                "tone": "warn",
+                "summary": "안전한 초안이지만 편집상 주의점이 있습니다. 고객 발송 전 확인하거나 수정을 요청하세요.",
+                "checks": [
+                    {"label": "안전성: 안전", "tone": "good"},
+                    {"label": "편집 품질: 검토 필요", "tone": "warn"},
+                    {"label": "경고 확인 후 승인 가능", "tone": "warn"},
+                ],
+                "issues": issues,
+            }
+        if safety == "SAFE" and editorial == "POOR":
+            return {
+                "label": "수정 필요",
+                "tone": "warn",
+                "summary": "안전성 차단 사유는 없지만 편집 품질이 낮습니다. 전체 후보를 확인하고 수정을 요청하거나 거절하세요.",
+                "checks": [
+                    {"label": "안전성: 안전", "tone": "good"},
+                    {"label": "편집 품질: 낮음", "tone": "warn"},
+                    {"label": "고객 승인: 제공하지 않음", "tone": "good"},
+                ],
+                "issues": issues,
+            }
+        return {
+            "label": "안전성 확인 중지",
+            "tone": "danger",
+            "summary": "안전성 판정이 확정되지 않았거나 위험이 확인되어 운영자 초안과 고객 발송을 보류했습니다.",
+            "checks": [
+                {"label": f"안전성: {safety or '미확정'}", "tone": "danger"},
+                {"label": "고객 발송 차단됨", "tone": "good"},
+                {"label": "진단 근거 확인 필요", "tone": "warn"},
+            ],
+            "issues": issues,
+        }
     if validation_is_pass(meta):
         checks = [
             {"label": "필수 구성 정상", "tone": "good"},

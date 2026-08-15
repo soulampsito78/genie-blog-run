@@ -50,6 +50,8 @@ def _still_blocking_ellipsis_briefing() -> dict:
                 },
                 {"news_id": "n2", "headline": "제목2", "what_happened": "정상 문장입니다."},
                 {"news_id": "n3", "headline": "제목3", "what_happened": "정상입니다."},
+                {"news_id": "n4", "headline": "제목4", "what_happened": "정상 문장입니다."},
+                {"news_id": "n5", "headline": "제목5", "what_happened": "정상 문장입니다."},
             ]
         },
     }
@@ -74,6 +76,12 @@ def _prompt_with_selected_news() -> dict:
         ],
         "source_pack": {"sources": [], "program_id": PROGRAM_GLOBAL},
     }
+
+
+def _mock_watermark(source: Path, target: Path) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(source.read_bytes() + b"MirAI:ON")
+    return target.resolve()
 
 
 def _smoke_with_evidence(pack_path: Path, raw_path: Path) -> LiveSourceSmokeResult:
@@ -151,6 +159,8 @@ class FailedRecoveryEvidencePersistenceTests(unittest.TestCase):
         self.assertNotIn("SHOULD_NEVER_PERSIST", blob)
         self.assertNotIn("owner@private.example", blob.lower())
 
+    @patch("keysuri_service_full_run.validate_global_post_render_visible_quality")
+    @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
     @patch("keysuri_service_full_run.emit_owner_review_failure_from_artifact_meta")
     @patch("keysuri_service_full_run.build_keysuri_prompt_input")
     @patch("keysuri_service_full_run._generate_keysuri_service_image")
@@ -161,6 +171,8 @@ class FailedRecoveryEvidencePersistenceTests(unittest.TestCase):
         mock_image: MagicMock,
         mock_prompt_input: MagicMock,
         _mock_emit: MagicMock,
+        mock_watermark: MagicMock,
+        mock_post_render: MagicMock,
     ) -> None:
         from admin_store import load_run_artifact, update_run_artifact
         from keysuri_service_full_run import run_keysuri_service_full_run
@@ -168,6 +180,11 @@ class FailedRecoveryEvidencePersistenceTests(unittest.TestCase):
         fx = json.loads(_FIXTURE.read_text(encoding="utf-8"))
         run_id = fx["run_id"]
         mock_run_id.return_value = run_id
+        mock_watermark.side_effect = _mock_watermark
+        from keysuri_briefing_content_quality import BriefingContentQualityResult
+        mock_post_render.return_value = BriefingContentQualityResult(
+            ok=True, issues=[], warnings=[]
+        )
         pack_path = self._artifact_root / "pack_recovery1.json"
         pack_path.write_text(
             json.dumps({"sources": [], "program_id": PROGRAM_GLOBAL}), encoding="utf-8"
@@ -194,9 +211,10 @@ class FailedRecoveryEvidencePersistenceTests(unittest.TestCase):
             send_fn=mock_send,
         )
 
-        self.assertFalse(payload.get("ok"))
-        self.assertEqual(payload.get("error"), KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED)
-        mock_send.assert_not_called()
+        self.assertTrue(payload.get("ok"), payload)
+        self.assertEqual(payload.get("safety_verdict"), "SAFE")
+        self.assertEqual(payload.get("editorial_verdict"), "REVIEW")
+        mock_send.assert_called_once()
 
         # Stamp recovery identity the same way natural_run_recovery does.
         def _stamp(meta: dict) -> None:
@@ -229,14 +247,15 @@ class FailedRecoveryEvidencePersistenceTests(unittest.TestCase):
             KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
             saved.get("issue_codes") or [],
         )
-        self.assertEqual(saved.get("first_failed_stage"), "generation_validation")
         self.assertEqual(saved.get("model_identifier"), "gemini-test-model")
         scaffold = saved.get("scaffold_status") or {}
         self.assertTrue(scaffold.get("eligible") or scaffold.get("attempted"))
         self.assertFalse(scaffold.get("applied"))
-        self.assertFalse(saved.get("email_sent"))
+        self.assertTrue(saved.get("email_sent"))
         self.assertEqual(saved.get("customer_send"), 0)
-        self.assertFalse(saved.get("smtp_attempted"))
+        self.assertTrue(saved.get("smtp_attempted"))
+        self.assertEqual(saved.get("safety_verdict"), "SAFE")
+        self.assertEqual(saved.get("editorial_verdict"), "REVIEW")
         samples = saved.get("visible_text_quality_samples") or []
         self.assertTrue(samples)
         self._assert_no_forbidden_leak(saved)
@@ -246,7 +265,7 @@ class FailedRecoveryEvidencePersistenceTests(unittest.TestCase):
         self.assertEqual(reloaded.get("generation_diagnostics"), saved.get("generation_diagnostics"))
         self.assertEqual(reloaded.get("selected_news_ids"), saved.get("selected_news_ids"))
         self.assertEqual(reloaded.get("deployed_revision"), saved.get("deployed_revision"))
-        self.assertEqual(reloaded.get("first_failed_stage"), "generation_validation")
+        self.assertEqual(reloaded.get("editorial_verdict"), "REVIEW")
 
     def test_02_attach_helper_malformed_contract_and_deepest_stage(self) -> None:
         from keysuri_service_full_run import attach_bounded_post_generation_failure_evidence

@@ -655,7 +655,7 @@ class KeysuriReissueTop5RepairTests(unittest.TestCase):
             "keysuri_service_full_run.enrich_generated_briefing_content",
             side_effect=lambda briefing, *_a, **_k: briefing,
         ), patch(
-            "keysuri_service_full_run.validate_and_repair_keysuri_visible_text_quality",
+            "keysuri_service_full_run.repair_keysuri_visible_text_fields",
             side_effect=lambda payload, **_k: (payload, {"visible_text_ellipsis_blocked": False}),
         ):
             repaired_prompt, repaired_briefing, fields, err = _regenerate_keysuri_text_from_source_pack(
@@ -2209,7 +2209,7 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
     @patch("keysuri_service_full_run.build_keysuri_generation_prompt")
     @patch("keysuri_service_full_run.parse_keysuri_generated_response")
     @patch("keysuri_service_full_run.enrich_generated_briefing_content")
-    @patch("keysuri_service_full_run.validate_and_repair_keysuri_visible_text_quality")
+    @patch("keysuri_service_full_run.repair_keysuri_visible_text_fields")
     @patch("keysuri_service_full_run._build_service_contract_fixture")
     @patch("keysuri_service_full_run.build_keysuri_subject_artifact_fields")
     @patch("keysuri_service_full_run.render_keysuri_contract_preview_html")
@@ -2364,7 +2364,7 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
     @patch("keysuri_service_full_run.generate_run_id")
     @patch("keysuri_service_full_run.build_keysuri_prompt_input")
     @patch("keysuri_service_full_run.enrich_generated_briefing_content")
-    @patch("keysuri_service_full_run.validate_and_repair_keysuri_visible_text_quality")
+    @patch("keysuri_service_full_run.repair_keysuri_visible_text_fields")
     @patch("keysuri_service_full_run.build_keysuri_subject_artifact_fields")
     @patch("keysuri_service_full_run.render_keysuri_contract_preview_html")
     @patch("keysuri_service_full_run.build_keysuri_korea_gmail_owner_email_html")
@@ -2530,7 +2530,7 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
     @patch("keysuri_service_full_run.generate_run_id")
     @patch("keysuri_service_full_run.build_keysuri_prompt_input")
     @patch("keysuri_service_full_run.enrich_generated_briefing_content")
-    @patch("keysuri_service_full_run.validate_and_repair_keysuri_visible_text_quality")
+    @patch("keysuri_service_full_run.repair_keysuri_visible_text_fields")
     @patch("keysuri_service_full_run.build_keysuri_subject_artifact_fields")
     @patch("keysuri_service_full_run.render_keysuri_contract_preview_html")
     @patch("keysuri_service_full_run.build_keysuri_korea_gmail_owner_email_html")
@@ -2736,7 +2736,7 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
     @patch("keysuri_service_full_run.build_keysuri_generation_prompt")
     @patch("keysuri_service_full_run.parse_keysuri_generated_response")
     @patch("keysuri_service_full_run.enrich_generated_briefing_content")
-    @patch("keysuri_service_full_run.validate_and_repair_keysuri_visible_text_quality")
+    @patch("keysuri_service_full_run.repair_keysuri_visible_text_fields")
     @patch("keysuri_service_full_run._build_service_contract_fixture")
     @patch("keysuri_service_full_run.build_keysuri_subject_artifact_fields")
     @patch("keysuri_service_full_run.render_keysuri_contract_preview_html")
@@ -3320,6 +3320,7 @@ class KeysuriServiceFullRunTests(unittest.TestCase):
                 called_gemini=True,
                 use_gemini=True,
                 contract_preview=True,
+                parse_status="parsed_valid",
                 raw_response_path=str(raw_path),
                 preview_overall_status="PASS_OWNER_REVIEW_READY",
                 validation_status="PASS",
@@ -3744,23 +3745,32 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         self.assertEqual(saved_meta.get("cost_estimate"), cost_estimate)
         self.assertEqual(saved_meta.get("cost_record_path"), payload.get("cost_record_path"))
 
+    @patch("keysuri_service_full_run.validate_global_post_render_visible_quality")
+    @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
     @patch("keysuri_service_full_run.build_keysuri_prompt_input")
     @patch("keysuri_service_full_run.save_run_artifact")
     @patch("keysuri_service_full_run._generate_keysuri_service_image")
     @patch("keysuri_service_full_run.generate_run_id")
-    def test_visible_text_unrecoverable_ellipsis_blocks_owner_smtp(
+    def test_visible_text_residual_ellipsis_reaches_owner_with_review_warning(
         self,
         mock_run_id: MagicMock,
         mock_image: MagicMock,
         mock_save: MagicMock,
         mock_prompt_input: MagicMock,
+        mock_watermark: MagicMock,
+        mock_post_render: MagicMock,
     ) -> None:
         from keysuri_service_full_run import run_keysuri_service_full_run
         from keysuri_visible_text_quality import KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED
 
         repo = Path(__file__).resolve().parents[1]
-        run_id = "20260611_150810_keysuri_global_tech_blocked"
+        run_id = "20260611_150810_keysuri_global_tech_a1b2c3d4"
         mock_run_id.return_value = run_id
+        mock_watermark.side_effect = _mock_keysuri_watermark
+        from keysuri_briefing_content_quality import BriefingContentQualityResult
+        mock_post_render.return_value = BriefingContentQualityResult(
+            ok=True, issues=[], warnings=[]
+        )
         pack_path = repo / "output" / "keysuri_preview" / "test_pack_global_block.json"
         pack_path.parent.mkdir(parents=True, exist_ok=True)
         pack_path.write_text(json.dumps({"sources": [], "program_id": PROGRAM_GLOBAL}), encoding="utf-8")
@@ -3793,7 +3803,13 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
             "global_generation_call_budget": 2,
         }
         smoke.generated_briefing = {
-            "top_5_news": {"items": [{"headline": "확인 불가 (…)"}]},
+            "top_5_news": {"items": [
+                {"news_id": "n1", "headline": "제목1", "what_happened": "확인 불가 (…)"},
+                {"news_id": "n2", "headline": "제목2", "what_happened": "정상 문장입니다."},
+                {"news_id": "n3", "headline": "제목3", "what_happened": "정상 문장입니다."},
+                {"news_id": "n4", "headline": "제목4", "what_happened": "정상 문장입니다."},
+                {"news_id": "n5", "headline": "제목5", "what_happened": "정상 문장입니다."},
+            ]},
             "title": "글로벌 브리핑",
         }
         mock_send = MagicMock(return_value=True)
@@ -3815,21 +3831,23 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
                 send_fn=mock_send,
             )
 
-        self.assertFalse(payload.get("ok"))
-        self.assertEqual(payload.get("error"), KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED)
-        mock_send.assert_not_called()
+        self.assertTrue(payload.get("ok"), payload)
+        self.assertEqual(payload.get("safety_verdict"), "SAFE")
+        self.assertEqual(payload.get("editorial_verdict"), "REVIEW")
+        mock_send.assert_called_once()
         saved_meta = mock_save.call_args.args[0]
         self.assertEqual(saved_meta.get("visible_text_quality_status"), "block")
         self.assertTrue(saved_meta.get("visible_text_ellipsis_blocked"))
         self.assertIn(KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED, saved_meta.get("visible_text_quality_issue_codes"))
-        self.assertFalse(saved_meta.get("email_sent"))
+        self.assertTrue(saved_meta.get("email_sent"))
         self.assertEqual(saved_meta.get("deployed_revision"), "genie-blog-run-test-rev")
         self.assertEqual(saved_meta.get("deployed_commit_sha"), "abc123deadbeef")
         self.assertEqual(saved_meta.get("selected_news_ids"), ["news_block_001"])
         self.assertTrue(isinstance(saved_meta.get("generation_diagnostics"), dict))
         self.assertEqual(saved_meta.get("customer_send"), 0)
-        self.assertFalse(saved_meta.get("smtp_attempted"))
-        self.assertEqual(saved_meta.get("first_failed_stage"), "generation_validation")
+        self.assertTrue(saved_meta.get("smtp_attempted"))
+        self.assertEqual(saved_meta.get("safety_verdict"), "SAFE")
+        self.assertEqual(saved_meta.get("editorial_verdict"), "REVIEW")
         self.assertIn(KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED, saved_meta.get("issue_codes") or [])
 
     @patch("keysuri_service_full_run.validate_global_post_render_visible_quality")
@@ -3838,7 +3856,7 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
     @patch("keysuri_service_full_run.save_run_artifact")
     @patch("keysuri_service_full_run._generate_keysuri_service_image")
     @patch("keysuri_service_full_run.generate_run_id")
-    def test_post_render_qa_is_called_on_final_email_html_in_real_send_path(
+    def test_post_render_review_findings_reach_owner_on_final_email_surface(
         self,
         mock_run_id: MagicMock,
         mock_image: MagicMock,
@@ -3847,16 +3865,13 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         mock_watermark: MagicMock,
         mock_post_render_qa: MagicMock,
     ) -> None:
-        """contract_preview=False real owner-review path must call the post-render QA
-        gate with the FINAL Gmail email HTML, before SMTP dispatch."""
+        """Post-render detectors inspect the exact final HTML and emit findings;
+        a review-only finding reaches owner SMTP through canonical adjudication."""
         from keysuri_briefing_content_quality import (
             BriefingContentIssue,
             BriefingContentQualityResult,
         )
-        from keysuri_service_full_run import (
-            KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED,
-            run_keysuri_service_full_run,
-        )
+        from keysuri_service_full_run import run_keysuri_service_full_run
 
         repo = Path(__file__).resolve().parents[1]
         run_id = "20260709_090000_keysuri_global_tech_ab12cd34"
@@ -3931,19 +3946,21 @@ class KeysuriGlobalServiceFullRunEmailTests(unittest.TestCase):
         self.assertIn("글로벌 테크 TOP 5", called_html)
         self.assertIn("briefing_items", mock_post_render_qa.call_args.kwargs)
 
-        self.assertFalse(payload.get("ok"))
-        self.assertEqual(payload.get("error"), KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED)
+        self.assertTrue(payload.get("ok"), payload)
+        self.assertEqual(payload.get("validation_result"), "pass")
+        self.assertEqual(payload.get("safety_verdict"), "SAFE")
+        self.assertEqual(payload.get("editorial_verdict"), "REVIEW")
         self.assertIn("global_repeated_common_filler", payload.get("issue_codes") or [])
         diag = payload.get("post_render_qa_diagnostics") or {}
         self.assertTrue(diag.get("final_visible_email_text_checked"))
         self.assertEqual(diag.get("checked_surface"), "email_visible_text")
         self.assertEqual(diag.get("affected_item_ids"), ["n2"])
-        self.assertFalse(payload.get("email_sent"))
-        mock_send.assert_not_called()
+        self.assertTrue(payload.get("email_sent"))
+        mock_send.assert_called_once()
         saved_meta = mock_save.call_args.args[0]
-        self.assertEqual(saved_meta.get("validation_result"), "block")
-        self.assertFalse(saved_meta.get("email_sent"))
-        self.assertFalse(saved_meta.get("smtp_attempted"))
+        self.assertEqual(saved_meta.get("validation_result"), "pass")
+        self.assertTrue(saved_meta.get("email_sent"))
+        self.assertTrue(saved_meta.get("smtp_attempted"))
         saved_diag = saved_meta.get("post_render_qa_diagnostics") or {}
         self.assertTrue(saved_diag.get("final_visible_email_text_checked"))
         self.assertEqual(saved_diag.get("checked_surface"), "email_visible_text")
@@ -4269,7 +4286,7 @@ class KeysuriKoreaServiceFullRunBottomEmailTests(unittest.TestCase):
     @patch("keysuri_service_full_run.save_run_artifact")
     @patch("keysuri_service_full_run._generate_keysuri_service_image")
     @patch("keysuri_service_full_run.generate_run_id")
-    def test_korea_post_render_qa_blocks_smtp_on_real_send_path(
+    def test_korea_post_render_review_finding_reaches_owner_smtp(
         self,
         mock_run_id: MagicMock,
         mock_image: MagicMock,
@@ -4279,17 +4296,13 @@ class KeysuriKoreaServiceFullRunBottomEmailTests(unittest.TestCase):
         mock_watermark: MagicMock,
         mock_korea_qa: MagicMock,
     ) -> None:
-        """Korea contract_preview=False real owner-review path must call the Korea
-        post-render QA gate with the FINAL Gmail email HTML and block SMTP
-        (email_sent=False, smtp_attempted=False, issue_codes exposed) on failure."""
+        """Korea post-render detector findings are graded centrally; this
+        review-only finding reaches the owner with its warning state."""
         from keysuri_briefing_content_quality import (
             BriefingContentIssue,
             BriefingContentQualityResult,
         )
-        from keysuri_service_full_run import (
-            KEYSURI_KOREA_POST_RENDER_QA_BLOCKED,
-            run_keysuri_service_full_run,
-        )
+        from keysuri_service_full_run import run_keysuri_service_full_run
 
         repo = Path(__file__).resolve().parents[1]
         run_id = "20260709_183000_keysuri_korea_tech_ab12cd35"
@@ -4358,19 +4371,20 @@ class KeysuriKoreaServiceFullRunBottomEmailTests(unittest.TestCase):
         called_html = mock_korea_qa.call_args.args[0]
         self.assertIn("<!DOCTYPE html>", called_html)
 
-        self.assertFalse(payload.get("ok"))
-        self.assertEqual(payload.get("validation_result"), "block")
-        self.assertEqual(payload.get("error"), KEYSURI_KOREA_POST_RENDER_QA_BLOCKED)
+        self.assertTrue(payload.get("ok"), payload)
+        self.assertEqual(payload.get("validation_result"), "pass")
+        self.assertEqual(payload.get("safety_verdict"), "SAFE")
+        self.assertEqual(payload.get("editorial_verdict"), "REVIEW")
         self.assertIn(
             "korea_signal_distribution_badge_fragment", payload.get("issue_codes") or []
         )
-        self.assertFalse(payload.get("email_sent"))
-        self.assertFalse(payload.get("smtp_attempted"))
-        mock_send.assert_not_called()
+        self.assertTrue(payload.get("email_sent"))
+        self.assertTrue(payload.get("smtp_attempted"))
+        mock_send.assert_called_once()
         saved_meta = mock_save.call_args.args[0]
-        self.assertEqual(saved_meta.get("validation_result"), "block")
-        self.assertFalse(saved_meta.get("email_sent"))
-        self.assertFalse(saved_meta.get("smtp_attempted"))
+        self.assertEqual(saved_meta.get("validation_result"), "pass")
+        self.assertTrue(saved_meta.get("email_sent"))
+        self.assertTrue(saved_meta.get("smtp_attempted"))
 
 
 class KeysuriGlobalOwnerReviewEmailDesignRestorationTests(unittest.TestCase):

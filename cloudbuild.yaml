@@ -46,6 +46,7 @@ steps:
           --image="$$immutable_image" \
           --revision-suffix="$$REVISION_SUFFIX" \
           --no-traffic \
+          --update-env-vars=COMMIT_SHA=$COMMIT_SHA \
           --labels=managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID,gcb-trigger-id=$_TRIGGER_ID \
           --region=$_DEPLOY_REGION \
           --project=$_AR_PROJECT_ID \

@@ -112,6 +112,13 @@ def build_current_approval_target(
         "recipient_count": len(recipients),
         "recipient_configuration_version": config_version,
         "recipient_configuration_hash": config_hash,
+        "safety_verdict": str(meta.get("safety_verdict") or ""),
+        "editorial_verdict": str(meta.get("editorial_verdict") or ""),
+        "review_issue_codes": list(meta.get("review_issue_codes") or [])[:48],
+        "warning_confirmation_required": (
+            mode in {"keysuri_global_tech", "keysuri_korea_tech"}
+            and str(meta.get("editorial_verdict") or "") == "REVIEW"
+        ),
     }
     fields["approval_target_sha256"] = _canonical_json_hash(fields)
     return PreparedApprovalTarget(

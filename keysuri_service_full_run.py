@@ -62,14 +62,19 @@ from keysuri_cost_estimate import estimate_keysuri_gemini_cost
 from service_image_api import DEFAULT_VERTEX_IMAGE_MODEL
 from keysuri_email_identity import build_keysuri_subject_artifact_fields
 from keysuri_visible_text_quality import (
-    KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
     merge_visible_text_quality_fields,
-    validate_and_repair_keysuri_visible_text_quality,
+    repair_keysuri_visible_text_fields,
     validate_keysuri_html_visible_text_quality,
 )
+from keysuri_quality_adjudication import (
+    OWNER_HOLD_INCIDENT,
+    OWNER_SEND_POOR_NOTICE,
+    SAFETY_SAFE,
+    adjudicate_keysuri_owner_surface,
+    adjudication_artifact_fields,
+    extract_visible_text,
+)
 from keysuri_briefing_content_quality import (
-    KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED,
-    KEYSURI_KOREA_POST_RENDER_QA_BLOCKED,
     validate_global_post_render_visible_quality,
     validate_korea_post_render_visible_quality,
 )
@@ -80,6 +85,8 @@ from keysuri_live_source_smoke import (
     _prompt_input_diagnostic_snapshot,
     generate_keysuri_with_bounded_recovery,
     run_keysuri_live_source_smoke,
+    scan_placeholder_markers,
+    scan_sample_markers,
 )
 from keysuri_prompt_input import build_keysuri_prompt_input
 from sent_news_dedup_gate import normalize_candidate
@@ -1155,6 +1162,102 @@ def _validation_result_from_smoke(smoke: LiveSourceSmokeResult) -> str:
     return "block"
 
 
+def _smoke_findings_for_canonical_adjudicator(
+    smoke: LiveSourceSmokeResult,
+) -> List[Mapping[str, Any]]:
+    """Convert every intermediate smoke failure channel into findings.
+
+    Known placeholder wording can become REVIEW. Sample markers remain hard
+    security findings. Missing detector detail receives an unknown catch-all,
+    which the registry resolves to INCONCLUSIVE rather than silently passing.
+    """
+    findings: List[Mapping[str, Any]] = []
+    for raw_issue in smoke.validation_issues or []:
+        raw_text = str(raw_issue or "").strip()
+        code = raw_text.split(":", 1)[0].strip()
+        if code:
+            findings.append(
+                {
+                    "issue_code": code,
+                    "field": "intermediate_owner_preview",
+                    "detail": raw_text,
+                }
+            )
+    for raw_issue in smoke.visible_body_quality_issues or []:
+        raw_text = str(raw_issue or "").strip()
+        code = raw_text.split(":", 1)[0].strip().rsplit("/", 1)[-1]
+        if code:
+            findings.append(
+                {
+                    "issue_code": code,
+                    "field": "intermediate_owner_preview",
+                    "detail": raw_text,
+                }
+            )
+    for hit in list(smoke.sample_marker_hits or []):
+        findings.append(
+            {
+                "issue_code": str(hit.code or "keysuri_smoke_sample_marker"),
+                "field": "source_or_intermediate_preview",
+                "before": hit.context,
+            }
+        )
+    for hit in list(smoke.placeholder_gate_hits or []):
+        findings.append(
+            {
+                "issue_code": str(hit.code or "keysuri_smoke_placeholder"),
+                "field": "intermediate_owner_preview",
+                "before": hit.context,
+            }
+        )
+    if smoke.error:
+        findings.append(
+            {
+                "issue_code": "keysuri_smoke_reported_error",
+                "field": "intermediate_owner_preview",
+                "detail": str(smoke.error)[:180],
+            }
+        )
+    generation_contract_ready = bool(
+        smoke.called_gemini and smoke.parse_status == "parsed_valid"
+    )
+    unexplained_failure = bool(
+        not smoke.ok
+        and generation_contract_ready
+        and (
+            (not smoke.sample_marker_pass and not smoke.sample_marker_hits)
+            or (
+                not smoke.placeholder_gate_pass
+                and not smoke.placeholder_gate_hits
+            )
+            or (
+                str(smoke.validation_status or "").upper() != "PASS"
+                and not smoke.validation_issues
+            )
+            or (
+                not smoke.visible_body_quality_pass
+                and not smoke.visible_body_quality_issues
+            )
+            or (
+                smoke.sample_marker_pass
+                and smoke.placeholder_gate_pass
+                and str(smoke.validation_status or "").upper() == "PASS"
+                and smoke.visible_body_quality_pass
+                and not smoke.error
+            )
+        )
+    )
+    if unexplained_failure:
+        findings.append(
+            {
+                "issue_code": "keysuri_smoke_unclassified_failure",
+                "field": "intermediate_owner_preview",
+                "detail": "legacy smoke failed; safety remains inconclusive",
+            }
+        )
+    return findings
+
+
 def _extend_unique(values: List[str], extras: List[str]) -> List[str]:
     out = list(values)
     for extra in extras:
@@ -1184,32 +1287,6 @@ def _generated_briefing_top_items(briefing: Optional[dict]) -> List[Dict[str, An
     if not isinstance(items, list):
         return []
     return [item for item in items if isinstance(item, dict)]
-
-
-KEYSURI_VISIBLE_TEXT_QUALITY_BLOCKED = "keysuri_visible_text_quality_blocked"
-
-
-def _visible_text_quality_block_code(fields: Optional[Mapping[str, Any]]) -> Optional[str]:
-    """Error code when the visible-text walker says block — for ANY reason.
-
-    ``validate_and_repair_keysuri_visible_text_quality`` also raises
-    ``visible_text_dangling_quoted_title_blocked`` /
-    ``visible_text_year_span_blocked`` /
-    ``visible_text_korea_token_duplication_blocked`` and folds them into
-    ``visible_text_quality_status``. The send path used to test only the
-    ellipsis flag, so those three were recorded on the artifact and then
-    ignored. Every terminal flag now stops the owner-review send.
-    """
-    if not isinstance(fields, Mapping):
-        return None
-    if fields.get("visible_text_ellipsis_blocked"):
-        return KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED
-    for code in fields.get("terminal_issue_codes") or []:
-        if str(code or "").strip():
-            return str(code).strip()
-    if str(fields.get("visible_text_quality_status") or "") == "block":
-        return KEYSURI_VISIBLE_TEXT_QUALITY_BLOCKED
-    return None
 
 
 def _global_visible_surface_kwargs(
@@ -1530,12 +1607,10 @@ def _regenerate_keysuri_text_from_snapshot(
     if not isinstance(generated_briefing, dict):
         return None, None, "generated_briefing_regen_missing"
     generated_briefing = enrich_generated_briefing_content(generated_briefing, program_id, prompt_input)
-    generated_briefing, visible_text_quality_fields = validate_and_repair_keysuri_visible_text_quality(
+    generated_briefing, visible_text_quality_fields = repair_keysuri_visible_text_fields(
         generated_briefing,
         root_path="generated_briefing",
     )
-    if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
-        return None, None, KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED
     return prompt_input, generated_briefing, None
 
 
@@ -2706,7 +2781,7 @@ def _compose_reissue_top5_visible_items(
 
 
 def _reissue_visible_quality_status(payload: Dict[str, Any]) -> str:
-    _repaired, fields = validate_and_repair_keysuri_visible_text_quality(
+    _repaired, fields = repair_keysuri_visible_text_fields(
         payload,
         root_path="generated_briefing",
     )
@@ -2791,14 +2866,11 @@ def _repair_reissue_top5_from_live_selection(
             program_id=program_id,
         )
         if repaired_prompt is not None and repaired_briefing is not None:
-            repaired_briefing, after_quality_fields = validate_and_repair_keysuri_visible_text_quality(
+            repaired_briefing, after_quality_fields = repair_keysuri_visible_text_fields(
                 repaired_briefing,
                 root_path="generated_briefing",
             )
             after_status = str(after_quality_fields.get("visible_text_quality_status") or "pass")
-            if after_quality_fields.get("visible_text_ellipsis_blocked"):
-                last_codes = [KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED]
-                continue
             fields = {
                 "reissue_reselection_enabled": True,
                 "reissue_reselection_source": "live_candidate_pool",
@@ -3032,7 +3104,7 @@ def _regenerate_keysuri_text_from_source_pack(
         prompt_input = repaired_prompt
         generated_briefing = repaired_briefing
         generated_briefing = enrich_generated_briefing_content(generated_briefing, program_id, prompt_input)
-        generated_briefing, visible_text_quality_fields = validate_and_repair_keysuri_visible_text_quality(
+        generated_briefing, visible_text_quality_fields = repair_keysuri_visible_text_fields(
             generated_briefing,
             root_path="generated_briefing",
         )
@@ -3040,8 +3112,6 @@ def _regenerate_keysuri_text_from_source_pack(
         repair_fields["reissue_text_quality_gate_after_enrich"] = str(
             visible_text_quality_fields.get("visible_text_quality_status") or "pass"
         )
-        if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
-            return None, None, repair_fields, KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED
         return prompt_input, generated_briefing, repair_fields, None
 
     # Legacy (non-reissue) path retained for compatibility.
@@ -3051,13 +3121,11 @@ def _regenerate_keysuri_text_from_source_pack(
     if not isinstance(generated_briefing, dict):
         return None, None, {}, "generated_briefing_regen_missing"
     generated_briefing = enrich_generated_briefing_content(generated_briefing, program_id, prompt_input)
-    generated_briefing, visible_text_quality_fields = validate_and_repair_keysuri_visible_text_quality(
+    generated_briefing, visible_text_quality_fields = repair_keysuri_visible_text_fields(
         generated_briefing,
         root_path="generated_briefing",
     )
-    if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
-        return None, None, {}, KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED
-    return prompt_input, generated_briefing, {}, None
+    return prompt_input, generated_briefing, visible_text_quality_fields, None
 
 
 def _resolve_saved_artifact_path(parent: Dict[str, Any], *keys: str) -> Optional[Path]:
@@ -3405,6 +3473,86 @@ def _owner_subject_for_regen(parent: Dict[str, Any], regenerated_subject: str, r
     return new_subject if new_subject.startswith(prefix) else f"{prefix}{new_subject}"
 
 
+def _adjudicate_and_send_owner_surface(
+    *,
+    program_id: str,
+    subject: str,
+    email_html: str,
+    owner_review_url: str,
+    visible_quality_fields: Optional[Mapping[str, Any]],
+    post_render_qa: Any,
+    send_owner_email: bool,
+    inline_parts: Optional[List[Tuple[str, str, str]]] = None,
+    send_fn: Optional[Callable[..., bool]] = None,
+    extra_findings: Optional[List[Mapping[str, Any]]] = None,
+    observe_smtp_memory: bool = False,
+) -> Dict[str, Any]:
+    """Adjudicate the final immutable surface once, then execute its policy.
+
+    Detectors have no delivery authority.  This helper receives finding-only
+    output and sends exactly the subject/body returned by the canonical
+    adjudicator.  Customer delivery is never performed here.
+    """
+    result = adjudicate_keysuri_owner_surface(
+        program_id=program_id,
+        subject=subject,
+        email_html=email_html,
+        visible_quality_fields=visible_quality_fields,
+        post_render_result=post_render_qa,
+        extra_findings=extra_findings,
+        owner_review_url=owner_review_url,
+    )
+    behavior = str(result.get("owner_delivery_behavior") or "")
+    delivery_html = str(result.get("owner_email_html") or "")
+    delivery_subject = str(result.get("owner_email_subject") or "")
+    smtp_attempted = False
+    email_sent = False
+
+    if not send_owner_email:
+        if observe_smtp_memory:
+            mark_memory_stage_not_reached("before_owner_smtp", reason="send_not_requested")
+    elif behavior == OWNER_HOLD_INCIDENT:
+        if observe_smtp_memory:
+            mark_memory_stage_not_reached(
+                "before_owner_smtp", reason="canonical_quality_hold"
+            )
+    elif os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip() not in ("1", "true", "yes"):
+        if observe_smtp_memory:
+            mark_memory_stage_not_reached(
+                "before_owner_smtp", reason="owner_review_send_gate_off"
+            )
+    else:
+        smtp_attempted = True
+        sender = send_fn or send_genie_email
+        os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
+        send_parts = [] if behavior == OWNER_SEND_POOR_NOTICE else list(inline_parts or [])
+        if observe_smtp_memory:
+            record_memory_stage_reached("before_owner_smtp")
+        email_sent = bool(
+            sender(
+                delivery_html,
+                delivery_subject,
+                inline_jpeg_parts=send_parts,
+                attachment_jpeg_parts=[],
+            )
+        )
+
+    result["smtp_attempted"] = smtp_attempted
+    result["email_sent"] = email_sent
+    # REVIEW persists and sends the warning-decorated exact surface. POOR keeps
+    # the complete candidate in Admin while SMTP receives only the concise
+    # notification. Unsafe/inconclusive keeps the candidate as diagnostics.
+    result["persisted_email_html"] = (
+        delivery_html
+        if behavior not in (OWNER_SEND_POOR_NOTICE, OWNER_HOLD_INCIDENT)
+        else str(email_html or "")
+    )
+    result["validation_result"] = (
+        "pass" if result.get("safety_verdict") == SAFETY_SAFE else "block"
+    )
+    return result
+
+
 def run_keysuri_image_only_reissue(
     parent_run_id: str,
     *,
@@ -3542,42 +3690,71 @@ def run_keysuri_image_only_reissue(
     subject = old_subject if old_subject.startswith("[이미지 재발행]") else f"[이미지 재발행]{old_subject}"
     preheader = str(parent.get("owner_email_preheader") or parent.get("email_preheader") or "").strip()
 
-    email_sent = False
-    smtp_attempted = False
-    if send_owner_email:
-        if os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip() not in ("1", "true", "yes"):
-            issue_codes.append("owner_review_send_gate_off")
-        else:
-            smtp_attempted = True
-            os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
-            inline_parts: List[Tuple[str, str, str]] = [
-                (str(gen_image_abs.resolve()), top_cid, gen_image_abs.name or "keysuri_top_regen.jpg")
-            ]
-            if bottom_image_path is not None and bottom_cid:
-                inline_parts.append(
-                    (
-                        str(bottom_image_path.resolve()),
-                        bottom_cid,
-                        bottom_image_path.name or "keysuri_korea_bottom_regen.jpg",
-                    )
-                )
-            sender = send_fn or send_genie_email
-            email_sent = bool(
-                sender(
-                    email_html,
-                    subject,
-                    inline_jpeg_parts=inline_parts,
-                    attachment_jpeg_parts=[],
-                )
+    visible_text_quality_fields = merge_visible_text_quality_fields(
+        parent,
+        validate_keysuri_html_visible_text_quality(
+            email_html, path="owner_email_html.visible_text"
+        ),
+    )
+    parent_briefing = parent.get("regen_generated_briefing_snapshot")
+    if pid == PROGRAM_GLOBAL:
+        post_render_qa = validate_global_post_render_visible_quality(
+            email_html,
+            sanitizer_diagnostics=_global_filler_sanitizer_diagnostics(parent_briefing),
+            briefing_items=_generated_briefing_top_items(parent_briefing),
+            **_global_visible_surface_kwargs(parent_briefing, parent),
+        )
+    else:
+        post_render_qa = validate_korea_post_render_visible_quality(email_html)
+    inherited_findings: List[Mapping[str, Any]] = []
+    for code in parent.get("review_issue_codes") or []:
+        inherited_findings.append({"issue_code": str(code), "field": "parent_surface"})
+    for code in parent.get("terminal_issue_codes") or []:
+        inherited_findings.append({"issue_code": str(code), "field": "parent_surface"})
+    for code in parent.get("repaired_issue_codes") or []:
+        inherited_findings.append(
+            {
+                "issue_code": str(code),
+                "field": "parent_surface",
+                "reported_state": "REPAIRED",
+            }
+        )
+    inline_parts: List[Tuple[str, str, str]] = [
+        (str(gen_image_abs.resolve()), top_cid, gen_image_abs.name or "keysuri_top_regen.jpg")
+    ]
+    if bottom_image_path is not None and bottom_cid:
+        inline_parts.append(
+            (
+                str(bottom_image_path.resolve()),
+                bottom_cid,
+                bottom_image_path.name or "keysuri_korea_bottom_regen.jpg",
             )
+        )
+    owner_review_url = build_owner_review_admin_url(child_run_id) or ""
+    adjudication = _adjudicate_and_send_owner_surface(
+        program_id=pid,
+        subject=subject,
+        email_html=email_html,
+        owner_review_url=owner_review_url,
+        visible_quality_fields=visible_text_quality_fields,
+        post_render_qa=post_render_qa,
+        extra_findings=inherited_findings,
+        send_owner_email=send_owner_email,
+        inline_parts=inline_parts,
+        send_fn=send_fn,
+    )
+    smtp_attempted = bool(adjudication.get("smtp_attempted"))
+    email_sent = bool(adjudication.get("email_sent"))
+    subject = str(adjudication.get("owner_email_subject") or subject)
+    email_html = str(adjudication.get("persisted_email_html") or email_html)
 
     meta = build_service_artifact_fields(
         run_id=child_run_id,
         mode=pid,
         program_id=pid,
         trigger_source=trigger_source,
-        validation_result=str(parent.get("validation_result") or "pass"),
-        issue_codes=issue_codes,
+        validation_result=str(adjudication.get("validation_result") or "block"),
+        issue_codes=_extend_unique(issue_codes, list(adjudication.get("issue_codes") or [])),
         called_gemini=False,
         image_outcome=image_outcome,
         html_path=str(parent.get("html_path") or ""),
@@ -3587,10 +3764,13 @@ def run_keysuri_image_only_reissue(
         customer_delivery_status="not_sent",
         response_status=200,
         workflow_status=str(parent.get("workflow_status") or "review_required"),
-        owner_review_url=build_owner_review_admin_url(child_run_id) or None,
+        owner_review_url=owner_review_url or None,
         artifact_storage_durable=_service_artifact_storage_durable(),
     )
     _copy_subject_identity_fields(parent, meta)
+    meta.update(visible_text_quality_fields)
+    meta.update(adjudication_artifact_fields(adjudication))
+    meta.update(_post_render_qa_diagnostic_fields(post_render_qa))
     meta.update(
         {
             "regen_type": "image_only",
@@ -3656,7 +3836,11 @@ def run_keysuri_image_only_reissue(
     saved_run_id = save_run_artifact(meta, email_html=email_html)
 
     return {
-        "ok": image_outcome.ok and (not send_owner_email or email_sent),
+        "ok": (
+            adjudication.get("safety_verdict") == SAFETY_SAFE
+            and image_outcome.ok
+            and (not send_owner_email or email_sent)
+        ),
         "run_id": saved_run_id,
         "program_id": pid,
         "regen_type": "image_only",
@@ -3666,6 +3850,8 @@ def run_keysuri_image_only_reissue(
         "text_generation_called": False,
         "image_generation_called": True,
         "email_sent": email_sent,
+        "safety_verdict": adjudication.get("safety_verdict"),
+        "editorial_verdict": adjudication.get("editorial_verdict"),
         "owner_email_subject": subject,
         "customer_delivery_status": "not_sent",
         "top_image_cid": top_cid,
@@ -3827,15 +4013,10 @@ def run_keysuri_text_only_reissue(
         )
 
     visible_text_quality_fields = merge_visible_text_quality_fields(
+        repair_fields,
         validate_keysuri_html_visible_text_quality(preview_html, path="owner_preview_html.visible_text"),
         validate_keysuri_html_visible_text_quality(email_html, path="owner_email_html.visible_text"),
     )
-    if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
-        return {
-            "ok": False,
-            "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED,
-            "program_id": pid,
-        }
     if pid == PROGRAM_GLOBAL:
         post_render_qa = validate_global_post_render_visible_quality(
             email_html,
@@ -3843,56 +4024,40 @@ def run_keysuri_text_only_reissue(
             briefing_items=_generated_briefing_top_items(generated_briefing),
             **_global_visible_surface_kwargs(generated_briefing, subject_fields),
         )
-        post_render_error = KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED
     else:
         post_render_qa = validate_korea_post_render_visible_quality(email_html)
-        post_render_error = KEYSURI_KOREA_POST_RENDER_QA_BLOCKED
-    if not post_render_qa.ok:
-        failure = {
-            "ok": False,
-            "error": post_render_error,
-            "issue_codes": [i.code for i in post_render_qa.issues],
-            "program_id": pid,
-            "smtp_attempted": False,
-            "email_sent": False,
-        }
-        failure.update(_post_render_qa_diagnostic_fields(post_render_qa))
-        return failure
-
-    smtp_attempted = False
-    email_sent = False
-    if send_owner_email:
-        if os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip() not in ("1", "true", "yes"):
-            pass
-        else:
-            smtp_attempted = True
-            os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
-            inline_parts = [(str(top_image_path.resolve()), top_cid, top_image_path.name)]
-            if pid == PROGRAM_KOREA and bottom_image_path is not None:
-                inline_parts.append(
-                    (
-                        str(bottom_image_path.resolve()),
-                        bottom_cid or keysuri_korea_bottom_service_email_cid_token(parent_run_id),
-                        bottom_image_path.name,
-                    )
-                )
-            sender = send_fn or send_genie_email
-            email_sent = bool(
-                sender(
-                    email_html,
-                    owner_subject,
-                    inline_jpeg_parts=inline_parts,
-                    attachment_jpeg_parts=[],
-                )
+    inline_parts = [(str(top_image_path.resolve()), top_cid, top_image_path.name)]
+    if pid == PROGRAM_KOREA and bottom_image_path is not None:
+        inline_parts.append(
+            (
+                str(bottom_image_path.resolve()),
+                bottom_cid or keysuri_korea_bottom_service_email_cid_token(parent_run_id),
+                bottom_image_path.name,
             )
+        )
+    adjudication = _adjudicate_and_send_owner_surface(
+        program_id=pid,
+        subject=owner_subject,
+        email_html=email_html,
+        owner_review_url=owner_review_url,
+        visible_quality_fields=visible_text_quality_fields,
+        post_render_qa=post_render_qa,
+        send_owner_email=send_owner_email,
+        inline_parts=inline_parts,
+        send_fn=send_fn,
+    )
+    smtp_attempted = bool(adjudication.get("smtp_attempted"))
+    email_sent = bool(adjudication.get("email_sent"))
+    owner_subject = str(adjudication.get("owner_email_subject") or owner_subject)
+    email_html = str(adjudication.get("persisted_email_html") or email_html)
 
     meta = build_service_artifact_fields(
         run_id=child_run_id,
         mode=pid,
         program_id=pid,
         trigger_source=trigger_source,
-        validation_result="pass",
-        issue_codes=[],
+        validation_result=str(adjudication.get("validation_result") or "block"),
+        issue_codes=list(adjudication.get("issue_codes") or []),
         called_gemini=True,
         html_path=html_rel,
         owner_review_html_path=str(artifact_email_path(child_run_id)),
@@ -3908,6 +4073,8 @@ def run_keysuri_text_only_reissue(
     meta.update(_dedup_artifact_fields_from_prompt_input(prompt_input))
     meta.update(repair_fields)
     meta.update(visible_text_quality_fields)
+    meta.update(adjudication_artifact_fields(adjudication))
+    meta.update(_post_render_qa_diagnostic_fields(post_render_qa))
     meta.update(_scope_delivery_reason_fields("body_only"))
     meta.update(top_image_reuse_fields)
     meta.update(
@@ -3964,11 +4131,16 @@ def run_keysuri_text_only_reissue(
     )
     save_run_artifact(meta, email_html=email_html)
     return {
-        "ok": not send_owner_email or email_sent,
+        "ok": (
+            adjudication.get("safety_verdict") == SAFETY_SAFE
+            and (not send_owner_email or email_sent)
+        ),
         "run_id": child_run_id,
         "program_id": pid,
         "regen_type": "body_only",
         "email_sent": email_sent,
+        "safety_verdict": adjudication.get("safety_verdict"),
+        "editorial_verdict": adjudication.get("editorial_verdict"),
         "customer_delivery_status": "not_sent",
     }
 
@@ -4074,7 +4246,7 @@ def run_keysuri_text_and_image_reissue(
     prompt_input = repaired_prompt
     generated_briefing = repaired_briefing
     generated_briefing = enrich_generated_briefing_content(generated_briefing, pid, prompt_input)
-    generated_briefing, _visible_fresh = validate_and_repair_keysuri_visible_text_quality(
+    generated_briefing, _visible_fresh = repair_keysuri_visible_text_fields(
         generated_briefing,
         root_path="generated_briefing",
     )
@@ -4082,10 +4254,6 @@ def run_keysuri_text_and_image_reissue(
     repair_fields["reissue_text_quality_gate_after_enrich"] = str(
         _visible_fresh.get("visible_text_quality_status") or "pass"
     )
-    if _visible_fresh.get("visible_text_ellipsis_blocked"):
-        failure = {"ok": False, "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED, "program_id": pid}
-        failure.update(repair_fields)
-        return failure
 
     child_run_id = generate_run_id(pid)
     subject_fields = build_keysuri_subject_artifact_fields(
@@ -4195,11 +4363,10 @@ def run_keysuri_text_and_image_reissue(
         )
 
     visible_text_quality_fields = merge_visible_text_quality_fields(
+        repair_fields,
         validate_keysuri_html_visible_text_quality(preview_html, path="owner_preview_html.visible_text"),
         validate_keysuri_html_visible_text_quality(email_html, path="owner_email_html.visible_text"),
     )
-    if visible_text_quality_fields.get("visible_text_ellipsis_blocked"):
-        return {"ok": False, "error": KEYSURI_KOREAN_CONNECTOR_ELLIPSIS_BLOCKED, "program_id": pid}
     if pid == PROGRAM_GLOBAL:
         post_render_qa = validate_global_post_render_visible_quality(
             email_html,
@@ -4207,55 +4374,39 @@ def run_keysuri_text_and_image_reissue(
             briefing_items=_generated_briefing_top_items(generated_briefing),
             **_global_visible_surface_kwargs(generated_briefing, subject_fields),
         )
-        post_render_error = KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED
     else:
         post_render_qa = validate_korea_post_render_visible_quality(email_html)
-        post_render_error = KEYSURI_KOREA_POST_RENDER_QA_BLOCKED
-    if not post_render_qa.ok:
-        failure = {
-            "ok": False,
-            "error": post_render_error,
-            "issue_codes": [i.code for i in post_render_qa.issues],
-            "program_id": pid,
-            "smtp_attempted": False,
-            "email_sent": False,
-        }
-        failure.update(_post_render_qa_diagnostic_fields(post_render_qa))
-        return failure
-
-    smtp_attempted = False
-    email_sent = False
-    if send_owner_email:
-        if os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip() not in ("1", "true", "yes"):
-            pass
-        else:
-            smtp_attempted = True
-            sender = send_fn or send_genie_email
-            os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
-            if pid == PROGRAM_GLOBAL:
-                inline_parts = inline_jpeg_parts_for_global_service_email(gen_image_abs, child_run_id)
-            else:
-                inline_parts = inline_jpeg_parts_for_korea_service_email(
-                    gen_image_abs,
-                    child_run_id,
-                    bottom_image_path=bottom_image_path,
-                )
-            email_sent = bool(
-                sender(
-                    email_html,
-                    owner_subject,
-                    inline_jpeg_parts=inline_parts,
-                    attachment_jpeg_parts=[],
-                )
-            )
+    if pid == PROGRAM_GLOBAL:
+        inline_parts = inline_jpeg_parts_for_global_service_email(gen_image_abs, child_run_id)
+    else:
+        inline_parts = inline_jpeg_parts_for_korea_service_email(
+            gen_image_abs,
+            child_run_id,
+            bottom_image_path=bottom_image_path,
+        )
+    adjudication = _adjudicate_and_send_owner_surface(
+        program_id=pid,
+        subject=owner_subject,
+        email_html=email_html,
+        owner_review_url=owner_review_url,
+        visible_quality_fields=visible_text_quality_fields,
+        post_render_qa=post_render_qa,
+        send_owner_email=send_owner_email,
+        inline_parts=inline_parts,
+        send_fn=send_fn,
+    )
+    smtp_attempted = bool(adjudication.get("smtp_attempted"))
+    email_sent = bool(adjudication.get("email_sent"))
+    owner_subject = str(adjudication.get("owner_email_subject") or owner_subject)
+    email_html = str(adjudication.get("persisted_email_html") or email_html)
 
     meta = build_service_artifact_fields(
         run_id=child_run_id,
         mode=pid,
         program_id=pid,
         trigger_source=trigger_source,
-        validation_result="pass",
-        issue_codes=issue_codes,
+        validation_result=str(adjudication.get("validation_result") or "block"),
+        issue_codes=_extend_unique(issue_codes, list(adjudication.get("issue_codes") or [])),
         called_gemini=True,
         image_outcome=image_outcome,
         html_path=html_rel,
@@ -4272,6 +4423,8 @@ def run_keysuri_text_and_image_reissue(
     meta.update(_dedup_artifact_fields_from_prompt_input(prompt_input))
     meta.update(repair_fields)
     meta.update(visible_text_quality_fields)
+    meta.update(adjudication_artifact_fields(adjudication))
+    meta.update(_post_render_qa_diagnostic_fields(post_render_qa))
     meta.update(_scope_delivery_reason_fields("body_and_image"))
     meta.update(
         {
@@ -4322,11 +4475,17 @@ def run_keysuri_text_and_image_reissue(
     )
     save_run_artifact(meta, email_html=email_html)
     return {
-        "ok": image_outcome.ok and (not send_owner_email or email_sent),
+        "ok": (
+            adjudication.get("safety_verdict") == SAFETY_SAFE
+            and image_outcome.ok
+            and (not send_owner_email or email_sent)
+        ),
         "run_id": child_run_id,
         "program_id": pid,
         "regen_type": "body_and_image",
         "email_sent": email_sent,
+        "safety_verdict": adjudication.get("safety_verdict"),
+        "editorial_verdict": adjudication.get("editorial_verdict"),
         "customer_delivery_status": "not_sent",
     }
 
@@ -4676,14 +4835,19 @@ def _run_keysuri_service_full_run_impl(
                 "preflight_input_diagnostic": "PREFLIGHT_INPUT_NOT_COMPARABLE",
                 "preflight_comparison_error_type": type(exc).__name__,
             }
-    validation_result = _validation_result_from_smoke(smoke)
-    if smoke.called_gemini and smoke.parse_status == "parsed_valid" and smoke.ok:
-        validation_result = "pass"
+    generation_contract_ready = bool(
+        smoke.called_gemini and smoke.parse_status == "parsed_valid"
+    )
+    validation_result = "pass" if generation_contract_ready else "block"
     issue_codes: List[str] = list(smoke.validation_issues or [])
     if smoke.error:
         issue_codes.append(str(smoke.error)[:120])
 
-    if not smoke.called_gemini or validation_result != "pass" or not smoke.ok:
+    smoke_adjudication_findings = _smoke_findings_for_canonical_adjudicator(
+        smoke
+    )
+
+    if not generation_contract_ready:
         meta = build_service_artifact_fields(
             run_id=run_id,
             mode=pid,
@@ -4834,42 +4998,10 @@ def _run_keysuri_service_full_run_impl(
         _save_failed_run_artifact(meta, email_html="")
         return {"ok": False, "run_id": run_id, "program_id": pid, "service_full_run": True, "email_sent": False, "error": "generated_briefing_reload_failed"}
 
-    generated_briefing, visible_text_quality_fields = validate_and_repair_keysuri_visible_text_quality(
+    generated_briefing, visible_text_quality_fields = repair_keysuri_visible_text_fields(
         generated_briefing,
         root_path="generated_briefing",
     )
-    visible_block_code = _visible_text_quality_block_code(visible_text_quality_fields)
-    if visible_block_code:
-        block_issue_codes = _extend_unique(
-            issue_codes,
-            list(visible_text_quality_fields.get("visible_text_quality_issue_codes") or []),
-        )
-        meta = build_service_artifact_fields(
-            run_id=run_id,
-            mode=pid,
-            program_id=pid,
-            trigger_source=trigger_source,
-            validation_result="block",
-            issue_codes=block_issue_codes,
-            called_gemini=True,
-            image_outcome=image_outcome,
-            email_sent=False,
-            error_code=visible_block_code,
-        )
-        meta.update(visible_text_quality_fields)
-        _save_failed_run_artifact(meta, email_html="")
-        return {
-            "ok": False,
-            "run_id": run_id,
-            "program_id": pid,
-            "service_full_run": True,
-            "validation_result": "block",
-            "called_gemini": True,
-            "called_image_api": image_outcome.called_image_api,
-            "email_sent": False,
-            "error": visible_block_code,
-            "issue_codes": block_issue_codes,
-        }
 
     raw_generated_image_path = str(image_outcome.generated_image_path or "")
     gen_image_raw_abs = _REPO / raw_generated_image_path
@@ -4969,7 +5101,7 @@ def _run_keysuri_service_full_run_impl(
         trigger_source=trigger_source,
         contract_fixture=contract_fixture_preview,
     )
-    subject_fields, subject_quality_fields = validate_and_repair_keysuri_visible_text_quality(
+    subject_fields, subject_quality_fields = repair_keysuri_visible_text_fields(
         subject_fields,
         root_path="subject_fields",
     )
@@ -4977,39 +5109,6 @@ def _run_keysuri_service_full_run_impl(
         visible_text_quality_fields,
         subject_quality_fields,
     )
-    visible_block_code = _visible_text_quality_block_code(visible_text_quality_fields)
-    if visible_block_code:
-        block_issue_codes = _extend_unique(
-            issue_codes,
-            list(visible_text_quality_fields.get("visible_text_quality_issue_codes") or []),
-        )
-        meta = build_service_artifact_fields(
-            run_id=run_id,
-            mode=pid,
-            program_id=pid,
-            trigger_source=trigger_source,
-            validation_result="block",
-            issue_codes=block_issue_codes,
-            called_gemini=True,
-            image_outcome=image_outcome,
-            email_sent=False,
-            error_code=visible_block_code,
-        )
-        meta.update(visible_text_quality_fields)
-        meta.update(subject_fields)
-        _save_failed_run_artifact(meta, email_html="")
-        return {
-            "ok": False,
-            "run_id": run_id,
-            "program_id": pid,
-            "service_full_run": True,
-            "validation_result": "block",
-            "called_gemini": True,
-            "called_image_api": image_outcome.called_image_api,
-            "email_sent": False,
-            "error": visible_block_code,
-            "issue_codes": block_issue_codes,
-        }
     editorial_subject = subject_fields["editorial_subject"]
     owner_subject = subject_fields["owner_email_subject"]
     owner_preheader = subject_fields["owner_email_preheader"]
@@ -5079,46 +5178,6 @@ def _run_keysuri_service_full_run_impl(
         visible_text_quality_fields,
         html_quality_fields,
     )
-    visible_block_code = _visible_text_quality_block_code(visible_text_quality_fields)
-    if visible_block_code:
-        block_issue_codes = _extend_unique(
-            issue_codes,
-            list(visible_text_quality_fields.get("visible_text_quality_issue_codes") or []),
-        )
-        meta = build_service_artifact_fields(
-            run_id=run_id,
-            mode=pid,
-            program_id=pid,
-            trigger_source=trigger_source,
-            validation_result="block",
-            issue_codes=block_issue_codes,
-            called_gemini=True,
-            image_outcome=image_outcome,
-            html_path=html_rel,
-            owner_review_html_path=str(artifact_email_path(run_id)),
-            smtp_attempted=False,
-            email_sent=False,
-            workflow_status=smoke.preview_overall_status,
-            owner_review_url=owner_review_url or None,
-            artifact_storage_durable=storage_durable,
-            error_code=visible_block_code,
-        )
-        meta.update(subject_fields)
-        meta.update(visible_text_quality_fields)
-        _save_failed_run_artifact(meta, email_html="")
-        return {
-            "ok": False,
-            "run_id": run_id,
-            "program_id": pid,
-            "service_full_run": True,
-            "validation_result": "block",
-            "called_gemini": True,
-            "called_image_api": image_outcome.called_image_api,
-            "email_sent": False,
-            "error": visible_block_code,
-            "issue_codes": block_issue_codes,
-            "html_path": html_rel,
-        }
     if pid == PROGRAM_GLOBAL:
         post_render_qa = validate_global_post_render_visible_quality(
             email_html,
@@ -5126,116 +5185,66 @@ def _run_keysuri_service_full_run_impl(
             briefing_items=_generated_briefing_top_items(generated_briefing),
             **_global_visible_surface_kwargs(generated_briefing, subject_fields),
         )
-        post_render_error = KEYSURI_GLOBAL_POST_RENDER_QA_BLOCKED
     else:
         post_render_qa = validate_korea_post_render_visible_quality(email_html)
-        post_render_error = KEYSURI_KOREA_POST_RENDER_QA_BLOCKED
-    if not post_render_qa.ok:
-        post_render_issue_codes = _extend_unique(
-            issue_codes,
-            [i.code for i in post_render_qa.issues],
+    final_surface_findings: List[Mapping[str, Any]] = list(
+        smoke_adjudication_findings
+    )
+    final_visible_text = extract_visible_text(email_html)
+    # The trusted Admin deep link is delivery chrome, not briefing content.
+    # Do not mistake a test/staging host in that operator-only URL for source
+    # sample leakage; the URL itself remains in the adjudicated surface hash.
+    if owner_review_url:
+        final_visible_text = final_visible_text.replace(owner_review_url, "")
+    for hit in scan_sample_markers(owner_subject, final_visible_text):
+        final_surface_findings.append(
+            {
+                "issue_code": hit.code,
+                "field": "rendered_visible_surface",
+                "before": hit.context,
+            }
         )
-        meta = build_service_artifact_fields(
-            run_id=run_id,
-            mode=pid,
-            program_id=pid,
-            trigger_source=trigger_source,
-            validation_result="block",
-            issue_codes=post_render_issue_codes,
-            called_gemini=True,
-            image_outcome=image_outcome,
-            html_path=html_rel,
-            owner_review_html_path=str(artifact_email_path(run_id)),
-            smtp_attempted=False,
-            email_sent=False,
-            workflow_status=smoke.preview_overall_status,
-            owner_review_url=owner_review_url or None,
-            artifact_storage_durable=storage_durable,
-            error_code=post_render_error,
+    for hit in scan_placeholder_markers(owner_subject, final_visible_text):
+        final_surface_findings.append(
+            {
+                "issue_code": hit.code,
+                "field": "rendered_visible_surface",
+                "before": hit.context,
+            }
         )
-        meta.update(subject_fields)
-        meta.update(_post_render_qa_diagnostic_fields(post_render_qa))
-        _save_failed_run_artifact(meta, email_html="")
-        failure = {
-            "ok": False,
-            "run_id": run_id,
-            "program_id": pid,
-            "service_full_run": True,
-            "validation_result": "block",
-            "called_gemini": True,
-            "called_image_api": image_outcome.called_image_api,
-            "email_sent": False,
-            "smtp_attempted": False,
-            "error": post_render_error,
-            "issue_codes": post_render_issue_codes,
-            "html_path": html_rel,
-        }
-        failure.update(_post_render_qa_diagnostic_fields(post_render_qa))
-        return failure
+    inline_parts: List[Tuple[str, str, str]] = []
+    owner_send_requested = send_owner_email
+    if not gen_image_abs.is_file():
+        issue_codes.append("generated_image_missing_for_cid_email")
+        owner_send_requested = False
+    elif pid == PROGRAM_GLOBAL:
+        inline_parts = inline_jpeg_parts_for_global_service_email(gen_image_abs, run_id)
+    elif pid == PROGRAM_KOREA:
+        inline_parts = inline_jpeg_parts_for_korea_service_email(
+            gen_image_abs,
+            run_id,
+            bottom_image_path=bottom_image_path,
+        )
 
-    email_sent = False
-    smtp_attempted = False
-    subject = owner_subject
-    if send_owner_email:
-        if os.getenv("GENIE_OWNER_REVIEW_SEND", "").strip() not in ("1", "true", "yes"):
-            issue_codes.append("owner_review_send_gate_off")
-            mark_memory_stage_not_reached(
-                "before_owner_smtp",
-                reason="owner_review_send_gate_off",
-            )
-        else:
-            smtp_attempted = True
-            sender = send_fn or send_genie_email
-            if pid == PROGRAM_GLOBAL:
-                if not gen_image_abs.is_file():
-                    issue_codes.append("generated_image_missing_for_cid_email")
-                    mark_memory_stage_not_reached(
-                        "before_owner_smtp",
-                        reason="not_reached_due_to_missing_image",
-                    )
-                else:
-                    os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
-                    inline_parts = inline_jpeg_parts_for_global_service_email(gen_image_abs, run_id)
-                    record_memory_stage_reached("before_owner_smtp")
-                    email_sent = bool(
-                        sender(
-                            email_html,
-                            subject,
-                            inline_jpeg_parts=inline_parts,
-                            attachment_jpeg_parts=[],
-                        )
-                    )
-            elif pid == PROGRAM_KOREA:
-                if not gen_image_abs.is_file():
-                    issue_codes.append("generated_image_missing_for_cid_email")
-                    mark_memory_stage_not_reached(
-                        "before_owner_smtp",
-                        reason="not_reached_due_to_missing_image",
-                    )
-                else:
-                    os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
-                    inline_parts = inline_jpeg_parts_for_korea_service_email(
-                        gen_image_abs,
-                        run_id,
-                        bottom_image_path=bottom_image_path,
-                    )
-                    record_memory_stage_reached("before_owner_smtp")
-                    email_sent = bool(
-                        sender(
-                            email_html,
-                            subject,
-                            inline_jpeg_parts=inline_parts,
-                            attachment_jpeg_parts=[],
-                        )
-                    )
-            else:
-                record_memory_stage_reached("before_owner_smtp")
-                email_sent = bool(sender(email_html, subject))
-    else:
-        mark_memory_stage_not_reached(
-            "before_owner_smtp",
-            reason="send_not_requested",
-        )
+    adjudication = _adjudicate_and_send_owner_surface(
+        program_id=pid,
+        subject=owner_subject,
+        email_html=email_html,
+        owner_review_url=owner_review_url,
+        visible_quality_fields=visible_text_quality_fields,
+        post_render_qa=post_render_qa,
+        send_owner_email=owner_send_requested,
+        inline_parts=inline_parts,
+        send_fn=send_fn,
+        extra_findings=final_surface_findings,
+        observe_smtp_memory=True,
+    )
+    smtp_attempted = bool(adjudication.get("smtp_attempted"))
+    email_sent = bool(adjudication.get("email_sent"))
+    subject = str(adjudication.get("owner_email_subject") or owner_subject)
+    email_html = str(adjudication.get("persisted_email_html") or email_html)
+    validation_result = str(adjudication.get("validation_result") or "block")
+    issue_codes = _extend_unique(issue_codes, list(adjudication.get("issue_codes") or []))
 
     meta = build_service_artifact_fields(
         run_id=run_id,
@@ -5263,6 +5272,16 @@ def _run_keysuri_service_full_run_impl(
     meta.update(owner_email_fields)
     meta.update(subject_fields)
     meta.update(_dedup_artifact_fields_from_prompt_input(prompt_input))
+    prompt_diagnostic = _prompt_input_diagnostic_snapshot(prompt_input)
+    meta["prompt_input_diagnostic_snapshot"] = prompt_diagnostic
+    if prompt_diagnostic.get("selected_news_ids") is not None:
+        meta["selected_news_ids"] = list(
+            prompt_diagnostic.get("selected_news_ids") or []
+        )[:8]
+    if prompt_diagnostic.get("selected_headlines") is not None:
+        meta["selected_headlines"] = list(
+            prompt_diagnostic.get("selected_headlines") or []
+        )[:8]
     smoke_internal_codes = [
         str(code) for code in (getattr(smoke, "internal_issue_codes", []) or []) if code
     ]
@@ -5274,6 +5293,7 @@ def _run_keysuri_service_full_run_impl(
     parse_meta = getattr(smoke, "parse_meta", None)
     if isinstance(parse_meta, dict) and parse_meta:
         meta["parse_meta"] = copy.deepcopy(parse_meta)
+        meta["scaffold_status"] = _scaffold_status_from_parse_meta(parse_meta)
     generation_diagnostics = getattr(smoke, "generation_diagnostics", None)
     if isinstance(generation_diagnostics, dict):
         safe_recovery_diagnostics = {
@@ -5303,7 +5323,36 @@ def _run_keysuri_service_full_run_impl(
                 getattr(smoke, "generation_recovery_result", None) or "not_needed"
             ),
         )
+    generation_contract = meta.get("generation_contract")
+    if isinstance(generation_contract, dict):
+        model_identifier = str(
+            generation_contract.get("model_identifier")
+            or generation_contract.get("model")
+            or ""
+        ).strip()
+        if model_identifier:
+            meta["model_identifier"] = model_identifier
+        contract_fingerprint = str(
+            generation_contract.get("schema_fingerprint")
+            or generation_contract.get("contract_fingerprint")
+            or generation_contract.get("fingerprint")
+            or ""
+        ).strip()
+        if contract_fingerprint:
+            meta["generation_contract_fingerprint"] = contract_fingerprint
     meta.update(visible_text_quality_fields)
+    meta.update(adjudication_artifact_fields(adjudication))
+    meta.update(_post_render_qa_diagnostic_fields(post_render_qa))
+    meta["customer_send"] = 0
+    meta["customer_delivery_status"] = "not_sent"
+    runtime_revision = _runtime_deployed_revision()
+    runtime_commit_sha = _runtime_deployed_commit_sha()
+    if runtime_revision:
+        meta["deployed_revision"] = runtime_revision
+        meta["revision"] = runtime_revision
+    if runtime_commit_sha:
+        meta["deployed_commit_sha"] = runtime_commit_sha
+        meta["commit_sha"] = runtime_commit_sha
     meta.update(_preflight_drift_fields)
     meta["owner_email_subject"] = subject
     _log_owner_email_delivery_event(program_id=pid, run_id=run_id, fields=owner_email_fields)
@@ -5408,12 +5457,23 @@ def _run_keysuri_service_full_run_impl(
             "keysuri_service_full_run: run artifact save failed run_id=%s", run_id
         )
 
-    ok = image_outcome.ok and (not send_owner_email or email_sent) and artifact_saved
+    quality_safe = adjudication.get("safety_verdict") == SAFETY_SAFE
+    ok = (
+        quality_safe
+        and image_outcome.ok
+        and (not send_owner_email or email_sent)
+        and artifact_saved
+    )
     if not ok:
         # Terminal failures after the validation gate (SMTP, send gate, image,
         # artifact persistence) are still final safe-fails and must reach the
         # same operator event as the earlier finalizers.
-        if send_owner_email and not email_sent:
+        if not quality_safe:
+            final_error_code = str(
+                (adjudication.get("terminal_issue_codes") or ["canonical_quality_hold"])[0]
+            )
+            final_stage = "final_quality_adjudication"
+        elif send_owner_email and not email_sent:
             final_error_code = (
                 "smtp_send_failed" if smtp_attempted else "owner_review_send_gate_off"
             )
@@ -5437,6 +5497,16 @@ def _run_keysuri_service_full_run_impl(
         "service_full_run": True,
         "trigger_source": trigger_source,
         "validation_result": validation_result,
+        "safety_verdict": adjudication.get("safety_verdict"),
+        "editorial_verdict": adjudication.get("editorial_verdict"),
+        "terminal_issue_codes": adjudication.get("terminal_issue_codes"),
+        "review_issue_codes": adjudication.get("review_issue_codes"),
+        "repaired_issue_codes": adjudication.get("repaired_issue_codes"),
+        "issue_codes": issue_codes,
+        "post_render_qa_diagnostics": copy.deepcopy(
+            meta.get("post_render_qa_diagnostics") or {}
+        ),
+        "owner_delivery_behavior": adjudication.get("owner_delivery_behavior"),
         "called_gemini": True,
         "called_image_api": image_outcome.called_image_api,
         "image_generation_status": image_outcome.image_generation_status,
@@ -5452,6 +5522,7 @@ def _run_keysuri_service_full_run_impl(
         "artifact_status": meta.get("artifact_status"),
         "smtp_attempted": smtp_attempted,
         "email_sent": email_sent,
+        "customer_send": 0,
         "korea_bottom_shot_status": meta.get("korea_bottom_shot_status"),
         "cost_estimate": cost_estimate,
         "cost_record_path": meta.get("cost_record_path"),

@@ -72,10 +72,17 @@ def _keysuri_global_legacy_owner_review_email_html(
 
 
 _KEYSURI_KOREA_BOTTOM_BASELINE_ASSET_ID = "keysuri_korea_bottom_20260605_105936"
+_GRADED_READY_FIELDS = {
+    "safety_verdict": "SAFE",
+    "editorial_verdict": "READY",
+    "terminal_issue_codes": [],
+    "review_issue_codes": [],
+}
 
 
 def _keysuri_global_artifact_meta(run_id: str) -> dict:
     return {
+        **_GRADED_READY_FIELDS,
         "run_id": run_id,
         "mode": PROGRAM_GLOBAL,
         "program_id": PROGRAM_GLOBAL,
@@ -95,6 +102,7 @@ def _keysuri_global_artifact_meta(run_id: str) -> dict:
 def _keysuri_korea_artifact_meta_with_baseline(run_id: str) -> dict:
     """Korea artifact meta with 041559 bottom QA baseline confirmed (bc78424)."""
     return {
+        **_GRADED_READY_FIELDS,
         "run_id": run_id,
         "mode": PROGRAM_KOREA,
         "program_id": PROGRAM_KOREA,
@@ -112,6 +120,7 @@ def _keysuri_korea_artifact_meta_with_baseline(run_id: str) -> dict:
 
 def _keysuri_korea_artifact_meta_with_generated_bottom(run_id: str) -> dict:
     return {
+        **_GRADED_READY_FIELDS,
         "run_id": run_id,
         "mode": PROGRAM_KOREA,
         "program_id": PROGRAM_KOREA,
@@ -144,6 +153,7 @@ class KeysuriApproveRunGateTests(unittest.TestCase):
         # Korea without bottom QA baseline metadata → blocked (asset_id missing)
         run_id = "20260612_120000_keysuri_korea_tech_aabbccdd"
         meta = {
+            **_GRADED_READY_FIELDS,
             "run_id": run_id,
             "mode": PROGRAM_KOREA,
             "program_id": PROGRAM_KOREA,
@@ -159,6 +169,7 @@ class KeysuriApproveRunGateTests(unittest.TestCase):
         # Korea with asset_id correct but wrong bottom_shot_source → blocked
         run_id = "20260612_120000_keysuri_korea_tech_aabbccdd"
         meta = {
+            **_GRADED_READY_FIELDS,
             "run_id": run_id,
             "mode": PROGRAM_KOREA,
             "program_id": PROGRAM_KOREA,
@@ -226,6 +237,7 @@ class KeysuriCustomerSubjectTests(unittest.TestCase):
 
         subject = build_keysuri_customer_final_subject(
             {
+                **_GRADED_READY_FIELDS,
                 "mode": "keysuri_global_tech",
                 "editorial_subject": "AI 데이터센터 전력 계약 확대: 6월 24일 글로벌 테크 브리핑",
                 "owner_email_subject": "[운영자 검토][수동] AI 데이터센터 전력 계약 확대: 6월 24일 글로벌 테크 브리핑",
@@ -310,6 +322,7 @@ class KeysuriApproveRunBlockedTests(unittest.TestCase):
         run_id = "20260612_120000_keysuri_korea_tech_aabbccdd"
         save_run_artifact(
             {
+                **_GRADED_READY_FIELDS,
                 "run_id": run_id,
                 "mode": PROGRAM_KOREA,
                 "program_id": PROGRAM_KOREA,
@@ -490,6 +503,7 @@ class KeysuriAdminApproveButtonTests(unittest.TestCase):
         run_id = "20260612_130000_keysuri_korea_tech_bbccddee"
         save_run_artifact(
             {
+                **_GRADED_READY_FIELDS,
                 "run_id": run_id,
                 "mode": PROGRAM_KOREA,
                 "program_id": PROGRAM_KOREA,
@@ -577,6 +591,7 @@ class KeysuriApproveRouteTests(unittest.TestCase):
         run_id = "20260612_140000_keysuri_korea_tech_ccddeeff"
         save_run_artifact(
             {
+                **_GRADED_READY_FIELDS,
                 "run_id": run_id,
                 "mode": PROGRAM_KOREA,
                 "program_id": PROGRAM_KOREA,
@@ -680,6 +695,8 @@ class ServiceFullRunRegistryApprovalTests(unittest.TestCase):
                 "owner_review_status": "pending_review",
                 "customer_delivery_status": "not_sent",
             }
+            if mode in {PROGRAM_GLOBAL, PROGRAM_KOREA}:
+                meta.update(_GRADED_READY_FIELDS)
             ok, err = can_approve_customer_send(meta, has_email_html=True)
             with self.subTest(program_id=spec.program_id, mode=mode):
                 if mode == PROGRAM_KOREA:
@@ -732,6 +749,7 @@ class KeysuriKoreaCustomerEmailBottomCidTests(unittest.TestCase):
         bottom_source: str = "fixed_105936_fallback",
     ) -> dict:
         return {
+            **_GRADED_READY_FIELDS,
             "run_id": run_id,
             "mode": PROGRAM_KOREA,
             "program_id": PROGRAM_KOREA,
@@ -828,6 +846,7 @@ class KeysuriKoreaCustomerEmailBottomCidTests(unittest.TestCase):
             top.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
             # meta has top path but NO bottom path
             meta = {
+                **_GRADED_READY_FIELDS,
                 "run_id": run_id,
                 "mode": PROGRAM_KOREA,
                 "program_id": PROGRAM_KOREA,
@@ -966,6 +985,7 @@ class KeysuriKoreaGeneratedV6PersistenceTests(unittest.TestCase):
         gcs_bottom_object: str = "",
     ) -> dict:
         meta: dict = {
+            **_GRADED_READY_FIELDS,
             "run_id": run_id,
             "mode": PROGRAM_KOREA,
             "program_id": PROGRAM_KOREA,
@@ -1309,6 +1329,7 @@ class KeysuriKoreaGeneratedV6PersistenceTests(unittest.TestCase):
             top.write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
             bottom.write_bytes(b"\xff\xd8\xff" + b"\x33" * 64)
             meta = {
+                **_GRADED_READY_FIELDS,
                 "run_id": run_id,
                 "mode": PROGRAM_KOREA,
                 "program_id": PROGRAM_KOREA,
