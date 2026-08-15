@@ -10,6 +10,11 @@ from datetime import datetime
 from typing import Any, Dict, Iterable, Mapping, Optional
 from zoneinfo import ZoneInfo
 
+from genie_schedule_policy import (
+    SKIPPED_HOLIDAY_STATUS,
+    korean_public_holiday_name,
+)
+
 
 ACTIVE_PROGRAMS = (
     {
@@ -598,6 +603,15 @@ def preflight_projection(
     now_kst = (now or datetime.now(ZoneInfo("Asia/Seoul")))
     if now_kst.tzinfo is None:
         now_kst = now_kst.replace(tzinfo=ZoneInfo("Asia/Seoul"))
+    holiday_name = korean_public_holiday_name(now_kst)
+    if holiday_name is not None:
+        # Intentional non-publishing day: absent evidence is expected, not stale.
+        return {
+            "state": "skipped_holiday",
+            "label": "공휴일 비발행",
+            "detail": holiday_name,
+            "provenance": SKIPPED_HOLIDAY_STATUS,
+        }
     hour, minute = (int(value) for value in scheduled.split(":", 1))
     expected = now_kst.astimezone(ZoneInfo("Asia/Seoul")).replace(hour=hour, minute=minute, second=0, microsecond=0)
     if now_kst.astimezone(ZoneInfo("Asia/Seoul")) < expected:

@@ -5,8 +5,10 @@ import json
 import os
 import unittest
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, List
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
@@ -20,6 +22,16 @@ from main import app
 
 _ENDPOINT = "/internal/jobs/create-keysuri-owner-review"
 _TOKEN = "unit-test-internal-token"
+
+
+# 이 엔드포인트 테스트들은 예약 트리거 + dry_run=False 를 사용하므로 실행일이
+# 대한민국 공휴일이면 비발행 가드가 정상 발화한다. 날짜 의존성을 제거하기 위해
+# 평일로 고정한다 (가드 자체는 test_korean_holiday_non_publishing_guard.py 에서 검증).
+_NON_HOLIDAY_WEEKDAY = datetime(2026, 8, 18, 12, 30, tzinfo=ZoneInfo("Asia/Seoul"))
+
+
+def _weekday_clock(now=None):
+    return _NON_HOLIDAY_WEEKDAY if now is None else now
 
 
 def _auth_headers() -> Dict[str, str]:
@@ -51,6 +63,7 @@ class _FakeSmokeResult:
     )
 
 
+@mock.patch("internal_jobs.get_kst_now", new=_weekday_clock)
 class KeysuriInternalJobsAuthTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(app)
@@ -224,6 +237,7 @@ class KeysuriInternalJobsDryRunTests(unittest.TestCase):
         runner.assert_not_called()
 
 
+@mock.patch("internal_jobs.get_kst_now", new=_weekday_clock)
 class KeysuriInternalJobsNonDryRunTests(unittest.TestCase):
     def _make_runner(self, program_id: str) -> mock.Mock:
         def _runner(**kwargs: Any) -> LiveSourceSmokeResult:
@@ -307,6 +321,7 @@ class KeysuriInternalJobsNonDryRunTests(unittest.TestCase):
         self.assertEqual(body["error_type"], "RuntimeError")
 
 
+@mock.patch("internal_jobs.get_kst_now", new=_weekday_clock)
 class KeysuriInternalJobsStructuredLoggingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(app)

@@ -28,8 +28,15 @@ from keysuri_live_source_smoke import (
 )
 from keysuri_quality_adjudication import run_keysuri_graded_validation_no_send_proof
 from genie_schedule_policy import (
+    HOLIDAY_SKIP_REASON,
+    SCHEDULED_PREFLIGHT_TRIGGER_SOURCE,
+    WEEKEND_SKIP_REASON,
     ScheduledWeekendSkip,
     get_kst_now,
+    is_korean_public_holiday,
+    is_korean_publishing_day,
+    korean_public_holiday_name,
+    scheduled_holiday_skip_payload,
     today_genie_weekend_skip_payload,
 )
 from natural_run_activity import track_natural_run_activity
@@ -536,6 +543,18 @@ def create_owner_review_endpoint(
     if auth_fail is not None:
         return auth_fail
 
+    holiday_skip = scheduled_holiday_skip_payload(
+        program_id="today_genie",
+        trigger_source=body.trigger_source,
+        scheduled_slot=body.scheduled_slot,
+        execution_class=body.execution_class,
+        dry_run=body.dry_run,
+        now=get_kst_now(),
+    )
+    if holiday_skip is not None:
+        logger.info("create_owner_review: %s", holiday_skip["skipped_reason"])
+        return JSONResponse(status_code=200, content=holiday_skip)
+
     identity, identity_error, identity_issues = resolve_today_execution_identity(
         execution_class=body.execution_class,
         scheduled_slot=body.scheduled_slot,
@@ -745,6 +764,25 @@ def natural_run_watchdog_endpoint(
             )
         elif body.verification_only:
             summary = run_watchdog_verification_probe(now=watchdog_now)
+        elif not is_korean_publishing_day(watchdog_now):
+            # No slot was expected today, so there is nothing to miss. Decided
+            # before reconciliation so no artifact listing, incident or alert
+            # can occur on a non-publishing day.
+            summary = {
+                "ok": True,
+                "watchdog_fast_path": True,
+                "reason": (
+                    HOLIDAY_SKIP_REASON
+                    if is_korean_public_holiday(watchdog_now)
+                    else WEEKEND_SKIP_REASON
+                ),
+                "expected_run": False,
+                "publishing_day": False,
+                "holiday_name": korean_public_holiday_name(watchdog_now),
+                "target_date_kst": watchdog_now.date().isoformat(),
+                "due_programs": [],
+                "results": [],
+            }
         else:
             due_programs = watchdog_programs_due_for_reconciliation(
                 now=watchdog_now,
@@ -831,6 +869,22 @@ def natural_run_preflight_endpoint(
             },
         )
 
+    # Scheduler-only endpoint: the canary class is itself the scheduled trigger.
+    holiday_skip = scheduled_holiday_skip_payload(
+        program_id=body.program_id,
+        trigger_source=SCHEDULED_PREFLIGHT_TRIGGER_SOURCE,
+        scheduled_slot=body.scheduled_slot,
+        execution_class=EXECUTION_CLASS_PREFLIGHT_CANARY,
+        now=get_kst_now(),
+    )
+    if holiday_skip is not None:
+        logger.info(
+            "natural-run-preflight: %s program=%s",
+            holiday_skip["skipped_reason"],
+            body.program_id,
+        )
+        return JSONResponse(status_code=200, content=holiday_skip)
+
     try:
         readiness = run_natural_preflight(
             body.program_id,
@@ -873,6 +927,21 @@ def create_keysuri_owner_review_endpoint(
     normalized, err = validate_keysuri_owner_review_program_id(body.program_id)
     if err:
         return JSONResponse(status_code=400, content=err)
+
+    holiday_skip = scheduled_holiday_skip_payload(
+        program_id=normalized,
+        trigger_source=body.trigger_source,
+        dry_run=body.dry_run,
+        now=get_kst_now(),
+    )
+    if holiday_skip is not None:
+        holiday_skip["service_full_run"] = bool(body.service_full_run)
+        logger.info(
+            "create_keysuri_owner_review: %s program=%s",
+            holiday_skip["skipped_reason"],
+            normalized,
+        )
+        return JSONResponse(status_code=200, content=holiday_skip)
 
     try:
         is_natural_execution = (

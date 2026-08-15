@@ -27,6 +27,11 @@ from keysuri_service_full_run import (
 )
 
 
+from datetime import datetime as _dt
+from zoneinfo import ZoneInfo as _ZI
+
+_NON_HOLIDAY_WEEKDAY = _dt(2026, 8, 18, 18, 30, tzinfo=_ZI("Asia/Seoul"))
+
 _REPO = Path(__file__).resolve().parents[1]
 _PROMPT_PATH = _REPO / "ops" / "feeds" / "keysuri_korea_prompt_input.sample.json"
 _GENERATED_PATH = (
@@ -1449,7 +1454,13 @@ class CorrectiveContractAndEndpointTests(unittest.TestCase):
             **diagnostics,
         }
         client = TestClient(app)
-        with patch.dict(os.environ, {"GENIE_INTERNAL_JOB_TOKEN": "unit-test-token"}, clear=False):
+        # 예약 트리거 + dry_run=False 경로이므로 실행일이 대한민국 공휴일이면
+        # 비발행 가드가 정상 발화한다. 이 테스트의 관심사는 복구 실패 응답이므로
+        # 평일로 고정한다.
+        with patch.dict(os.environ, {"GENIE_INTERNAL_JOB_TOKEN": "unit-test-token"}, clear=False), patch(
+            "internal_jobs.get_kst_now",
+            new=lambda now=None: _NON_HOLIDAY_WEEKDAY if now is None else now,
+        ):
             with patch(
                 "internal_jobs.create_keysuri_owner_review_job",
                 return_value=payload,
