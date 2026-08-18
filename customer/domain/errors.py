@@ -172,3 +172,30 @@ class TrialNotFound(CustomerAuthError):
     """No trial projection exists for the authenticated account."""
 
     code = "TRIAL_NOT_FOUND"
+
+
+# --- D-3 conversion -------------------------------------------------------
+
+
+class ConversionNotEligible(CustomerAuthError):
+    """The account is outside the exact D-3 conversion window or state."""
+
+    code = "CONVERSION_NOT_ELIGIBLE"
+
+
+class ConversionSelectionRequired(CustomerAuthError):
+    """Explicit paid-plan selection is absent."""
+
+    code = "CONVERSION_SELECTION_REQUIRED"
+
+
+class ConversionSelectionInvalid(CustomerAuthError):
+    """Plan or product composition is not a canonical purchasable choice."""
+
+    code = "CONVERSION_SELECTION_INVALID"
+
+
+class CatalogUnavailable(CustomerAuthError):
+    """The current canonical catalog cannot be resolved unambiguously."""
+
+    code = "CATALOG_UNAVAILABLE"

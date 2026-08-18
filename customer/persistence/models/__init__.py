@@ -24,6 +24,8 @@ from customer.persistence.models.identity import (
 )
 from customer.persistence.models.payment import PaymentMethod
 from customer.persistence.models.subscription import (
+    ConversionSelection,
+    ConversionSelectionProduct,
     ConversionSnapshot,
     ConversionSnapshotProduct,
     Subscription,
@@ -37,6 +39,8 @@ __all__ = [
     "BillingEvent",
     "BrowserSession",
     "CommandIdempotency",
+    "ConversionSelection",
+    "ConversionSelectionProduct",
     "ConversionSnapshot",
     "ConversionSnapshotProduct",
     "CustomerAccount",

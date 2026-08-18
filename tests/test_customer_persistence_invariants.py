@@ -334,19 +334,43 @@ def test_single_product_plan_rejects_a_second_product(session):
 
 def test_conversion_snapshot_package_two_requires_two_products(session):
     from customer.persistence.models import (
+        ConversionSelection,
+        ConversionSelectionProduct,
         ConversionSnapshot,
         ConversionSnapshotProduct,
     )
 
     account = make_account(session)
+    method = make_payment_method(session, account)
     subscription = make_subscription(session, account, state="conversion_scheduled")
-    snapshot = ConversionSnapshot(
+    now = dt.datetime.now(UTC)
+    selection = ConversionSelection(
+        account_id=account.id,
         subscription_id=subscription.id,
         plan_code="package_two",
         price_krw=11000,
         price_version=1,
         currency="KRW",
-        confirmed_at=dt.datetime.now(UTC),
+        selected_at=now,
+    )
+    selection.products = [
+        ConversionSelectionProduct(product_code="today_genie"),
+        ConversionSelectionProduct(product_code="keysuri_global"),
+    ]
+    session.add(selection)
+    session.flush()
+    snapshot = ConversionSnapshot(
+        selection_id=selection.id,
+        account_id=account.id,
+        person_id=account.person_id,
+        subscription_id=subscription.id,
+        payment_method_id=method.id,
+        plan_code="package_two",
+        price_krw=11000,
+        price_version=1,
+        currency="KRW",
+        confirmed_at=now,
+        first_charge_at=subscription.trial_end_at,
         status="pending",
     )
     session.add(snapshot)
@@ -361,21 +385,21 @@ def test_conversion_snapshot_package_two_requires_two_products(session):
         force_deferred_constraints(session)
 
 
-def test_subscription_may_hold_only_one_pending_conversion_snapshot(session):
-    from customer.persistence.models import ConversionSnapshot
+def test_subscription_may_hold_only_one_conversion_selection(session):
+    from customer.persistence.models import ConversionSelection
 
     account = make_account(session)
     subscription = make_subscription(session, account, state="conversion_scheduled")
 
     def build(plan_code, price):
-        return ConversionSnapshot(
+        return ConversionSelection(
+            account_id=account.id,
             subscription_id=subscription.id,
             plan_code=plan_code,
             price_krw=price,
             price_version=1,
             currency="KRW",
-            confirmed_at=dt.datetime.now(UTC),
-            status="pending",
+            selected_at=dt.datetime.now(UTC),
         )
 
     session.add(build("full_set", 16500))

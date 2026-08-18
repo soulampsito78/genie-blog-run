@@ -267,6 +267,85 @@ class SubscriptionProduct(CustomerBase):
     subscription: Mapped[Subscription] = relationship(back_populates="products")
 
 
+class ConversionSelection(CustomerBase):
+    """Mutable D-3 plan selection before explicit paid-conversion consent.
+
+    This row is deliberately not billing authority.  Confirmation copies its
+    validated values into an immutable ``ConversionSnapshot``.  A database
+    trigger prevents further changes once a snapshot references the selection.
+    """
+
+    __tablename__ = "conversion_selection"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey("customer_account.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey("subscription.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    plan_code: Mapped[str] = mapped_column(sa.String(40), nullable=False)
+    price_krw: Mapped[int] = mapped_column(sa.Integer, nullable=False)
+    price_version: Mapped[int] = mapped_column(sa.Integer, nullable=False)
+    currency: Mapped[str] = mapped_column(
+        sa.String(3), nullable=False, server_default=sa.text("'KRW'")
+    )
+    selected_at: Mapped[dt.datetime] = mapped_column(
+        sa.DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[dt.datetime] = created_at_column()
+    updated_at: Mapped[dt.datetime] = updated_at_column()
+
+    products: Mapped[List["ConversionSelectionProduct"]] = relationship(
+        back_populates="conversion_selection", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "subscription_id", name="uq_conversion_selection_subscription_id"
+        ),
+        sa.CheckConstraint(
+            "plan_code IN ({0})".format(
+                ", ".join("'{0}'".format(v) for v in PlanCode.values())
+            ),
+            name="plan_code_valid",
+        ),
+        sa.CheckConstraint("price_krw > 0", name="price_positive"),
+        sa.CheckConstraint("currency = 'KRW'", name="currency_krw"),
+        sa.ForeignKeyConstraint(
+            ["plan_code", "price_version"],
+            ["plan_catalog.plan_code", "plan_catalog.price_version"],
+            name="fk_conversion_selection_plan_catalog",
+            ondelete="RESTRICT",
+        ),
+    )
+
+
+class ConversionSelectionProduct(CustomerBase):
+    """Product membership for a mutable, not-yet-confirmed selection."""
+
+    __tablename__ = "conversion_selection_product"
+
+    conversion_selection_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey("conversion_selection.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    product_code: Mapped[str] = mapped_column(
+        sa.String(40),
+        sa.ForeignKey("product.code", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+
+    conversion_selection: Mapped[ConversionSelection] = relationship(
+        back_populates="products"
+    )
+
+
 class ConversionSnapshot(CustomerBase):
     """The customer's explicit D-3 paid-plan choice, frozen (Lifecycle sec. 1.1).
 
@@ -279,9 +358,30 @@ class ConversionSnapshot(CustomerBase):
     __tablename__ = "conversion_snapshot"
 
     id: Mapped[uuid.UUID] = uuid_pk()
+    selection_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey("conversion_selection.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey("customer_account.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    person_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey("person_identity.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
     subscription_id: Mapped[uuid.UUID] = mapped_column(
         sa.Uuid(as_uuid=True),
         sa.ForeignKey("subscription.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    payment_method_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey("payment_method.id", ondelete="RESTRICT"),
         nullable=False,
     )
 
@@ -294,6 +394,9 @@ class ConversionSnapshot(CustomerBase):
 
     #: When the customer explicitly confirmed conversion (Lifecycle sec. 4.1A).
     confirmed_at: Mapped[dt.datetime] = mapped_column(
+        sa.DateTime(timezone=True), nullable=False
+    )
+    first_charge_at: Mapped[dt.datetime] = mapped_column(
         sa.DateTime(timezone=True), nullable=False
     )
     status: Mapped[str] = enum_column(ConversionSnapshotStatus)
@@ -329,6 +432,9 @@ class ConversionSnapshot(CustomerBase):
         sa.CheckConstraint(
             "status <> 'applied' OR applied_at IS NOT NULL",
             name="applied_at_present",
+        ),
+        sa.CheckConstraint(
+            "first_charge_at > confirmed_at", name="first_charge_after_confirmation"
         ),
         sa.ForeignKeyConstraint(
             ["plan_code", "price_version"],

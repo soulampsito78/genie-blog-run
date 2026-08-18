@@ -45,6 +45,7 @@ SESSION_LOGOUT_ALL = "session.logout_all"
 
 PAYMENT_METHOD_REGISTERED = "payment_method.registered"
 TRIAL_STARTED = "subscription.trial_started"
+CONVERSION_CONFIRMED = "subscription.conversion_confirmed"
 
 
 #: Payload keys that must never appear, regardless of value.

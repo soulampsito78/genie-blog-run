@@ -5,7 +5,7 @@ module builds a complete APIRouter and a dedicated test app only.
 """
 
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, FastAPI, Header, Request, Response
 from fastapi.responses import JSONResponse
@@ -38,7 +38,11 @@ from customer.domain.enums import (
 from customer.domain.errors import (
     AgeNotEligible,
     AuthenticationRequired,
+    CatalogUnavailable,
     ChallengeRateLimited,
+    ConversionNotEligible,
+    ConversionSelectionInvalid,
+    ConversionSelectionRequired,
     CustomerAuthError,
     DeliveryEmailUnverified,
     IdentityVerificationFailed,
@@ -64,6 +68,11 @@ from customer.persistence.models import (
     PaymentMethod,
 )
 from customer.services.challenge_service import ChallengeService
+from customer.services.conversion_service import (
+    ConversionEligibility,
+    ConversionResult,
+    ConversionService,
+)
 from customer.services.cookies import cleared_cookie_settings, session_cookie_settings
 from customer.services.identity_service import IdentityService
 from customer.services.login_service import LoginService
@@ -122,6 +131,19 @@ class TrialStartRequest(BaseModel):
     confirm: bool
 
 
+class ConversionSelectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    plan_code: str = Field(min_length=1, max_length=40)
+    products: List[str] = Field(min_length=1, max_length=3)
+
+
+class ConversionConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: bool
+
+
 customer_router = APIRouter(prefix="/v1/customer")
 identity_router = APIRouter(prefix="/identity", tags=["customer-identity"])
 auth_router = APIRouter(prefix="/auth", tags=["customer-auth"])
@@ -132,6 +154,7 @@ payment_methods_router = APIRouter(
     prefix="/payment-methods", tags=["customer-payment-methods"]
 )
 trial_router = APIRouter(prefix="/trial", tags=["customer-trial"])
+conversion_router = APIRouter(prefix="/conversion", tags=["customer-conversion"])
 
 
 @identity_router.post("/start")
@@ -430,6 +453,101 @@ def get_current_trial(
     return {"trial": _trial_projection(result)}
 
 
+@conversion_router.get("/eligibility")
+def get_conversion_eligibility(
+    access: AccessContext = Depends(require_customer_session),
+    session: Session = Depends(get_customer_db_session),
+    clock: Clock = Depends(get_clock),
+):
+    try:
+        result = ConversionService(session, clock).eligibility(access.account_id)
+    except CustomerAuthError as error:
+        return _domain_error(error)
+    return {"conversion": _conversion_eligibility_projection(result)}
+
+
+@conversion_router.get("/catalog")
+def get_conversion_catalog(
+    access: AccessContext = Depends(require_customer_session),
+    session: Session = Depends(get_customer_db_session),
+    clock: Clock = Depends(get_clock),
+):
+    try:
+        rows = ConversionService(session, clock).catalog(access.account_id)
+    except CustomerAuthError as error:
+        return _domain_error(error)
+    return {
+        "plans": [
+            {
+                "plan_code": row.plan_code,
+                "price_krw": row.price_krw,
+                "price_version": row.price_version,
+                "currency": row.currency,
+                "vat_included": row.vat_included,
+                "product_count": row.product_count,
+                "fixed_products": list(products),
+                "selected": False,
+            }
+            for row, products in rows
+        ]
+    }
+
+
+@conversion_router.put("/selection")
+def put_conversion_selection(
+    body: ConversionSelectionRequest,
+    access: AccessContext = Depends(require_customer_session),
+    _: None = Depends(require_same_site_origin),
+    session: Session = Depends(get_customer_db_session),
+    clock: Clock = Depends(get_clock),
+):
+    try:
+        result = ConversionService(session, clock).select(
+            account_id=access.account_id,
+            plan_code=body.plan_code,
+            products=body.products,
+        )
+    except CustomerAuthError as error:
+        return _domain_error(error)
+    return {"conversion": _conversion_projection(result)}
+
+
+@conversion_router.get("/selection")
+def get_conversion_selection(
+    access: AccessContext = Depends(require_customer_session),
+    session: Session = Depends(get_customer_db_session),
+    clock: Clock = Depends(get_clock),
+):
+    try:
+        result = ConversionService(session, clock).current_selection(access.account_id)
+    except CustomerAuthError as error:
+        return _domain_error(error)
+    return {"conversion": _conversion_projection(result)}
+
+
+@conversion_router.post("/confirm")
+def confirm_conversion(
+    body: ConversionConfirmRequest,
+    idempotency_key: str = Header(
+        ..., alias="Idempotency-Key", min_length=1, max_length=200
+    ),
+    access: AccessContext = Depends(require_fresh_financial_auth),
+    _: None = Depends(require_same_site_origin),
+    session: Session = Depends(get_customer_db_session),
+    clock: Clock = Depends(get_clock),
+):
+    if body.confirm is not True:
+        return _error("CONVERSION_NOT_CONFIRMED", 400)
+    try:
+        result = ConversionService(session, clock).confirm(
+            account_id=access.account_id,
+            idempotency_key=idempotency_key,
+        )
+    except CustomerAuthError as error:
+        return _domain_error(error)
+    return {"conversion": _conversion_projection(result), "replayed": result.replayed}
+
+
 @sessions_router.get("")
 def list_sessions(
     access: AccessContext = Depends(require_customer_session),
@@ -496,6 +614,7 @@ customer_router.include_router(sessions_router)
 customer_router.include_router(onboarding_router)
 customer_router.include_router(payment_methods_router)
 customer_router.include_router(trial_router)
+customer_router.include_router(conversion_router)
 
 
 def create_customer_test_app() -> FastAPI:
@@ -532,6 +651,16 @@ def _domain_error(error: CustomerAuthError) -> JSONResponse:
     elif isinstance(error, TrialNotFound):
         status = 404
     elif isinstance(error, IdempotencyKeyConflict):
+        status = 409
+    elif isinstance(
+        error,
+        (
+            CatalogUnavailable,
+            ConversionNotEligible,
+            ConversionSelectionInvalid,
+            ConversionSelectionRequired,
+        ),
+    ):
         status = 409
     elif isinstance(
         error, (PaymentMethodRequired, DeliveryEmailUnverified, TrialNotEligible)
@@ -626,6 +755,35 @@ def _trial_projection(result: TrialResult) -> Dict[str, Any]:
         "delivery_start_date": subscription.delivery_start_date.isoformat(),
         "products": list(result.products),
         "automatic_paid_conversion": False,
+    }
+
+
+def _conversion_eligibility_projection(result: ConversionEligibility) -> Dict[str, Any]:
+    return {
+        "subscription_id": str(result.subscription.id),
+        "state": result.subscription.state,
+        "eligible": result.eligible,
+        "opens_at": result.opens_at.isoformat(),
+        "closes_at": result.closes_at.isoformat(),
+        "automatic_paid_conversion": False,
+    }
+
+
+def _conversion_projection(result: ConversionResult) -> Dict[str, Any]:
+    snapshot = result.snapshot
+    return {
+        "subscription_id": str(result.subscription.id),
+        "state": result.subscription.state,
+        "selection_id": str(result.selection.id),
+        "plan_code": result.selection.plan_code,
+        "products": list(result.products),
+        "price_krw": result.selection.price_krw,
+        "price_version": result.selection.price_version,
+        "currency": result.selection.currency,
+        "confirmed": snapshot is not None,
+        "confirmed_at": snapshot.confirmed_at.isoformat() if snapshot else None,
+        "first_charge_at": snapshot.first_charge_at.isoformat() if snapshot else None,
+        "charged": False,
     }
 
 

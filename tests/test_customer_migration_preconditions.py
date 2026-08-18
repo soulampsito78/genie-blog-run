@@ -160,7 +160,9 @@ def test_case_a_fresh_database_migrates_through_both_revisions(scratch_database)
     command.upgrade(config, PHASE_1_HEAD)
     assert _browser_session_count(scratch_database) == 0
 
-    command.upgrade(config, "head")
+    # This test isolates the Phase 1 -> Phase 2 credential precondition. Later
+    # revisions have their own migration-integrity coverage.
+    command.upgrade(config, PHASE_2_HEAD)
 
     assert _current_revision(scratch_database) == PHASE_2_HEAD
 
@@ -178,7 +180,7 @@ def test_case_b_existing_session_makes_the_migration_refuse(scratch_database):
     assert _browser_session_count(scratch_database) == 1
 
     with pytest.raises(Exception) as excinfo:
-        command.upgrade(config, "head")
+        command.upgrade(config, PHASE_2_HEAD)
 
     message = str(excinfo.value)
     assert "MIGRATION PRECONDITION FAILED" in message
@@ -192,7 +194,7 @@ def test_case_b_existing_session_row_is_preserved(scratch_database):
     session_id = _insert_phase1_browser_session(scratch_database)
 
     with pytest.raises(Exception):
-        command.upgrade(config, "head")
+        command.upgrade(config, PHASE_2_HEAD)
 
     engine = sa.create_engine(scratch_database)
     with engine.connect() as connection:
@@ -212,7 +214,7 @@ def test_case_b_schema_is_not_left_half_migrated(scratch_database):
     _insert_phase1_browser_session(scratch_database)
 
     with pytest.raises(Exception):
-        command.upgrade(config, "head")
+        command.upgrade(config, PHASE_2_HEAD)
 
     assert _current_revision(scratch_database) == PHASE_1_HEAD
 
