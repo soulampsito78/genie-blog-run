@@ -46,6 +46,9 @@ SESSION_LOGOUT_ALL = "session.logout_all"
 PAYMENT_METHOD_REGISTERED = "payment_method.registered"
 TRIAL_STARTED = "subscription.trial_started"
 CONVERSION_CONFIRMED = "subscription.conversion_confirmed"
+FIRST_CHARGE_SUCCEEDED = "billing.first_charge_succeeded"
+FIRST_CHARGE_FAILED = "billing.first_charge_failed"
+FIRST_CHARGE_UNKNOWN = "billing.first_charge_provider_state_unknown"
 
 
 #: Payload keys that must never appear, regardless of value.

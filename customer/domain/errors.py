@@ -199,3 +199,12 @@ class CatalogUnavailable(CustomerAuthError):
     """The current canonical catalog cannot be resolved unambiguously."""
 
     code = "CATALOG_UNAVAILABLE"
+
+
+# --- first conversion charge ---------------------------------------------
+
+
+class FirstChargeConflict(CustomerAuthError):
+    """Stored first-charge or provider evidence conflicts with authority."""
+
+    code = "FIRST_CHARGE_CONFLICT"
