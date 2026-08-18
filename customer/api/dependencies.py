@@ -18,6 +18,10 @@ from customer.services.providers import (
     NullVerificationCodeSender,
     VerificationCodeSender,
 )
+from customer.services.payment_providers import (
+    PaymentMethodProvider,
+    UnconfiguredPaymentMethodProvider,
+)
 from customer.services.session_service import AccessContext, SessionService
 
 
@@ -60,6 +64,10 @@ def get_verification_code_sender() -> VerificationCodeSender:
     return NullVerificationCodeSender()
 
 
+def get_payment_method_provider() -> PaymentMethodProvider:
+    return UnconfiguredPaymentMethodProvider()
+
+
 def get_customer_api_security_config() -> CustomerApiSecurityConfig:
     # Origins are not finalised, so a mounted deployment must explicitly
     # provide them before cookie-authenticated writes can proceed.
@@ -97,6 +105,22 @@ def require_fresh_auth(
     service.require_fresh_auth(
         live_session,
         required_assurance=AuthAssuranceLevel.RECENT_VERIFICATION.value,
+    )
+    return access
+
+
+def require_fresh_financial_auth(
+    access: AccessContext = Depends(require_customer_session),
+    session: Session = Depends(get_customer_db_session),
+    clock: Clock = Depends(get_clock),
+) -> AccessContext:
+    """Require fresh mobile-OTP-equivalent assurance for payment changes."""
+    live_session = session.get(BrowserSession, access.session_id)
+    if live_session is None:
+        raise AuthenticationRequired("customer session is required")
+    SessionService(session, clock).require_fresh_auth(
+        live_session,
+        required_assurance=AuthAssuranceLevel.STRONG_OTP.value,
     )
     return access
 

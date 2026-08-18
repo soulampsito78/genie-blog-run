@@ -106,3 +106,42 @@ class AccountNotActive(CustomerAuthError):
     """Account is withdrawn or otherwise not eligible to authenticate."""
 
     code = "ACCOUNT_NOT_ACTIVE"
+
+
+# --- payment method -------------------------------------------------------
+
+
+class PaymentMethodNotFound(CustomerAuthError):
+    """Payment method or registration is unavailable to this customer."""
+
+    code = "PAYMENT_METHOD_NOT_FOUND"
+
+
+class PaymentProviderNotConfigured(CustomerAuthError):
+    """No payment provider adapter has been selected or configured."""
+
+    code = "PAYMENT_PROVIDER_NOT_CONFIGURED"
+
+
+class PaymentProviderUnavailable(CustomerAuthError):
+    """Provider operation failed without exposing provider error details."""
+
+    code = "PAYMENT_PROVIDER_UNAVAILABLE"
+
+
+class PaymentProviderStateUnknown(CustomerAuthError):
+    """Provider has not authoritatively confirmed registration success."""
+
+    code = "PROVIDER_STATE_UNKNOWN"
+
+
+class PaymentMethodVerificationFailed(CustomerAuthError):
+    """Provider authoritatively rejected registration or own-name proof."""
+
+    code = "PAYMENT_METHOD_VERIFICATION_FAILED"
+
+
+class IdempotencyKeyConflict(CustomerAuthError):
+    """An idempotency key was reused with different command parameters."""
+
+    code = "IDEMPOTENCY_KEY_CONFLICT"

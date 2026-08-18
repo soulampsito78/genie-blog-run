@@ -244,6 +244,9 @@ def test_route_inventory_is_exact_and_contains_no_operator_surface():
         ("GET", "/v1/customer/sessions"),
         ("DELETE", "/v1/customer/sessions/{session_id}"),
         ("GET", "/v1/customer/onboarding/status"),
+        ("POST", "/v1/customer/payment-methods/registration"),
+        ("POST", "/v1/customer/payment-methods/registration/finalize"),
+        ("GET", "/v1/customer/payment-methods/default"),
     }
     assert actual == expected
     forbidden = ("/admin", "/internal", "owner-review", "approve", "send-now")
@@ -850,6 +853,8 @@ def test_customer_dependency_graph_and_context_have_no_operator_authority():
         importlib.import_module("customer.api.dependencies"),
         importlib.import_module("customer.services.login_service"),
         importlib.import_module("customer.services.onboarding_service"),
+        importlib.import_module("customer.services.payment_method_service"),
+        importlib.import_module("customer.services.payment_providers"),
     ]
     imported_modules = set()
     for module in modules:

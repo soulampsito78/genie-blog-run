@@ -90,7 +90,7 @@ class OnboardingService:
             sa.select(Subscription.id).where(Subscription.account_id == account_id)
         )
         if subscription is None:
-            return "trial_start_required"
+            return "trial_start_confirmation_required"
         return "onboarding_complete"
 
 

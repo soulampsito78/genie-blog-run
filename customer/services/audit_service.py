@@ -43,6 +43,8 @@ SESSION_CREATED = "session.created"
 SESSION_REVOKED = "session.revoked"
 SESSION_LOGOUT_ALL = "session.logout_all"
 
+PAYMENT_METHOD_REGISTERED = "payment_method.registered"
+
 
 #: Payload keys that must never appear, regardless of value.
 _FORBIDDEN_KEY_FRAGMENTS = (

@@ -7,9 +7,9 @@ module builds a complete APIRouter and a dedicated test app only.
 import uuid
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, FastAPI, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Header, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from customer.api.dependencies import (
@@ -19,9 +19,11 @@ from customer.api.dependencies import (
     get_customer_api_security_config,
     get_customer_db_session,
     get_identity_provider,
+    get_payment_method_provider,
     get_verification_code_sender,
     require_customer_session,
     require_fresh_auth,
+    require_fresh_financial_auth,
     require_same_site_origin,
 )
 from customer.domain.clock import Clock
@@ -39,17 +41,29 @@ from customer.domain.errors import (
     CustomerAuthError,
     IdentityVerificationFailed,
     LoginChallengeInvalid,
+    IdempotencyKeyConflict,
+    PaymentMethodNotFound,
+    PaymentMethodVerificationFailed,
+    PaymentProviderNotConfigured,
+    PaymentProviderStateUnknown,
+    PaymentProviderUnavailable,
     SessionExpired,
     SessionInvalid,
     SessionRevoked,
     StepUpRequired,
 )
-from customer.persistence.models import BrowserSession, CustomerAccount, IdentityVerification
+from customer.persistence.models import (
+    BrowserSession,
+    CustomerAccount,
+    IdentityVerification,
+    PaymentMethod,
+)
 from customer.services.challenge_service import ChallengeService
 from customer.services.cookies import cleared_cookie_settings, session_cookie_settings
 from customer.services.identity_service import IdentityService
 from customer.services.login_service import LoginService
 from customer.services.onboarding_service import OnboardingService
+from customer.services.payment_method_service import PaymentMethodService
 from customer.services.session_service import AccessContext, SessionService
 
 
@@ -86,12 +100,25 @@ class LoginVerifyRequest(LoginChallengeRequest):
     remember_login: bool = False
 
 
+class PaymentRegistrationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    replacement_payment_method_id: Optional[uuid.UUID] = None
+
+
+class PaymentRegistrationFinalizeRequest(PaymentRegistrationRequest):
+    registration_reference: str = Field(min_length=1, max_length=120)
+
+
 customer_router = APIRouter(prefix="/v1/customer")
 identity_router = APIRouter(prefix="/identity", tags=["customer-identity"])
 auth_router = APIRouter(prefix="/auth", tags=["customer-auth"])
 account_router = APIRouter(prefix="/account", tags=["customer-account"])
 sessions_router = APIRouter(prefix="/sessions", tags=["customer-sessions"])
 onboarding_router = APIRouter(prefix="/onboarding", tags=["customer-onboarding"])
+payment_methods_router = APIRouter(
+    prefix="/payment-methods", tags=["customer-payment-methods"]
+)
 
 
 @identity_router.post("/start")
@@ -270,6 +297,81 @@ def get_onboarding_status(
     return {"next_required_stage": OnboardingService(session, clock, IdentityService(session, clock)).status_for_account(access.account_id)}
 
 
+@payment_methods_router.post("/registration")
+def initiate_payment_method_registration(
+    body: PaymentRegistrationRequest,
+    idempotency_key: str = Header(
+        ..., alias="Idempotency-Key", min_length=1, max_length=200
+    ),
+    access: AccessContext = Depends(require_fresh_financial_auth),
+    _: None = Depends(require_same_site_origin),
+    session: Session = Depends(get_customer_db_session),
+    clock: Clock = Depends(get_clock),
+    provider=Depends(get_payment_method_provider),
+):
+    try:
+        started = PaymentMethodService(session, clock, provider).initiate_registration(
+            account_id=access.account_id,
+            idempotency_key=idempotency_key,
+            replacement_payment_method_id=body.replacement_payment_method_id,
+        )
+    except CustomerAuthError as error:
+        return _domain_error(error)
+    return {
+        "accepted": True,
+        "registration_reference": started.registration_reference,
+        "replayed": started.replayed,
+        "completed": started.completed,
+    }
+
+
+@payment_methods_router.post("/registration/finalize")
+def finalize_payment_method_registration(
+    body: PaymentRegistrationFinalizeRequest,
+    idempotency_key: str = Header(
+        ..., alias="Idempotency-Key", min_length=1, max_length=200
+    ),
+    access: AccessContext = Depends(require_fresh_financial_auth),
+    _: None = Depends(require_same_site_origin),
+    session: Session = Depends(get_customer_db_session),
+    clock: Clock = Depends(get_clock),
+    provider=Depends(get_payment_method_provider),
+):
+    try:
+        registered = PaymentMethodService(session, clock, provider).finalize_registration(
+            account_id=access.account_id,
+            idempotency_key=idempotency_key,
+            registration_reference=body.registration_reference,
+            replacement_payment_method_id=body.replacement_payment_method_id,
+        )
+    except CustomerAuthError as error:
+        return _domain_error(error)
+    stage = OnboardingService(
+        session, clock, IdentityService(session, clock)
+    ).status_for_account(access.account_id)
+    return {
+        "payment_method": _payment_method_projection(registered.payment_method),
+        "onboarding": {"next_required_stage": stage},
+        "replayed": registered.replayed,
+    }
+
+
+@payment_methods_router.get("/default")
+def get_default_payment_method(
+    access: AccessContext = Depends(require_customer_session),
+    session: Session = Depends(get_customer_db_session),
+    clock: Clock = Depends(get_clock),
+    provider=Depends(get_payment_method_provider),
+):
+    try:
+        method = PaymentMethodService(
+            session, clock, provider
+        ).default_payment_method(access.account_id)
+    except CustomerAuthError as error:
+        return _domain_error(error)
+    return {"payment_method": _payment_method_projection(method)}
+
+
 @sessions_router.get("")
 def list_sessions(
     access: AccessContext = Depends(require_customer_session),
@@ -334,6 +436,7 @@ customer_router.include_router(auth_router)
 customer_router.include_router(account_router)
 customer_router.include_router(sessions_router)
 customer_router.include_router(onboarding_router)
+customer_router.include_router(payment_methods_router)
 
 
 def create_customer_test_app() -> FastAPI:
@@ -365,6 +468,16 @@ def _domain_error(error: CustomerAuthError) -> JSONResponse:
         status = 403
     elif isinstance(error, LoginChallengeInvalid):
         status = 400
+    elif isinstance(error, PaymentMethodNotFound):
+        status = 404
+    elif isinstance(error, IdempotencyKeyConflict):
+        status = 409
+    elif isinstance(error, PaymentProviderStateUnknown):
+        status = 409
+    elif isinstance(error, PaymentMethodVerificationFailed):
+        status = 422
+    elif isinstance(error, (PaymentProviderNotConfigured, PaymentProviderUnavailable)):
+        status = 503
     return _error(error.code, status)
 
 
@@ -420,6 +533,20 @@ def _session_projection(row: BrowserSession, current_session_id) -> Dict[str, An
         "created_at": row.created_at.isoformat(),
         "last_seen_at": row.last_seen_at.isoformat(),
         "user_agent_summary": row.user_agent_summary,
+    }
+
+
+def _payment_method_projection(method: PaymentMethod) -> Dict[str, Any]:
+    """Browser-safe metadata. Billing/verification references stay server-side."""
+    return {
+        "payment_method_id": str(method.id),
+        "provider": method.provider,
+        "brand": method.card_brand,
+        "last4": method.card_last4,
+        "display_label": method.display_label,
+        "status": method.status,
+        "is_default": method.is_default,
+        "own_name_verified": method.own_name_verified,
     }
 
 
