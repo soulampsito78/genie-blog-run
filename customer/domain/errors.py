@@ -90,6 +90,12 @@ class SessionInvalid(CustomerAuthError):
     code = "SESSION_INVALID"
 
 
+class AuthenticationRequired(CustomerAuthError):
+    """A customer route was called without a valid browser session."""
+
+    code = "AUTHENTICATION_REQUIRED"
+
+
 class StepUpRequired(CustomerAuthError):
     """Sensitive action attempted without sufficiently fresh/strong auth."""
 
