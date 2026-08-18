@@ -34,6 +34,7 @@ from customer.persistence.models import (  # noqa: E402
     AuthChallenge,
     BrowserSession,
     CustomerAccount,
+    DeliveryEmail,
     IdentityVerification,
     PersonIdentity,
     Subscription,
@@ -247,6 +248,8 @@ def test_route_inventory_is_exact_and_contains_no_operator_surface():
         ("POST", "/v1/customer/payment-methods/registration"),
         ("POST", "/v1/customer/payment-methods/registration/finalize"),
         ("GET", "/v1/customer/payment-methods/default"),
+        ("POST", "/v1/customer/trial/start"),
+        ("GET", "/v1/customer/trial"),
     }
     assert actual == expected
     forbidden = ("/admin", "/internal", "owner-review", "approve", "send-now")
@@ -391,6 +394,94 @@ def test_signup_email_challenge_rejects_invalid_expired_and_replayed_codes(
     _assert_response_has_no_secret_material(response, code, challenge.code_hash, challenge.code_salt)
     expected_accounts = 1 if failure == "replayed" else 0
     assert session.query(CustomerAccount).count() == expected_accounts
+
+
+def test_signup_binds_verified_email_and_materializes_delivery_evidence(
+    api, session
+):
+    client, provider, sender = api
+    verification_id = _start_signup(
+        client, provider, stable_key="DI-email-evidence"
+    )
+    requested_email = "  Verified.Owner@Example.COM  "
+    normalized_email = "verified.owner@example.com"
+    issued = client.post(
+        "/v1/customer/auth/signup/email-challenge",
+        json={
+            "verification_id": verification_id,
+            "account_email": requested_email,
+        },
+    )
+    assert issued.status_code == 200
+    challenge_id = issued.json()["challenge_id"]
+    code = sender.codes[("email", normalized_email)]
+
+    response = _complete_signup_request(
+        client,
+        verification_id,
+        " VERIFIED.OWNER@example.com ",
+        challenge_id,
+        code,
+    )
+
+    assert response.status_code == 200
+    account = session.query(CustomerAccount).one()
+    challenge = session.get(AuthChallenge, uuid.UUID(challenge_id))
+    delivery_email = session.query(DeliveryEmail).one()
+    assert account.account_email == normalized_email
+    assert challenge.target == normalized_email
+    assert challenge.status == AuthChallengeStatus.CONSUMED.value
+    assert challenge.account_id == account.id
+    assert challenge.verified_at is not None
+    assert challenge.consumed_at == challenge.verified_at
+    assert delivery_email.account_id == account.id
+    assert delivery_email.email == normalized_email
+    assert delivery_email.status == "active"
+    assert delivery_email.verified_at == challenge.verified_at
+
+
+def test_signup_email_target_mismatch_is_blocked_without_partial_customer_state(
+    api, session, caplog
+):
+    client, provider, sender = api
+    verification_id = _start_signup(
+        client, provider, stable_key="DI-email-mismatch"
+    )
+    verified_email = "verified-a@example.com"
+    challenge_id, code = _issue_signup_challenge(
+        client, sender, verification_id, verified_email
+    )
+
+    response = _complete_signup_request(
+        client,
+        verification_id,
+        "unverified-b@example.com",
+        challenge_id,
+        code,
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"error": {"code": "LOGIN_CHALLENGE_INVALID"}}
+    _assert_response_has_no_secret_material(response, code, verified_email)
+    challenge = session.get(AuthChallenge, uuid.UUID(challenge_id))
+    assert challenge.status == AuthChallengeStatus.PENDING.value
+    assert challenge.verified_at is None
+    assert challenge.consumed_at is None
+    assert challenge.account_id is None
+    assert session.query(AuditEvent).filter_by(
+        event_type=audit_events.AUTH_CHALLENGE_VERIFIED
+    ).count() == 0
+    assert code not in caplog.text
+    assert verified_email not in caplog.text
+    assert "unverified-b@example.com" not in caplog.text
+    assert all(
+        verified_email not in str(event.payload)
+        and "unverified-b@example.com" not in str(event.payload)
+        for event in session.query(AuditEvent).all()
+    )
+    assert session.query(PersonIdentity).count() == 0
+    assert session.query(CustomerAccount).count() == 0
+    assert session.query(DeliveryEmail).count() == 0
 
 
 def test_login_is_enumeration_safe_and_issues_secure_server_session_cookie(api):

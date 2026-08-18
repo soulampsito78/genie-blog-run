@@ -29,6 +29,7 @@ from customer.domain import auth_policy
 from customer.domain.clock import Clock, ensure_utc
 from customer.domain.enums import AuthChallengeStatus
 from customer.domain.errors import ChallengeRateLimited, LoginChallengeInvalid
+from customer.domain.email import normalize_email
 from customer.domain.security import issue_verification_code, verification_code_matches
 from customer.persistence.models import AuthChallenge
 from customer.services import audit_service as audit_events
@@ -74,7 +75,7 @@ class ChallengeService:
         attacker cannot accumulate several live codes for one action.
         """
         now = self._clock.now()
-        target = target.strip().lower()
+        target = _normalize_target(channel, target)
 
         self._enforce_issue_cooldown(purpose=purpose, target=target, now=now)
         self._expire_pending(purpose=purpose, target=target, now=now)
@@ -151,6 +152,7 @@ class ChallengeService:
         code: str,
         purpose: str,
         account_id: Optional[uuid.UUID] = None,
+        expected_target: Optional[str] = None,
     ) -> AuthChallenge:
         """Verify a code and consume the challenge in one atomic step.
 
@@ -182,6 +184,14 @@ class ChallengeService:
             raise LoginChallengeInvalid("challenge account mismatch")
         if account_id is None and challenge.account_id is not None:
             raise LoginChallengeInvalid("challenge account mismatch")
+        if (
+            expected_target is not None
+            and challenge.target
+            != _normalize_target(challenge.channel, expected_target)
+        ):
+            # Compare before status/code mutation. A request for another
+            # address must neither consume this proof nor reveal any address.
+            raise LoginChallengeInvalid("challenge target mismatch")
 
         if challenge.status != AuthChallengeStatus.PENDING.value:
             raise LoginChallengeInvalid(
@@ -229,3 +239,9 @@ class ChallengeService:
             payload={"purpose": challenge.purpose, "channel": challenge.channel},
         )
         return challenge
+
+
+def _normalize_target(channel: str, target: str) -> str:
+    if channel == "email":
+        return normalize_email(target)
+    return str(target or "").strip().lower()

@@ -27,6 +27,7 @@ from customer.api.dependencies import (
     require_same_site_origin,
 )
 from customer.domain.clock import Clock
+from customer.domain.email import is_valid_email, normalize_email
 from customer.domain.enums import (
     AuthChallengeChannel,
     AuthChallengePurpose,
@@ -39,10 +40,12 @@ from customer.domain.errors import (
     AuthenticationRequired,
     ChallengeRateLimited,
     CustomerAuthError,
+    DeliveryEmailUnverified,
     IdentityVerificationFailed,
-    LoginChallengeInvalid,
     IdempotencyKeyConflict,
+    LoginChallengeInvalid,
     PaymentMethodNotFound,
+    PaymentMethodRequired,
     PaymentMethodVerificationFailed,
     PaymentProviderNotConfigured,
     PaymentProviderStateUnknown,
@@ -51,6 +54,8 @@ from customer.domain.errors import (
     SessionInvalid,
     SessionRevoked,
     StepUpRequired,
+    TrialNotEligible,
+    TrialNotFound,
 )
 from customer.persistence.models import (
     BrowserSession,
@@ -65,6 +70,7 @@ from customer.services.login_service import LoginService
 from customer.services.onboarding_service import OnboardingService
 from customer.services.payment_method_service import PaymentMethodService
 from customer.services.session_service import AccessContext, SessionService
+from customer.services.trial_service import TrialResult, TrialService
 
 
 class IdentityStartRequest(BaseModel):
@@ -110,6 +116,12 @@ class PaymentRegistrationFinalizeRequest(PaymentRegistrationRequest):
     registration_reference: str = Field(min_length=1, max_length=120)
 
 
+class TrialStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: bool
+
+
 customer_router = APIRouter(prefix="/v1/customer")
 identity_router = APIRouter(prefix="/identity", tags=["customer-identity"])
 auth_router = APIRouter(prefix="/auth", tags=["customer-auth"])
@@ -119,6 +131,7 @@ onboarding_router = APIRouter(prefix="/onboarding", tags=["customer-onboarding"]
 payment_methods_router = APIRouter(
     prefix="/payment-methods", tags=["customer-payment-methods"]
 )
+trial_router = APIRouter(prefix="/trial", tags=["customer-trial"])
 
 
 @identity_router.post("/start")
@@ -201,15 +214,20 @@ def complete_signup(
     if verification is None:
         return _error(IdentityVerificationFailed.code, 422)
     try:
-        ChallengeService(session, clock).verify_and_consume(
+        normalized_email = normalize_email(body.account_email)
+        if not is_valid_email(normalized_email):
+            raise IdentityVerificationFailed("account email is invalid")
+        email_verification = ChallengeService(session, clock).verify_and_consume(
             challenge_id=body.challenge_id,
             code=body.code,
             purpose=AuthChallengePurpose.EMAIL_OWNERSHIP.value,
+            expected_target=normalized_email,
         )
         identity = IdentityService(session, clock)
         result = OnboardingService(session, clock, identity).complete_account_signup(
             verification=verification,
-            account_email=body.account_email,
+            account_email=normalized_email,
+            email_verification=email_verification,
         )
     except CustomerAuthError as error:
         return _domain_error(error)
@@ -372,6 +390,46 @@ def get_default_payment_method(
     return {"payment_method": _payment_method_projection(method)}
 
 
+@trial_router.post("/start")
+def start_trial(
+    body: TrialStartRequest,
+    idempotency_key: str = Header(
+        ..., alias="Idempotency-Key", min_length=1, max_length=200
+    ),
+    access: AccessContext = Depends(require_customer_session),
+    _: None = Depends(require_same_site_origin),
+    session: Session = Depends(get_customer_db_session),
+    clock: Clock = Depends(get_clock),
+):
+    if body.confirm is not True:
+        return _error("TRIAL_CONFIRMATION_REQUIRED", 400)
+    try:
+        result = TrialService(session, clock).start_trial(
+            account_id=access.account_id,
+            idempotency_key=idempotency_key,
+        )
+    except CustomerAuthError as error:
+        return _domain_error(error)
+    return {
+        "trial": _trial_projection(result),
+        "onboarding": {"next_required_stage": "onboarding_complete"},
+        "replayed": result.replayed,
+    }
+
+
+@trial_router.get("")
+def get_current_trial(
+    access: AccessContext = Depends(require_customer_session),
+    session: Session = Depends(get_customer_db_session),
+    clock: Clock = Depends(get_clock),
+):
+    try:
+        result = TrialService(session, clock).current_trial(access.account_id)
+    except CustomerAuthError as error:
+        return _domain_error(error)
+    return {"trial": _trial_projection(result)}
+
+
 @sessions_router.get("")
 def list_sessions(
     access: AccessContext = Depends(require_customer_session),
@@ -437,6 +495,7 @@ customer_router.include_router(account_router)
 customer_router.include_router(sessions_router)
 customer_router.include_router(onboarding_router)
 customer_router.include_router(payment_methods_router)
+customer_router.include_router(trial_router)
 
 
 def create_customer_test_app() -> FastAPI:
@@ -470,7 +529,13 @@ def _domain_error(error: CustomerAuthError) -> JSONResponse:
         status = 400
     elif isinstance(error, PaymentMethodNotFound):
         status = 404
+    elif isinstance(error, TrialNotFound):
+        status = 404
     elif isinstance(error, IdempotencyKeyConflict):
+        status = 409
+    elif isinstance(
+        error, (PaymentMethodRequired, DeliveryEmailUnverified, TrialNotEligible)
+    ):
         status = 409
     elif isinstance(error, PaymentProviderStateUnknown):
         status = 409
@@ -547,6 +612,20 @@ def _payment_method_projection(method: PaymentMethod) -> Dict[str, Any]:
         "status": method.status,
         "is_default": method.is_default,
         "own_name_verified": method.own_name_verified,
+    }
+
+
+def _trial_projection(result: TrialResult) -> Dict[str, Any]:
+    """Trial-only projection: no paid plan, price, or provider credential."""
+    subscription = result.subscription
+    return {
+        "subscription_id": str(subscription.id),
+        "state": subscription.state,
+        "trial_start_at": subscription.trial_start_at.isoformat(),
+        "trial_end_at": subscription.trial_end_at.isoformat(),
+        "delivery_start_date": subscription.delivery_start_date.isoformat(),
+        "products": list(result.products),
+        "automatic_paid_conversion": False,
     }
 
 

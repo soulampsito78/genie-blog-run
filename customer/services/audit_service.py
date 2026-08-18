@@ -44,6 +44,7 @@ SESSION_REVOKED = "session.revoked"
 SESSION_LOGOUT_ALL = "session.logout_all"
 
 PAYMENT_METHOD_REGISTERED = "payment_method.registered"
+TRIAL_STARTED = "subscription.trial_started"
 
 
 #: Payload keys that must never appear, regardless of value.
@@ -115,6 +116,7 @@ class AuditService:
         event_type: str,
         *,
         account_id: Optional[uuid.UUID] = None,
+        subscription_id: Optional[uuid.UUID] = None,
         actor_type: str = AuditActorType.SYSTEM.value,
         actor_account_id: Optional[uuid.UUID] = None,
         entity_type: Optional[str] = None,
@@ -132,6 +134,7 @@ class AuditService:
             actor_type=actor_type,
             actor_account_id=actor_account_id,
             account_id=account_id,
+            subscription_id=subscription_id,
             event_type=event_type,
             entity_type=entity_type,
             entity_id=str(entity_id) if entity_id is not None else None,

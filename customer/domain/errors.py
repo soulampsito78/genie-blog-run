@@ -145,3 +145,30 @@ class IdempotencyKeyConflict(CustomerAuthError):
     """An idempotency key was reused with different command parameters."""
 
     code = "IDEMPOTENCY_KEY_CONFLICT"
+
+
+# --- trial ---------------------------------------------------------------
+
+
+class PaymentMethodRequired(CustomerAuthError):
+    """A usable verified own-name default method is absent."""
+
+    code = "PAYMENT_METHOD_REQUIRED"
+
+
+class DeliveryEmailUnverified(CustomerAuthError):
+    """No verified active delivery address can receive trial briefings."""
+
+    code = "DELIVERY_EMAIL_UNVERIFIED"
+
+
+class TrialNotEligible(CustomerAuthError):
+    """The verified person or account cannot receive a new free trial."""
+
+    code = "TRIAL_NOT_ELIGIBLE"
+
+
+class TrialNotFound(CustomerAuthError):
+    """No trial projection exists for the authenticated account."""
+
+    code = "TRIAL_NOT_FOUND"
