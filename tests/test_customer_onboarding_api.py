@@ -255,6 +255,9 @@ def test_route_inventory_is_exact_and_contains_no_operator_surface():
         ("PUT", "/v1/customer/conversion/selection"),
         ("GET", "/v1/customer/conversion/selection"),
         ("POST", "/v1/customer/conversion/confirm"),
+        ("GET", "/v1/customer/billing/recovery"),
+        ("POST", "/v1/customer/billing/recovery/first-charge"),
+        ("POST", "/v1/customer/billing/recovery/suspended-renewal"),
     }
     assert actual == expected
     forbidden = ("/admin", "/internal", "owner-review", "approve", "send-now")

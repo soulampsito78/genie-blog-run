@@ -8,7 +8,11 @@ from sqlalchemy.orm import Session
 
 from customer.domain.clock import Clock, SystemClock
 from customer.domain.enums import AuthAssuranceLevel
-from customer.domain.errors import AuthenticationRequired, StepUpRequired
+from customer.domain.errors import (
+    AuthenticationRequired,
+    PaymentProviderNotConfigured,
+    StepUpRequired,
+)
 from customer.persistence.models import BrowserSession
 from customer.persistence.session import customer_session
 from customer.services.challenge_service import ChallengeService
@@ -66,6 +70,13 @@ def get_verification_code_sender() -> VerificationCodeSender:
 
 def get_payment_method_provider() -> PaymentMethodProvider:
     return UnconfiguredPaymentMethodProvider()
+
+
+def get_billing_recovery_executor():
+    """Fail closed until a mounted Customer runtime supplies provider wiring."""
+    raise PaymentProviderNotConfigured(
+        "billing recovery provider is not configured"
+    )
 
 
 def get_customer_api_security_config() -> CustomerApiSecurityConfig:

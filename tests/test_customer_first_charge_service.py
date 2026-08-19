@@ -626,7 +626,15 @@ def test_no_public_charge_route_or_operational_wiring():
         for route in create_customer_test_app().routes
         if route.path.startswith("/v1/customer")
     }
-    assert not any("charge" in path or "billing" in path for path in customer_paths)
+    assert {
+        path
+        for path in customer_paths
+        if "charge" in path or "billing" in path
+    } == {
+        "/v1/customer/billing/recovery",
+        "/v1/customer/billing/recovery/first-charge",
+        "/v1/customer/billing/recovery/suspended-renewal",
+    }
     assert not any(
         getattr(route, "path", "").startswith("/v1/customer") for route in app.routes
     )

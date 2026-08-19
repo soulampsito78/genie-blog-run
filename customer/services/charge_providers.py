@@ -80,7 +80,12 @@ class FirstChargeProvider(Protocol):
 
 @dataclass(frozen=True)
 class RenewalChargeRequest:
-    """Server-only command for one immutable paid-renewal attempt slot."""
+    """Server-only command for one immutable paid-renewal obligation.
+
+    ``purpose`` distinguishes the scheduled Day 0/+1/+3 cadence from an
+    explicit post-suspension recovery without creating a second provider
+    boundary.  Both commands settle the same durable billing-period tuple.
+    """
 
     attempt_id: str
     account_id: str
@@ -92,9 +97,10 @@ class RenewalChargeRequest:
     plan_code: str
     price_version: int
     attempt_no: int
-    retry_offset_day: int
+    retry_offset_day: Optional[int]
     idempotency_key: str = field(repr=False)
     billing_key_reference: str = field(repr=False)
+    purpose: str = "renewal_charge"
 
 
 class RenewalChargeProvider(Protocol):

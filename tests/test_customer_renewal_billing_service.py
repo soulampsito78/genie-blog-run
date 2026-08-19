@@ -951,7 +951,15 @@ def test_no_public_renewal_route_worker_or_production_mount():
         for route in create_customer_test_app().routes
         if route.path.startswith("/v1/customer")
     }
-    assert not any("renewal" in path or "billing" in path for path in customer_paths)
+    assert {
+        path
+        for path in customer_paths
+        if "renewal" in path or "billing" in path
+    } == {
+        "/v1/customer/billing/recovery",
+        "/v1/customer/billing/recovery/first-charge",
+        "/v1/customer/billing/recovery/suspended-renewal",
+    }
     assert not any(
         getattr(route, "path", "").startswith("/v1/customer") for route in app.routes
     )

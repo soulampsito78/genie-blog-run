@@ -16,6 +16,7 @@ from customer.api.dependencies import (
     CustomerApiSecurityConfig,
     IdentityProviderNotConfigured,
     get_clock,
+    get_billing_recovery_executor,
     get_customer_api_security_config,
     get_customer_db_session,
     get_identity_provider,
@@ -60,6 +61,8 @@ from customer.domain.errors import (
     StepUpRequired,
     TrialNotEligible,
     TrialNotFound,
+    FirstChargeConflict,
+    RenewalBillingConflict,
 )
 from customer.persistence.models import (
     BrowserSession,
@@ -68,6 +71,10 @@ from customer.persistence.models import (
     PaymentMethod,
 )
 from customer.services.challenge_service import ChallengeService
+from customer.services.billing_recovery_service import (
+    BillingRecoveryResult,
+    BillingRecoveryService,
+)
 from customer.services.conversion_service import (
     ConversionEligibility,
     ConversionResult,
@@ -144,6 +151,12 @@ class ConversionConfirmRequest(BaseModel):
     confirm: bool
 
 
+class BillingRecoveryConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: bool
+
+
 customer_router = APIRouter(prefix="/v1/customer")
 identity_router = APIRouter(prefix="/identity", tags=["customer-identity"])
 auth_router = APIRouter(prefix="/auth", tags=["customer-auth"])
@@ -155,6 +168,7 @@ payment_methods_router = APIRouter(
 )
 trial_router = APIRouter(prefix="/trial", tags=["customer-trial"])
 conversion_router = APIRouter(prefix="/conversion", tags=["customer-conversion"])
+billing_router = APIRouter(prefix="/billing", tags=["customer-billing"])
 
 
 @identity_router.post("/start")
@@ -548,6 +562,63 @@ def confirm_conversion(
     return {"conversion": _conversion_projection(result), "replayed": result.replayed}
 
 
+@billing_router.get("/recovery")
+def get_billing_recovery_eligibility(
+    access: AccessContext = Depends(require_customer_session),
+    session: Session = Depends(get_customer_db_session),
+    clock: Clock = Depends(get_clock),
+):
+    projection = BillingRecoveryService(session, clock).projection(access.account_id)
+    return {
+        "first_charge": _recovery_eligibility_projection(projection.first_charge),
+        "suspended_renewal": _recovery_eligibility_projection(
+            projection.suspended_renewal
+        ),
+    }
+
+
+@billing_router.post("/recovery/first-charge")
+def confirm_first_charge_recovery(
+    body: BillingRecoveryConfirmRequest,
+    idempotency_key: str = Header(
+        ..., alias="Idempotency-Key", min_length=1, max_length=200
+    ),
+    access: AccessContext = Depends(require_fresh_financial_auth),
+    _: None = Depends(require_same_site_origin),
+    executor=Depends(get_billing_recovery_executor),
+):
+    if body.confirm is not True:
+        return _error("BILLING_RECOVERY_CONFIRMATION_REQUIRED", 400)
+    try:
+        result = executor.recover_first_charge(
+            access.account_id, idempotency_key=idempotency_key
+        )
+    except CustomerAuthError as error:
+        return _domain_error(error)
+    return {"recovery": _billing_recovery_projection(result)}
+
+
+@billing_router.post("/recovery/suspended-renewal")
+def confirm_suspended_renewal_recovery(
+    body: BillingRecoveryConfirmRequest,
+    idempotency_key: str = Header(
+        ..., alias="Idempotency-Key", min_length=1, max_length=200
+    ),
+    access: AccessContext = Depends(require_fresh_financial_auth),
+    _: None = Depends(require_same_site_origin),
+    executor=Depends(get_billing_recovery_executor),
+):
+    if body.confirm is not True:
+        return _error("BILLING_RECOVERY_CONFIRMATION_REQUIRED", 400)
+    try:
+        result = executor.recover_suspended_renewal(
+            access.account_id, idempotency_key=idempotency_key
+        )
+    except CustomerAuthError as error:
+        return _domain_error(error)
+    return {"recovery": _billing_recovery_projection(result)}
+
+
 @sessions_router.get("")
 def list_sessions(
     access: AccessContext = Depends(require_customer_session),
@@ -615,6 +686,7 @@ customer_router.include_router(onboarding_router)
 customer_router.include_router(payment_methods_router)
 customer_router.include_router(trial_router)
 customer_router.include_router(conversion_router)
+customer_router.include_router(billing_router)
 
 
 def create_customer_test_app() -> FastAPI:
@@ -659,6 +731,8 @@ def _domain_error(error: CustomerAuthError) -> JSONResponse:
             ConversionNotEligible,
             ConversionSelectionInvalid,
             ConversionSelectionRequired,
+            FirstChargeConflict,
+            RenewalBillingConflict,
         ),
     ):
         status = 409
@@ -784,6 +858,38 @@ def _conversion_projection(result: ConversionResult) -> Dict[str, Any]:
         "confirmed_at": snapshot.confirmed_at.isoformat() if snapshot else None,
         "first_charge_at": snapshot.first_charge_at.isoformat() if snapshot else None,
         "charged": False,
+    }
+
+
+def _recovery_eligibility_projection(result) -> Dict[str, Any]:
+    return {
+        "kind": result.kind,
+        "eligible": result.eligible,
+        "status": result.status,
+        "subscription_id": (
+            str(result.subscription_id) if result.subscription_id else None
+        ),
+        "billing_attempt_id": (
+            str(result.billing_attempt_id) if result.billing_attempt_id else None
+        ),
+        "reconciliation_required": result.reconciliation_required,
+        "explicit_action_required": result.explicit_action_required,
+    }
+
+
+def _billing_recovery_projection(result: BillingRecoveryResult) -> Dict[str, Any]:
+    return {
+        "kind": result.kind,
+        "status": result.status,
+        "subscription_id": (
+            str(result.subscription_id) if result.subscription_id else None
+        ),
+        "billing_attempt_id": (
+            str(result.billing_attempt_id) if result.billing_attempt_id else None
+        ),
+        "replayed": result.replayed,
+        "reconciliation_required": result.reconciliation_required,
+        "delivery_available": result.delivery_available,
     }
 
 

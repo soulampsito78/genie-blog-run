@@ -61,6 +61,14 @@ RENEWAL_RECONCILIATION_SUCCEEDED = "billing.renewal_reconciled_success"
 RENEWAL_RECONCILIATION_FAILED = "billing.renewal_reconciled_failure"
 RENEWAL_RECONCILIATION_UNKNOWN = "billing.renewal_reconciliation_unknown"
 RENEWAL_RECONCILIATION_CONFLICT = "billing.renewal_reconciliation_conflict"
+BILLING_RECOVERY_REQUESTED = "billing.recovery_requested"
+BILLING_RECOVERY_SUCCEEDED = "billing.recovery_succeeded"
+BILLING_RECOVERY_FAILED = "billing.recovery_failed"
+BILLING_RECOVERY_UNKNOWN = "billing.recovery_provider_state_unknown"
+BILLING_RECOVERY_RECONCILIATION_SUCCEEDED = "billing.recovery_reconciled_success"
+BILLING_RECOVERY_RECONCILIATION_FAILED = "billing.recovery_reconciled_failure"
+BILLING_RECOVERY_RECONCILIATION_UNKNOWN = "billing.recovery_reconciliation_unknown"
+BILLING_RECOVERY_RECONCILIATION_CONFLICT = "billing.recovery_reconciliation_conflict"
 
 
 #: Payload keys that must never appear, regardless of value.
