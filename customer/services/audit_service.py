@@ -49,6 +49,10 @@ CONVERSION_CONFIRMED = "subscription.conversion_confirmed"
 FIRST_CHARGE_SUCCEEDED = "billing.first_charge_succeeded"
 FIRST_CHARGE_FAILED = "billing.first_charge_failed"
 FIRST_CHARGE_UNKNOWN = "billing.first_charge_provider_state_unknown"
+FIRST_CHARGE_RECONCILIATION_SUCCEEDED = "billing.first_charge_reconciled_success"
+FIRST_CHARGE_RECONCILIATION_FAILED = "billing.first_charge_reconciled_failure"
+FIRST_CHARGE_RECONCILIATION_UNKNOWN = "billing.first_charge_reconciliation_unknown"
+FIRST_CHARGE_RECONCILIATION_CONFLICT = "billing.first_charge_reconciliation_conflict"
 
 
 #: Payload keys that must never appear, regardless of value.

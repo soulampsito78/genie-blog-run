@@ -75,3 +75,101 @@ class FirstChargeProvider(Protocol):
 
     def charge(self, request: FirstChargeRequest) -> FirstChargeProviderResult:
         ...
+
+
+class ReconciliationOutcome(str, Enum):
+    """Authoritative query result for the original provider command.
+
+    Provider adapters must map missing or ambiguous provider records to
+    ``STILL_UNKNOWN`` unless their provider contract proves that absence is a
+    definitive non-charge result.
+    """
+
+    CONFIRMED_SUCCESS = "confirmed_success"
+    CONFIRMED_FAILURE = "confirmed_failure"
+    STILL_UNKNOWN = "still_unknown"
+    NOT_FOUND = "not_found"
+
+
+class ReconciliationLookupBasis(str, Enum):
+    """Durable authority used to query the original provider command."""
+
+    OPERATION_REFERENCE = "operation_reference"
+    IDEMPOTENCY_KEY = "idempotency_key"
+
+
+@dataclass(frozen=True)
+class FirstChargeReconciliationCapabilities:
+    """Explicit provider-adapter guarantees; defaults are fail-closed."""
+
+    authoritative_idempotency_lookup: bool = False
+    definitive_not_found_means_no_charge: bool = False
+
+
+@dataclass(frozen=True)
+class FirstChargeReconciliationRequest:
+    """Server-only lookup evidence for one already-issued charge command."""
+
+    attempt_id: str
+    provider: str
+    lookup_basis: ReconciliationLookupBasis
+    original_idempotency_key: str = field(repr=False)
+    original_operation_reference: Optional[str] = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class FirstChargeReconciliationResult:
+    outcome: ReconciliationOutcome
+    transaction_reference: Optional[str] = None
+    provider_event_reference: Optional[str] = None
+    failure_code: Optional[str] = None
+
+    @classmethod
+    def confirmed_success(
+        cls, transaction_reference: str, *, event_reference: Optional[str] = None
+    ) -> "FirstChargeReconciliationResult":
+        return cls(
+            ReconciliationOutcome.CONFIRMED_SUCCESS,
+            transaction_reference=transaction_reference,
+            provider_event_reference=event_reference,
+        )
+
+    @classmethod
+    def confirmed_failure(
+        cls, failure_code: str, *, event_reference: Optional[str] = None
+    ) -> "FirstChargeReconciliationResult":
+        return cls(
+            ReconciliationOutcome.CONFIRMED_FAILURE,
+            provider_event_reference=event_reference,
+            failure_code=failure_code,
+        )
+
+    @classmethod
+    def still_unknown(
+        cls, *, event_reference: Optional[str] = None
+    ) -> "FirstChargeReconciliationResult":
+        return cls(
+            ReconciliationOutcome.STILL_UNKNOWN,
+            provider_event_reference=event_reference,
+        )
+
+    @classmethod
+    def not_found(
+        cls, *, event_reference: Optional[str] = None
+    ) -> "FirstChargeReconciliationResult":
+        return cls(
+            ReconciliationOutcome.NOT_FOUND,
+            provider_event_reference=event_reference,
+        )
+
+
+class FirstChargeReconciliationProvider(Protocol):
+    """Query-only adapter for the original first-charge provider command."""
+
+    name: str
+    reconciliation_capabilities: FirstChargeReconciliationCapabilities
+
+    def reconcile_first_charge(
+        self, request: FirstChargeReconciliationRequest
+    ) -> FirstChargeReconciliationResult:
+        ...
