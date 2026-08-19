@@ -53,6 +53,14 @@ FIRST_CHARGE_RECONCILIATION_SUCCEEDED = "billing.first_charge_reconciled_success
 FIRST_CHARGE_RECONCILIATION_FAILED = "billing.first_charge_reconciled_failure"
 FIRST_CHARGE_RECONCILIATION_UNKNOWN = "billing.first_charge_reconciliation_unknown"
 FIRST_CHARGE_RECONCILIATION_CONFLICT = "billing.first_charge_reconciliation_conflict"
+RENEWAL_PREPARED = "billing.renewal_prepared"
+RENEWAL_SUCCEEDED = "billing.renewal_succeeded"
+RENEWAL_FAILED = "billing.renewal_failed"
+RENEWAL_UNKNOWN = "billing.renewal_provider_state_unknown"
+RENEWAL_RECONCILIATION_SUCCEEDED = "billing.renewal_reconciled_success"
+RENEWAL_RECONCILIATION_FAILED = "billing.renewal_reconciled_failure"
+RENEWAL_RECONCILIATION_UNKNOWN = "billing.renewal_reconciliation_unknown"
+RENEWAL_RECONCILIATION_CONFLICT = "billing.renewal_reconciliation_conflict"
 
 
 #: Payload keys that must never appear, regardless of value.

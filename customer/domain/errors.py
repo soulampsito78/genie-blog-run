@@ -208,3 +208,9 @@ class FirstChargeConflict(CustomerAuthError):
     """Stored first-charge or provider evidence conflicts with authority."""
 
     code = "FIRST_CHARGE_CONFLICT"
+
+
+class RenewalBillingConflict(CustomerAuthError):
+    """Stored paid-renewal or provider evidence conflicts with authority."""
+
+    code = "RENEWAL_BILLING_CONFLICT"

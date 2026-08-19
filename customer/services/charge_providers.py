@@ -7,6 +7,7 @@ billing-key reference is intentionally server-only and excluded from repr.
 
 from dataclasses import dataclass, field
 from enum import Enum
+import datetime as dt
 from typing import Optional, Protocol
 
 
@@ -74,6 +75,36 @@ class FirstChargeProvider(Protocol):
     name: str
 
     def charge(self, request: FirstChargeRequest) -> FirstChargeProviderResult:
+        ...
+
+
+@dataclass(frozen=True)
+class RenewalChargeRequest:
+    """Server-only command for one immutable paid-renewal attempt slot."""
+
+    attempt_id: str
+    account_id: str
+    subscription_id: str
+    billing_period_start: dt.date
+    billing_period_end: dt.date
+    amount_krw: int
+    currency: str
+    plan_code: str
+    price_version: int
+    attempt_no: int
+    retry_offset_day: int
+    idempotency_key: str = field(repr=False)
+    billing_key_reference: str = field(repr=False)
+
+
+class RenewalChargeProvider(Protocol):
+    """Provider-neutral server-side recurring-charge adapter."""
+
+    name: str
+
+    def charge_renewal(
+        self, request: RenewalChargeRequest
+    ) -> FirstChargeProviderResult:
         ...
 
 
@@ -171,5 +202,28 @@ class FirstChargeReconciliationProvider(Protocol):
 
     def reconcile_first_charge(
         self, request: FirstChargeReconciliationRequest
+    ) -> FirstChargeReconciliationResult:
+        ...
+
+
+@dataclass(frozen=True)
+class RenewalChargeReconciliationRequest:
+    """Lookup-only evidence for one original renewal charge command."""
+
+    attempt_id: str
+    provider: str
+    lookup_basis: ReconciliationLookupBasis
+    original_idempotency_key: str = field(repr=False)
+    original_operation_reference: Optional[str] = field(default=None, repr=False)
+
+
+class RenewalChargeReconciliationProvider(Protocol):
+    """Query-only adapter; it can never create a renewal charge."""
+
+    name: str
+    reconciliation_capabilities: FirstChargeReconciliationCapabilities
+
+    def reconcile_renewal(
+        self, request: RenewalChargeReconciliationRequest
     ) -> FirstChargeReconciliationResult:
         ...
