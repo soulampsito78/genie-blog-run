@@ -43,6 +43,15 @@ CATEGORY_KEYWORD_GROUPS: Dict[str, Tuple[str, ...]] = {
     "robotics_automation_manufacturing": (
         "robotics", "humanoid robot", "industrial robot", "warehouse automation",
         "factory automation", "collaborative robot", "autonomous systems", "manufacturing",
+        # A consumer/companion robot is a robot. Without these, an "AI companion
+        # robot" headline scored ZERO robotics hits while an incidental
+        # "battery"/"charging" mention in its summary won battery_ev_energy_grid
+        # outright, and the enricher then attached 전력 조달·ESS 계약 follow-ups to
+        # a home-robot story (2026-08-27 Global).
+        "robot", "robotic", "humanoid", "companion robot", "home robot",
+        "consumer robot", "service robot", "cobot", "legged robot", "quadruped",
+        "robot vacuum", "autonomous mobility",
+        "로봇", "휴머노이드", "협동로봇", "자동화",
     ),
     "battery_ev_energy_grid": (
         "battery", "solid-state battery", "lithium", "lfp", "sodium-ion", "ess", "grid storage",
@@ -636,18 +645,62 @@ def _classify_total(total: int, *, hard_reject: bool) -> Classification:
     return "reject"
 
 
+# Deliberate, non-alphabetical tie-break order. Ties used to be resolved by
+# sorting the category slug alphabetically, which is editorially meaningless:
+# `ai_software_platform` and `aerospace_satellite_defense_tech` won ties over
+# every other category purely because "a" sorts first. This order puts the
+# categories whose keywords are concrete and physical (a named robot, a named
+# battery chemistry, a named fab tool) ahead of the broad catch-alls, so a tie
+# is broken toward the more specific claim about the item.
+_CATEGORY_TIE_BREAK_ORDER: Tuple[str, ...] = (
+    "robotics_automation_manufacturing",
+    "semiconductor_equipment_materials",
+    "semiconductor_chip_infra",
+    "battery_ev_energy_grid",
+    "aerospace_satellite_defense_tech",
+    "hardware_device_display",
+    "cybersecurity_cloud_datacenter",
+    "policy_regulation_capital_supplychain",
+    "ai_software_platform",
+)
+
+_CATEGORY_TIE_BREAK_RANK: Dict[str, int] = {
+    cat: idx for idx, cat in enumerate(_CATEGORY_TIE_BREAK_ORDER)
+}
+
+# A keyword in the headline is a claim about what the article IS. The same
+# keyword in a long trailing summary is frequently incidental.
+_TITLE_HIT_WEIGHT = 3
+_BODY_HIT_WEIGHT = 1
+
+
 def classify_global_tech_category(
     text: str,
     *,
     feed_default: str = "",
+    title: str = "",
 ) -> Tuple[str, List[str], float, str]:
-    """Return primary_category, secondary_categories, confidence, reason."""
+    """Return primary_category, secondary_categories, confidence, reason.
+
+    ``title`` is optional and, when supplied, is weighted far above the rest of
+    ``text``. Evidence priority is title first, then the same item's summary /
+    body, then the feed default as a weak fallback — never another item's text.
+    """
     lower = text.lower()
+    title_lower = str(title or "").strip().lower()
     hits: List[Tuple[str, int]] = []
+    hit_detail: Dict[str, Tuple[int, int]] = {}
     for cat, keywords in CATEGORY_KEYWORD_GROUPS.items():
-        count = sum(1 for kw in keywords if kw in lower)
-        if count:
-            hits.append((cat, count))
+        title_hits = sum(1 for kw in keywords if title_lower and kw in title_lower)
+        all_hits = sum(1 for kw in keywords if kw in lower)
+        # Keywords found in the title are also present in the combined blob;
+        # count the remainder as body evidence so the title is not double-paid.
+        body_hits = max(0, all_hits - title_hits)
+        if not all_hits:
+            continue
+        weighted = title_hits * _TITLE_HIT_WEIGHT + body_hits * _BODY_HIT_WEIGHT
+        hits.append((cat, weighted))
+        hit_detail[cat] = (title_hits, body_hits)
 
     # Guard: only allow aerospace/defense through when an unambiguous
     # aerospace/defense/military term is present — a stray "launch" hit from a
@@ -656,7 +709,15 @@ def classify_global_tech_category(
     if not has_strict_aerospace_signal:
         hits = [(cat, n) for cat, n in hits if cat != "aerospace_satellite_defense_tech"]
 
-    hits.sort(key=lambda pair: (-pair[1], pair[0]))
+    # Strongest weighted evidence first; then title evidence; then the explicit
+    # specificity order above. Never the alphabetical slug.
+    hits.sort(
+        key=lambda pair: (
+            -pair[1],
+            -hit_detail.get(pair[0], (0, 0))[0],
+            _CATEGORY_TIE_BREAK_RANK.get(pair[0], len(_CATEGORY_TIE_BREAK_ORDER)),
+        )
+    )
     if not hits:
         if any(kw in lower for kw in CONSUMER_MOBILE_DEVICE_KEYWORDS):
             return "hardware_device_display", [], 0.4, "consumer_device_keyword_fallback"
@@ -685,10 +746,20 @@ def classify_global_tech_category(
         # item. Fall back to the same neutral category `market_signal` uses.
         }.get(legacy, AI_PRIMARY_CATEGORY)
         return mapped, [], 0.35, f"feed_default_mapped:{legacy}"
-    primary, top_hits = hits[0][0], hits[0][1]
+    primary, top_score = hits[0][0], hits[0][1]
     secondary = [cat for cat, n in hits[1:4] if n >= 1]
-    confidence = min(0.95, 0.45 + top_hits * 0.12)
-    reason = f"keyword_hits:{top_hits} for {primary}"
+    primary_title_hits, primary_body_hits = hit_detail.get(primary, (0, 0))
+    # Body-only evidence stays low-confidence on purpose: downstream category
+    # fallback copy is only allowed to assert a vertical when the evidence for
+    # that vertical is grounded in this item's own headline.
+    if primary_title_hits:
+        confidence = min(0.95, 0.55 + primary_title_hits * 0.12)
+    else:
+        confidence = min(0.5, 0.3 + primary_body_hits * 0.05)
+    reason = (
+        f"title_hits:{primary_title_hits} body_hits:{primary_body_hits} "
+        f"weighted:{top_score} for {primary}"
+    )
     return primary, secondary, round(confidence, 2), reason
 
 
@@ -936,7 +1007,7 @@ def score_global_signal_item(item: dict) -> ScoredGlobalSignal:
 
     text = _text_blob(item)
     primary_category, secondary_categories, category_confidence, reason_for_category = (
-        classify_global_tech_category(text, feed_default=category)
+        classify_global_tech_category(text, feed_default=category, title=title)
     )
     category = primary_category
     penalty_notes: List[str] = []

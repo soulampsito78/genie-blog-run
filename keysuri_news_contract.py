@@ -10,6 +10,8 @@ from keysuri_korea_signal_scoring import CATEGORY_KO_LABELS, KOREA_TECH_CATEGORI
 from keysuri_source_gate import CONFIDENCE_LABELS, GateResult
 from sent_news_dedup_gate import (
     canonicalize_url,
+    editorial_cluster_key as _editorial_cluster_key,
+    extract_company_entities,
     normalize_title,
     recent_log_duplicate_reason,
     select_with_diversity_caps,
@@ -1004,6 +1006,136 @@ def _claim_to_news_item(
     return item
 
 
+# --- Cross-day editorial novelty (Phase 4) --------------------------------
+# Exact URL/title dedup stops the same *article* recurring; it does nothing about
+# the same *ecosystem* recurring. 2026-08-24/25/26 Global each led with NVIDIA AI
+# Factory + OpenAI + IEEE Spectrum: fifteen TOP5 slots, nine of them those three
+# source brands, three days of near-identical narrative, and every article
+# technically new. These weights demote a candidate whose source / entity /
+# editorial cluster has dominated recent owner-review briefings — as a bounded
+# rank offset, never a ban, so a materially stronger signal still wins and a
+# genuinely important repeat NVIDIA story can still lead.
+_CROSS_DAY_AXIS_PENALTY_CAP = 2
+_CROSS_DAY_TOTAL_PENALTY_CAP = 3
+
+
+def _recent_axis_day_counts(
+    recent_rows: Sequence[Dict[str, Any]],
+) -> Tuple[Dict[str, set], Dict[str, set], Dict[str, set]]:
+    """Distinct KST days on which each source / entity / cluster was exposed."""
+    by_source: Dict[str, set] = {}
+    by_entity: Dict[str, set] = {}
+    by_cluster: Dict[str, set] = {}
+    for row in recent_rows:
+        if not isinstance(row, dict):
+            continue
+        day = str(row.get("exposed_date_kst") or row.get("sent_date_kst") or "").strip()
+        if not day:
+            day = str(row.get("run_id") or "").strip()
+        if not day:
+            continue
+        source = str(row.get("normalized_source") or row.get("source") or "").strip().lower()
+        if source:
+            by_source.setdefault(source, set()).add(day)
+        cluster = str(row.get("editorial_cluster_key") or "").strip().lower()
+        if cluster:
+            by_cluster.setdefault(cluster, set()).add(day)
+        for entity in row.get("entity_keys") or []:
+            key = str(entity or "").strip().lower()
+            if key:
+                by_entity.setdefault(key, set()).add(day)
+    return by_source, by_entity, by_cluster
+
+
+def _cross_day_novelty_penalty(
+    item: Dict[str, Any],
+    by_source: Dict[str, set],
+    by_entity: Dict[str, set],
+    by_cluster: Dict[str, set],
+) -> Dict[str, Any]:
+    source = str(item.get("normalized_source") or item.get("source") or "").strip().lower()
+    # Candidate-pool items are not yet enriched with the structured keys the
+    # exposure log stores, so derive them the same way the log does. Without
+    # this, entity and cluster penalties silently evaluate to zero and the whole
+    # signal collapses to "same source brand", which every major feed trips.
+    cluster = str(item.get("editorial_cluster_key") or "").strip().lower()
+    if not cluster:
+        cluster = str(_editorial_cluster_key(item) or "").strip().lower()
+    raw_entities = item.get("entity_keys")
+    if not isinstance(raw_entities, list) or not raw_entities:
+        raw_entities = extract_company_entities(item)
+    entities = [
+        str(entity or "").strip().lower()
+        for entity in (raw_entities or [])
+        if str(entity or "").strip()
+    ]
+    source_penalty = min(_CROSS_DAY_AXIS_PENALTY_CAP, len(by_source.get(source, ())) if source else 0)
+    cluster_penalty = min(
+        _CROSS_DAY_AXIS_PENALTY_CAP, len(by_cluster.get(cluster, ())) if cluster else 0
+    )
+    entity_penalty = min(
+        _CROSS_DAY_AXIS_PENALTY_CAP,
+        max((len(by_entity.get(entity, ())) for entity in entities), default=0),
+    )
+    total = min(
+        _CROSS_DAY_TOTAL_PENALTY_CAP, source_penalty + entity_penalty + cluster_penalty
+    )
+    return {
+        "recent_source_penalty": source_penalty,
+        "recent_entity_penalty": entity_penalty,
+        "recent_cluster_penalty": cluster_penalty,
+        "cross_day_novelty_penalty": total,
+    }
+
+
+def apply_cross_day_novelty_ordering(
+    pool: List[Dict[str, Any]],
+    recent_rows: Sequence[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Bounded re-ordering of an already score-ordered pool.
+
+    The penalty is added to the candidate's existing rank, so it can move a
+    candidate down by at most ``_CROSS_DAY_TOTAL_PENALTY_CAP`` places' worth of
+    score advantage. A candidate that is genuinely stronger by a wider margin
+    keeps its lead — repetition is a tie-breaker, not censorship.
+    """
+    if not pool or not recent_rows:
+        return list(pool), []
+    by_source, by_entity, by_cluster = _recent_axis_day_counts(recent_rows)
+    if not (by_source or by_entity or by_cluster):
+        return list(pool), []
+    decisions: List[Dict[str, Any]] = []
+    keyed: List[Tuple[float, int, Dict[str, Any]]] = []
+    for index, item in enumerate(pool):
+        penalties = _cross_day_novelty_penalty(item, by_source, by_entity, by_cluster)
+        penalty = int(penalties["cross_day_novelty_penalty"])
+        keyed.append((index + penalty, index, item))
+        if penalty:
+            decisions.append(
+                {
+                    "news_id": item.get("news_id") or item.get("claim_id") or "",
+                    "title": item.get("title") or item.get("headline") or "",
+                    "source": item.get("normalized_source") or item.get("source") or "",
+                    "original_rank": index,
+                    "effective_rank": index + penalty,
+                    **penalties,
+                }
+            )
+    keyed.sort(key=lambda entry: (entry[0], entry[1]))
+    reordered = [entry[2] for entry in keyed]
+    for decision in decisions:
+        decision["final_rank"] = next(
+            (i for i, candidate in enumerate(reordered)
+             if (candidate.get("news_id") or candidate.get("claim_id") or "") == decision["news_id"]),
+            None,
+        )
+        decision["demoted"] = (
+            decision["final_rank"] is not None
+            and decision["final_rank"] > decision["original_rank"]
+        )
+    return reordered, decisions
+
+
 def select_top_5_news(
     source_pack: dict,
     gate_result: GateResult,
@@ -1139,7 +1271,15 @@ def select_top_5_news(
     hard_rows += [row for row in (recent_dedup_rows or []) if isinstance(row, dict)]
 
     if allow_exposure_backfill is None:
-        allow_exposure_backfill = is_scheduled_trigger_source(trigger_source)
+        # Owner-review exposure is a SOFT duplicate, and a soft duplicate must
+        # never be able to force a hold: collapsing below five is strictly worse
+        # for the owner than a recorded repeat, and it is the historic
+        # "fewer than 5 candidates" failure. So last-resort backfill is always
+        # permitted; `trigger_source` only records whether this was a scheduled
+        # run, because the *preference* for fresh candidates (applied above) is
+        # what differs, not the willingness to avoid an under-count.
+        allow_exposure_backfill = True
+    scheduled_trigger = is_scheduled_trigger_source(trigger_source)
 
     # Cross-day dedup over the FULL hydrated pool, applied BEFORE the diversity
     # caps so a recent-log duplicate is dropped and backfilled from the next fresh
@@ -1251,6 +1391,9 @@ def select_top_5_news(
             "fresh_backfill_used_count": fresh_backfill_used_count,
             "exposure_backfill_used": exposure_backfill_used,
             "exposure_backfill_used_count": exposure_backfill_used_count,
+            "exposure_backfill_on_scheduled_run": bool(
+                exposure_backfill_used and scheduled_trigger
+            ),
             "final_selected_count": selected_count,
             "selected_count": selected_count,
         }
@@ -1280,6 +1423,12 @@ def select_top_5_news(
             "cross_day_dedup_rejected_items": cross_day_rejected,
         }
 
+    # Bounded cross-day editorial novelty: prefer, among comparably valuable
+    # candidates, the one whose source/entity/cluster has NOT dominated recent
+    # owner-review briefings. Applied to the ordering only — never a filter.
+    deduped_pool, cross_day_novelty_decisions = apply_cross_day_novelty_ordering(
+        deduped_pool, list(soft_rows) + list(hard_rows)
+    )
     diversity = select_with_diversity_caps(deduped_pool, required_count=KEYSURI_TOP_NEWS_COUNT)
     selected = diversity["selected_items"]
     diversity_summary = diversity["diversity_summary"]
@@ -1290,6 +1439,10 @@ def select_top_5_news(
         "diversity_rejected_count": len(diversity["rejected_items"]),
         "relaxed_due_to_candidate_shortage": bool(
             diversity_summary.get("relaxed_due_to_candidate_shortage")
+        ),
+        "cross_day_novelty_penalized_count": len(cross_day_novelty_decisions),
+        "cross_day_novelty_demoted_count": sum(
+            1 for decision in cross_day_novelty_decisions if decision.get("demoted")
         ),
     }
     internal_issue_codes: List[str] = []
@@ -1309,6 +1462,7 @@ def select_top_5_news(
         "candidate_funnel_summary": candidate_funnel_summary,
         "cross_day_dedup_removed_count": cross_day_dedup_removed_count,
         "cross_day_dedup_rejected_items": cross_day_rejected,
+        "cross_day_novelty_decisions": cross_day_novelty_decisions,
         "exposure_backfill_used": exposure_backfill_used,
         "internal_issue_codes": internal_issue_codes,
     }

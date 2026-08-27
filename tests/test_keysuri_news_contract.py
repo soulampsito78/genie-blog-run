@@ -699,9 +699,14 @@ class KeysuriKoreaExposureDedupBackfillTests(unittest.TestCase):
         self.assertIn("b1", ids)
         self.assertEqual(len(ids), 5)
 
-    def test_manual_run_holds_on_exposure_dupes_without_backfill(self) -> None:
-        # Non-scheduled (manual/QA) run keeps exposure items as a hard block so the
-        # operator sees the true dedup state -> hold, no re-injection.
+    def test_manual_run_backfills_exposure_rather_than_holding(self) -> None:
+        # A soft duplicate must never be able to force a hold. Exposure-only
+        # dupes are re-injected on any trigger when the fresh pool is short --
+        # collapsing below five is the historic "fewer than 5 candidates"
+        # failure and is strictly worse for the owner than a recorded repeat.
+        # `exposure_backfill_on_scheduled_run` still records which kind of run
+        # it was. Customer-sent rows remain a hard block that DOES hold (see
+        # test_hold_funnel_has_all_diagnostic_fields).
         pack = self._pack(["a1", "a2", "a3", "a4", "a5"])
         exposure = [self._log_row(c) for c in ["a1", "a2", "a3", "a4", "a5"]]
         result = select_top_5_news(
@@ -710,8 +715,12 @@ class KeysuriKoreaExposureDedupBackfillTests(unittest.TestCase):
             exposure_log_rows=exposure,
             trigger_source="manual_admin_review",
         )
-        self.assertEqual(result["verdict"], "hold")
-        self.assertFalse(result.get("exposure_backfill_used"))
+        self.assertEqual(result["verdict"], "pass")
+        self.assertTrue(result.get("exposure_backfill_used"))
+        self.assertEqual(len(result["top_5_news"]["items"]), 5)
+        funnel = result["candidate_funnel_summary"]
+        self.assertEqual(funnel["exposure_backfill_used_count"], 5)
+        self.assertFalse(funnel["exposure_backfill_on_scheduled_run"])
 
     def test_hold_funnel_has_all_diagnostic_fields(self) -> None:
         pack = self._pack(["a1", "a2", "a3", "a4", "a5"])

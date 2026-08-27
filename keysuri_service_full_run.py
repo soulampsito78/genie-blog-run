@@ -2348,6 +2348,28 @@ def _reissue_canonical_url(item: Dict[str, Any]) -> str:
     return ""
 
 
+# A canonical URL or a title+source pair is a *checkable* assertion about which
+# article a block of prose is about. A bare news_id is not: model output often
+# carries an opaque id of its own making that references no real article, and
+# `prompt_index`/`selection_index` are slot positions that say nothing about
+# article identity at all.
+_REISSUE_ARTICLE_IDENTITY_KINDS = frozenset({"canonical_url", "title_source"})
+
+
+def _reissue_article_identity_keys(item: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """Identity keys that verifiably name a *specific article*.
+
+    Used to decide whether positional pairing is even conceivable: a base that
+    names an article which matches nothing in the live batch is proof the two
+    batches are different, not licence to pair them by position.
+    """
+    return [
+        key
+        for key in _reissue_correlation_keys(item)
+        if key[0] in _REISSUE_ARTICLE_IDENTITY_KINDS
+    ]
+
+
 def _reissue_correlation_keys(item: Dict[str, Any]) -> List[Tuple[str, str]]:
     """Stable identity keys for pairing model prose to a live article.
 
@@ -2429,19 +2451,43 @@ def correlate_reissue_seeds(
         methods.append(method)
 
     unmatched = [i for i, seed in enumerate(seeds) if seed is None]
+    # Do the bases actually claim to be about specific articles? Prose-only
+    # model output (no ids, no URLs, no titles) can only be paired by position,
+    # because position is the sole correspondence the model expressed. Bases
+    # that DO carry article identity are a different matter entirely.
+    identity_bearing_bases = [b for b in bases if _reissue_article_identity_keys(b)]
     if unmatched and bases:
-        # Last-resort positional recovery, gated so it can only ever apply to a
-        # provably identical batch: equal counts, the expected size, nothing
-        # already bound by identity, and a unique article per output slot.
+        # Last-resort positional recovery. The previous guard treated "nothing
+        # bound by identity" as evidence of a provably identical batch. It is
+        # the opposite: when every base names an article and not one of them
+        # matches any live article, that is proof the two batches are DIFFERENT.
+        #
+        # 2026-08-27 body reissue (20260827_123607_keysuri_global_tech_847c9113)
+        # hard-excluded all five parent articles and re-selected five fresh ones,
+        # so identity overlap was necessarily zero — and the old guard read that
+        # as permission. Every card shipped with one article's headline over
+        # another article's source, body and URL ("Bringing ChatGPT for Teachers"
+        # under "5 ways to upgrade your home decor with Google Search").
+        #
+        # Positional pairing is therefore permitted only when NO base asserts an
+        # article identity that could be checked and contradicted.
+        batch_identity_conflict = bool(identity_bearing_bases)
         guards_ok = (
             len(bases) == len(live_items) == expected_count
             and not used
             and len(unmatched) == len(live_items)
+            and not batch_identity_conflict
             and len({_reissue_norm_compare_key(_reissue_real_title(i)) for i in live_items}) == expected_count
             and all(_reissue_canonical_url(i) for i in live_items)
             and len({_reissue_canonical_url(i).rstrip("/") for i in live_items}) == expected_count
         )
         diagnostics["reissue_correlation_positional_guards_passed"] = bool(guards_ok)
+        diagnostics["reissue_correlation_base_identity_bearing_count"] = len(
+            identity_bearing_bases
+        )
+        diagnostics["reissue_correlation_batch_identity_conflict"] = bool(
+            batch_identity_conflict
+        )
         if guards_ok:
             seeds = list(bases[: len(live_items)])
             methods = ["positional"] * len(live_items)
@@ -3423,14 +3469,19 @@ def _maybe_write_owner_review_exposure_log(
     only when the regenerated selection differs from the parent run's
     recorded selection, so a same-selection reissue is not counted twice.
     """
-    # Do not write owner-review exposure to production log unless customer_delivery_status is explicitly sent/success
-    # This ensures validation blocks, manual runs, and owner-review-only runs do not pollute dedupe memory.
-    status = str(meta.get("customer_delivery_status") or "").strip()
-    if status not in ("sent", "success"):
-        meta["exposure_log_updated"] = False
-        meta["exposure_log_update_error"] = "customer_not_sent_yet"
-        return
-    
+    # An owner-review email that actually reached the owner IS an exposure
+    # event, and it is the ONLY exposure event Kee-Suri normally produces:
+    # the canonical lifecycle is owner review first, customer send only after
+    # explicit approval. A prior shared-path change required
+    # customer_delivery_status in (sent, success) before writing this log,
+    # which meant the log was never written at all for the owner-review-only
+    # flow it was built for — cross-day memory died silently and Global
+    # re-converged on the same sources for days.
+    #
+    # These rows are consumed as SOFT duplicates (see keysuri_prompt_input /
+    # select_top_5_news), so recording them cannot recreate the historic
+    # "fewer than 5 candidates" hold; customer-sent history stays the separate
+    # hard block. `email_sent` below remains the real precondition.
     if not email_sent:
         meta["exposure_log_updated"] = False
         meta["exposure_log_update_error"] = "email_not_sent"

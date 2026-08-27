@@ -145,11 +145,60 @@ class Global1230IncidentHarness(unittest.TestCase):
         result = generate_keysuri_with_bounded_recovery(
             _prompt_input(), gemini_caller=_caller, usage_sink={}
         )
-        self.assertEqual(len(calls), 1)  # scaffold salvages; no second call
-        self.assertEqual(result["parse_result"]["parse_status"], "parsed_valid")
+        # A display shell means the model produced no article prose, so the
+        # scaffold had to graft the whole TOP5. That buys the ONE budgeted
+        # corrective call rather than being waved through as a success: shipping
+        # the scaffold silently is what sent the owner a template-only POOR
+        # briefing on 2026-08-27. The stub returns the same shell again, so the
+        # retry cannot improve it and the run falls back to the scaffolded parse
+        # — still contract-valid, still graded by the single adjudicator.
+        self.assertEqual(len(calls), 2)
         diag = result["generation_diagnostics"]
+        self.assertTrue(diag.get("global_recovery_attempted"))
+        self.assertIn(
+            "global_contract_scaffold_fabricated_top5",
+            diag.get("global_recovery_error_codes") or [],
+        )
+        self.assertTrue(diag.get("global_recovery_fallback_to_prior_parse"))
+        self.assertEqual(result["parse_result"]["parse_status"], "parsed_valid")
+        self.assertEqual(
+            len(result["parse_result"]["generated_briefing"]["top_5_news"]["items"]), 5
+        )
+        # Budget is still respected: never a third call.
         self.assertLessEqual(int(diag.get("global_generation_call_count") or 0), 2)
         self.assertFalse(diag.get("global_generation_budget_exhausted"))
+
+    def test_03b_recovered_generation_replaces_scaffold_when_model_recovers(self) -> None:
+        """When the corrective call DOES return a real briefing, it wins."""
+        from keysuri_live_source_smoke import generate_keysuri_with_bounded_recovery
+
+        fx = _load_fixture()
+        shell_text = json.dumps(fx["model_display_shell"], ensure_ascii=False)
+        good_text = json.dumps(_generated(), ensure_ascii=False)
+        calls: list = []
+
+        def _caller(prompt: str, **kwargs):
+            calls.append({"prompt": prompt})
+            sink = kwargs.get("usage_sink")
+            if isinstance(sink, dict):
+                sink.update(
+                    {
+                        "prompt_token_count": 10,
+                        "candidates_token_count": 20,
+                        "total_token_count": 30,
+                    }
+                )
+            return shell_text if len(calls) == 1 else good_text
+
+        result = generate_keysuri_with_bounded_recovery(
+            _prompt_input(), gemini_caller=_caller, usage_sink={}
+        )
+        self.assertEqual(len(calls), 2)
+        diag = result["generation_diagnostics"]
+        self.assertTrue(diag.get("global_recovery_attempted"))
+        self.assertEqual(diag.get("global_recovery_result"), "succeeded")
+        self.assertFalse(diag.get("global_recovery_fallback_to_prior_parse"))
+        self.assertEqual(result["parse_result"]["parse_status"], "parsed_valid")
 
     def test_04_genuine_empty_shell_without_top5_pack_still_blocks(self) -> None:
         from keysuri_generation_prompt import parse_keysuri_generated_response

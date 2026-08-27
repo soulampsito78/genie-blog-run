@@ -614,7 +614,18 @@ class KeysuriGlobalSignalScoringTests(unittest.TestCase):
                 item["source_name"] = "Ars Technica"
         source_pack = _source_pack_from_items(items)
         selection = score_global_signal_candidates(items)
-        self.assertEqual(len(selection.watchlist), 0)
+        # "NVIDIA specialized AI trust tools secure runtime" ties on raw keyword
+        # count between ai_software_platform and semiconductor_chip_infra. It
+        # used to land on ai_software_platform purely because the slug sorts
+        # first alphabetically; title-weighted classification now reads the
+        # NVIDIA headline as chip/infra, so both NVIDIA items share a category
+        # and the low-scoring Google item stays on the watchlist instead of
+        # being promoted by the category-diversity gate. The point of this test
+        # is the replacement path below, which is unaffected.
+        self.assertEqual(
+            [s.source_id for s in selection.watchlist],
+            ["google-1"],
+        )
 
         packed = apply_scored_selection_to_source_pack(source_pack, selection)
         self.assertGreater(packed["source_pack_funnel_summary"]["replacement_pool_count"], 0)

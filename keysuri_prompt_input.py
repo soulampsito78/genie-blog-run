@@ -181,7 +181,15 @@ def build_keysuri_prompt_input(
         gate_result,
         recent_dedup_rows=extra_rows,
         sent_log_rows=list(sent_log_rows),
-        exposure_log_rows=None,  # Owner-review exposure log is purely admin trace; do not use as production dedupe source
+        # Owner-review exposure IS cross-day memory. Kee-Suri's lifecycle is
+        # owner-review first and customer send only after explicit approval, so
+        # gating this on customer delivery (as a prior shared-path change did)
+        # left `select_top_5_news` with no soft-duplicate signal at all and the
+        # Global briefing re-converged on the same ecosystem for days. These
+        # rows stay SOFT: `select_top_5_news` may controlled-backfill them on a
+        # scheduled run rather than collapsing below five. Customer-sent rows
+        # remain the hard, irreversible block.
+        exposure_log_rows=list(exposure_log_rows),
         trigger_source=trigger_source,
     )
     spec = get_program(pid)

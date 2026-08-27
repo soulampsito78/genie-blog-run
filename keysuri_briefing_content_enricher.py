@@ -12,6 +12,7 @@ from keysuri_briefing_content_quality import (
     GLOBAL_STARTUP_FOUNDER_MARKERS,
 )
 from keysuri_contract_preview_quality import _sentence_count
+from keysuri_global_signal_scoring import CATEGORY_KEYWORD_GROUPS
 from keysuri_global_visible_surface import (
     attach_korean_subject_particle,
     balance_quote_marks,
@@ -783,6 +784,74 @@ def _looks_generic_next_watch(text: str) -> bool:
     return any(marker.lower() in lower for marker in _GENERIC_NEXT_WATCH_MARKERS)
 
 
+# Minimum classifier confidence before a vertical-specific checkpoint pair may
+# assert something concrete about an item ("전력 조달·ESS 계약 일정"). Below this,
+# only a neutral same-source follow-up is honest.
+_CATEGORY_FALLBACK_MIN_CONFIDENCE = 0.5
+
+
+def _same_item_category_evidence(meta: dict, item: dict, category: str) -> bool:
+    """Does THIS item's own text carry evidence for THIS category?
+
+    One misclassification used to fan out into several reader-visible false
+    statements at once — wrong why_now, wrong owner_angle, wrong next_watch,
+    wrong deep-dive framing — because every fallback map is keyed on the
+    category alone and never re-checks the item. A companion-robot story whose
+    summary merely mentioned charging inherited 전력 조달·ESS 계약 일정 as a
+    checkpoint the article said nothing about.
+    """
+    keywords = CATEGORY_KEYWORD_GROUPS.get(category)
+    if not keywords:
+        return False
+    blob = " ".join(
+        _text(v)
+        for v in (
+            _get_field(item, "korean_title", "headline"),
+            item.get("title"),
+            meta.get("statement"),
+            meta.get("summary"),
+            item.get("summary"),
+            item.get("what_happened"),
+        )
+    ).lower()
+    if not blob:
+        return False
+    return any(kw in blob for kw in keywords)
+
+
+def _category_fallback_is_grounded(meta: dict, item: dict, category: str) -> bool:
+    """Gate vertical-specific fallback copy on same-item evidence.
+
+    A category assigned with real confidence AND corroborated by this item's own
+    words may speak in that vertical's language. Anything weaker falls back to a
+    neutral, source-grounded follow-up rather than inventing a vertical.
+    """
+    raw_conf = meta.get("category_confidence")
+    if raw_conf is None:
+        raw_conf = item.get("category_confidence")
+    try:
+        confidence = float(raw_conf) if raw_conf is not None else None
+    except (TypeError, ValueError):
+        confidence = None
+    if confidence is not None and confidence < _CATEGORY_FALLBACK_MIN_CONFIDENCE:
+        return False
+    return _same_item_category_evidence(meta, item, category)
+
+
+def _neutral_next_watch_pair(meta: dict, item: dict) -> Tuple[str, str]:
+    """Same-source grounded follow-up that asserts no vertical."""
+    source = _text(meta.get("source_name") or item.get("source_name"))
+    if source:
+        return (
+            f"{source} 후속 공식 발표",
+            "원문 업데이트·구체 수치 공개 여부",
+        )
+    return (
+        "해당 출처의 후속 공식 발표",
+        "원문 업데이트·구체 수치 공개 여부",
+    )
+
+
 def _concrete_next_watch_pair(meta: dict, item: dict) -> Tuple[str, str]:
     # Startup/founder/investor articles must never carry energy checkpoints
     # (2026-07-10 TOP4: founder-advice article got 전력/ESS/그리드 next_watch).
@@ -790,8 +859,13 @@ def _concrete_next_watch_pair(meta: dict, item: dict) -> Tuple[str, str]:
         return _STARTUP_NEXT_WATCH_PAIR
     cat = _category_key(meta, item)
     pair = _NEXT_WATCH_BY_CAT.get(cat)
-    if pair:
+    if pair and _category_fallback_is_grounded(meta, item, cat):
         return pair
+    if pair:
+        # Category is plausible but this item does not corroborate it. Say
+        # something true about the source instead of something specific and
+        # wrong about a vertical.
+        return _neutral_next_watch_pair(meta, item)
     category = _category_label(meta, item)
     return (
         f"{category} 후속 일정·공식 발표",

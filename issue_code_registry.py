@@ -127,6 +127,17 @@ ISSUE_CODE_REGISTRY: tuple[IssueCodeEntry, ...] = (
         notes="Internal marker that Global contract scaffold salvaged the payload.",
     ),
     IssueCodeEntry(
+        code="global_contract_scaffold_fabricated_top5",
+        program="global",
+        stage="generation",
+        severity=SEVERITY_REPAIR,
+        repairability=REPAIRABILITY_DETERMINISTICALLY_REPAIRABLE,
+        notes=(
+            "Scaffold had to graft the whole TOP5 — the model contributed no "
+            "article prose. Buys the one budgeted corrective generation call."
+        ),
+    ),
+    IssueCodeEntry(
         code="gemini_json_schema_validation_failed",
         program="shared",
         stage="generation_validation",

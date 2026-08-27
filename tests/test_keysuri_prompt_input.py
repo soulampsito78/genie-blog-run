@@ -287,8 +287,8 @@ class KeysuriPromptInputExposureLogMergeTests(unittest.TestCase):
         self.assertEqual(result["combined_recent_log_count"], 0)
         self.assertNotIn("exposure_log_read_error_code", result)
 
-    def test_exposure_log_only_entry_does_not_exclude_matching_candidate(self) -> None:
-        """Owner-review exposure is admin-trace only; it must not feed production dedupe."""
+    def test_exposure_log_only_entry_is_soft_deduped_from_next_selection(self) -> None:
+        """An item shown in yesterday's owner-review email is a soft duplicate."""
         pack = _load_pack("keysuri_global_sources.sample.json")
         baseline = build_keysuri_prompt_input("keysuri_global_tech", pack)
         first_item = baseline["top_5_news"]["items"][0]
@@ -304,11 +304,18 @@ class KeysuriPromptInputExposureLogMergeTests(unittest.TestCase):
         selected_urls = {
             it.get("canonical_url") or it.get("url") for it in result["top_5_news"]["items"]
         }
-        # Exposure-only entries are still counted for admin observability but must
-        # not remove the matching candidate from the production TOP 5.
-        self.assertIn(first_item.get("canonical_url") or first_item.get("url"), selected_urls)
+        exposed_url = first_item.get("canonical_url") or first_item.get("url")
         funnel = result["candidate_funnel_summary"]
-        self.assertEqual(funnel.get("cross_day_dedup_removed_count", 0), 0)
+        # The exposure row IS consumed as a cross-day soft duplicate...
+        self.assertGreater(funnel.get("dedup_removed_by_exposure_log_count"), 0)
+        # ...but this sample pack is deliberately thin (7 claims), so honouring
+        # the soft duplicate outright would drop the briefing below five. The
+        # controlled backfill re-injects it and records that it did, rather than
+        # collapsing the TOP5. Both halves of the layered contract are visible.
+        self.assertTrue(result.get("exposure_dedup_backfill_used"))
+        self.assertGreater(funnel.get("exposure_backfill_used_count"), 0)
+        self.assertEqual(len(result["top_5_news"]["items"]), 5)
+        self.assertIn(exposed_url, selected_urls)
 
     def test_combined_count_sums_both_logs(self) -> None:
         pack = _load_pack("keysuri_global_sources.sample.json")
@@ -438,9 +445,13 @@ class KeysuriPromptInputExposureLogMergeTests(unittest.TestCase):
 
 
 class KeysuriKoreaScheduledExposureBackfillTests(unittest.TestCase):
-    """Composer-level contract: owner-review exposure is NOT a production dedupe
-    source. Customer-sent remains a hard block. Contract-layer exposure soft-dedup
-    / backfill remains covered by tests/test_keysuri_news_contract.py."""
+    """Composer-level contract for layered cross-day memory.
+
+    Owner-review exposure IS cross-day memory — it is the only exposure event
+    the owner-review-first lifecycle normally produces. It is a SOFT duplicate:
+    a scheduled run prefers genuinely fresh candidates, and may controlled-
+    backfill exposed ones rather than collapsing below five. Customer-sent
+    history stays a separate HARD block."""
 
     _SCHEDULED = "scheduled_service_full_run"
 
@@ -506,39 +517,58 @@ class KeysuriKoreaScheduledExposureBackfillTests(unittest.TestCase):
             selected_items=items,
         )
 
-    def test_scheduled_run_keeps_exposed_items_without_exposure_backfill(self) -> None:
+    def test_scheduled_run_prefers_fresh_over_owner_review_exposed(self) -> None:
+        """Yesterday's owner-review items lose to genuinely fresh candidates.
+
+        This is the behaviour whose loss let Global re-converge on the same
+        NVIDIA/OpenAI/IEEE ecosystem three days running: with exposure ignored,
+        the same top-scoring articles won again every day.
+        """
         gate = GateResult(verdict="pass", issues=())
         pack = self._pack(["a1", "a2", "a3", "a4", "a5"], backfill=["b1", "b2", "b3", "b4", "b5"])
         baseline = build_keysuri_prompt_input("keysuri_korea_tech", pack, gate_result=gate)
+        exposed_ids = {it["news_id"] for it in baseline["top_5_news"]["items"]}
         self._expose(baseline["top_5_news"]["items"])
 
         result = build_keysuri_prompt_input(
             "keysuri_korea_tech", pack, gate_result=gate, trigger_source=self._SCHEDULED
         )
         self.assertEqual(result["prompt_status"], "ready_for_generation")
-        self.assertIsNotNone(result["top_5_news"])
         self.assertEqual(len(result["top_5_news"]["items"]), 5)
+        selected_ids = {it["news_id"] for it in result["top_5_news"]["items"]}
+        self.assertEqual(selected_ids & exposed_ids, set())
+        # A fresh pool that can fill five needs no backfill at all.
         self.assertFalse(result.get("exposure_dedup_backfill_used"))
-        self.assertEqual(result["candidate_funnel_summary"]["fresh_backfill_used_count"], 0)
-        self.assertEqual(
-            [it["news_id"] for it in result["top_5_news"]["items"]],
-            [it["news_id"] for it in baseline["top_5_news"]["items"]],
-        )
+        funnel = result["candidate_funnel_summary"]
+        self.assertEqual(funnel["exposure_backfill_used_count"], 0)
+        self.assertGreater(funnel["dedup_removed_by_exposure_log_count"], 0)
 
-    def test_manual_run_also_ignores_exposure_as_dedupe_source(self) -> None:
+    def test_manual_run_still_dedupes_exposure_but_never_backfills(self) -> None:
         gate = GateResult(verdict="pass", issues=())
         pack = self._pack(["a1", "a2", "a3", "a4", "a5"], backfill=["b1", "b2", "b3", "b4", "b5"])
         baseline = build_keysuri_prompt_input("keysuri_korea_tech", pack, gate_result=gate)
+        exposed_ids = {it["news_id"] for it in baseline["top_5_news"]["items"]}
         self._expose(baseline["top_5_news"]["items"])
 
         result = build_keysuri_prompt_input(
             "keysuri_korea_tech", pack, gate_result=gate, trigger_source="manual_admin_review"
         )
         self.assertEqual(result["prompt_status"], "ready_for_generation")
+        selected_ids = {it["news_id"] for it in result["top_5_news"]["items"]}
+        self.assertEqual(selected_ids & exposed_ids, set())
+        # Controlled backfill is a scheduled-run affordance only.
         self.assertFalse(result.get("exposure_dedup_backfill_used"))
-        self.assertEqual(result["candidate_funnel_summary"]["fresh_backfill_used_count"], 0)
+        self.assertEqual(
+            result["candidate_funnel_summary"]["exposure_backfill_used_count"], 0
+        )
 
-    def test_composer_does_not_reinject_via_exposure_when_pool_exhausted(self) -> None:
+    def test_scheduled_run_backfills_exposure_rather_than_dropping_below_five(self) -> None:
+        """Soft must not become an unconditional hard block.
+
+        When the genuinely fresh pool cannot fill five, a scheduled run
+        re-injects owner-review-exposed items instead of recreating the historic
+        "fewer than 5 candidates" hold — and records that it did so.
+        """
         gate = GateResult(verdict="pass", issues=())
         pack = self._pack(["a1", "a2", "a3", "a4", "a5"])
         baseline = build_keysuri_prompt_input("keysuri_korea_tech", pack, gate_result=gate)
@@ -548,10 +578,10 @@ class KeysuriKoreaScheduledExposureBackfillTests(unittest.TestCase):
             "keysuri_korea_tech", pack, gate_result=gate, trigger_source=self._SCHEDULED
         )
         self.assertEqual(result["prompt_status"], "ready_for_generation")
-        self.assertFalse(result.get("exposure_dedup_backfill_used"))
-        self.assertNotIn(
-            "keysuri_korea_exposure_dedup_backfill_used",
-            result.get("internal_issue_codes", []),
+        self.assertEqual(len(result["top_5_news"]["items"]), 5)
+        self.assertTrue(result.get("exposure_dedup_backfill_used"))
+        self.assertGreater(
+            result["candidate_funnel_summary"]["exposure_backfill_used_count"], 0
         )
 
     def test_scheduled_run_holds_when_customer_sent(self) -> None:

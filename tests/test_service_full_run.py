@@ -5349,26 +5349,42 @@ class OwnerReviewExposureLogWriteTriggerTests(unittest.TestCase):
         self.assertTrue(meta["exposure_log_updated"])
         self.assertEqual(meta["exposure_log_written_count"], 1)
         self.assertIn("exposure_log_path", meta)
-    def test_write_skipped_for_various_customer_delivery_statuses(self) -> None:
+    def test_write_does_not_require_customer_delivery(self) -> None:
+        """Owner-review exposure is recorded without any customer send.
+
+        Kee-Suri's canonical lifecycle is owner review first, customer send only
+        after explicit approval, so requiring customer_delivery_status in
+        (sent, success) meant this log was never written for the
+        owner-review-only flow it exists to serve. Cross-day memory died
+        silently and Global re-converged on the same sources for days
+        (2026-08-24..27). These rows are consumed as SOFT duplicates, so
+        recording them cannot force a hold.
+        """
         from keysuri_service_full_run import _maybe_write_owner_review_exposure_log
         from owner_review_exposure_log_store import load_owner_review_exposure_log
 
-        # Verify all these statuses block the write even if email_sent=True
-        blocked_statuses = [None, "", "not_sent", "blocked", "failed", "pending"]
-        
-        for status in blocked_statuses:
+        owner_review_only_statuses = [None, "", "not_sent", "blocked", "failed", "pending"]
+
+        for index, status in enumerate(owner_review_only_statuses):
             meta = {
                 "program_id": PROGRAM_GLOBAL,
-                "run_id": f"r-{status}",
-                "selected_items": [self._item("Title", "https://x.com/a")],
+                "run_id": f"r-{index}",
+                "selected_items": [self._item("Title", f"https://x.com/a{index}")],
             }
             if status is not None:
                 meta["customer_delivery_status"] = status
-                
-            _maybe_write_owner_review_exposure_log(meta, email_sent=True, exposure_kind="owner_review_email")
-            self.assertFalse(meta.get("exposure_log_updated"))
-            self.assertEqual(meta.get("exposure_log_update_error"), "customer_not_sent_yet")
-            self.assertEqual(len(load_owner_review_exposure_log()), 0)
+
+            _maybe_write_owner_review_exposure_log(
+                meta, email_sent=True, exposure_kind="owner_review_email"
+            )
+            self.assertTrue(
+                meta.get("exposure_log_updated"),
+                msg=f"customer_delivery_status={status!r} must not block exposure write",
+            )
+            self.assertIsNone(meta.get("exposure_log_update_error"))
+        self.assertEqual(
+            len(load_owner_review_exposure_log()), len(owner_review_only_statuses)
+        )
 
     def test_write_succeeds_for_sent_and_success_customer_delivery_statuses(self) -> None:
         from keysuri_service_full_run import _maybe_write_owner_review_exposure_log

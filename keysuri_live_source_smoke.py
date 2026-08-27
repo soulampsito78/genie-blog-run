@@ -47,6 +47,7 @@ from keysuri_generation_prompt import (
 from keysuri_gemini_client import KeysuriGeminiError, call_keysuri_gemini_text
 from keysuri_html_preview_validation import validate_keysuri_html_preview
 from keysuri_global_signal_scoring import (
+    CATEGORY_KO_LABELS,
     apply_scored_selection_to_source_pack,
     classify_global_tech_category,
     score_candidates_from_source_pack,
@@ -731,19 +732,33 @@ def _category_for_program_item(
     return _infer_category(title, summary, item.default_category)
 
 
+# Reader-facing Global prose is Korean. These strings are contract placeholders
+# for two required item fields (why_it_matters / business_implication) that the
+# model and the enricher are expected to replace with same-item grounded prose.
+#
+# They used to be English implementation copy — "Public tech source (X)
+# published: ..." and "AI/software/platform shifts may change vendor shortlists
+# and workflow lock-in." Whenever the model returned nothing usable and the
+# Global contract scaffold grafted the claim pool straight into the cards
+# (2026-08-27 12:30 natural run), that English shipped to the owner verbatim.
+# Blacklisting the phrases downstream would only have hidden the producer; the
+# producer is here, so the placeholders are Korean and named as placeholders.
 def _business_implication(category: str) -> str:
-    mapping = {
-        "ai_software_platform": "AI/software/platform shifts may change vendor shortlists and workflow lock-in.",
-        "semiconductor_chip_infra": "Chip and AI infrastructure signals may affect hardware roadmaps and capex.",
-        "semiconductor_equipment_materials": "Equipment/materials moves may shift fab capacity and supply risk.",
-        "robotics_automation_manufacturing": "Robotics/automation adoption may reshape operations and labor leverage.",
-        "battery_ev_energy_grid": "Battery/EV/energy signals may affect power cost and infrastructure planning.",
-        "aerospace_satellite_defense_tech": "Aerospace/defense tech may affect strategic procurement and risk posture.",
-        "hardware_device_display": "Device/display shifts may change edge deployment and consumer-tech spillover.",
-        "cybersecurity_cloud_datacenter": "Security/cloud/datacenter moves may affect reliability and compliance cost.",
-        "policy_regulation_capital_supplychain": "Policy/capital/supply-chain moves may alter market access and timing.",
-    }
-    return mapping.get(category, "Live public source metadata may affect near-term tech watch priorities.")
+    label = CATEGORY_KO_LABELS.get(category, "")
+    if label:
+        return f"{label} 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다."
+    return "공개 출처 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다."
+
+
+def _why_it_matters_placeholder(source_name: str, title: str) -> str:
+    """Korean, grounded in this item's own source and headline — never another's."""
+    name = str(source_name or "").strip()
+    headline = str(title or "").strip()[:120]
+    if name and headline:
+        return f"{name} 공개 발표: 「{headline}」."
+    if headline:
+        return f"공개 출처 발표: 「{headline}」."
+    return "공개 출처 발표 내용으로, 세부 사항은 원문 확인이 필요합니다."
 
 
 def _build_source_entries_from_items(
@@ -799,7 +814,7 @@ def _build_source_entries_from_items(
                 "category": category,
                 "headline": item.title[:160],
                 "summary": summary,
-                "why_it_matters": f"Public tech source ({item.feed_name}) published: {item.title[:120]}",
+                "why_it_matters": _why_it_matters_placeholder(item.feed_name, item.title),
                 "business_implication": _business_implication(category),
             }
         )
@@ -1132,6 +1147,16 @@ _SEMANTIC_RECOVERY_CODES = frozenset(
     }
 )
 # Global bounded full-contract repair targets (exact names + current aliases).
+# The Global contract scaffold exists to complete a *partial* model output.
+# When it has to graft the entire TOP5 from the prompt's claim pool, the model
+# contributed no article prose at all and the "briefing" is really the source
+# pack wearing a contract shape. That is a generation failure, not a repair, and
+# it must buy the one budgeted corrective call rather than being waved through
+# as parsed_valid (2026-08-27 12:30 Global: 645 output tokens, zero expected
+# keys, scaffold applied, recovery recorded as "not_needed", owner received a
+# template-only POOR notice).
+GLOBAL_SCAFFOLD_FABRICATED_TOP5_CODE = "global_contract_scaffold_fabricated_top5"
+
 _GLOBAL_CONTRACT_REPAIR_CODES = frozenset(
     {
         "gemini_json_missing_required_keys",
@@ -1145,6 +1170,7 @@ _GLOBAL_CONTRACT_REPAIR_CODES = frozenset(
         "deep_dive_missing_required_field",
         "deep_dive_heading_invalid",
         "deep_dive_key_implications_invalid",
+        GLOBAL_SCAFFOLD_FABRICATED_TOP5_CODE,
     }
 )
 # Ceiling of two total model attempts per Global run: the initial call plus at
@@ -2034,6 +2060,19 @@ def _preservable_fields_from_parse(parse_result: Mapping[str, Any]) -> List[str]
     return present
 
 
+def _global_scaffold_fabricated_top5(parse_result: Mapping[str, Any]) -> bool:
+    """True when the scaffold, not the model, produced the TOP5 articles."""
+    meta = parse_result.get("parse_meta")
+    if not isinstance(meta, Mapping):
+        return False
+    if not meta.get("global_contract_scaffold_applied"):
+        return False
+    repaired = meta.get("repaired_fields")
+    if not isinstance(repaired, (list, tuple)):
+        return False
+    return "top_5_news" in {str(field) for field in repaired}
+
+
 def _run_global_bounded_contract_repair(
     *,
     prompt_input: dict,
@@ -2048,8 +2087,16 @@ def _run_global_bounded_contract_repair(
     model: Optional[str],
     usage_sink: Optional[MutableMapping[str, Any]],
     call_state: MutableMapping[str, Any],
+    fallback_parse_result: Optional[dict] = None,
 ) -> Dict[str, Any]:
-    """Bounded Global full-contract repair — never Korea item reconciliation."""
+    """Bounded Global full-contract repair — never Korea item reconciliation.
+
+    ``fallback_parse_result`` is a contract-valid parse that already exists and
+    is merely low quality (today: a scaffold-completed one). When the corrective
+    call cannot beat it, the run keeps it and lets the single canonical graded
+    adjudicator rate it, instead of converting an editorial-quality problem into
+    a hard generation block.
+    """
     recovery_usage: Dict[str, Any] = {}
     repair_codes = _global_contract_repair_codes(initial_codes)
     diagnostics: Dict[str, Any] = {
@@ -2164,6 +2211,7 @@ def _run_global_bounded_contract_repair(
         issue_codes=repair_codes,
     )
     calls_before_repair = int(call_state.get("count") or 0)
+    fallback_raw_text = raw_text
     try:
         recovery_raw, recovery_generation = generate_keysuri_body_raw_text(
             prompt_input,
@@ -2214,7 +2262,26 @@ def _run_global_bounded_contract_repair(
             "parse_meta": {"parse_failure_stage": "global_contract_repair"},
         }
 
-    success = parse_result.get("parse_status") == "parsed_valid"
+    # A corrective call that comes back as another display shell gets scaffolded
+    # into a contract-valid payload just like the first one did. That is not a
+    # recovery — it is the same empty briefing wearing the same contract — so it
+    # must not be reported as "succeeded".
+    recovery_scaffold_fabricated = _global_scaffold_fabricated_top5(parse_result)
+    success = (
+        parse_result.get("parse_status") == "parsed_valid"
+        and not recovery_scaffold_fabricated
+    )
+    diagnostics["global_recovery_scaffold_fabricated_top5"] = bool(
+        recovery_scaffold_fabricated
+    )
+    if not success and isinstance(fallback_parse_result, dict):
+        # The corrective call did not beat the contract-valid output we already
+        # held. Keep that one so the graded adjudicator still rates a real
+        # candidate rather than the run collapsing to a generation block.
+        parse_result = fallback_parse_result
+        raw_text = fallback_raw_text
+        diagnostics["global_recovery_fallback_to_prior_parse"] = True
+    diagnostics.setdefault("global_recovery_fallback_to_prior_parse", False)
     repair_calls = max(
         0, int(call_state.get("count") or 0) - calls_before_repair
     )
@@ -2388,7 +2455,8 @@ def generate_keysuri_with_bounded_recovery(
                 }
             )
 
-    if parse_result.get("parse_status") == "parsed_valid":
+    scaffold_fabricated = is_global and _global_scaffold_fabricated_top5(parse_result)
+    if parse_result.get("parse_status") == "parsed_valid" and not scaffold_fabricated:
         _merge_into_diagnostics(
             diagnostics,
             _merge_generation_usage(usage_sink, initial_usage, recovery_usage),
@@ -2408,12 +2476,20 @@ def generate_keysuri_with_bounded_recovery(
         }
 
     if is_global:
+        repair_codes = list(initial_codes)
+        fallback_parse_result = None
+        if scaffold_fabricated:
+            # Structurally valid, editorially empty: spend the corrective call,
+            # but keep this parse to fall back on.
+            if GLOBAL_SCAFFOLD_FABRICATED_TOP5_CODE not in repair_codes:
+                repair_codes.append(GLOBAL_SCAFFOLD_FABRICATED_TOP5_CODE)
+            fallback_parse_result = copy.deepcopy(parse_result)
         return _run_global_bounded_contract_repair(
             prompt_input=prompt_input,
             program_id=program_id,
             raw_text=raw_text,
             parse_result=parse_result,
-            initial_codes=initial_codes,
+            initial_codes=repair_codes,
             initial_generation=initial_generation,
             initial_usage=initial_usage,
             gemini_caller=gemini_caller,
@@ -2421,6 +2497,7 @@ def generate_keysuri_with_bounded_recovery(
             model=model,
             usage_sink=usage_sink,
             call_state=call_state,
+            fallback_parse_result=fallback_parse_result,
         )
 
     if program_id != PROGRAM_KOREA:
