@@ -1,6 +1,7 @@
 """Tests for Kee-Suri offline generation prompt contract and JSON parse guard."""
 from __future__ import annotations
 
+import hashlib
 import json
 import unittest
 from copy import deepcopy
@@ -13,6 +14,7 @@ from keysuri_generation_prompt import (
     build_keysuri_generation_prompt,
     build_keysuri_generation_prompt_compact,
     build_keysuri_generation_prompt_contract,
+    build_keysuri_corrective_generation_prompt,
     extract_json_object_from_model_text,
     generate_keysuri_body_raw_text,
     parse_keysuri_generated_response,
@@ -164,6 +166,71 @@ class KeysuriGenerationPromptContractTests(unittest.TestCase):
         ):
             with self.subTest(filler=filler):
                 self.assertIn(filler, prompt)
+
+    def test_global_prompt_applies_source_faithful_natural_korean_contract(self) -> None:
+        """The adopted im-not-ai principles target template prose without
+        licensing a second writer to add human-sounding facts."""
+        prompt = build_keysuri_generation_prompt(_global_prompt())
+        self.assertIn("GLOBAL NATURAL KOREAN EDITING", prompt)
+        for internal_marker in (
+            "Public tech source (...) published:",
+            "source summary:",
+            "claim statement:",
+            "instruction text",
+            "scaffold notes",
+        ):
+            with self.subTest(internal_marker=internal_marker):
+                self.assertIn(internal_marker, prompt)
+        for templated_marker in (
+            "시사하는 바가 크다",
+            "주목할 만하다",
+            "매우 중요하다",
+            "repeated boilerplate",
+            "antithesis frame",
+        ):
+            with self.subTest(templated_marker=templated_marker):
+                self.assertIn(templated_marker, prompt)
+
+        # Naturalization remains subtractive and source-fidelity-first: it may
+        # not invent the very evidence that would make generic prose sound
+        # specific, flatten uncertainty, or borrow a different article's text.
+        for safety_rule in (
+            "not permission to add anecdotes, quotations, metaphors, background events, or likely explanations",
+            "Never turn '~일 수 있다' or '~로 보인다' into a confirmed fact",
+            "never invent a replacement conclusion",
+            "Never merge article identities",
+            "borrow prose from another rank",
+            "Ordinary Korean expressions are not banned",
+        ):
+            with self.subTest(safety_rule=safety_rule):
+                self.assertIn(safety_rule, prompt)
+
+    def test_global_compact_and_corrective_paths_keep_same_naturalization_contract(self) -> None:
+        compact = build_keysuri_generation_prompt_compact(_global_prompt())
+        corrective = build_keysuri_corrective_generation_prompt(
+            _global_prompt(),
+            {
+                "failure_family": "schema_or_contract_failure",
+                "fixed_source_ids": ["src-001"],
+                "fixed_top5_order": [],
+            },
+        )
+        for name, prompt in (("compact", compact), ("corrective", corrective)):
+            with self.subTest(path=name):
+                self.assertEqual(prompt.count("GLOBAL NATURAL KOREAN EDITING"), 1)
+                self.assertIn("Public tech source (...) published:", prompt)
+                self.assertIn("never invent a replacement conclusion", prompt)
+                self.assertIn("borrow prose from another rank", prompt)
+
+    def test_global_naturalization_keeps_korea_prompt_byte_identical(self) -> None:
+        """Global-only editorial changes must not alter Korea semantics or text."""
+        prompt = build_keysuri_generation_prompt(_korea_prompt())
+        digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        self.assertEqual(
+            digest,
+            "6a3bd999210f833f67034ac27583c1a583d4cb9988d86e0f3d43bf463c8acec0",
+        )
+        self.assertNotIn("GLOBAL NATURAL KOREAN EDITING", prompt)
 
     def test_global_prompt_forbids_pixel_android_as_aerospace_defense(self) -> None:
         prompt = build_keysuri_generation_prompt(_global_prompt())
