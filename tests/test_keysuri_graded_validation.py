@@ -184,7 +184,7 @@ class KeysuriGradedValidationTests(unittest.TestCase):
                 email_html="<html><body><p>완전한 안전 본문</p></body></html>",
                 owner_review_url="https://admin.example/r/1",
                 visible_quality_fields={},
-                post_render_qa=_qa("global_visible_raw_english_prose_blocked"),
+                post_render_qa=_qa("global_visible_repeated_template_skeleton_blocked"),
                 send_owner_email=True,
                 send_fn=sender,
             )
@@ -226,6 +226,86 @@ class KeysuriGradedValidationTests(unittest.TestCase):
         self.assertIn("전체 후보", result["persisted_email_html"])
         self.assertNotIn("<article>전체 후보</article>", sent[0][1])
         self.assertIn("Admin에서 전체 후보 확인", sent[0][1])
+
+    def test_05b_global_english_surface_sends_korean_notice_only(self) -> None:
+        findings = [
+            {
+                "issue_code": "global_visible_raw_english_prose_blocked",
+                "field": "top5",
+                "rank": rank,
+                "before": f"English source prose {rank}",
+            }
+            for rank in (1, 2, 4)
+        ]
+        findings.extend(
+            [
+                {
+                    "issue_code": "global_visible_semantic_truncation_blocked",
+                    "field": "top5",
+                    "rank": 1,
+                },
+                {
+                    "issue_code": "global_visible_repeated_template_skeleton_blocked",
+                    "field": "top5",
+                },
+                {
+                    "issue_code": "global_visible_deep_dive_duplication_blocked",
+                    "field": "deep_dive",
+                },
+                {
+                    "issue_code": "global_visible_repeated_low_information_label",
+                    "field": "visible_body",
+                },
+            ]
+        )
+        result = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_global_tech",
+            subject=(
+                "[운영자 검토][수동] Nvidia closes in on Hugging Face acquisition: "
+                "8월 27일 글로벌 테크 브리핑"
+            ),
+            email_html="<html><body>broken candidate</body></html>",
+            extra_findings=findings,
+            owner_review_url="https://admin.example/r/poor",
+        )
+
+        self.assertEqual(result["editorial_verdict"], EDITORIAL_POOR)
+        self.assertEqual(result["owner_delivery_behavior"], OWNER_SEND_POOR_NOTICE)
+        self.assertEqual(
+            result["owner_email_subject"],
+            "[운영자 검토][품질 확인][수동] 8월 27일 글로벌 테크 브리핑",
+        )
+        self.assertNotIn("Nvidia", result["owner_email_subject"])
+        self.assertNotIn("Hugging Face", result["owner_email_subject"])
+        notice = result["owner_email_html"]
+        self.assertEqual(notice.count("영문 원문 노출"), 1)
+        self.assertEqual(notice.count("문장 잘림"), 1)
+        self.assertEqual(notice.count("반복 문장 골격"), 1)
+        self.assertEqual(notice.count("딥다이브 내용 중복"), 1)
+        self.assertEqual(notice.count("판정 라벨 반복"), 1)
+        self.assertNotIn("운영자 검토 필요", notice)
+        self.assertNotIn("global_visible_", notice)
+        self.assertIn("TOP 5 1·2·4위", notice)
+
+    def test_05c_one_global_english_finding_is_poor_not_full_review(self) -> None:
+        result = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_global_tech",
+            subject="[운영자 검토] 한국어 제목",
+            email_html="<html><body><article>English body must stay in Admin</article></body></html>",
+            extra_findings=[
+                {
+                    "issue_code": "global_visible_raw_english_prose_blocked",
+                    "field": "top5",
+                    "rank": 3,
+                }
+            ],
+            owner_review_url="https://admin.example/r/english",
+        )
+
+        self.assertEqual(result["editorial_verdict"], EDITORIAL_POOR)
+        self.assertEqual(result["customer_approval_policy"], CUSTOMER_APPROVAL_UNAVAILABLE)
+        self.assertNotIn("English body must stay", result["owner_email_html"])
+        self.assertIn("영문 원문 노출", result["owner_email_html"])
 
     def test_06_unsafe_and_unknown_hold_both_owner_and_customer(self) -> None:
         unsafe = adjudicate_keysuri_owner_surface(
@@ -435,6 +515,10 @@ class KeysuriGradedValidationTests(unittest.TestCase):
         self.assertEqual(
             by_name["safe_review_owner_path"]["owner_delivery_behavior"],
             "SEND_OWNER_REVIEW_WARNING",
+        )
+        self.assertEqual(
+            by_name["safe_english_notice_only_path"]["owner_delivery_behavior"],
+            "SEND_OWNER_QUALITY_NOTICE",
         )
         self.assertEqual(
             by_name["ungrounded_semantic_truncation"]["safety_verdict"],

@@ -19,6 +19,7 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _SPACE_RE = re.compile(r"\s+")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？…])\s+")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9가-힣]{2,}")
+_HANGUL_RE = re.compile(r"[가-힣]")
 _TRAILING_PUNCT_RE = re.compile(r"[\s:：,，.;。!！?？/|·…-]+$")
 _OWNER_PREFIX_RE = re.compile(r"^\s*(?:\[[^\]]+\]\s*)+")
 
@@ -255,6 +256,13 @@ def _subject_components(
     program_label = _program_label(program_id)
     core, source = _select_subject_core(program_id, generated_briefing, prompt_input, contract_fixture)
     core = _clean_text(core)
+    # Kee-Suri Global is a Korean-language briefing. A malformed model response
+    # can leave the deterministic scaffold with only the source RSS headline;
+    # that English diagnostic/source identity must never become the visible
+    # email subject. Korea behavior is intentionally unchanged here.
+    if not _is_korea(program_id) and core and not _HANGUL_RE.search(core):
+        core = _fallback_core(program_id)
+        source = "fallback_non_korean_headline"
     if not core or _too_repetitive(core):
         core = _fallback_core(program_id)
         source = "fallback"

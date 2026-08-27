@@ -221,6 +221,24 @@ class KeysuriGenerationPromptContractTests(unittest.TestCase):
                 self.assertIn("Public tech source (...) published:", prompt)
                 self.assertIn("never invent a replacement conclusion", prompt)
                 self.assertIn("borrow prose from another rank", prompt)
+        self.assertIn("Kee-Suri Compact Generation Prompt", corrective)
+        self.assertNotIn("Kee-Suri Offline Generation Prompt (staged)", corrective)
+        self.assertLess(len(corrective), len(build_keysuri_generation_prompt(_global_prompt())))
+
+    def test_global_compact_repair_preserves_plural_source_ids(self) -> None:
+        prompt_input = _global_prompt()
+        first = prompt_input["top_5_news"]["items"][0]
+        first["source_ids"] = ["src-001", "src-001-secondary"]
+        corrective = build_keysuri_corrective_generation_prompt(
+            prompt_input,
+            {
+                "failure_family": "GLOBAL_MALFORMED_CONTRACT",
+                "fixed_source_ids": ["src-001", "src-001-secondary"],
+                "fixed_top5_order": [],
+            },
+        )
+
+        self.assertIn('"source_ids": ["src-001", "src-001-secondary"]', corrective)
 
     def test_global_naturalization_keeps_korea_prompt_byte_identical(self) -> None:
         """Global-only editorial changes must not alter Korea semantics or text."""

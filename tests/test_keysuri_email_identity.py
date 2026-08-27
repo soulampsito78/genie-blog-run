@@ -40,6 +40,44 @@ class KeysuriEmailIdentityTests(unittest.TestCase):
         self.assertIn("6월 24일 글로벌 테크 브리핑", subject)
         self.assertNotIn("[운영자 검토]", subject)
 
+    def test_global_subject_never_uses_english_only_source_headline(self) -> None:
+        briefing = {
+            "top_5_news": {
+                "items": [
+                    {
+                        "headline": "Nvidia closes in on Hugging Face acquisition",
+                        "summary": "Nvidia has reportedly agreed to buy Hugging Face.",
+                    }
+                ]
+            }
+        }
+        fields = build_keysuri_subject_artifact_fields(
+            PROGRAM_GLOBAL,
+            briefing,
+            run_id="20260827_160723_keysuri_global_tech_52128001",
+            trigger_source="manual_owner_authorized_email_full_run",
+        )
+
+        self.assertEqual(fields["subject_source"], "fallback_non_korean_headline")
+        self.assertEqual(
+            fields["editorial_subject"],
+            "글로벌 AI·테크 신호 점검: 8월 27일 글로벌 테크 브리핑",
+        )
+        self.assertNotIn("Nvidia", fields["owner_email_subject"])
+        self.assertNotIn("Hugging Face", fields["owner_email_preheader"])
+
+    def test_korea_english_only_subject_behavior_is_unchanged(self) -> None:
+        briefing = {
+            "top_5_news": {"items": [{"headline": "English source headline"}]}
+        }
+        subject = build_keysuri_editorial_subject(
+            PROGRAM_KOREA,
+            briefing,
+            run_id="20260827_183000_keysuri_korea_tech_aabbccdd",
+        )
+
+        self.assertIn("English source headline", subject)
+
     def test_korea_subject_uses_generated_top_signal_headline(self) -> None:
         briefing = {
             "top_5_news": {

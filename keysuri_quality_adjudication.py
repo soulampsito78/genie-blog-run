@@ -48,6 +48,89 @@ _STYLE_SCRIPT_RE = re.compile(
 )
 _TAG_RE = re.compile(r"<[^>]+>")
 _SPACE_RE = re.compile(r"\s+")
+_GLOBAL_POOR_SUBJECT_SUFFIX_RE = re.compile(
+    r"(?P<suffix>\d{1,2}월\s+\d{1,2}일\s+글로벌\s+테크\s+브리핑)\s*$"
+)
+
+# Existing detectors still report into the one canonical adjudicator. These
+# are delivery-policy refinements, not another validator: a Global candidate
+# with a visibly English/internal/broken surface is retained in Admin evidence
+# but is never mailed as if it were a readable Korean review candidate.
+_GLOBAL_NOTICE_ONLY_REVIEW_CODES = frozenset(
+    {
+        "global_visible_subject_integrity_blocked",
+        "global_visible_internal_template_leak_blocked",
+        "global_visible_raw_english_prose_blocked",
+        "global_visible_semantic_truncation_blocked",
+    }
+)
+
+_GLOBAL_POOR_NOTICE_COPY = {
+    "global_visible_subject_integrity_blocked": (
+        "메일 제목 이상",
+        "제목이 잘렸거나 한국어 브리핑 제목으로 사용할 수 없는 상태입니다.",
+    ),
+    "global_visible_internal_template_leak_blocked": (
+        "내부 템플릿 문구 노출",
+        "독자에게 보여서는 안 되는 생성용 문구가 본문에 남았습니다.",
+    ),
+    "global_visible_raw_english_prose_blocked": (
+        "영문 원문 노출",
+        "한국어 브리핑 본문에 번역되지 않은 영문 문장이 남았습니다.",
+    ),
+    "global_visible_semantic_truncation_blocked": (
+        "문장 잘림",
+        "문장이 중간에서 끊겨 의미가 완결되지 않았습니다.",
+    ),
+    "global_visible_repeated_template_skeleton_blocked": (
+        "반복 문장 골격",
+        "여러 기사 설명이 같은 문장 구조를 반복합니다.",
+    ),
+    "global_visible_deep_dive_duplication_blocked": (
+        "딥다이브 내용 중복",
+        "딥다이브가 앞선 기사 설명을 되풀이합니다.",
+    ),
+    "global_visible_repeated_low_information_label": (
+        "판정 라벨 반복",
+        "정보량이 낮은 같은 판정 라벨이 여러 기사에 반복됩니다.",
+    ),
+    "global_visible_category_grounding_mismatch": (
+        "기사와 분류 불일치",
+        "기사 근거와 분류 또는 후속 관찰 항목이 맞지 않습니다.",
+    ),
+    "global_visible_korean_particle_defect": (
+        "한국어 문장 연결 오류",
+        "제목과 조사 연결이 자연스럽지 않습니다.",
+    ),
+    "global_abstract_filler_no_specifics": (
+        "구체성 부족",
+        "기사의 고유 사실 없이 추상적인 설명만 남았습니다.",
+    ),
+    "global_category_next_watch_mismatch": (
+        "후속 관찰 항목 불일치",
+        "기사 분류와 다음 관찰 항목의 주제가 어긋납니다.",
+    ),
+    "global_repeated_common_filler": (
+        "상투 문구 반복",
+        "여러 기사에서 같은 일반 문구가 반복됩니다.",
+    ),
+    "global_repeated_selection_reason_template": (
+        "선정 이유 반복",
+        "여러 기사의 선정 이유가 같은 틀을 반복합니다.",
+    ),
+    "english_rss_leakage": (
+        "영문 RSS 문구 노출",
+        "원문 피드의 영문 설명이 한국어 본문에 그대로 남았습니다.",
+    ),
+    "internal_validation_marker_visible": (
+        "내부 검증 문구 노출",
+        "운영용 검증 표식이 독자 화면에 남았습니다.",
+    ),
+    "visible_internal_score_leak": (
+        "내부 점수 노출",
+        "편집 과정에서만 써야 할 내부 점수가 화면에 노출됐습니다.",
+    ),
+}
 
 
 def _bounded_text(value: Any, limit: int = 180) -> str:
@@ -346,13 +429,80 @@ def _review_subject(subject: str) -> str:
     return f"[운영자 검토][주의] {value}".strip()
 
 
-def _poor_notice(subject: str, owner_review_url: str, findings: Sequence[Mapping[str, Any]]) -> tuple[str, str]:
-    notice_subject = _review_subject(subject).replace("[주의]", "[품질 확인]", 1)
-    labels: List[str] = []
-    for row in findings[:8]:
-        policy = get_graded_issue_policy(str(row.get("issue_code") or ""))
-        labels.append(policy.label_ko if policy is not None else "추가 확인 필요")
-    summary = "".join(f"<li>{html.escape(label)}</li>" for label in labels)
+def _is_global(program_id: str) -> bool:
+    value = str(program_id or "").strip()
+    return value == "keysuri_global_tech" or value.startswith("keysuri_global")
+
+
+def _global_poor_notice_subject(subject: str) -> str:
+    value = str(subject or "").strip()
+    manual = "[수동]" in value
+    prefix = "[운영자 검토][품질 확인]" + ("[수동]" if manual else "")
+    match = _GLOBAL_POOR_SUBJECT_SUFFIX_RE.search(value)
+    suffix = match.group("suffix") if match else "글로벌 테크 브리핑 품질 확인"
+    return f"{prefix} {suffix}"
+
+
+def _global_poor_notice_summary(findings: Sequence[Mapping[str, Any]]) -> str:
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for row in findings:
+        code = str(row.get("issue_code") or "").strip()
+        if not code:
+            continue
+        entry = grouped.setdefault(code, {"ranks": [], "fields": []})
+        rank = row.get("rank")
+        if isinstance(rank, int) and rank > 0 and rank not in entry["ranks"]:
+            entry["ranks"].append(rank)
+        field = _bounded_text(row.get("field"), 40)
+        if field and field not in entry["fields"]:
+            entry["fields"].append(field)
+
+    items: List[str] = []
+    for code, context in list(grouped.items())[:8]:
+        label, detail = _GLOBAL_POOR_NOTICE_COPY.get(
+            code,
+            ("편집 품질 이상", "완성본으로 보내기 전에 Admin에서 해당 항목을 확인해야 합니다."),
+        )
+        locations: List[str] = []
+        ranks = sorted(context["ranks"])
+        if ranks:
+            locations.append("TOP 5 " + "·".join(str(rank) for rank in ranks) + "위")
+        elif context["fields"]:
+            field_labels = {
+                "top5": "TOP 5",
+                "deep_dive": "딥다이브",
+                "subject": "메일 제목",
+                "visible_body": "메일 본문",
+            }
+            locations.extend(
+                field_labels.get(field, field)
+                for field in context["fields"][:2]
+            )
+        location = f" <span style=\"color:#6b7280;\">({' · '.join(locations)})</span>" if locations else ""
+        items.append(
+            f"<li><strong>{html.escape(label)}</strong>{location}"
+            f"<br>{html.escape(detail)}</li>"
+        )
+    return "".join(items) or "<li>고객 발송 전 Admin에서 품질 상태를 확인해 주세요.</li>"
+
+
+def _poor_notice(
+    program_id: str,
+    subject: str,
+    owner_review_url: str,
+    findings: Sequence[Mapping[str, Any]],
+) -> tuple[str, str]:
+    if _is_global(program_id):
+        notice_subject = _global_poor_notice_subject(subject)
+        summary = _global_poor_notice_summary(findings)
+    else:
+        # Preserve the existing Korea notice surface exactly.
+        notice_subject = _review_subject(subject).replace("[주의]", "[품질 확인]", 1)
+        labels: List[str] = []
+        for row in findings[:8]:
+            policy = get_graded_issue_policy(str(row.get("issue_code") or ""))
+            labels.append(policy.label_ko if policy is not None else "추가 확인 필요")
+        summary = "".join(f"<li>{html.escape(label)}</li>" for label in labels)
     link = (
         f'<p><a href="{html.escape(owner_review_url, quote=True)}">Admin에서 전체 후보 확인</a></p>'
         if owner_review_url
@@ -473,9 +623,12 @@ def adjudicate_keysuri_quality(
         safety = SAFETY_SAFE
 
     residual_count = sum(1 for row in normalized if row.get("finding_state") == FINDING_RESIDUAL)
+    global_notice_only = _is_global(program_id) and any(
+        code in _GLOBAL_NOTICE_ONLY_REVIEW_CODES for code in review_codes
+    )
     if residual_count == 0:
         editorial = EDITORIAL_READY
-    elif residual_count >= _POOR_REVIEW_FINDING_THRESHOLD:
+    elif global_notice_only or residual_count >= _POOR_REVIEW_FINDING_THRESHOLD:
         editorial = EDITORIAL_POOR
     else:
         editorial = EDITORIAL_REVIEW
@@ -492,7 +645,7 @@ def adjudicate_keysuri_quality(
     elif matrix["owner_delivery_behavior"] == OWNER_SEND_POOR_NOTICE:
         residuals = [row for row in normalized if row.get("finding_state") == FINDING_RESIDUAL]
         delivery_subject, delivery_html = _poor_notice(
-            candidate_subject, owner_review_url, residuals
+            program_id, candidate_subject, owner_review_url, residuals
         )
     elif matrix["owner_delivery_behavior"] == OWNER_HOLD_INCIDENT:
         delivery_subject = ""
@@ -788,6 +941,11 @@ def run_keysuri_graded_validation_no_send_proof() -> Dict[str, Any]:
         _case(
             "safe_review_owner_path",
             "keysuri_global_tech",
+            ("global_visible_repeated_template_skeleton_blocked",),
+        ),
+        _case(
+            "safe_english_notice_only_path",
+            "keysuri_global_tech",
             ("global_visible_raw_english_prose_blocked",),
         ),
         _structured_case("deepx_original_wrong_domain", deepx_broken),
@@ -824,6 +982,11 @@ def run_keysuri_graded_validation_no_send_proof() -> Dict[str, Any]:
             SAFETY_SAFE,
             EDITORIAL_REVIEW,
             OWNER_SEND_WARNING,
+        ),
+        "safe_english_notice_only_path": (
+            SAFETY_SAFE,
+            EDITORIAL_POOR,
+            OWNER_SEND_POOR_NOTICE,
         ),
         "deepx_original_wrong_domain": (
             SAFETY_SAFE,

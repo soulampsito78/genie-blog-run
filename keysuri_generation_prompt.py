@@ -1637,6 +1637,7 @@ def _compact_top5_for_global_retry(top_5: Any) -> Dict[str, Any]:
                     max_chars=160,
                 ),
                 "source_id": item.get("source_id"),
+                "source_ids": list(item.get("source_ids") or []),
                 "category": item.get("category"),
             }
         )
@@ -1826,7 +1827,14 @@ def build_keysuri_corrective_generation_prompt(
             "still emit every required key in the same single JSON object.",
             "Output exactly one JSON object. No markdown fences, no commentary.",
         ]
-    return build_keysuri_generation_prompt(prompt_input) + "\n" + "\n".join(suffix)
+    base_prompt = (
+        build_keysuri_generation_prompt_compact(
+            prompt_input, reason="global_malformed_contract_repair"
+        )
+        if program_id == PROGRAM_GLOBAL or program_id.startswith("keysuri_global")
+        else build_keysuri_generation_prompt(prompt_input)
+    )
+    return base_prompt + "\n" + "\n".join(suffix)
 
 
 def generate_keysuri_body_raw_text(
