@@ -1416,7 +1416,12 @@ def _program_service_state_cards(runs, incidents) -> dict:
         else:
             action_html = f'<p class="page-description">{_esc(action["label"])}</p>'
         notice_html = ""
-        if state["customer_notice_state"] in {"recommended", "required"}:
+        # The next action may already be the notice; offering it twice reads as
+        # two different actions on a phone, where they stack.
+        if action.get("kind") != "notice" and state["customer_notice_state"] in {
+            "recommended",
+            "required",
+        }:
             notice_html = (
                 '<div class="actions" style="margin-top:8px;">'
                 f'<a class="btn btn--secondary" href="/admin/notices/new?program_id={_esc(pid)}">'
@@ -1427,7 +1432,7 @@ def _program_service_state_cards(runs, incidents) -> dict:
 <article class="run-card">
   <div class="run-card__top"><div><p class="eyebrow">{_esc(state['program_display'])} · {_esc(state['scheduled_time'])}</p>
   <h3>{_esc(state['program_name'])}</h3></div>{_ui_badge(state['service_health'], _SERVICE_HEALTH_TONE.get(state['service_health'], 'neutral'))}</div>
-  <div class="metrics" style="margin:14px 0;grid-template-columns:repeat(3,minmax(0,1fr));">
+  <div class="metrics" style="margin:14px 0;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));">
     {_ui_metric('콘텐츠 상태', _CONTENT_STATUS_LABELS.get(state['content_status'], state['content_status']))}
     {_ui_metric('고객 발송 가능', '예' if state['customer_ready'] else '아니오')}
     {_ui_metric('고객 공지', _NOTICE_STATE_LABELS.get(state['customer_notice_state'], state['customer_notice_state']))}
@@ -1475,7 +1480,7 @@ def admin_incidents_list(request: Request):
         cards.append(f"""
 <article class="run-card">
   <div class="run-card__top"><div><p class="eyebrow">{_esc(view['program']['display'])}</p><h3>{_esc(view['scheduled'] or '실행 시각 미기록')} 발행 장애</h3></div>{_ui_badge(view['current'], view['tone'])}</div>
-  <div class="metrics" style="margin:14px 0;grid-template-columns:repeat(3,minmax(0,1fr));">
+  <div class="metrics" style="margin:14px 0;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));">
     {_ui_metric('고객 영향', view['customer_impact'])}
     {_ui_metric('실패 단계', view['failed_stage'])}
     {_ui_metric('안전 상태', view['duplicate_risk'])}
