@@ -91,15 +91,35 @@ class NumericObservationInvariantTests(unittest.TestCase):
         self.assertIsNone(probe._parse_float(None))
 
     def test_explicit_sourced_zero_remains_zero(self) -> None:
+        # A dated settled-session table may publish a genuine flat close.
         obs = _obs(
             close=6912.37,
             previous_close=6912.37,
             change_pct=0.0,
             market_date="2026-08-27",
             session_state="closed",
+            settlement_evidence="naver_daily_close_table:2026-08-27",
         )
         self.assertEqual(obs["observation_status"], SETTLED)
         self.assertEqual(obs["pct_change"], 0.0)
+
+    def test_a_quotes_own_previous_close_is_not_zero_evidence(self) -> None:
+        """A provider rolling its reference forward looks exactly like a flat close.
+
+        Observed on CNBC's US indices at 03:29 ET on 2026-08-28:
+        previous_day_closing had rolled to equal the last settled close and the
+        change read 0.00, which would have published "S&P 500 +0.00%" for a
+        session that actually closed +0.72%.
+        """
+        obs = _obs(
+            close=7730.99,
+            previous_close=7730.99,
+            change_pct=0.0,
+            market_date="2026-08-27",
+            session_state="closed",
+        )
+        self.assertEqual(obs["observation_status"], UNVERIFIABLE_ZERO)
+        self.assertIsNone(obs["pct_change"])
 
     def test_zero_without_a_sourced_previous_close_is_refused(self) -> None:
         # The exact shape the 08:24 pre-open Naver quote arrived in: the change
@@ -150,12 +170,29 @@ class SessionIdentityTests(unittest.TestCase):
         obs = _obs(close=6912.37, change_pct=0.0, change_pts=0.0, market_date=TARGET)
         self.assertEqual(obs["observation_status"], UNSETTLED_SESSION)
 
-    def test_live_session_state_is_not_settled_even_on_a_past_date(self) -> None:
+    def test_a_past_session_date_outranks_a_live_market_status(self) -> None:
+        """Session state describes the market, not the quote.
+
+        A US close read at 03:29 ET carries curmktstatus PRE_MKT because the
+        *next* session is being flagged; the quote itself still belongs to the
+        completed prior session, and refusing it blocked every evening run.
+        """
+        obs = _obs(
+            close=7730.99,
+            previous_close=7675.70,
+            change_pct=0.72,
+            market_date="2026-08-27",
+            session_state="PRE_MKT",
+        )
+        self.assertEqual(obs["observation_status"], SETTLED)
+        self.assertEqual(obs["pct_change"], 0.72)
+
+    def test_a_live_status_on_the_target_session_is_still_unsettled(self) -> None:
         obs = _obs(
             close=66653.59,
             previous_close=66131.98,
             change_pct=0.79,
-            market_date="2026-08-27",
+            market_date=TARGET,
             session_state="REG_MKT",
         )
         self.assertEqual(obs["observation_status"], UNSETTLED_SESSION)
@@ -208,9 +245,11 @@ class SessionIdentityTests(unittest.TestCase):
             "as_of": "2026-08-27",
             "indices": {
                 "KOSPI": {"close": 6912.37, "previous_close": 6912.37, "change_pct": 0.0,
-                          "market_date": "2026-08-27", "session_state": "closed"},
+                          "market_date": "2026-08-27", "session_state": "closed",
+                          "settlement_evidence": "naver_daily_close_table:2026-08-27"},
                 "KOSDAQ": {"close": 837.65, "previous_close": 837.65, "change_pct": 0.0,
-                           "market_date": "2026-08-27", "session_state": "closed"},
+                           "market_date": "2026-08-27", "session_state": "closed",
+                           "settlement_evidence": "naver_daily_close_table:2026-08-27"},
             },
         }
         _normalized, report = normalize_index_feed(feed, target_date=TARGET)

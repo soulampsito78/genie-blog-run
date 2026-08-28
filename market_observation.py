@@ -203,7 +203,15 @@ def normalize_market_observation(
                 f"before target {target.isoformat()}"
             )
             return result
-    if result["session_state"] == "live":
+    if result["session_state"] == "live" and not (
+        require_prior_session and target is not None and market_date < target
+    ):
+        # Session state describes the market, not the quote. Once the quote's own
+        # session date is strictly in the past, that date is the stronger
+        # evidence: a US close carried at 03:29 ET is settled even though the
+        # next session has already been flagged pre-market. A live status over a
+        # stale timestamp is caught instead by the coherence and zero-evidence
+        # rules below, which is where it actually shows up.
         result["observation_status"] = UNSETTLED_SESSION
         result["observation_reason"] = "source reports the session as still trading"
         return result
@@ -302,16 +310,15 @@ def _zero_is_evidenced(
 ) -> bool:
     """Whether a 0.00% change is an established fact rather than an unmoved quote.
 
-    Evidence means the source published a previous close of its own — a second,
-    independent print — and it equals today's close. A previous close that was
-    itself back-computed from a zero point change proves nothing, which is the
-    exact shape the 2026-08-28 pre-open Naver quote arrived in.
+    Only a source that publishes a dated, completed session may assert a flat
+    close. A quote's own previous_close is not evidence: when a provider rolls
+    its reference forward at the pre-market open it sets previous_day_closing
+    equal to the last settled close, so `previous_close == close` with a zero
+    change is precisely the shape of a quote that has not traded — observed on
+    CNBC's US indices at 03:29 ET on 2026-08-28, reproducing the same defect
+    that shipped from Naver's pre-open KOSPI quote that morning.
     """
-    if str(slot.get("settlement_evidence") or "").strip():
-        return True
-    if not prev_sourced or prev is None:
-        return False
-    return abs(close - prev) < 1e-9
+    return bool(str(slot.get("settlement_evidence") or "").strip())
 
 
 def normalize_index_feed(
