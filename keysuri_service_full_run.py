@@ -46,6 +46,7 @@ from keysuri_contract_preview_renderer import (
     prepare_contract_preview_fixture,
     render_keysuri_contract_preview_html,
 )
+from keysuri_reader_surface import reader_surface_run_fields
 from keysuri_briefing_content_enricher import (
     _GLOBAL_FILLER_SANITIZER_KEY,
     enrich_generated_briefing_content,
@@ -3823,6 +3824,9 @@ def run_keysuri_image_only_reissue(
     )
     _copy_subject_identity_fields(parent, meta)
     meta.update(visible_text_quality_fields)
+    # Image-only reissue never regenerates text: the reader surface is the
+    # parent's, and it is re-derived rather than assumed to have carried over.
+    meta.update(reader_surface_run_fields(parent_briefing))
     meta.update(adjudication_artifact_fields(adjudication))
     meta.update(_post_render_qa_diagnostic_fields(post_render_qa))
     meta.update(
@@ -4128,6 +4132,7 @@ def run_keysuri_text_only_reissue(
     meta.update(_dedup_artifact_fields_from_prompt_input(prompt_input))
     meta.update(repair_fields)
     meta.update(visible_text_quality_fields)
+    meta.update(reader_surface_run_fields(generated_briefing))
     meta.update(adjudication_artifact_fields(adjudication))
     meta.update(_post_render_qa_diagnostic_fields(post_render_qa))
     meta.update(_scope_delivery_reason_fields("body_only"))
@@ -4479,6 +4484,7 @@ def run_keysuri_text_and_image_reissue(
     meta.update(_dedup_artifact_fields_from_prompt_input(prompt_input))
     meta.update(repair_fields)
     meta.update(visible_text_quality_fields)
+    meta.update(reader_surface_run_fields(generated_briefing))
     meta.update(adjudication_artifact_fields(adjudication))
     meta.update(_post_render_qa_diagnostic_fields(post_render_qa))
     meta.update(_scope_delivery_reason_fields("body_and_image"))
@@ -5398,6 +5404,7 @@ def _run_keysuri_service_full_run_impl(
         if contract_fingerprint:
             meta["generation_contract_fingerprint"] = contract_fingerprint
     meta.update(visible_text_quality_fields)
+    meta.update(reader_surface_run_fields(generated_briefing))
     meta.update(adjudication_artifact_fields(adjudication))
     meta.update(_post_render_qa_diagnostic_fields(post_render_qa))
     meta["customer_send"] = 0

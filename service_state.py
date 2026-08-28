@@ -135,6 +135,21 @@ def derive_content_status(meta: Mapping[str, Any]) -> Dict[str, Any]:
             "blocking": blocking,
         }
 
+    # The reader-surface producer withheld a customer-visible field it could not
+    # bind from authored prose. Whatever else the run reports, the cards on the
+    # page are incomplete.
+    if meta.get("reader_surface_enforced") and not meta.get("reader_surface_complete", True):
+        withheld = meta.get("reader_surface_unavailable_fields") or []
+        reasons.append(
+            "독자 노출 필드가 생성되지 않아 보류 표시로 대체되었습니다: "
+            + ", ".join(str(item) for item in list(withheld)[:6])
+        )
+        return {
+            "content_status": CONTENT_QUALITY_DEGRADED,
+            "reasons": reasons,
+            "blocking": blocking,
+        }
+
     # A scaffold may restore structure; it may not turn "the model produced no
     # article prose" into "generation succeeded". When the one budgeted
     # corrective call also failed, what remains on the reader surface is

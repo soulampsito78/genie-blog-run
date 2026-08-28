@@ -1263,6 +1263,10 @@ def enrich_korea_deep_dive_content(
     return out
 
 
+#: Where the reader-surface boundary records what it had to withhold.
+_READER_SURFACE_DIAGNOSTIC_KEY = "_reader_surface_diagnostics"
+
+
 def enrich_generated_briefing_content(
     generated_briefing: dict,
     program_id: str,
@@ -1333,4 +1337,18 @@ def enrich_generated_briefing_content(
 
     from keysuri_briefing_body_ux_normalizer import normalize_generated_briefing_visible_prose
 
-    return normalize_generated_briefing_visible_prose(out, program_id, prompt_input)
+    out = normalize_generated_briefing_visible_prose(out, program_id, prompt_input)
+
+    # The canonical reader-surface boundary, applied last so nothing in this
+    # function can write past it. Every path that produces a briefing — first
+    # parse, corrective generation, scaffold completion, repair, reissue,
+    # degraded candidate, manual run — calls this function, so this is the one
+    # place a customer-visible article field can be produced.
+    from keysuri_reader_surface import enforce_reader_surface
+
+    out, reader_diag = enforce_reader_surface(
+        out, program_id=program_id, prompt_input=prompt_input
+    )
+    if isinstance(out, dict) and reader_diag.get("reader_surface_enforced"):
+        out[_READER_SURFACE_DIAGNOSTIC_KEY] = reader_diag
+    return out

@@ -176,6 +176,49 @@ class ScaffoldCannotHideFailureTests(unittest.TestCase):
         self.assertTrue(state["customer_ready"])
 
 
+class ReaderSurfaceGatesCustomerReadinessTests(unittest.TestCase):
+    """B feeding C: withheld reader prose is a degraded service, not a clean run."""
+
+    BASE = {
+        "run_id": "r",
+        "validation_result": "pass",
+        "safety_verdict": "SAFE",
+        "editorial_verdict": "GOOD",
+        "issue_codes": [],
+        "customer_delivery_status": "not_sent",
+    }
+
+    def test_incomplete_reader_surface_is_not_customer_ready(self) -> None:
+        state = derive_service_state(
+            {
+                **self.BASE,
+                "reader_surface_enforced": True,
+                "reader_surface_complete": False,
+                "reader_surface_ready_item_count": 0,
+                "reader_surface_unavailable_fields": ["claim-1:summary"],
+            },
+            program=GLOBAL,
+        )
+        self.assertFalse(state["customer_ready"])
+        self.assertEqual(state["service_health"], DEGRADED)
+
+    def test_a_complete_reader_surface_stays_publishable(self) -> None:
+        state = derive_service_state(
+            {
+                **self.BASE,
+                "reader_surface_enforced": True,
+                "reader_surface_complete": True,
+                "reader_surface_ready_item_count": 5,
+            },
+            program=GLOBAL,
+        )
+        self.assertTrue(state["customer_ready"])
+
+    def test_runs_predating_the_contract_are_not_penalised(self) -> None:
+        state = derive_service_state(dict(self.BASE), program=GLOBAL)
+        self.assertTrue(state["customer_ready"])
+
+
 class OwnerActionContractTests(unittest.TestCase):
     """D: the Admin must answer "what does the owner do now?"."""
 
