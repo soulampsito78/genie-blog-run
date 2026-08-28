@@ -1827,14 +1827,74 @@ def build_keysuri_corrective_generation_prompt(
             "still emit every required key in the same single JSON object.",
             "Output exactly one JSON object. No markdown fences, no commentary.",
         ]
-    base_prompt = (
-        build_keysuri_generation_prompt_compact(
-            prompt_input, reason="global_malformed_contract_repair"
-        )
-        if program_id == PROGRAM_GLOBAL or program_id.startswith("keysuri_global")
-        else build_keysuri_generation_prompt(prompt_input)
-    )
+    # The compact prompt exists for a MAX_TOKENS emergency: it "drops long prose
+    # instructions" and truncates each article's summary to 160 characters. A
+    # malformed-contract repair is the opposite failure — the model returned too
+    # much, not too little — and reusing the compact prompt here left it with a
+    # schema and a title, which is not enough evidence to differentiate five
+    # analyses. That is what produced one rhetorical shape on 5/5 cards on
+    # 2026-08-28. Contract repair keeps the full editorial prompt.
+    base_prompt = build_keysuri_generation_prompt(prompt_input)
+
+    plans = _narrative_plan_payload(prompt_input)
+    if plans:
+        suffix[-1:-1] = [
+            "",
+            "PER-ARTICLE NARRATIVE PLANS",
+            "Each entry is evidence and intent for ONE article, derived from that",
+            "article's own source.",
+            "- Write each card from its own plan; never from the category.",
+            "- Two cards must not share a sentence shape. Vary structure, not just nouns.",
+            "- A field marked UNAVAILABLE has no supporting evidence: say so plainly",
+            "  or omit it. Do not substitute a generic category statement.",
+            "- Each explanatory field must carry at least one item from that plan's",
+            "  discriminating_terms, or a fact/number/date from its own source.",
+            json.dumps(plans, ensure_ascii=False, sort_keys=True),
+        ]
+    synthesis = _deep_dive_synthesis_payload(prompt_input)
+    if synthesis:
+        suffix[-1:-1] = [
+            "",
+            "DEEP DIVE SYNTHESIS PLAN",
+            "The deep dive must synthesize across the five articles, not restate them.",
+            "- Do not reuse a sentence that already appears in any TOP5 card.",
+            "- Say what the day's stories have in common, where they pull apart,",
+            "  and why that difference matters to the owner.",
+            "- UNAVAILABLE means the evidence does not support that observation.",
+            json.dumps(synthesis, ensure_ascii=False, sort_keys=True),
+        ]
     return base_prompt + "\n" + "\n".join(suffix)
+
+
+def _deep_dive_synthesis_payload(prompt_input: dict) -> dict:
+    """Cross-article synthesis intent; empty when unavailable."""
+    try:
+        from keysuri_narrative_plan import (
+            build_deep_dive_synthesis_plan,
+            build_narrative_plans,
+        )
+
+        top = prompt_input.get("top_5_news") if isinstance(prompt_input, dict) else None
+        items = top.get("items") if isinstance(top, dict) else None
+        if not isinstance(items, list) or not items:
+            return {}
+        return build_deep_dive_synthesis_plan(build_narrative_plans(items)).as_prompt_dict()
+    except Exception:  # noqa: BLE001 - synthesis intent is an improvement, not a dependency.
+        return {}
+
+
+def _narrative_plan_payload(prompt_input: dict) -> list:
+    """Per-article plans for the corrective prompt; empty when unavailable."""
+    try:
+        from keysuri_narrative_plan import build_narrative_plans, plans_as_prompt_payload
+
+        top = prompt_input.get("top_5_news") if isinstance(prompt_input, dict) else None
+        items = top.get("items") if isinstance(top, dict) else None
+        if not isinstance(items, list) or not items:
+            return []
+        return plans_as_prompt_payload(build_narrative_plans(items))
+    except Exception:  # noqa: BLE001 - a plan is an improvement, never a dependency.
+        return []
 
 
 def generate_keysuri_body_raw_text(

@@ -221,9 +221,31 @@ class KeysuriGenerationPromptContractTests(unittest.TestCase):
                 self.assertIn("Public tech source (...) published:", prompt)
                 self.assertIn("never invent a replacement conclusion", prompt)
                 self.assertIn("borrow prose from another rank", prompt)
-        self.assertIn("Kee-Suri Compact Generation Prompt", corrective)
-        self.assertNotIn("Kee-Suri Offline Generation Prompt (staged)", corrective)
-        self.assertLess(len(corrective), len(build_keysuri_generation_prompt(_global_prompt())))
+        # Contract repair keeps the FULL editorial prompt. The compact prompt is
+        # for a MAX_TOKENS emergency — it drops the prose instructions and
+        # truncates each article's summary, and reusing it here is what left the
+        # model with a schema and a title and produced one rhetorical shape on
+        # 5/5 cards on 2026-08-28.
+        self.assertIn("Kee-Suri Offline Generation Prompt (staged)", corrective)
+        self.assertNotIn("Kee-Suri Compact Generation Prompt", corrective)
+        self.assertGreater(len(corrective), len(build_keysuri_generation_prompt(_global_prompt())))
+        self.assertIn("PER-ARTICLE NARRATIVE PLANS", corrective)
+
+    def test_corrective_prompt_carries_one_plan_per_article(self) -> None:
+        corrective = build_keysuri_corrective_generation_prompt(
+            _global_prompt(),
+            {
+                "failure_family": "GLOBAL_MALFORMED_CONTRACT",
+                "fixed_source_ids": ["src-001"],
+                "fixed_top5_order": [],
+            },
+        )
+        items = _global_prompt()["top_5_news"]["items"]
+        for item in items:
+            self.assertIn(str(item["news_id"]), corrective)
+        self.assertIn("never from the category", corrective)
+        self.assertIn("must not share a sentence shape", corrective)
+        self.assertIn("UNAVAILABLE", corrective)
 
     def test_global_compact_repair_preserves_plural_source_ids(self) -> None:
         prompt_input = _global_prompt()
@@ -238,7 +260,12 @@ class KeysuriGenerationPromptContractTests(unittest.TestCase):
             },
         )
 
-        self.assertIn('"source_ids": ["src-001", "src-001-secondary"]', corrective)
+        # The full prompt renders TOP5 indented rather than inline, so assert the
+        # invariant (both ids survive the corrective path) not the formatting.
+        self.assertIn("src-001-secondary", corrective)
+        self.assertIn('"fixed_source_ids": ["src-001", "src-001-secondary"]', corrective)
+        top5_block = corrective.split("CORRECTIVE_CONTEXT")[0]
+        self.assertIn("src-001-secondary", top5_block)
 
     def test_global_naturalization_keeps_korea_prompt_byte_identical(self) -> None:
         """Global-only editorial changes must not alter Korea semantics or text."""

@@ -249,8 +249,10 @@ class Global1230IncidentHarness(unittest.TestCase):
         )
         self.assertIn("FORBIDDEN: display-only shells", prompt)
         self.assertIn("COMPLETE contract object", prompt)
-        self.assertIn("Kee-Suri Compact Generation Prompt", prompt)
-        self.assertNotIn("Kee-Suri Offline Generation Prompt (staged)", prompt)
+        # Contract repair uses the full editorial prompt; see
+        # test_global_compact_and_corrective_paths_keep_same_naturalization_contract.
+        self.assertIn("Kee-Suri Offline Generation Prompt (staged)", prompt)
+        self.assertNotIn("Kee-Suri Compact Generation Prompt", prompt)
         self.assertNotIn("fill only missing or invalid required fields", prompt)
 
     def test_07_watchdog_generation_validation_not_gate_failure(self) -> None:
