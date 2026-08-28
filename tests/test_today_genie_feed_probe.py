@@ -60,6 +60,26 @@ def _naver_day_html(rows: list[tuple[str, str, str, str, str]]) -> str:
     return "<table class=\"type_1\">" + "".join(_naver_day_row(*r) for r in rows) + "</table>"
 
 
+def _naver_world_day_html(rows) -> str:
+    """Naver world 일별시세 markup: dated close + magnitude-only change.
+
+    Direction lives in the row class, but the parser re-derives it from
+    consecutive closes and only requires the class to agree.
+    """
+    cells = "".join(
+        f'<tr class="{css} ">'
+        f'<td class="tb_td">{day}</td>'
+        f'<td class="tb_td2"><span>{close}</span></td>'
+        f'<td class="tb_td3"><span class="point_status">{change}</span></td>'
+        f'<td class="tb_td4"><span>0</span></td>'
+        f'<td class="tb_td5"><span>0</span></td>'
+        f'<td class="tb_td6"><span>0</span></td>'
+        f'</tr>'
+        for day, close, change, css in rows
+    )
+    return f'<table id="dayTable"><tbody>{cells}</tbody></table>'
+
+
 def _rss_xml(items: list[tuple[str, str]]) -> str:
     chunks = ['<?xml version="1.0"?><rss><channel>']
     for title, pub in items:
@@ -92,8 +112,16 @@ class TodayGenieFeedProbeTests(unittest.TestCase):
                 return _cnbc_html("25,929.663", "220.231", "0.86", "2026-06-08T17:15:59.000-0400")
             if url == probe.CNBC_QUOTES["DJI"]:
                 return _cnbc_html("50,786.01", "-80.77", "-0.16", "2026-06-08T16:56:57.000-0400")
-            if url == probe.CNBC_QUOTES["NIKKEI"]:
-                return _cnbc_html("64,024.60", "UNCH", "UNCH", "2026-06-08")
+            if url == probe.NAVER_WORLD_INDEX["NIKKEI"]:
+                # 06-09 still open; the settled row a 06-09 briefing may quote
+                # is 06-08, whose change is derived from the 06-05 close.
+                return _naver_world_day_html(
+                    [
+                        ("2026.06.09", "64,100.00", "75.40", "point_up"),
+                        ("2026.06.08", "64,024.60", "300.40", "point_dn"),
+                        ("2026.06.05", "64,325.00", "100.00", "point_up"),
+                    ]
+                )
             if url == probe.NAVER_INDEX["KOSPI"]:
                 # 8160.59 -> 7484.41 is -676.18pts = -8.29%; the 상승 label is stale.
                 return _naver_html("7,484.41", "676.18", "-8.29", "상승", "2026.06.08")

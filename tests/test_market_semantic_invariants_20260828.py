@@ -678,3 +678,99 @@ class ProgramBoundaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _naver_world_day_html(rows) -> str:
+    cells = "".join(
+        f'<tr class="{css} "><td class="tb_td">{day}</td>'
+        f'<td class="tb_td2"><span>{close}</span></td>'
+        f'<td class="tb_td3"><span class="point_status">{change}</span></td>'
+        f'<td class="tb_td4"><span>0</span></td><td class="tb_td5"><span>0</span></td>'
+        f'<td class="tb_td6"><span>0</span></td></tr>'
+        for day, close, change, css in rows
+    )
+    return f'<table id="dayTable"><tbody>{cells}</tbody></table>'
+
+
+# The real Nikkei tape from Naver's world daily table.
+NIKKEI_DAY_ROWS = [
+    ("2026.08.28", "66,405.56", "273.58", "point_up"),
+    ("2026.08.27", "66,131.98", "130.18", "point_dn"),
+    ("2026.08.26", "66,262.16", "405.73", "point_up"),
+    ("2026.08.25", "65,856.43", "328.34", "point_up"),
+]
+
+
+class SettledNikkeiTests(unittest.TestCase):
+    """The Nikkei residual: a dated completed session, not a live quote.
+
+    CNBC's .N225 resets its change at the Tokyo pre-open while its timestamp
+    still lags the prior session, which is how "니케이 66131.98 0%" shipped on
+    2026-08-28 when the session had actually closed -130.18 / -0.20%.
+    """
+
+    def _row(self, target):
+        return probe.select_settled_naver_world_row(
+            _naver_world_day_html(NIKKEI_DAY_ROWS), "NIKKEI", target_date=target
+        )
+
+    def test_20260828_target_yields_the_settled_0827_session(self) -> None:
+        row = self._row("2026-08-28")
+        self.assertEqual(row["market_date"], "2026-08-27")
+        self.assertEqual(row["close"], 66131.98)
+        self.assertEqual(row["change_pts"], -130.18)
+        self.assertEqual(row["change_pct"], -0.2)
+        self.assertEqual(row["previous_close"], 66262.16)
+
+    def test_monday_target_yields_the_friday_close(self) -> None:
+        # Monday 06:30 must not depend on Monday's live quote state.
+        row = self._row("2026-08-31")
+        self.assertEqual(row["market_date"], "2026-08-28")
+        self.assertEqual(row["close"], 66405.56)
+        self.assertEqual(row["change_pct"], 0.41)
+
+    def test_change_is_derived_from_consecutive_closes(self) -> None:
+        row = self._row("2026-08-28")
+        self.assertAlmostEqual(
+            row["close"] - row["previous_close"], row["change_pts"], places=2
+        )
+
+    def test_a_row_class_contradicting_the_arithmetic_is_refused(self) -> None:
+        rows = [
+            ("2026.08.28", "66,405.56", "273.58", "point_up"),
+            ("2026.08.27", "66,131.98", "130.18", "point_up"),  # actually fell
+            ("2026.08.26", "66,262.16", "405.73", "point_up"),
+        ]
+        with self.assertRaises(probe.FeedProbeError):
+            probe.select_settled_naver_world_row(
+                _naver_world_day_html(rows), "NIKKEI", target_date="2026-08-28"
+            )
+
+    def test_a_published_magnitude_disagreeing_with_arithmetic_is_refused(self) -> None:
+        rows = [
+            ("2026.08.27", "66,131.98", "999.99", "point_dn"),
+            ("2026.08.26", "66,262.16", "405.73", "point_up"),
+        ]
+        with self.assertRaises(probe.FeedProbeError):
+            probe.select_settled_naver_world_row(
+                _naver_world_day_html(rows), "NIKKEI", target_date="2026-08-28"
+            )
+
+    def test_no_preceding_session_is_an_error_not_a_guess(self) -> None:
+        rows = [("2026.08.27", "66,131.98", "130.18", "point_dn")]
+        with self.assertRaises(probe.FeedProbeError):
+            probe.select_settled_naver_world_row(
+                _naver_world_day_html(rows), "NIKKEI", target_date="2026-08-28"
+            )
+
+    def test_settled_row_carries_settlement_evidence(self) -> None:
+        row = self._row("2026-08-28")
+        self.assertIn("naver_world_daily_close_table", row["settlement_evidence"])
+        self.assertEqual(row["session_state"], "closed")
+
+    def test_the_observation_contract_accepts_it(self) -> None:
+        obs = normalize_market_observation(
+            "NIKKEI", self._row("2026-08-28"), target_date="2026-08-28"
+        )
+        self.assertEqual(obs["observation_status"], SETTLED)
+        self.assertEqual(obs["pct_change"], -0.2)

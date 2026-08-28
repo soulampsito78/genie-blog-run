@@ -62,6 +62,26 @@ def _naver_html(
     """
 
 
+def _naver_world_day_html(rows) -> str:
+    """Naver world 일별시세 markup: dated close + magnitude-only change.
+
+    Direction lives in the row class, but the parser re-derives it from
+    consecutive closes and only requires the class to agree.
+    """
+    cells = "".join(
+        f'<tr class="{css} ">'
+        f'<td class="tb_td">{day}</td>'
+        f'<td class="tb_td2"><span>{close}</span></td>'
+        f'<td class="tb_td3"><span class="point_status">{change}</span></td>'
+        f'<td class="tb_td4"><span>0</span></td>'
+        f'<td class="tb_td5"><span>0</span></td>'
+        f'<td class="tb_td6"><span>0</span></td>'
+        f'</tr>'
+        for day, close, change, css in rows
+    )
+    return f'<table id="dayTable"><tbody>{cells}</tbody></table>'
+
+
 def _blind(word: str) -> str:
     return f'<span class="blind">{word}</span>'
 
@@ -82,6 +102,14 @@ def _naver_day_html(rows: list) -> str:
 # The same 2026-07-29 incident tape as the settled daily table publishes it: the
 # session in progress leads the table, and the settled 07-28 row is the one a
 # 07-29 pre-open briefing may quote.
+# 2026-07-29 Nikkei tape as the world daily table publishes it: -1.49% on 07-28
+# derived from the 07-27 close.
+LIVE_NIKKEI_DAY_ROWS = [
+    ("2026.07.29", "61,000.00", "434.19", "point_dn"),
+    ("2026.07.28", "61,434.19", "929.86", "point_dn"),
+    ("2026.07.27", "62,364.05", "100.00", "point_up"),
+]
+
 LIVE_DAY_ROWS = {
     "KOSPI": [
         ("2026.07.29", "5,600.00", "63.24", "-1.11", "하락"),
@@ -519,6 +547,7 @@ class IncidentEndToEndTests(unittest.TestCase):
         pages = {
             probe.NAVER_INDEX_DAY["KOSPI"]: _naver_day_html(LIVE_DAY_ROWS["KOSPI"]),
             probe.NAVER_INDEX_DAY["KOSDAQ"]: _naver_day_html(LIVE_DAY_ROWS["KOSDAQ"]),
+            probe.NAVER_WORLD_INDEX["NIKKEI"]: _naver_world_day_html(LIVE_NIKKEI_DAY_ROWS),
         }
         for sym, body in PerIndexIsolationTests.LIVE_CNBC.items():
             pages[probe.CNBC_QUOTES[sym]] = body
@@ -595,12 +624,17 @@ class PerIndexIsolationTests(unittest.TestCase):
         pages = {
             probe.NAVER_INDEX_DAY["KOSPI"]: _naver_day_html(LIVE_DAY_ROWS["KOSPI"]),
             probe.NAVER_INDEX_DAY["KOSDAQ"]: _naver_day_html(LIVE_DAY_ROWS["KOSDAQ"]),
+            probe.NAVER_WORLD_INDEX["NIKKEI"]: _naver_world_day_html(LIVE_NIKKEI_DAY_ROWS),
         }
         for sym, body in self.LIVE_CNBC.items():
             pages[probe.CNBC_QUOTES[sym]] = body
         broken_urls = set()
         for sym in broken:
-            broken_urls.add(probe.NAVER_INDEX_DAY.get(sym) or probe.CNBC_QUOTES[sym])
+            broken_urls.add(
+                probe.NAVER_INDEX_DAY.get(sym)
+                or probe.NAVER_WORLD_INDEX.get(sym)
+                or probe.CNBC_QUOTES[sym]
+            )
 
         def fetch(url: str, timeout_sec: int = 20) -> str:
             if url in broken_urls:
