@@ -1,0 +1,166 @@
+{
+ "case": "20260827_reissue",
+ "run_id": "20260827_165839_keysuri_global_tech_47a85254",
+ "program_id": "keysuri_global_tech",
+ "editorial_verdict": "REVIEW",
+ "safety_verdict": "SAFE",
+ "review_issue_codes": [
+  "global_visible_repeated_template_skeleton_blocked",
+  "global_visible_repeated_low_information_label"
+ ],
+ "owner_delivery_behavior": "SEND_OWNER_REVIEW_WARNING",
+ "items": [
+  {
+   "rank": 1,
+   "news_id": "claim-live-nvidia-blog-a50e18aa16",
+   "headline": "엔비디아, 맞춤형 고대역폭 메모리 'NVHBM'으로 NVLink 생태계 확장",
+   "summary": "엔비디아가 조 단위 파라미터 워크로드와 AI 에이전트 수요에 대응하기 위해 맞춤형 고대역폭 메모리인 NVHBM을 도입하고 NVLink 퓨전 기술을 확장합니다.",
+   "what_happened": "엔비디아가 조 단위 파라미터 워크로드와 AI 에이전트 수요에 대응하기 위해 맞춤형 고대역폭 메모리인 NVHBM을 도입하고 NVLink 퓨전 기술을 확장합니다. NVIDIA Blog 공개 요약에 따르면 「NVIDIA NVLink Fusion Expands With NVHBM Custom High-Bandwidth Memory」 관련 변화가 보고되었습니다. 반도체·칩·AI 인프라 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다.",
+   "why_now": "AI 인프라의 성능 요구치가 급증함에 따라 기존 메모리 구조의 한계를 극복하기 위한 하드웨어 최적화가 필수적이기 때문입니다. 반도체·칩·AI 인프라 확인 포인트는 공급 일정·파운드리/벤더 고객 발표, 그리고 벤치마크·양산 일정입니다. 반도체·칩·AI 인프라 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "AI 인프라의 성능 요구치가 급증함에 따라 기존 메모리 구조의 한계를 극복하기 위한 하드웨어 최적화가 필수적이기 때문입니다. 반도체·칩·AI 인프라 확인 포인트는 공급 일정·파운드리/벤더 고객 발표, 그리고 벤치마크·양산 일정입니다. 반도체·칩·AI 인프라 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "반도체 설계와 메모리 제조 간의 결합이 긴밀해지며 맞춤형 칩 솔루션이 시장의 주도권을 잡을 것으로 보입니다. 반도체·칩·AI 인프라 후속은 공급 일정·파운드리/벤더 고객 발표 중심으로 보면 됩니다. 반도체·칩·AI 인프라가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "반도체 설계와 메모리 제조 간의 결합이 긴밀해지며 맞춤형 칩 솔루션이 시장의 주도권을 잡을 것으로 보입니다. 반도체·칩·AI 인프라 후속은 공급 일정·파운드리/벤더 고객 발표 중심으로 보면 됩니다. 반도체·칩·AI 인프라가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "공급 일정·파운드리/벤더 고객 발표; 벤치마크·양산 일정",
+   "category": "semiconductor_chip_infra",
+   "source_ids": [
+    "live-nvidia-blog-a50e18aa16"
+   ]
+  },
+  {
+   "rank": 2,
+   "news_id": "claim-live-openai-blog-fa2791fbc9",
+   "headline": "오픈AI, 미국 55개 교육구로 '교사용 ChatGPT' 보급 확대",
+   "summary": "오픈AI가 미국 내 55개 교육 시스템에 교사용 ChatGPT를 확장 도입하여 10만 명 이상의 교육자에게 안전한 AI 도구와 교육 지원을 제공합니다.",
+   "what_happened": "오픈AI가 미국 내 55개 교육 시스템에 교사용 ChatGPT를 확장 도입하여 10만 명 이상의 교육자에게 안전한 AI 도구와 교육 지원을 제공합니다. OpenAI News 공개 요약에 따르면 「오픈AI, 미국 55개 교육구로 '교사용 ChatGPT' 보급 확대」 관련 변화가 보고되었습니다. 「오픈AI」 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다.",
+   "why_now": "공교육 현장에 생성형 AI를 체계적으로 도입하여 교사들의 업무 효율성을 높이고 디지털 교육 격차를 해소하려는 시도입니다. 「오픈AI」 확인 포인트는 API 공개·엔터프라이즈 도입 일정, 그리고 가격·파트너/고객 발표입니다. 「오픈AI」 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "공교육 현장에 생성형 AI를 체계적으로 도입하여 교사들의 업무 효율성을 높이고 디지털 교육 격차를 해소하려는 시도입니다. 「오픈AI」 확인 포인트는 API 공개·엔터프라이즈 도입 일정, 그리고 가격·파트너/고객 발표입니다. 「오픈AI」 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "에듀테크 분야에서 AI 플랫폼의 영향력이 커지며 공공 부문과의 파트너십이 주요 수익 모델로 부상할 수 있습니다. 「오픈AI」 후속은 API 공개·엔터프라이즈 도입 일정 중심으로 보면 됩니다. 「오픈AI」가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "에듀테크 분야에서 AI 플랫폼의 영향력이 커지며 공공 부문과의 파트너십이 주요 수익 모델로 부상할 수 있습니다. 「오픈AI」 후속은 API 공개·엔터프라이즈 도입 일정 중심으로 보면 됩니다. 「오픈AI」가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "API 공개·엔터프라이즈 도입 일정; 가격·파트너/고객 발표",
+   "category": "ai_software_platform",
+   "source_ids": [
+    "live-openai-blog-fa2791fbc9"
+   ]
+  },
+  {
+   "rank": 3,
+   "news_id": "claim-live-techcrunch-ai-745d673f45",
+   "headline": "AI 스타트업 '인스팅트', 설립 1년 만에 25억 달러 기업 가치 인정",
+   "summary": "설립된 지 1년 된 AI 스타트업 인스팅트가 3억 5천만 달러의 투자를 유치하며 기업 가치 25억 달러를 달성했습니다.",
+   "what_happened": "설립된 지 1년 된 AI 스타트업 인스팅트가 3억 5천만 달러의 투자를 유치하며 기업 가치 25억 달러를 달성했습니다. TechCrunch AI 공개 요약에 따르면 「AI 스타트업 '인스팅트', 설립 1년 만에 25억 달러 기업 가치 인정」 관련 변화가 보고되었습니다. 「AI 스타트업 '인스팅트'」 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다.",
+   "why_now": "단기간에 막대한 자본을 끌어모으며 주목받고 있으나 데이터 프라이버시에 대한 우려도 함께 제기되고 있습니다. 「AI 스타트업 '인스팅트'」 확인 포인트는 투자 환경·후속 라운드(팔로우온) 흐름, 그리고 창업자 실행 리스크·번 레이트·GTM 후속입니다. 「AI 스타트업 '인스팅트'」 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "단기간에 막대한 자본을 끌어모으며 주목받고 있으나 데이터 프라이버시에 대한 우려도 함께 제기되고 있습니다. 「AI 스타트업 '인스팅트'」 확인 포인트는 투자 환경·후속 라운드(팔로우온) 흐름, 그리고 창업자 실행 리스크·번 레이트·GTM 후속입니다. 「AI 스타트업 '인스팅트'」 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "초기 단계 AI 기업에 대한 자본 집중 현상이 지속되는 가운데 규제 준수 여부가 향후 성장의 변수가 될 전망입니다. 「AI 스타트업 '인스팅트'」 후속은 투자 환경·후속 라운드(팔로우온) 흐름 중심으로 보면 됩니다. 「AI 스타트업 '인스팅트'」가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "초기 단계 AI 기업에 대한 자본 집중 현상이 지속되는 가운데 규제 준수 여부가 향후 성장의 변수가 될 전망입니다. 「AI 스타트업 '인스팅트'」 후속은 투자 환경·후속 라운드(팔로우온) 흐름 중심으로 보면 됩니다. 「AI 스타트업 '인스팅트'」가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "투자 환경·후속 라운드(팔로우온) 흐름; 창업자 실행 리스크·번 레이트·GTM 후속",
+   "category": "policy_regulation_capital_supplychain",
+   "source_ids": [
+    "live-techcrunch-ai-745d673f45"
+   ]
+  },
+  {
+   "rank": 4,
+   "news_id": "claim-live-ieee-spectrum-6200b570f5",
+   "headline": "IEEE-HKN, 신진 연구자 발굴을 위한 '미래 혁신' 컨퍼런스 개최",
+   "summary": "IEEE-HKN 명예 협회가 11월 6일 신진 저자들의 연구 성과를 알리고 네트워크를 형성하기 위한 '미래 혁신' 대면 행사를 처음으로 엽니다.",
+   "what_happened": "IEEE-HKN 명예 협회가 11월 6일 신진 저자들의 연구 성과를 알리고 네트워크를 형성하기 위한 '미래 혁신' 대면 행사를 처음으로 엽니다. IEEE Spectrum 공개 요약에 따르면 「IEEE-HKN, 신진 연구자 발굴을 위한 '미래 혁신' 컨퍼런스 개최」 관련 변화가 보고되었습니다. 「IEEE-HKN」 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다.",
+   "why_now": "차세대 기술 인재들이 학술적 가시성을 확보하고 산업계와 소통할 수 있는 기회를 제공하기 위함입니다. 「IEEE-HKN」 확인 포인트는 IEEE Spectrum 후속 공식 발표, 그리고 원문 업데이트·구체 수치 공개 여부입니다. 「IEEE-HKN」 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "차세대 기술 인재들이 학술적 가시성을 확보하고 산업계와 소통할 수 있는 기회를 제공하기 위함입니다. 「IEEE-HKN」 확인 포인트는 IEEE Spectrum 후속 공식 발표, 그리고 원문 업데이트·구체 수치 공개 여부입니다. 「IEEE-HKN」 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "미래 기술 인력을 조기에 확보하려는 기업들에게 우수한 인재를 발굴하는 창구가 될 수 있습니다. 「IEEE-HKN」 후속은 IEEE Spectrum 후속 공식 발표 중심으로 보면 됩니다. 「IEEE-HKN」이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "미래 기술 인력을 조기에 확보하려는 기업들에게 우수한 인재를 발굴하는 창구가 될 수 있습니다. 「IEEE-HKN」 후속은 IEEE Spectrum 후속 공식 발표 중심으로 보면 됩니다. 「IEEE-HKN」이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "IEEE Spectrum 후속 공식 발표; 원문 업데이트·구체 수치 공개 여부",
+   "category": "battery_ev_energy_grid",
+   "source_ids": [
+    "live-ieee-spectrum-6200b570f5"
+   ]
+  },
+  {
+   "rank": 5,
+   "news_id": "claim-live-datacenter-dynamics-3cf76770dc",
+   "headline": "유로파이버, 유럽 인프라 확장을 위한 22억 유로 규모 대출 확보",
+   "summary": "유럽 광통신 기업 유로파이버가 유럽 시장 확장 계획을 지원하기 위해 22억 유로 규모의 지속가능성 연계 채무 금융을 조달했습니다.",
+   "what_happened": "유럽 광통신 기업 유로파이버가 유럽 시장 확장 계획을 지원하기 위해 22억 유로 규모의 지속가능성 연계 채무 금융을 조달했습니다. Datacenter Dynamics 공개 요약에 따르면 「유로파이버, 유럽 인프라 확장을 위한 22억 유로 규모 대출 확보」 관련 변화가 보고되었습니다. 「유로파이버, 유럽 인프라 확장을 위한 22억 유로 규모 대출 확보」 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다.",
+   "why_now": "데이터 센터와 네트워크 인프라 확장에 필요한 대규모 자금을 환경적 책임과 연계하여 확보했다는 점이 특징입니다. 「유로파이버, 유럽 인프라 확장을 위한 22억 유로 규모 대출 확보」 확인 포인트는 Datacenter Dynamics 후속 공식 발표, 그리고 원문 업데이트·구체 수치 공개 여부입니다. 「유로파이버, 유럽 인프라 확장을 위한 22억 유로 규모 대출 확보」 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "데이터 센터와 네트워크 인프라 확장에 필요한 대규모 자금을 환경적 책임과 연계하여 확보했다는 점이 특징입니다. 「유로파이버, 유럽 인프라 확장을 위한 22억 유로 규모 대출 확보」 확인 포인트는 Datacenter Dynamics 후속 공식 발표, 그리고 원문 업데이트·구체 수치 공개 여부입니다. 「유로파이버, 유럽 인프라 확장을 위한 22억 유로 규모 대출 확보」 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "인프라 투자 시장에서 ESG 기준 충족이 자금 조달의 효율성을 결정짓는 핵심 요소로 자리 잡고 있습니다. 「유로파이버, 유럽 인프라 확장을 위한 22억 유로 규모 대출 확보」 후속은 Datacenter Dynamics 후속 공식 발표 중심으로 보면 됩니다. 「유로파이버, 유럽 인프라 확장을 위한 22억 유로 규모 대출 확보」가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "인프라 투자 시장에서 ESG 기준 충족이 자금 조달의 효율성을 결정짓는 핵심 요소로 자리 잡고 있습니다. 「유로파이버, 유럽 인프라 확장을 위한 22억 유로 규모 대출 확보」 후속은 Datacenter Dynamics 후속 공식 발표 중심으로 보면 됩니다. 「유로파이버, 유럽 인프라 확장을 위한 22억 유로 규모 대출 확보」가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "Datacenter Dynamics 후속 공식 발표; 원문 업데이트·구체 수치 공개 여부",
+   "category": "cybersecurity_cloud_datacenter",
+   "source_ids": [
+    "live-datacenter-dynamics-3cf76770dc"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "rank": 1,
+   "news_id": "claim-live-nvidia-blog-a50e18aa16",
+   "headline": "NVIDIA NVLink Fusion Expands With NVHBM Custom High-Bandwidth Memory",
+   "summary": "The next wave of AI is placing new demands on infrastructure. As AI agents and trillion-parameter workloads become mainstream, the performance of AI infrastructure depends not only on compute, but on how compute, memory, storage, networking and software are designed together as a unified system. To help hyperscalers and AI innovators build the next generation",
+   "category": "semiconductor_chip_infra",
+   "entity_keys": [
+    "nvidia"
+   ],
+   "source_name": "NVIDIA Blog",
+   "source_ids": [
+    "live-nvidia-blog-a50e18aa16"
+   ],
+   "url": "https://blogs.nvidia.com/blog/nvlink-fusion-nvhbm-custom-high-bandwidth-memory/"
+  },
+  {
+   "rank": 2,
+   "news_id": "claim-live-openai-blog-fa2791fbc9",
+   "headline": "Bringing ChatGPT for Teachers to more U.S. school districts",
+   "summary": "ChatGPT for Teachers is expanding to 55 U.S. school systems, bringing secure AI tools, training, and support to over 100,000 more educators and staff.",
+   "category": "ai_software_platform",
+   "entity_keys": [
+    "openai"
+   ],
+   "source_name": "OpenAI News",
+   "source_ids": [
+    "live-openai-blog-fa2791fbc9"
+   ],
+   "url": "https://openai.com/index/bringing-chatgpt-for-teachers-to-more-us-school-districts"
+  },
+  {
+   "rank": 3,
+   "news_id": "claim-live-techcrunch-ai-745d673f45",
+   "headline": "Viral AI startup Instinct has raised $350M at a $2.5B valuation",
+   "summary": "The startup is only a year old but it has already generated a massive amount of hype (and money) while also spurring privacy concerns.",
+   "category": "policy_regulation_capital_supplychain",
+   "entity_keys": [],
+   "source_name": "TechCrunch AI",
+   "source_ids": [
+    "live-techcrunch-ai-745d673f45"
+   ],
+   "url": "https://techcrunch.com/2026/08/26/viral-ai-startup-instinct-has-raised-350-million-at-a-2-5-billion-valuation/"
+  },
+  {
+   "rank": 4,
+   "news_id": "claim-live-ieee-spectrum-6200b570f5",
+   "headline": "IEEE Student Conference Provides Visibility to Budding Authors",
+   "summary": "The IEEE–Eta Kappa Nu (IEEE-HKN) honor society is preparing to host the Innovating the Future event on 6 November. The inaugural one-day, in-person event is designed to provide a forum for IEEE and IEEE-HKN undergraduate and graduate student authors to present their original research papers. A keynote address and thematic presentation sessions are planned as well. Student attendees can network with their peers and gain firsthand experience with the academic publishing process. To present at the",
+   "category": "battery_ev_energy_grid",
+   "entity_keys": [],
+   "source_name": "IEEE Spectrum",
+   "source_ids": [
+    "live-ieee-spectrum-6200b570f5"
+   ],
+   "url": "https://spectrum.ieee.org/ieee-student-conference-budding-authors"
+  },
+  {
+   "rank": 5,
+   "news_id": "claim-live-datacenter-dynamics-3cf76770dc",
+   "headline": "Eurofiber secures €2.2bn sustainability-linked debt financing",
+   "summary": "Will support Eurofiber's European expansion plans",
+   "category": "cybersecurity_cloud_datacenter",
+   "entity_keys": [],
+   "source_name": "Datacenter Dynamics",
+   "source_ids": [
+    "live-datacenter-dynamics-3cf76770dc"
+   ],
+   "url": "https://www.datacenterdynamics.com/en/news/eurofiber-secures-22bn-sustainability-linked-debt-financing/"
+  }
+ ],
+ "deep_dive_body": "오늘 눈에 띄는 점은 엔비디아, 맞춤형 고대역폭 메모리 흐름과 오픈AI, 미국 55개 교육구로 '교사용 이슈가 동시에 보인다는 것입니다. 한쪽은 산업·인프라 쪽이고, 다른 쪽은 소프트웨어·운영 쪽입니다. 주인님, AI 모델이 조 단위 파라미터로 대형화되면서 기존의 범용 메모리로는 데이터 처리 속도를 따라잡기 어려워졌습니다. 엔비디아는 이를 해결하기 위해 NVLink 기술을 확장하고 맞춤형 고대역폭 메모리인 NVHBM을 도입하여 하드웨어 병목 현상을 정면 돌파하고 있습니다. 이는 AI 인프라가 단순히 칩의 성능 경쟁을 넘어, 메모리와 네트워크가 하나로 통합된 거대한 시스템 단위의 최적화 단계로 진입했음을 시사합니다. 이러한 맞춤형 설계는 특정 워크로드에 최적화된 성능을 제공하며 AI 에이전트 시대의 핵심 경쟁력이 될 것입니다. 향후 공식 발표를 통해 세부 내용이 보완될 가능성이 있습니다."
+}

@@ -1,0 +1,179 @@
+{
+ "case": "20260827_natural",
+ "run_id": "20260827_123001_keysuri_global_tech_1f269612",
+ "program_id": "keysuri_global_tech",
+ "editorial_verdict": "POOR",
+ "safety_verdict": "SAFE",
+ "review_issue_codes": [
+  "global_visible_raw_english_prose_blocked",
+  "global_visible_semantic_truncation_blocked",
+  "global_visible_internal_template_leak_blocked",
+  "global_visible_repeated_template_skeleton_blocked",
+  "global_visible_deep_dive_duplication_blocked",
+  "global_visible_repeated_low_information_label"
+ ],
+ "owner_delivery_behavior": "SEND_OWNER_QUALITY_NOTICE",
+ "items": [
+  {
+   "rank": 1,
+   "news_id": "claim-live-nvidia-blog-a50e18aa16",
+   "headline": "NVIDIA NVLink Fusion Expands With NVHBM Custom High-Bandwidth Memory",
+   "summary": "The next wave of AI is placing new demands on infrastructure. As AI agents and trillion-parameter workloads become mainstream, the performance of AI infrastructure depends not only on compute, but on how compute, memory, storage, networking and software are designed together as a unified system. To help hyperscalers and AI innovators build the next generation",
+   "what_happened": "The next wave of AI is placing new demands on infrastructure. As AI agents and trillion-parameter workloads become mainstream, the performance of AI infrastructure depends not only on compute, but on how compute, memory, storage, networking and software are designed together as a unified system. To help hyperscalers and AI innovators build the next generation.",
+   "why_now": "Public tech source (NVIDIA Blog) published: NVIDIA NVLink Fusion Expands With NVHBM Custom High-Bandwidth Memory. 반도체·칩·AI 인프라 확인 포인트는 공급 일정·파운드리/벤더 고객 발표, 그리고 벤치마크·양산 일정입니다. 반도체·칩·AI 인프라 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "Public tech source (NVIDIA Blog) published: NVIDIA NVLink Fusion Expands With NVHBM Custom High-Bandwidth Memory. 반도체·칩·AI 인프라 확인 포인트는 공급 일정·파운드리/벤더 고객 발표, 그리고 벤치마크·양산 일정입니다. 반도체·칩·AI 인프라 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "Chip and AI infrastructure signals may affect hardware roadmaps and capex. 반도체·칩·AI 인프라 후속은 공급 일정·파운드리/벤더 고객 발표 중심으로 보면 됩니다. 반도체·칩·AI 인프라가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "Chip and AI infrastructure signals may affect hardware roadmaps and capex. 반도체·칩·AI 인프라 후속은 공급 일정·파운드리/벤더 고객 발표 중심으로 보면 됩니다. 반도체·칩·AI 인프라가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "공급 일정·파운드리/벤더 고객 발표; 벤치마크·양산 일정",
+   "category": "semiconductor_chip_infra",
+   "source_ids": [
+    "live-nvidia-blog-a50e18aa16"
+   ],
+   "source_name": "NVIDIA Blog"
+  },
+  {
+   "rank": 2,
+   "news_id": "claim-live-google-ai-blog-9ce79d4dde",
+   "headline": "5 ways to upgrade your home decor with Google Search",
+   "summary": "Learn how to use Google Search tools to find home decor inspiration, shop for furniture, and tackle DIY projects.",
+   "what_happened": "Learn how to use Google Search tools to find home decor inspiration shop for furniture and tackle DIY projects.",
+   "why_now": "Public tech source (Google AI Blog) published: 5 ways to upgrade your home decor with Google Search. AI·소프트웨어·플랫폼 확인 포인트는 API 공개·엔터프라이즈 도입 일정, 그리고 가격·파트너/고객 발표입니다. AI·소프트웨어·플랫폼 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "Public tech source (Google AI Blog) published: 5 ways to upgrade your home decor with Google Search. AI·소프트웨어·플랫폼 확인 포인트는 API 공개·엔터프라이즈 도입 일정, 그리고 가격·파트너/고객 발표입니다. AI·소프트웨어·플랫폼 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "AI/software/platform shifts may change vendor shortlists and workflow lock-in. AI·소프트웨어·플랫폼 후속은 API 공개·엔터프라이즈 도입 일정 중심으로 보면 됩니다. AI·소프트웨어·플랫폼이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "AI/software/platform shifts may change vendor shortlists and workflow lock-in. AI·소프트웨어·플랫폼 후속은 API 공개·엔터프라이즈 도입 일정 중심으로 보면 됩니다. AI·소프트웨어·플랫폼이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "API 공개·엔터프라이즈 도입 일정; 가격·파트너/고객 발표",
+   "category": "ai_software_platform",
+   "source_ids": [
+    "live-google-ai-blog-9ce79d4dde"
+   ],
+   "source_name": "Google AI Blog"
+  },
+  {
+   "rank": 3,
+   "news_id": "claim-live-arstechnica-tech-lab-33551649b5",
+   "headline": "AI agents meant to replace Meta workers made “large-scale, disruptive actions”",
+   "summary": "Report shows Meta's challenges replacing people with AI agents.",
+   "what_happened": "Report shows Meta's challenges replacing people with AI agents. Ars Technica Technology Lab 공개 요약에 따르면 「AI agents meant to replace Meta workers made “large-scale, disruptive actions”」 관련 변화가 보고되었습니다. AI·소프트웨어·플랫폼 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다.",
+   "why_now": "Public tech source (Ars Technica Technology Lab) published: AI agents meant to replace Meta workers made “large-scale, disruptive actions”. AI·소프트웨어·플랫폼 확인 포인트는 API 공개·엔터프라이즈 도입 일정, 그리고 가격·파트너/고객 발표입니다. AI·소프트웨어·플랫폼 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "Public tech source (Ars Technica Technology Lab) published: AI agents meant to replace Meta workers made “large-scale, disruptive actions”. AI·소프트웨어·플랫폼 확인 포인트는 API 공개·엔터프라이즈 도입 일정, 그리고 가격·파트너/고객 발표입니다. AI·소프트웨어·플랫폼 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "AI/software/platform shifts may change vendor shortlists and workflow lock-in. AI·소프트웨어·플랫폼 후속은 API 공개·엔터프라이즈 도입 일정 중심으로 보면 됩니다. AI·소프트웨어·플랫폼이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "AI/software/platform shifts may change vendor shortlists and workflow lock-in. AI·소프트웨어·플랫폼 후속은 API 공개·엔터프라이즈 도입 일정 중심으로 보면 됩니다. AI·소프트웨어·플랫폼이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "API 공개·엔터프라이즈 도입 일정; 가격·파트너/고객 발표",
+   "category": "ai_software_platform",
+   "source_ids": [
+    "live-arstechnica-tech-lab-33551649b5"
+   ],
+   "source_name": "Ars Technica Technology Lab"
+  },
+  {
+   "rank": 4,
+   "news_id": "claim-live-openai-blog-34e62ff4c7",
+   "headline": "The Hugging Face incident and the road ahead",
+   "summary": "OpenAI shares findings from the Hugging Face security incident and the steps we’re taking to strengthen AI model security, monitoring, and alignment.",
+   "what_happened": "OpenAI shares findings from the Hugging Face security incident and the steps we’re taking to strengthen AI model security monitoring and alignment.",
+   "why_now": "Public tech source (OpenAI News) published: The Hugging Face incident and the road ahead. The Hugging Face incident and the road ahead 확인 포인트는 API 공개·엔터프라이즈 도입 일정, 그리고 가격·파트너/고객 발표입니다. The Hugging Face incident and the road ahead 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "Public tech source (OpenAI News) published: The Hugging Face incident and the road ahead. The Hugging Face incident and the road ahead 확인 포인트는 API 공개·엔터프라이즈 도입 일정, 그리고 가격·파트너/고객 발표입니다. The Hugging Face incident and the road ahead 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "AI/software/platform shifts may change vendor shortlists and workflow lock-in. The Hugging Face incident and the road ahead 후속은 API 공개·엔터프라이즈 도입 일정 중심으로 보면 됩니다. The Hugging Face incident and the road ahead이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "AI/software/platform shifts may change vendor shortlists and workflow lock-in. The Hugging Face incident and the road ahead 후속은 API 공개·엔터프라이즈 도입 일정 중심으로 보면 됩니다. The Hugging Face incident and the road ahead이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "API 공개·엔터프라이즈 도입 일정; 가격·파트너/고객 발표",
+   "category": "ai_software_platform",
+   "source_ids": [
+    "live-openai-blog-34e62ff4c7"
+   ],
+   "source_name": "OpenAI News"
+  },
+  {
+   "rank": 5,
+   "news_id": "claim-live-techcrunch-ai-745d673f45",
+   "headline": "Viral AI startup Instinct has raised $350 million at a $2.5 billion valuation",
+   "summary": "The startup is only a year old but it has already generated a massive amount of hype (and money) while also spurring privacy concerns.",
+   "what_happened": "The startup is only a year old but it has already generated a massive amount of hype (and money) while also spurring privacy concerns. TechCrunch AI 공개 요약에 따르면 「Viral AI startup Instinct has raised $350 million at a $2.5 billion valuation」 관련 변화가 보고되었습니다. 정책·규제·자본·공급망 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다.",
+   "why_now": "Public tech source (TechCrunch AI) published: Viral AI startup Instinct has raised $350 million at a $2.5 billion valuation. 정책·규제·자본·공급망 확인 포인트는 투자 환경·후속 라운드(팔로우온) 흐름, 그리고 창업자 실행 리스크·번 레이트·GTM 후속입니다. 정책·규제·자본·공급망 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "Public tech source (TechCrunch AI) published: Viral AI startup Instinct has raised $350 million at a $2.5 billion valuation. 정책·규제·자본·공급망 확인 포인트는 투자 환경·후속 라운드(팔로우온) 흐름, 그리고 창업자 실행 리스크·번 레이트·GTM 후속입니다. 정책·규제·자본·공급망 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "Policy/capital/supply-chain moves may alter market access and timing. 정책·규제·자본·공급망 후속은 투자 환경·후속 라운드(팔로우온) 흐름 중심으로 보면 됩니다. 정책·규제·자본·공급망이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "Policy/capital/supply-chain moves may alter market access and timing. 정책·규제·자본·공급망 후속은 투자 환경·후속 라운드(팔로우온) 흐름 중심으로 보면 됩니다. 정책·규제·자본·공급망이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "투자 환경·후속 라운드(팔로우온) 흐름; 창업자 실행 리스크·번 레이트·GTM 후속",
+   "category": "policy_regulation_capital_supplychain",
+   "source_ids": [
+    "live-techcrunch-ai-745d673f45"
+   ],
+   "source_name": "TechCrunch AI"
+  }
+ ],
+ "evidence": [
+  {
+   "rank": 1,
+   "news_id": "claim-live-nvidia-blog-a50e18aa16",
+   "headline": "NVIDIA NVLink Fusion Expands With NVHBM Custom High-Bandwidth Memory",
+   "summary": "The next wave of AI is placing new demands on infrastructure. As AI agents and trillion-parameter workloads become mainstream, the performance of AI infrastructure depends not only on compute, but on how compute, memory, storage, networking and software are designed together as a unified system. To help hyperscalers and AI innovators build the next generation",
+   "category": "semiconductor_chip_infra",
+   "entity_keys": [
+    "nvidia"
+   ],
+   "source_name": "NVIDIA Blog",
+   "source_ids": [
+    "live-nvidia-blog-a50e18aa16"
+   ],
+   "url": "https://blogs.nvidia.com/blog/nvlink-fusion-nvhbm-custom-high-bandwidth-memory/"
+  },
+  {
+   "rank": 2,
+   "news_id": "claim-live-google-ai-blog-9ce79d4dde",
+   "headline": "5 ways to upgrade your home decor with Google Search",
+   "summary": "Learn how to use Google Search tools to find home decor inspiration, shop for furniture, and tackle DIY projects.",
+   "category": "ai_software_platform",
+   "entity_keys": [
+    "google"
+   ],
+   "source_name": "Google AI Blog",
+   "source_ids": [
+    "live-google-ai-blog-9ce79d4dde"
+   ],
+   "url": "https://blog.google/products-and-platforms/products/search/home-decor-tips/"
+  },
+  {
+   "rank": 3,
+   "news_id": "claim-live-arstechnica-tech-lab-33551649b5",
+   "headline": "AI agents meant to replace Meta workers made “large-scale, disruptive actions”",
+   "summary": "Report shows Meta's challenges replacing people with AI agents.",
+   "category": "ai_software_platform",
+   "entity_keys": [
+    "meta"
+   ],
+   "source_name": "Ars Technica Technology Lab",
+   "source_ids": [
+    "live-arstechnica-tech-lab-33551649b5"
+   ],
+   "url": "https://arstechnica.com/ai/2026/08/metas-scrapped-plans-to-go-ai-native-included-slashing-teams-by-60-percent/"
+  },
+  {
+   "rank": 4,
+   "news_id": "claim-live-openai-blog-34e62ff4c7",
+   "headline": "The Hugging Face incident and the road ahead",
+   "summary": "OpenAI shares findings from the Hugging Face security incident and the steps we’re taking to strengthen AI model security, monitoring, and alignment.",
+   "category": "ai_software_platform",
+   "entity_keys": [
+    "openai"
+   ],
+   "source_name": "OpenAI News",
+   "source_ids": [
+    "live-openai-blog-34e62ff4c7"
+   ],
+   "url": "https://openai.com/index/hugging-face-incident-and-the-road-ahead"
+  },
+  {
+   "rank": 5,
+   "news_id": "claim-live-techcrunch-ai-745d673f45",
+   "headline": "Viral AI startup Instinct has raised $350 million at a $2.5 billion valuation",
+   "summary": "The startup is only a year old but it has already generated a massive amount of hype (and money) while also spurring privacy concerns.",
+   "category": "policy_regulation_capital_supplychain",
+   "entity_keys": [],
+   "source_name": "TechCrunch AI",
+   "source_ids": [
+    "live-techcrunch-ai-745d673f45"
+   ],
+   "url": "https://techcrunch.com/2026/08/26/viral-ai-startup-instinct-has-raised-350-million-at-a-2-5-billion-valuation/"
+  }
+ ],
+ "deep_dive_body": "오늘 눈에 띄는 점은 엔비디아 흐름과 Google 이슈가 동시에 보인다는 것입니다. 한쪽은 산업·인프라 쪽이고, 다른 쪽은 소프트웨어·운영 쪽입니다. 주인님, 오늘 글로벌 테크 시장은 인프라의 통합 가속화와 실제 운영 현장의 리스크가 교차하는 양상을 보이고 있습니다. 엔비디아가 칩을 넘어 시스템 전체를 설계하는 전략을 강화하는 반면, 메타는 AI 에이전트 도입 과정에서 예상치 못한 혼란을 겪으며 속도 조절에 들어갔습니다. 기술의 물리적 토대는 견고해지고 있으나, 이를 실제 업무에 적용하는 소프트웨어 계층에서는 여전히 정교한 조정이 필요한 시점입니다. 향후 공식 발표를 통해 세부 내용이 보완될 가능성이 있습니다."
+}

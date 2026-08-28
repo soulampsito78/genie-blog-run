@@ -1,0 +1,175 @@
+{
+ "case": "20260828_natural",
+ "run_id": "20260828_123001_keysuri_global_tech_9d30c899",
+ "program_id": "keysuri_global_tech",
+ "editorial_verdict": "POOR",
+ "safety_verdict": "SAFE",
+ "review_issue_codes": [
+  "global_visible_raw_english_prose_blocked",
+  "global_visible_repeated_template_skeleton_blocked",
+  "global_visible_deep_dive_duplication_blocked",
+  "global_visible_repeated_low_information_label"
+ ],
+ "owner_delivery_behavior": "SEND_OWNER_QUALITY_NOTICE",
+ "items": [
+  {
+   "rank": 1,
+   "news_id": "claim-live-nvidia-blog-d9edb0555a",
+   "headline": "Delivering Vera: NVIDIA’s First CPU Built for Agents Is Shipping Now",
+   "summary": "NVIDIA Vice President of Hyperscale and HPC Ian Buck hand-delivers Vera CPU systems across the AI ecosystem as Vera begins shipping at scale.",
+   "what_happened": "NVIDIA Vice President of Hyperscale and HPC Ian Buck hand-delivers Vera CPU systems across the AI ecosystem as Vera begins shipping at scale. NVIDIA Blog 공개 요약에 따르면 「Delivering Vera: NVIDIA’s First CPU Built for Agents Is Shipping Now」 관련 변화가 보고되었습니다. 반도체·칩·AI 인프라 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다.",
+   "why_now": "NVIDIA Blog 공개 발표: 「Delivering Vera: NVIDIA’s First CPU Built for Agents Is Shipping Now」. 반도체·칩·AI 인프라 확인 포인트는 공급 일정·파운드리/벤더 고객 발표, 그리고 벤치마크·양산 일정입니다. 반도체·칩·AI 인프라 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "NVIDIA Blog 공개 발표: 「Delivering Vera: NVIDIA’s First CPU Built for Agents Is Shipping Now」. 반도체·칩·AI 인프라 확인 포인트는 공급 일정·파운드리/벤더 고객 발표, 그리고 벤치마크·양산 일정입니다. 반도체·칩·AI 인프라 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "반도체·칩·AI 인프라 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. 반도체·칩·AI 인프라 후속은 공급 일정·파운드리/벤더 고객 발표 중심으로 보면 됩니다. 반도체·칩·AI 인프라가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "반도체·칩·AI 인프라 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. 반도체·칩·AI 인프라 후속은 공급 일정·파운드리/벤더 고객 발표 중심으로 보면 됩니다. 반도체·칩·AI 인프라가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "공급 일정·파운드리/벤더 고객 발표; 벤치마크·양산 일정",
+   "category": "semiconductor_chip_infra",
+   "source_ids": [
+    "live-nvidia-blog-d9edb0555a"
+   ],
+   "source_name": "NVIDIA Blog"
+  },
+  {
+   "rank": 2,
+   "news_id": "claim-live-techcrunch-startups-14be0f889e",
+   "headline": "AI, athletes, and Keith Rabois: StrictlyVC is back in New York on September 10",
+   "summary": "A boutique StrictlyVC evening returns to New York's West Village on September 10 with Keith Rabois, Craig Shapiro, Jason Levien, Tristan Walker, Brynn Putnam, and Deven Parekh — covering AI, sports investing, community-building, venture economics, and politics, with cocktails, food, and networking throughout the night.",
+   "what_happened": "A boutique StrictlyVC evening returns to New York's West Village on September 10 with Keith Rabois Craig Shapiro Jason Levien Tristan Walker Brynn Putnam and Deven Parekh — covering AI sports investing community-building venture economics and politics with cocktails food and networking throughout the night.",
+   "why_now": "TechCrunch 공개 발표: 「AI athletes and Keith Rabois: StrictlyVC is back in New York on September 10」.",
+   "why_it_matters": "TechCrunch 공개 발표: 「AI athletes and Keith Rabois: StrictlyVC is back in New York on September 10」.",
+   "owner_angle": "보안·클라우드·데이터센터 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. 「AI」 후속은 투자 환경·후속 라운드(팔로우온) 흐름 중심으로 보면 됩니다. 「AI」가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "보안·클라우드·데이터센터 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. 「AI」 후속은 투자 환경·후속 라운드(팔로우온) 흐름 중심으로 보면 됩니다. 「AI」가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "투자 환경·후속 라운드(팔로우온) 흐름; 창업자 실행 리스크·번 레이트·GTM 후속",
+   "category": "cybersecurity_cloud_datacenter",
+   "source_ids": [
+    "live-techcrunch-startups-14be0f889e"
+   ],
+   "source_name": "TechCrunch"
+  },
+  {
+   "rank": 3,
+   "news_id": "claim-live-google-ai-blog-a1c9c66d73",
+   "headline": "3 new ways to plan and book travel in Search",
+   "summary": "Book hotels and track airfares, plus view miles and rewards with AI Mode in Google Search.",
+   "what_happened": "Book hotels and track airfares, plus view miles and rewards with AI Mode in Google Search. Google AI Blog 공개 요약에 따르면 「3 new ways to plan and book travel in Search」 관련 변화가 보고되었습니다. 3 new ways to plan and book travel in Search 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다.",
+   "why_now": "Google AI Blog 공개 발표: 「3 new ways to plan and book travel in Search」. 3 new ways to plan and book travel in Search 확인 포인트는 Google AI Blog 후속 공식 발표, 그리고 원문 업데이트·구체 수치 공개 여부입니다. 3 new ways to plan and book travel in Search 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "Google AI Blog 공개 발표: 「3 new ways to plan and book travel in Search」. 3 new ways to plan and book travel in Search 확인 포인트는 Google AI Blog 후속 공식 발표, 그리고 원문 업데이트·구체 수치 공개 여부입니다. 3 new ways to plan and book travel in Search 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "AI·소프트웨어·플랫폼 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. 3 new ways to plan and book travel in Search 후속은 Google AI Blog 후속 공식 발표 중심으로 보면 됩니다. 3 new ways to plan and book travel in Search이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "AI·소프트웨어·플랫폼 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. 3 new ways to plan and book travel in Search 후속은 Google AI Blog 후속 공식 발표 중심으로 보면 됩니다. 3 new ways to plan and book travel in Search이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "Google AI Blog 후속 공식 발표; 원문 업데이트·구체 수치 공개 여부",
+   "category": "ai_software_platform",
+   "source_ids": [
+    "live-google-ai-blog-a1c9c66d73"
+   ],
+   "source_name": "Google AI Blog"
+  },
+  {
+   "rank": 4,
+   "news_id": "claim-live-arstechnica-tech-lab-1d378fad4f",
+   "headline": "How OpenAI let a mob of LLM agents game a test and ransack Hugging Face",
+   "summary": "Without authorization, 1,200 OpenAI agents conspired among themselves to game a test.",
+   "what_happened": "Without authorization 1 200 OpenAI agents conspired among themselves to game a test. Ars Technica Technology Lab 공개 요약에 따르면 「How OpenAI let a mob of LLM agents game a test and ransack Hugging Face」 관련 변화가 보고되었습니다.",
+   "why_now": "Ars Technica Technology Lab 공개 발표: 「How OpenAI let a mob of LLM agents game a test and ransack Hugging Face」. AI·소프트웨어·플랫폼 확인 포인트는 API 공개·엔터프라이즈 도입 일정, 그리고 가격·파트너/고객 발표입니다. AI·소프트웨어·플랫폼 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "Ars Technica Technology Lab 공개 발표: 「How OpenAI let a mob of LLM agents game a test and ransack Hugging Face」. AI·소프트웨어·플랫폼 확인 포인트는 API 공개·엔터프라이즈 도입 일정, 그리고 가격·파트너/고객 발표입니다. AI·소프트웨어·플랫폼 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "AI·소프트웨어·플랫폼 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. AI·소프트웨어·플랫폼 후속은 API 공개·엔터프라이즈 도입 일정 중심으로 보면 됩니다. AI·소프트웨어·플랫폼이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "AI·소프트웨어·플랫폼 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. AI·소프트웨어·플랫폼 후속은 API 공개·엔터프라이즈 도입 일정 중심으로 보면 됩니다. AI·소프트웨어·플랫폼이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "API 공개·엔터프라이즈 도입 일정; 가격·파트너/고객 발표",
+   "category": "ai_software_platform",
+   "source_ids": [
+    "live-arstechnica-tech-lab-1d378fad4f"
+   ],
+   "source_name": "Ars Technica Technology Lab"
+  },
+  {
+   "rank": 5,
+   "news_id": "claim-live-datacenter-dynamics-dab774d7ec",
+   "headline": "War and peace in the Middle East",
+   "summary": "How the data center market is faring, and being impacted, by the Iran War",
+   "what_happened": "How the data center market is faring and being impacted by the Iran War.",
+   "why_now": "Datacenter Dynamics 공개 발표: 「War and peace in the Middle East」. 「War and peace in the Middle East」 확인 포인트는 Datacenter Dynamics 후속 공식 발표, 그리고 원문 업데이트·구체 수치 공개 여부입니다. 「War and peace in the Middle East」 후속 일정과 공식 발표부터 보면 됩니다.",
+   "why_it_matters": "Datacenter Dynamics 공개 발표: 「War and peace in the Middle East」. 「War and peace in the Middle East」 확인 포인트는 Datacenter Dynamics 후속 공식 발표, 그리고 원문 업데이트·구체 수치 공개 여부입니다. 「War and peace in the Middle East」 후속 일정과 공식 발표부터 보면 됩니다.",
+   "owner_angle": "보안·클라우드·데이터센터 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. 「War and peace in the Middle East」 후속은 Datacenter Dynamics 후속 공식 발표 중심으로 보면 됩니다. 「War and peace in the Middle East」이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "business_implication": "보안·클라우드·데이터센터 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. 「War and peace in the Middle East」 후속은 Datacenter Dynamics 후속 공식 발표 중심으로 보면 됩니다. 「War and peace in the Middle East」이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+   "next_watch": "Datacenter Dynamics 후속 공식 발표; 원문 업데이트·구체 수치 공개 여부",
+   "category": "cybersecurity_cloud_datacenter",
+   "source_ids": [
+    "live-datacenter-dynamics-dab774d7ec"
+   ],
+   "source_name": "Datacenter Dynamics"
+  }
+ ],
+ "evidence": [
+  {
+   "rank": 1,
+   "news_id": "claim-live-nvidia-blog-d9edb0555a",
+   "headline": "Delivering Vera: NVIDIA’s First CPU Built for Agents Is Shipping Now",
+   "summary": "NVIDIA Vice President of Hyperscale and HPC Ian Buck hand-delivers Vera CPU systems across the AI ecosystem as Vera begins shipping at scale.",
+   "category": "semiconductor_chip_infra",
+   "entity_keys": [
+    "nvidia"
+   ],
+   "source_name": "NVIDIA Blog",
+   "source_ids": [
+    "live-nvidia-blog-d9edb0555a"
+   ],
+   "url": "https://blogs.nvidia.com/blog/vera-cpu-delivery/"
+  },
+  {
+   "rank": 2,
+   "news_id": "claim-live-techcrunch-startups-14be0f889e",
+   "headline": "AI, athletes, and Keith Rabois: StrictlyVC is back in New York on September 10",
+   "summary": "A boutique StrictlyVC evening returns to New York's West Village on September 10 with Keith Rabois, Craig Shapiro, Jason Levien, Tristan Walker, Brynn Putnam, and Deven Parekh — covering AI, sports investing, community-building, venture economics, and politics, with cocktails, food, and networking throughout the night.",
+   "category": "cybersecurity_cloud_datacenter",
+   "entity_keys": [],
+   "source_name": "TechCrunch",
+   "source_ids": [
+    "live-techcrunch-startups-14be0f889e"
+   ],
+   "url": "https://techcrunch.com/2026/08/27/ai-athletes-and-keith-rabois-strictlyvc-is-back-in-new-york-on-september-10/"
+  },
+  {
+   "rank": 3,
+   "news_id": "claim-live-google-ai-blog-a1c9c66d73",
+   "headline": "3 new ways to plan and book travel in Search",
+   "summary": "Book hotels and track airfares, plus view miles and rewards with AI Mode in Google Search.",
+   "category": "ai_software_platform",
+   "entity_keys": [
+    "google"
+   ],
+   "source_name": "Google AI Blog",
+   "source_ids": [
+    "live-google-ai-blog-a1c9c66d73"
+   ],
+   "url": "https://blog.google/products-and-platforms/products/search/book-travel-ai-mode/"
+  },
+  {
+   "rank": 4,
+   "news_id": "claim-live-arstechnica-tech-lab-1d378fad4f",
+   "headline": "How OpenAI let a mob of LLM agents game a test and ransack Hugging Face",
+   "summary": "Without authorization, 1,200 OpenAI agents conspired among themselves to game a test.",
+   "category": "ai_software_platform",
+   "entity_keys": [
+    "openai"
+   ],
+   "source_name": "Ars Technica Technology Lab",
+   "source_ids": [
+    "live-arstechnica-tech-lab-1d378fad4f"
+   ],
+   "url": "https://arstechnica.com/security/2026/08/how-openai-let-a-mob-of-llm-agents-game-a-test-and-ransack-hugging-face/"
+  },
+  {
+   "rank": 5,
+   "news_id": "claim-live-datacenter-dynamics-dab774d7ec",
+   "headline": "War and peace in the Middle East",
+   "summary": "How the data center market is faring, and being impacted, by the Iran War",
+   "category": "cybersecurity_cloud_datacenter",
+   "entity_keys": [],
+   "source_name": "Datacenter Dynamics",
+   "source_ids": [
+    "live-datacenter-dynamics-dab774d7ec"
+   ],
+   "url": "https://www.datacenterdynamics.com/en/analysis/war-and-peace-in-the-middle-east/"
+  }
+ ],
+ "deep_dive_body": "오늘 눈에 띄는 점은 엔비디아 흐름과 AI, athletes, and 이슈가 동시에 보인다는 것입니다. 한쪽은 산업·인프라 쪽이고, 다른 쪽은 소프트웨어·운영 쪽입니다. 주인님, 오늘 글로벌 테크 시장은 단순한 소프트웨어 경쟁을 넘어 에이전트 전용 하드웨어와 지정학적 인프라 리스크가 교차하는 양상을 보이고 있습니다. 엔비디아가 에이전트 구동에 최적화된 전용 CPU를 출하하며 인프라의 세대교체를 알린 반면, 자율 에이전트들의 통제 불능 사례와 중동 분쟁에 따른 데이터센터 위협은 우리가 직면한 새로운 리스크입니다. 하드웨어의 진화와 보안의 불확실성이 동시에 커지고 있는 흐름을 예의주시해야 합니다."
+}
