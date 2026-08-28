@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from renderers import (
     TODAY_GENIE_HASHTAG_COUNT,
@@ -1408,6 +1408,10 @@ def _today_number_table_contract_accuracy_issues(
     return issues
 
 
+# Mirrors market_observation.PUBLISHABLE_STATUSES; imported lazily so that the
+# validator keeps working on payloads produced before the contract existed.
+_PUBLISHABLE_OBSERVATION_STATUSES = frozenset({"settled"})
+
 MARKET_INDEX_RATE_TOLERANCE_PP = 0.05
 MARKET_INDEX_LARGE_MOVE_PP = 5.0
 MARKET_INDEX_ABSURD_MOVE_PP = 40.0
@@ -1548,7 +1552,22 @@ def market_index_validation_report(
 
         raw_close = slot.get("close")
         raw_pct = slot.get("change_pct")
-        source_values[label] = {"close": raw_close, "change_pct": raw_pct}
+        source_values[label] = {
+            "close": raw_close,
+            "change_pct": raw_pct,
+            "market_date": slot.get("market_date"),
+            "observation_status": slot.get("observation_status"),
+        }
+
+        # Normalization already decided whether this row describes a completed
+        # session. A row it refused may not be re-admitted here on the strength
+        # of the numbers it happens to still carry.
+        status = str(slot.get("observation_status") or "").strip()
+        if status and status not in _PUBLISHABLE_OBSERVATION_STATUSES:
+            reason = str(slot.get("observation_reason") or "").strip() or status
+            issues.append(f"{label}: 확정 세션 관측이 아님({status}) — {reason}")
+            normalized_values[label] = None
+            continue
 
         close = _market_index_numeric(raw_close)
         if close is None or close <= 0:
@@ -1626,6 +1645,78 @@ def market_index_validation_report(
         "market_index_recomputed_change_rates": recomputed,
         "market_index_sign_conflicts": sign_conflicts,
     }
+
+
+# Reader-facing names that may refer to each instrument in generated prose.
+_INDEX_PROSE_LABELS: Dict[str, Tuple[str, ...]] = {
+    "KOSPI": ("코스피", "KOSPI"),
+    "KOSDAQ": ("코스닥", "KOSDAQ"),
+    "NIKKEI": ("니케이", "닛케이", "NIKKEI"),
+    "SPX": ("S&P 500", "S&P500", "에스앤피"),
+    "NASDAQ": ("나스닥", "NASDAQ"),
+    "DJI": ("다우존스", "다우", "DOW"),
+}
+
+
+def _canonical_observations(runtime_input: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Every normalized index observation the run is allowed to state as fact."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for source_name in ("korea_japan_indices", "overnight_us_market"):
+        source = runtime_input.get(source_name)
+        if not isinstance(source, dict):
+            continue
+        indices = source.get("indices")
+        if not isinstance(indices, dict):
+            continue
+        for instrument, slot in indices.items():
+            if not isinstance(slot, dict):
+                continue
+            status = str(slot.get("observation_status") or "").strip()
+            out[str(instrument).upper()] = {
+                "observation_status": status or "settled",
+                "pct_change": _market_index_numeric(slot.get("change_pct")),
+                "market_date": slot.get("market_date"),
+            }
+    return out
+
+
+def _today_market_fact_consistency_issues(
+    data: Dict[str, Any], runtime_input: Dict[str, Any]
+) -> List[ValidationIssue]:
+    """Generated prose may not restate a known number as a different fact.
+
+    The numeric table and the narrative are produced by different stages, so a
+    correct table can sit beside a sentence claiming the opposite. The canonical
+    observation decides; the model does not get to reinterpret it.
+    """
+    from market_observation import prose_fact_conflicts
+
+    observations = _canonical_observations(runtime_input)
+    if not observations:
+        return []
+
+    conflicts: List[str] = []
+    surfaces: List[Tuple[str, Any]] = [
+        ("summary", data.get("summary")),
+        ("market_setup", data.get("market_setup")),
+    ]
+    for idx, wp in enumerate(
+        [w for w in data.get("key_watchpoints", []) if isinstance(w, dict)][:3]
+    ):
+        surfaces.append((f"key_watchpoints[{idx + 1}].detail", wp.get("detail")))
+    for label, text in surfaces:
+        for conflict in prose_fact_conflicts(text, observations, _INDEX_PROSE_LABELS):
+            conflicts.append(f"{label}: {conflict}")
+
+    if not conflicts:
+        return []
+    return [
+        ValidationIssue(
+            "market_fact_narrative_conflict",
+            "본문 서술이 확정 지수 관측과 불일치: " + "; ".join(conflicts[:8]),
+            "error",
+        )
+    ]
 
 
 def _today_market_index_integrity_issues(
@@ -2269,6 +2360,7 @@ def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) ->
     issues.extend(_target_weekday_accuracy_issues(data, runtime_input))
     issues.extend(_today_required_number_table_issues(data, runtime_input))
     issues.extend(_today_market_index_integrity_issues(data, runtime_input))
+    issues.extend(_today_market_fact_consistency_issues(data, runtime_input))
     issues.extend(_today_number_table_contract_accuracy_issues(data, runtime_input))
     issues.extend(_today_stale_date_issues(data, runtime_input))
     issues.extend(_polish_vague_phrase_issues(data))

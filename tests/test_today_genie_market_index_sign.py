@@ -66,6 +66,36 @@ def _blind(word: str) -> str:
     return f'<span class="blind">{word}</span>'
 
 
+def _naver_day_html(rows: list) -> str:
+    """Naver 일별시세 markup. `rate_down` is a static class present on every row."""
+    cells = "".join(
+        f'<td class="date">{day}</td>'
+        f'<td class="number_1">{close}</td>'
+        f'<td class="rate_down"><img alt="{arrow}"><span class="tah">{pts}</span></td>'
+        f'<td class="number_1"><span class="tah">{pct}%</span></td>'
+        f'<td class="number_1">1,000</td></tr>'
+        for day, close, pts, pct, arrow in rows
+    )
+    return f'<table class="type_1">{cells}</table>'
+
+
+# The same 2026-07-29 incident tape as the settled daily table publishes it: the
+# session in progress leads the table, and the settled 07-28 row is the one a
+# 07-29 pre-open briefing may quote.
+LIVE_DAY_ROWS = {
+    "KOSPI": [
+        ("2026.07.29", "5,600.00", "63.24", "-1.11", "하락"),
+        ("2026.07.28", "5,663.24", "360.42", "-5.98", "하락"),
+        ("2026.07.27", "6,023.66", "40.00", "+0.67", "상승"),
+    ],
+    "KOSDAQ": [
+        ("2026.07.29", "650.00", "12.68", "-1.91", "하락"),
+        ("2026.07.28", "662.68", "43.17", "-6.12", "하락"),
+        ("2026.07.27", "705.85", "5.00", "+0.71", "상승"),
+    ],
+}
+
+
 # Live 2026-07-29 Naver tape. Both indexes fell while the blind label read 상승;
 # the container class, the signed rate and the close/points arithmetic all agree
 # on 하락. Verified against the captured page: 5663.24 + 360.42 = 6023.66 and
@@ -337,9 +367,9 @@ class SnapshotRendererSignTests(unittest.TestCase):
         self.assertEqual(_norm_change_pct(_fmt_snapshot_change_pct(0.21)), "+0.21%")
 
     def test_zero_is_not_rendered_as_a_gain(self) -> None:
-        self.assertEqual(_fmt_snapshot_change_pct(0), "0%")
+        self.assertEqual(_fmt_snapshot_change_pct(0), "0.00%")
         self.assertEqual(_norm_change_pct("0%"), "0%")
-        self.assertEqual(_norm_change_pct(_fmt_snapshot_change_pct(0)), "0%")
+        self.assertEqual(_norm_change_pct(_fmt_snapshot_change_pct(0)), "0.00%")
 
     def test_normalization_is_idempotent(self) -> None:
         for raw in ("-10.84%", "+0.21%", "0%", "0.00%"):
@@ -457,7 +487,9 @@ class MarketIndexValidationGateTests(unittest.TestCase):
             self.assertIn(key, report)
         self.assertEqual(report["market_index_validation_status"], "block")
         for values in report["market_index_source_values"].values():
-            self.assertEqual(set(values), {"close", "change_pct"})
+            self.assertEqual(
+                set(values), {"close", "change_pct", "market_date", "observation_status"}
+            )
 
 
 class IncidentEndToEndTests(unittest.TestCase):
@@ -485,8 +517,8 @@ class IncidentEndToEndTests(unittest.TestCase):
     def test_live_20260729_tape_end_to_end(self) -> None:
         """Live tape: probe -> runtime context -> snapshot rows -> rendered cells."""
         pages = {
-            probe.NAVER_INDEX["KOSPI"]: _naver_html(**LIVE_KOSPI, direction_markup=_blind("상승")),
-            probe.NAVER_INDEX["KOSDAQ"]: _naver_html(**LIVE_KOSDAQ, direction_markup=_blind("상승")),
+            probe.NAVER_INDEX_DAY["KOSPI"]: _naver_day_html(LIVE_DAY_ROWS["KOSPI"]),
+            probe.NAVER_INDEX_DAY["KOSDAQ"]: _naver_day_html(LIVE_DAY_ROWS["KOSDAQ"]),
         }
         for sym, body in PerIndexIsolationTests.LIVE_CNBC.items():
             pages[probe.CNBC_QUOTES[sym]] = body
@@ -523,7 +555,9 @@ class IncidentEndToEndTests(unittest.TestCase):
         report = market_index_validation_report(data, runtime_input)
         self.assertEqual(report["market_index_validation_status"], "pass")
         self.assertEqual(_today_market_index_integrity_issues(data, runtime_input), [])
-        self.assertEqual(len(report["market_index_warnings"]), 2)
+        # The settled daily table carries the arrow alt and a signed rate that
+        # agree, so it never produces the quote page's stale-blind-label dissent.
+        self.assertEqual(report["market_index_warnings"], [])
 
         html = _today_snapshot_grouped_html(data["market_snapshot"])
         for forbidden in ("+5.98%", "+6.12%", "+0%", "+-", "--"):
@@ -559,14 +593,14 @@ class PerIndexIsolationTests(unittest.TestCase):
 
     def _fetch(self, *, broken: tuple[str, ...] = ()) -> object:
         pages = {
-            probe.NAVER_INDEX["KOSPI"]: _naver_html(**LIVE_KOSPI, direction_markup=_blind("상승")),
-            probe.NAVER_INDEX["KOSDAQ"]: _naver_html(**LIVE_KOSDAQ, direction_markup=_blind("상승")),
+            probe.NAVER_INDEX_DAY["KOSPI"]: _naver_day_html(LIVE_DAY_ROWS["KOSPI"]),
+            probe.NAVER_INDEX_DAY["KOSDAQ"]: _naver_day_html(LIVE_DAY_ROWS["KOSDAQ"]),
         }
         for sym, body in self.LIVE_CNBC.items():
             pages[probe.CNBC_QUOTES[sym]] = body
         broken_urls = set()
         for sym in broken:
-            broken_urls.add(probe.NAVER_INDEX.get(sym) or probe.CNBC_QUOTES[sym])
+            broken_urls.add(probe.NAVER_INDEX_DAY.get(sym) or probe.CNBC_QUOTES[sym])
 
         def fetch(url: str, timeout_sec: int = 20) -> str:
             if url in broken_urls:

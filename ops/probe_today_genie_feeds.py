@@ -44,6 +44,16 @@ NAVER_INDEX = {
     "KOSPI": "https://finance.naver.com/sise/sise_index.nhn?code=KOSPI",
     "KOSDAQ": "https://finance.naver.com/sise/sise_index.nhn?code=KOSDAQ",
 }
+# Settled per-session closes, each row carrying its own explicit market date.
+# The quote pages above answer "what is this index doing now"; a pre-open briefing
+# asks "how did the last completed session end", and only this table answers that
+# question without depending on what time of day the probe happens to run.
+NAVER_INDEX_DAY = {
+    "KOSPI": "https://finance.naver.com/sise/sise_index_day.nhn?code=KOSPI&page=1",
+    "KOSDAQ": "https://finance.naver.com/sise/sise_index_day.nhn?code=KOSDAQ&page=1",
+}
+# KRX regular session end, plus a margin for the closing auction to settle.
+KRX_SESSION_SETTLED_AFTER = (15, 40)
 CNBC_MARKET_NEWS_RSS = "https://www.cnbc.com/id/100003114/device/rss/rss.html"
 
 FEED_FILES = {
@@ -82,10 +92,18 @@ def _parse_iso_date(value: Any) -> Optional[date]:
 
 
 def _parse_float(value: Any) -> Optional[float]:
+    """Signed number, or None. A blank field is unknown, never a factual zero.
+
+    An empty string used to parse as 0.0, which is how a field the source never
+    published became a published "0%".
+    """
     if value is None:
         return None
     text = str(value).strip().replace(",", "").replace("%", "")
-    if not text or text.upper() == "UNCH":
+    if not text:
+        return None
+    if text.upper() == "UNCH":
+        # An explicit "unchanged" token is a claim the source made on purpose.
         return 0.0
     try:
         return float(text)
@@ -152,6 +170,11 @@ def parse_cnbc_quote_html(html: str, symbol: str) -> Dict[str, Any]:
     change_m = change_re.search(chunk) or change_re.search(html)
     pct_m = pct_re.search(chunk) or pct_re.search(html)
     time_m = re.search(r'"last_time"\s*:\s*"([^"]+)"', html)
+    # Session state and the source's own previous close. Without these a quote
+    # taken while the market is open — or one whose change has already been
+    # reset for the next session — is indistinguishable from a settled close.
+    status_m = re.search(r'"curmktstatus"\s*:\s*"([^"]+)"', html)
+    prev_m = re.search(r'"previous_day_closing"\s*:\s*"([0-9,.]+)"', html)
 
     close = _parse_float(price_m.group(1))
     if close is None:
@@ -179,18 +202,27 @@ def parse_cnbc_quote_html(html: str, symbol: str) -> Dict[str, Any]:
             except ValueError:
                 pass
 
+    previous_close = _parse_float(prev_m.group(1)) if prev_m else None
+    if change_pct is None and previous_close is not None and previous_close > 0:
+        change_pct = round((close - previous_close) / previous_close * 100.0, 2)
+
     digits = 4 if symbol == "NASDAQ" else 2
-    return {
+    row: Dict[str, Any] = {
         "close": round(close, digits),
         "change_pts": None if change_pts is None else round(change_pts, digits),
         "change_pct": None if change_pct is None else round(change_pct, 2),
+        "previous_close": None if previous_close is None else round(previous_close, digits),
         "as_of": as_of,
+        "market_date": as_of,
         "source_name": "CNBC",
         "source_url": CNBC_QUOTES[symbol],
         "confidence": "high",
         "accuracy_status": "verified",
         "notes": f"Parsed from CNBC public quote page for {symbol}.",
     }
+    if status_m:
+        row["session_state"] = status_m.group(1).strip()
+    return row
 
 
 NAVER_DIRECTION_SIGNS = {"상승": 1, "하락": -1, "보합": 0}
@@ -322,6 +354,14 @@ def _resolve_index_direction(
 
 
 def parse_naver_index_html(html: str, code: str) -> Dict[str, Any]:
+    """Parse Naver's live index quote page.
+
+    This describes the tape *right now*: during a session it is an intraday
+    print, and before the opening auction it is the previous close carrying a
+    zero change. It is therefore not a source of settled-session facts — a
+    pre-open briefing must use :func:`select_settled_naver_day_row` — and it is
+    kept for live-tape reads and for the direction-adjudication contract below.
+    """
     close_m = re.search(r'id="now_value"[^>]*>([0-9,.]+)', html)
     if not close_m:
         raise FeedProbeError(f"Naver {code}: missing close")
@@ -384,6 +424,141 @@ def parse_naver_index_html(html: str, code: str) -> Dict[str, Any]:
     if diagnostics:
         row["direction_diagnostics"] = diagnostics
     return row
+
+
+_NAVER_DAY_ROW_RE = re.compile(
+    r'<td class="date">\s*([0-9]{4})\.([0-9]{2})\.([0-9]{2})\s*</td>'
+    r'\s*<td class="number_1">\s*([0-9,]+\.?[0-9]*)\s*</td>'
+    r'([\s\S]*?)</tr>',
+    re.S,
+)
+
+
+def _kst_now() -> datetime:
+    return datetime.now(ZoneInfo("Asia/Seoul"))
+
+
+def _krx_session_settled(session_day: date, now_kst: datetime) -> bool:
+    """Whether the KRX session on ``session_day`` has finished as of ``now_kst``."""
+    today = now_kst.date()
+    if session_day < today:
+        return True
+    if session_day > today:
+        return False
+    hour, minute = KRX_SESSION_SETTLED_AFTER
+    return (now_kst.hour, now_kst.minute) >= (hour, minute)
+
+
+def parse_naver_index_day_rows(html: str, code: str) -> List[Dict[str, Any]]:
+    """Every settled row of Naver's 일별시세 table, newest first.
+
+    Each row carries its own date, close, point change magnitude and signed
+    rate, so an observation never has to borrow its identity from the page it
+    was found on. The row's ``rate_down`` CSS class is a static template class
+    that does not track direction — the arrow image's alt text and the rate's
+    own sign are the direction evidence, and they must agree.
+    """
+    rows: List[Dict[str, Any]] = []
+    for m in _NAVER_DAY_ROW_RE.finditer(html):
+        year, month, day, close_raw, rest = m.groups()
+        try:
+            market_date = date(int(year), int(month), int(day))
+        except ValueError:
+            continue
+        close = _parse_float(close_raw)
+        if close is None or close <= 0:
+            continue
+
+        pts_m = re.search(r"<span[^>]*>\s*([0-9,]+\.?[0-9]*)\s*</span>", rest)
+        pct_m = re.search(r"<span[^>]*>\s*([-+]?[0-9,]+\.?[0-9]*)\s*%", rest)
+        alt_m = re.search(r'alt="(상승|하락|보합)"', rest)
+        if pct_m is None:
+            continue
+        pct = _parse_float(pct_m.group(1))
+        if pct is None:
+            continue
+        pts = _parse_float(pts_m.group(1)) if pts_m else None
+
+        rate_sign = _explicit_sign(pct_m.group(1))
+        alt_sign = NAVER_DIRECTION_SIGNS[alt_m.group(1)] if alt_m else None
+        if rate_sign is not None and alt_sign is not None and rate_sign != alt_sign:
+            raise FeedProbeError(
+                f"Naver {code} {market_date.isoformat()}: conflicting direction "
+                f"(rate={rate_sign:+d}, arrow={alt_sign:+d})"
+            )
+        sign = rate_sign if rate_sign is not None else alt_sign
+        if sign is None:
+            sign = 0 if pct == 0 else None
+        if sign is None:
+            raise FeedProbeError(
+                f"Naver {code} {market_date.isoformat()}: change direction undetermined"
+            )
+
+        pct = 0.0 if sign == 0 else sign * abs(pct)
+        if pts is not None:
+            pts = 0.0 if sign == 0 else sign * abs(pts)
+        rows.append(
+            {
+                "market_date": market_date,
+                "close": round(close, 2),
+                "change_pts": None if pts is None else round(pts, 2),
+                "change_pct": round(pct, 2),
+                "change_direction": sign,
+            }
+        )
+    return rows
+
+
+def select_settled_naver_day_row(
+    html: str,
+    code: str,
+    *,
+    target_date: str,
+    now_kst: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """The newest completed session strictly before ``target_date``.
+
+    Selection is by explicit date, never by row position: the table's first row
+    is the session in progress whenever the probe runs during market hours.
+    """
+    now = now_kst or _kst_now()
+    target = _parse_iso_date(target_date)
+    if target is None:
+        raise FeedProbeError(f"Naver {code}: invalid target date {target_date!r}")
+
+    candidates = [
+        row
+        for row in parse_naver_index_day_rows(html, code)
+        if row["market_date"] < target and _krx_session_settled(row["market_date"], now)
+    ]
+    if not candidates:
+        raise FeedProbeError(
+            f"Naver {code}: no settled session before {target.isoformat()} in daily table"
+        )
+    row = max(candidates, key=lambda r: r["market_date"])
+    market_date = row["market_date"]
+    previous_close: Optional[float] = None
+    if row["change_pts"] is not None:
+        previous_close = round(row["close"] - row["change_pts"], 2)
+    return {
+        "close": row["close"],
+        "change_pts": row["change_pts"],
+        "change_pct": row["change_pct"],
+        "change_direction": row["change_direction"],
+        "previous_close": previous_close,
+        "market_date": market_date.isoformat(),
+        "as_of": market_date.isoformat(),
+        "session_state": "closed",
+        # The daily table only publishes completed sessions, so a 0.00% row
+        # there is a real flat close rather than an untraded quote.
+        "settlement_evidence": f"naver_daily_close_table:{market_date.isoformat()}",
+        "source_name": "Naver Finance",
+        "source_url": NAVER_INDEX_DAY[code],
+        "cross_check_url": NAVER_INDEX[code],
+        "confidence": "high",
+        "accuracy_status": "verified",
+        "notes": f"Settled session close from Naver Finance daily index table for {code}.",
+    }
 
 
 def parse_cnbc_rss_xml(xml: str, *, min_items: int = 4, max_items: int = 6) -> List[Dict[str, str]]:
@@ -506,6 +681,7 @@ def probe_korea_japan_indices(
     fetch_fn: FetchFn = default_fetch_url,
     *,
     timeout_sec: int = 20,
+    now_kst: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     fetched_at = _utc_now_iso()
     indices: Dict[str, Any] = {}
@@ -517,8 +693,10 @@ def probe_korea_japan_indices(
             code,
             fetch_fn,
             timeout_sec,
-            url=NAVER_INDEX[code],
-            parse=parse_naver_index_html,
+            url=NAVER_INDEX_DAY[code],
+            parse=lambda html, sym: select_settled_naver_day_row(
+                html, sym, target_date=target_date, now_kst=now_kst
+            ),
         )
         errors[code] = error
         if row is None:

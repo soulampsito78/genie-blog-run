@@ -160,16 +160,16 @@ class TodayNaturalRunHarness(unittest.TestCase):
         rendered = [_fmt_snapshot_change_pct(pct) for _, pct in rows]
         self.assertTrue(any(s.startswith("-") for s in rendered))
         self.assertTrue(any(s.startswith("+") for s in rendered))
-        self.assertIn("0%", rendered)
+        self.assertIn("0.00%", rendered)
 
     def test_02_positive_negative_and_zero(self) -> None:
         self.assertEqual(_fmt_snapshot_change_pct(1.2), "+1.2%")
         self.assertEqual(_fmt_snapshot_change_pct(-1.2), "-1.2%")
-        self.assertEqual(_fmt_snapshot_change_pct(0.0), "0%")
+        self.assertEqual(_fmt_snapshot_change_pct(0.0), "0.00%")
 
     def test_03_zero_renders_as_0_percent_never_plus_zero(self) -> None:
         rendered = _fmt_snapshot_change_pct(0.0)
-        self.assertEqual(rendered, "0%")
+        self.assertEqual(rendered, "0.00%")
         self.assertNotEqual(rendered, "+0%")
         self.assertNotEqual(_norm_change_pct("+0%"), "0")
 

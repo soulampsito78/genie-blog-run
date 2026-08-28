@@ -179,6 +179,8 @@ TODAY_GENIE_FEED_DIAGNOSTIC_KEYS = (
     "today_genie_feed_staleness",
     "today_genie_live_feed_staleness",
     "today_genie_stale_feeds",
+    "today_genie_market_observation_report",
+    "today_genie_market_observation_unpublishable",
     "today_genie_feed_refresh_started_at",
     "today_genie_feed_refresh_finished_at",
     "today_genie_feed_refresh_elapsed_ms",
@@ -1179,6 +1181,67 @@ def _valid_iso_date(raw: str) -> bool:
     return True
 
 
+TODAY_GENIE_INDEX_FEEDS = ("overnight_us_market", "korea_japan_indices")
+
+
+def _normalize_today_genie_market_feeds(
+    feeds: Dict[str, Any],
+    target_date: str,
+) -> Dict[str, Any]:
+    """Make every index observation coherent before the model ever sees it.
+
+    Source normalization, not editorial validation: a row that cannot be shown
+    to describe a completed session loses its numbers here, so no prompt,
+    model, producer or renderer downstream can read a value the observation
+    contract rejected. Rows repaired from a previously captured settled
+    observation keep their numbers, because that fact was already established.
+    """
+    from market_observation import normalize_index_feed, repair_feed_from_history
+    from market_observation_store import (
+        read_settled_observation,
+        write_settled_observation,
+    )
+
+    report: Dict[str, Any] = {}
+    unpublishable: List[str] = []
+    for source_id in TODAY_GENIE_INDEX_FEEDS:
+        feed = feeds.get(source_id)
+        if not isinstance(feed, dict):
+            continue
+        normalized, feed_report = normalize_index_feed(feed, target_date=target_date)
+
+        if feed_report.get("unpublishable"):
+            history: Dict[str, Any] = {}
+            for entry in feed_report["unpublishable"]:
+                instrument = str(entry).split(":", 1)[0].strip()
+                stored = read_settled_observation("today_genie", instrument)
+                if stored:
+                    history[instrument] = stored
+            if history:
+                normalized, feed_report = repair_feed_from_history(
+                    normalized,
+                    feed_report,
+                    target_date=target_date,
+                    history=history,
+                )
+
+        for instrument, observation in (feed_report.get("observations") or {}).items():
+            write_settled_observation(
+                "today_genie",
+                str(instrument),
+                dict(observation),
+                captured_at=_today_utc_now_iso(),
+            )
+
+        feeds[source_id] = normalized
+        report[source_id] = feed_report
+        unpublishable.extend(feed_report.get("unpublishable") or [])
+
+    feeds["today_genie_market_observation_report"] = report
+    feeds["today_genie_market_observation_unpublishable"] = unpublishable
+    return feeds
+
+
 def _controlled_test_target_date_from_env() -> Optional[str]:
     flag = os.getenv("GENIE_CONTROLLED_TEST_MODE", "").strip().lower()
     if flag not in ("1", "true", "yes"):
@@ -1218,6 +1281,7 @@ def build_runtime_input(mode: str, controlled_test_target_date: Optional[str] = 
             today_date,
             controlled_active=controlled_active,
         )
+        feeds = _normalize_today_genie_market_feeds(feeds, today_date)
         overnight_us_market = feeds["overnight_us_market"]
         macro_indicators = feeds["macro_indicators"]
         top_market_news = feeds["top_market_news"]
@@ -1286,6 +1350,12 @@ def build_runtime_input(mode: str, controlled_test_target_date: Optional[str] = 
                 "today_genie_live_feed_staleness"
             ),
             "today_genie_stale_feeds": list(feeds.get("today_genie_stale_feeds") or []),
+            "today_genie_market_observation_report": feeds.get(
+                "today_genie_market_observation_report"
+            ),
+            "today_genie_market_observation_unpublishable": list(
+                feeds.get("today_genie_market_observation_unpublishable") or []
+            ),
             "today_genie_feed_refresh_started_at": feeds.get(
                 "today_genie_feed_refresh_started_at"
             ),
@@ -1676,6 +1746,10 @@ def _runtime_validation_check_payload(
 
 def _fmt_signed_pct(value: Any) -> str:
     if isinstance(value, (int, float)):
+        if value == 0:
+            # Only an evidenced settled-flat close reaches this branch; render it
+            # at full precision so it reads as a measured rate, not a placeholder.
+            return "0.00%"
         sign = "+" if value > 0 else ""
         return f"{sign}{value:g}%"
     raw = str(value or "").strip()
@@ -1764,10 +1838,14 @@ def _feed_index_row(
     if close_num is None or pct_num is None:
         return None
 
+    # The row's own session date. Falling back to the feed-level date lets one
+    # instrument publish another's session, because the feed date is an
+    # aggregate across every index in the payload.
     as_of = ""
-    raw_as_of = feed_dict.get("as_of")
-    if isinstance(raw_as_of, str) and len(raw_as_of.strip()) >= 10:
-        as_of = raw_as_of.strip()[:10]
+    for raw_as_of in (slot.get("market_date"), slot.get("as_of"), feed_dict.get("as_of")):
+        if isinstance(raw_as_of, str) and len(raw_as_of.strip()) >= 10:
+            as_of = raw_as_of.strip()[:10]
+            break
 
     source_name = _provenance_field(slot, feed_dict, "source_name")
     source_url = _provenance_field(slot, feed_dict, "source_url")

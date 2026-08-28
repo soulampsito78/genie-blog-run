@@ -811,7 +811,9 @@ def _fmt_snapshot_change_pct(value: Any) -> str:
     if num is None:
         return ""
     if num == 0:
-        return "0%"
+        # A settled flat close, rendered at full precision so it reads as a
+        # measured rate rather than a missing value.
+        return "0.00%"
     sign = "+" if num > 0 else ""
     return f"{sign}{num:g}%"
 

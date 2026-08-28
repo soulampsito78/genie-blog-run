@@ -40,6 +40,26 @@ def _naver_html(
     """
 
 
+def _naver_day_row(day: str, close: str, pts: str, pct: str, arrow: str) -> str:
+    """One row of Naver's 일별시세 table, matching the live markup.
+
+    The `rate_down` class is a static template class on every row — direction
+    lives in the arrow's alt text and the rate's own sign — so fixtures keep it
+    fixed regardless of which way the session went.
+    """
+    return (
+        f'<td class="date">{day}</td>'
+        f'<td class="number_1">{close}</td>'
+        f'<td class="rate_down"><img alt="{arrow}"><span class="tah">{pts}</span></td>'
+        f'<td class="number_1"><span class="tah">{pct}%</span></td>'
+        f'<td class="number_1">126,972</td></tr>'
+    )
+
+
+def _naver_day_html(rows: list[tuple[str, str, str, str, str]]) -> str:
+    return "<table class=\"type_1\">" + "".join(_naver_day_row(*r) for r in rows) + "</table>"
+
+
 def _rss_xml(items: list[tuple[str, str]]) -> str:
     chunks = ['<?xml version="1.0"?><rss><channel>']
     for title, pub in items:
@@ -80,6 +100,24 @@ class TodayGenieFeedProbeTests(unittest.TestCase):
             if url == probe.NAVER_INDEX["KOSDAQ"]:
                 # 1002.44 -> 911.39 is -91.05pts = -9.08%; the 상승 label is stale.
                 return _naver_html("911.39", "91.05", "-9.08", "상승", "2026.06.08")
+            if url == probe.NAVER_INDEX_DAY["KOSPI"]:
+                # The target session (06-09) is still open and leads the table;
+                # the settled row the briefing needs is 06-08.
+                return _naver_day_html(
+                    [
+                        ("2026.06.09", "7,500.00", "15.59", "+0.21", "상승"),
+                        ("2026.06.08", "7,484.41", "676.18", "-8.29", "하락"),
+                        ("2026.06.05", "8,160.59", "40.00", "+0.49", "상승"),
+                    ]
+                )
+            if url == probe.NAVER_INDEX_DAY["KOSDAQ"]:
+                return _naver_day_html(
+                    [
+                        ("2026.06.09", "915.00", "3.61", "+0.40", "상승"),
+                        ("2026.06.08", "911.39", "91.05", "-9.08", "하락"),
+                        ("2026.06.05", "1,002.44", "5.00", "+0.50", "상승"),
+                    ]
+                )
             if url == probe.CNBC_MARKET_NEWS_RSS:
                 return _rss_xml(
                     [
