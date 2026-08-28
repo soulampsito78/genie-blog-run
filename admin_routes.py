@@ -116,6 +116,7 @@ from admin_notice_delivery import (
 )
 from admin_safety_store import (
     append_operator_audit,
+    reserve_qa_manual_run,
     list_operator_audit_page,
     safety_storage_display_path,
 )
@@ -1427,6 +1428,13 @@ def _program_service_state_cards(runs, incidents) -> dict:
                 f'<a class="btn btn--secondary" href="/admin/notices/new?program_id={_esc(pid)}">'
                 "고객 공지 작성</a></div>"
             )
+        qa_html = ""
+        if pid in QA_MANUAL_PROGRAMS:
+            qa_html = (
+                '<div class="actions" style="margin-top:8px;">'
+                f'<a class="btn btn--secondary" href="/admin/qa-manual-run?program_id={_esc(pid)}">'
+                "검증용 수동 풀런</a></div>"
+            )
         reasons = "".join(f"<li>{_esc(r)}</li>" for r in state["reasons"][:4])
         cards.append(f"""
 <article class="run-card">
@@ -1438,7 +1446,7 @@ def _program_service_state_cards(runs, incidents) -> dict:
     {_ui_metric('고객 공지', _NOTICE_STATE_LABELS.get(state['customer_notice_state'], state['customer_notice_state']))}
   </div>
   {f'<ul class="page-description">{reasons}</ul>' if reasons else ''}
-  {action_html}{notice_html}
+  {action_html}{notice_html}{qa_html}
 </article>""")
 
     if unhealthy:
@@ -3233,6 +3241,160 @@ def _notice_status_label(status: str) -> str:
         "sent": "발송 완료",
         "failed": "발송 실패",
     }.get(status, status)
+
+
+QA_MANUAL_PROGRAMS = {
+    "keysuri_global_tech": "KeeSuri Global Tech",
+    "keysuri_korea_tech": "KeeSuri Korea Tech",
+}
+QA_MANUAL_CONFIRM_PHRASE = "수동 풀런"
+
+
+def _qa_manual_command_id() -> str:
+    from admin_safety_store import now_kst_iso
+
+    stamp = now_kst_iso()[:19].replace("-", "").replace(":", "")
+    return f"qam_{stamp}_{secrets.token_hex(6)}"
+
+
+def _qa_manual_notice_html() -> str:
+    return (
+        '<div class="notice"><strong>운영자 검증용 수동 풀런</strong>'
+        "<ul style=\"margin:8px 0 0;padding-left:18px;\">"
+        "<li>자연실행 슬롯을 사용하지 않습니다.</li>"
+        "<li>고객 발송 없음.</li>"
+        "<li>운영자 검토 메일 1회.</li>"
+        "<li>버튼 한 번이 실행 1회입니다. 자동 재시도 없음.</li>"
+        "</ul></div>"
+    )
+
+
+@router.get("/admin/qa-manual-run", response_class=HTMLResponse)
+def admin_qa_manual_run_confirm(request: Request):
+    """Operator confirmation screen. Opening it never starts a run."""
+    need = _require_login(request)
+    if need is not None:
+        return need
+    program_id = str(request.query_params.get("program_id") or "keysuri_global_tech").strip()
+    if program_id not in QA_MANUAL_PROGRAMS:
+        program_id = "keysuri_global_tech"
+    command_id = _qa_manual_command_id()
+    inner = f"""
+{_ui_page_header('운영자 검증용 수동 풀런', '검수 품질을 확인하기 위한 1회 실행입니다. 예약 실행과 분리됩니다.', 'QA MANUAL RUN')}
+{_qa_manual_notice_html()}
+<div class="card">
+<form method="post" action="/admin/qa-manual-run">
+{_csrf_field(request, 'qa_manual_run')}
+<input type="hidden" name="command_id" value="{_esc(command_id)}">
+<label>대상 프로그램<br>
+<select name="program_id">{''.join(
+    f'<option value="{_esc(pid)}" {"selected" if pid == program_id else ""}>{_esc(label)}</option>'
+    for pid, label in QA_MANUAL_PROGRAMS.items()
+)}</select>
+</label><br><br>
+<label>확인 문구 입력 (<code>{_esc(QA_MANUAL_CONFIRM_PHRASE)}</code>)<br>
+<input type="text" name="confirm_phrase" autocomplete="off" required>
+</label><br><br>
+<div class="actions"><button class="btn btn--warning" type="submit">수동 풀런 1회 실행</button>
+<a class="btn btn--secondary" href="/admin/incidents">취소</a></div>
+</form>
+</div>
+"""
+    return HTMLResponse(_layout("QA manual run", inner, active="incidents"))
+
+
+@router.post("/admin/qa-manual-run")
+def admin_qa_manual_run_execute(
+    request: Request,
+    program_id: str = Form(""),
+    command_id: str = Form(""),
+    confirm_phrase: str = Form(""),
+    csrf_token: str = Form(""),
+):
+    need = _require_login(request)
+    if need is not None:
+        return need
+    if not _verify_csrf(request, "qa_manual_run", csrf_token):
+        return _csrf_rejected()
+
+    program_id = str(program_id or "").strip()
+    command_id = str(command_id or "").strip()
+    phrase = str(confirm_phrase or "").strip()
+    operator = _operator_id(request)
+
+    if program_id not in QA_MANUAL_PROGRAMS:
+        return _qa_manual_error("알 수 없는 프로그램입니다.")
+    if phrase != QA_MANUAL_CONFIRM_PHRASE:
+        return _qa_manual_error(
+            f"확인 문구가 일치하지 않습니다. '{QA_MANUAL_CONFIRM_PHRASE}' 를 정확히 입력하세요."
+        )
+    try:
+        claimed = reserve_qa_manual_run(
+            command_id, operator_id=operator, program_id=program_id
+        )
+    except ValueError:
+        return _qa_manual_error("실행 토큰이 유효하지 않습니다. 확인 화면을 다시 여세요.")
+    if not claimed:
+        # Refresh or double click: the first submission already ran.
+        return _qa_manual_error(
+            "이미 실행된 요청입니다. 중복 실행하지 않았습니다. 실행 이력에서 결과를 확인하세요."
+        )
+
+    append_operator_audit(
+        "qa_manual_full_run_requested",
+        operator_id=operator,
+        result="started",
+        related_id=command_id,
+        metadata={"program_id": program_id},
+    )
+
+    from internal_jobs import create_keysuri_owner_review_job
+    from keysuri_service_full_run import QA_MANUAL_FULL_RUN_TRIGGER
+
+    try:
+        payload = create_keysuri_owner_review_job(
+            program_id,
+            trigger_source=QA_MANUAL_FULL_RUN_TRIGGER,
+            dry_run=False,
+            service_full_run=True,
+            send_owner_email=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - operator-visible failure, no retry.
+        append_operator_audit(
+            "qa_manual_full_run_failed",
+            operator_id=operator,
+            result="error",
+            reason_code=type(exc).__name__,
+            related_id=command_id,
+            metadata={"program_id": program_id},
+        )
+        return _qa_manual_error(
+            f"실행 중 오류가 발생했습니다({_esc(type(exc).__name__)}). 자동 재시도하지 않았습니다."
+        )
+
+    run_id = str((payload or {}).get("run_id") or "").strip()
+    append_operator_audit(
+        "qa_manual_full_run_completed",
+        operator_id=operator,
+        run_id=run_id,
+        result=str((payload or {}).get("validation_result") or "unknown"),
+        related_id=command_id,
+        metadata={"program_id": program_id},
+    )
+    if run_id:
+        return RedirectResponse(url=f"/admin/runs/{run_id}?qa_manual=1", status_code=303)
+    return _qa_manual_error("실행은 되었으나 run_id를 확인하지 못했습니다. 실행 이력을 확인하세요.")
+
+
+def _qa_manual_error(message: str) -> HTMLResponse:
+    return HTMLResponse(
+        _layout(
+            "QA manual run",
+            f'<div class="notice notice--danger">{_esc(message)}</div>'
+            '<p><a class="btn" href="/admin/qa-manual-run">확인 화면으로</a></p>',
+        ),
+        status_code=400,
+    )
 
 
 @router.get("/admin/notices", response_class=HTMLResponse)

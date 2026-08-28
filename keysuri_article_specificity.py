@@ -5,6 +5,17 @@ The repeated-skeleton detector measures sentence *shape*. This measures
 date or named event that comes from this article's own evidence and does not
 come from the other selected articles.
 
+NOT PRODUCTION-GATING. Measured against real artifacts on 2026-08-28 this does
+not track editorial quality: the known-good 2026-08-26 Global briefing (editorial
+READY, no findings) scores 70% generic fields and 3 fully-generic cards, while
+the rejected 2026-08-28 17:29 run scores 30% and 0. The measure is dominated by
+whether Korean prose happens to retain Latin tokens or digits from an English
+source, which varies with the story rather than with the writing. Gating on it
+would block good briefings and pass bad ones. It is kept as an offline
+diagnostic; sentence-shape repetition
+(``global_visible_repeated_template_skeleton_blocked``) remains the signal that
+actually caught the failure.
+
 The operational definition is the headline-swap test the owner specified. If a
 card's explanatory prose would remain equally valid after swapping its headline
 with another TOP5 article's, the prose is about the category, not the article.

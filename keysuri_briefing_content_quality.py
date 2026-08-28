@@ -1749,6 +1749,7 @@ def validate_global_post_render_visible_quality(
     subject: Any = "",
     deep_dive: Optional[Mapping[str, Any]] = None,
     opening_lead: Any = "",
+    evidence_items: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> BriefingContentQualityResult:
     """Public, self-contained entry point for the real owner-review send path.
 
@@ -1894,6 +1895,7 @@ def validate_global_post_render_visible_quality(
         deep_dive=deep_dive,
         opening_lead=opening_lead,
         plain_text=plain,
+        evidence_items=evidence_items,
     )
     for finding in surface["findings"]:
         if finding["severity"] != "block":

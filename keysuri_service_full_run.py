@@ -123,7 +123,10 @@ from memory_observability import (
     record_memory_stage_if_absent,
     record_memory_stage_reached,
 )
-from today_genie_execution_identity import EXECUTION_CLASS_NATURAL_SCHEDULED
+from today_genie_execution_identity import (
+    EXECUTION_CLASS_NATURAL_SCHEDULED,
+    EXECUTION_CLASS_QA_MANUAL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -422,6 +425,19 @@ def _keysuri_scheduled_natural_identity_fields(
             f"{date_token[:4]}-{date_token[4:6]}-{date_token[6:8]}"
         ),
     }
+
+
+#: Operator-initiated verification run. Deliberately carries no scheduled_slot
+#: and no kst_schedule_date: it must never be mistakable for the day's natural
+#: execution, nor satisfy the natural-slot completion the watchdog looks for.
+QA_MANUAL_FULL_RUN_TRIGGER = "qa_manual_full_run"
+
+
+def _keysuri_qa_manual_identity_fields(*, trigger_source: str) -> Dict[str, str]:
+    """Explicit qa_manual identity, so the class is provable rather than absent."""
+    if str(trigger_source or "").strip() != QA_MANUAL_FULL_RUN_TRIGGER:
+        return {}
+    return {"execution_class": EXECUTION_CLASS_QA_MANUAL}
 
 _PROGRAM_EMAIL_SUBJECT = {
     PROGRAM_GLOBAL: "[운영자 검토] Kee-Suri Global Tech",
@@ -1288,6 +1304,22 @@ def _generated_briefing_top_items(briefing: Optional[dict]) -> List[Dict[str, An
     if not isinstance(items, list):
         return []
     return [item for item in items if isinstance(item, dict)]
+
+
+def _selected_evidence_items(prompt_input: Any) -> List[Dict[str, Any]]:
+    """The selected articles' source evidence, for the specificity check.
+
+    Specificity has to be measured against what the source said, not against the
+    prose the model produced from it — deriving the discriminating terms from
+    the generated text would make the check circular.
+    """
+    if not isinstance(prompt_input, Mapping):
+        return []
+    top = prompt_input.get("top_5_news")
+    items = top.get("items") if isinstance(top, Mapping) else None
+    if not isinstance(items, list):
+        return []
+    return [dict(item) for item in items if isinstance(item, Mapping)]
 
 
 def _global_visible_surface_kwargs(
@@ -4081,6 +4113,7 @@ def run_keysuri_text_only_reissue(
             sanitizer_diagnostics=_global_filler_sanitizer_diagnostics(generated_briefing),
             briefing_items=_generated_briefing_top_items(generated_briefing),
             **_global_visible_surface_kwargs(generated_briefing, subject_fields),
+            evidence_items=_selected_evidence_items(prompt_input),
         )
     else:
         post_render_qa = validate_korea_post_render_visible_quality(email_html)
@@ -4433,6 +4466,7 @@ def run_keysuri_text_and_image_reissue(
             sanitizer_diagnostics=_global_filler_sanitizer_diagnostics(generated_briefing),
             briefing_items=_generated_briefing_top_items(generated_briefing),
             **_global_visible_surface_kwargs(generated_briefing, subject_fields),
+            evidence_items=_selected_evidence_items(prompt_input),
         )
     else:
         post_render_qa = validate_korea_post_render_visible_quality(email_html)
@@ -4797,6 +4831,12 @@ def _run_keysuri_service_full_run_impl(
         run_id=run_id,
         trigger_source=trigger_source,
     )
+    # A qa_manual run gets its own class. The natural helper already returns {}
+    # for any non-Scheduler trigger, so these two can never both apply.
+    natural_identity_fields = {
+        **natural_identity_fields,
+        **_keysuri_qa_manual_identity_fields(trigger_source=trigger_source),
+    }
     if _run_context is not None:
         # Expose identity to the exception boundary as soon as it exists.
         _run_context["run_id"] = run_id
@@ -5246,6 +5286,7 @@ def _run_keysuri_service_full_run_impl(
             sanitizer_diagnostics=_global_filler_sanitizer_diagnostics(generated_briefing),
             briefing_items=_generated_briefing_top_items(generated_briefing),
             **_global_visible_surface_kwargs(generated_briefing, subject_fields),
+            evidence_items=_selected_evidence_items(prompt_input),
         )
     else:
         post_render_qa = validate_korea_post_render_visible_quality(email_html)

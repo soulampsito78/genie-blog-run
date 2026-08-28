@@ -71,6 +71,7 @@ GLOBAL_VISIBLE_INTERNAL_TEMPLATE_LEAK_BLOCKED = "global_visible_internal_templat
 GLOBAL_VISIBLE_RAW_ENGLISH_PROSE_BLOCKED = "global_visible_raw_english_prose_blocked"
 GLOBAL_VISIBLE_SEMANTIC_TRUNCATION_BLOCKED = "global_visible_semantic_truncation_blocked"
 GLOBAL_VISIBLE_REPEATED_SKELETON_BLOCKED = "global_visible_repeated_template_skeleton_blocked"
+
 GLOBAL_VISIBLE_REPEATED_LOW_INFORMATION_LABEL = "global_visible_repeated_low_information_label"
 GLOBAL_VISIBLE_DEEP_DIVE_DUPLICATION_BLOCKED = "global_visible_deep_dive_duplication_blocked"
 GLOBAL_VISIBLE_CATEGORY_GROUNDING_MISMATCH = "global_visible_category_grounding_mismatch"
@@ -752,6 +753,7 @@ def evaluate_global_visible_surface(
     deep_dive: Optional[Mapping[str, Any]] = None,
     opening_lead: Any = "",
     plain_text: Any = "",
+    evidence_items: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Evaluate the whole customer-visible Global surface.
 

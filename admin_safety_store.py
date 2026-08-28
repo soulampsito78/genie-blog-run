@@ -240,6 +240,30 @@ def sanitize_audit_metadata(value: Any, *, _depth: int = 0) -> Any:
     return str(value)[:500]
 
 
+_QA_MANUAL_COMMAND_RE = re.compile(r"^qam_[0-9]{8}T[0-9]{6}_[a-f0-9]{12}$")
+
+
+def reserve_qa_manual_run(command_id: str, *, operator_id: str, program_id: str) -> bool:
+    """Claim a qa_manual run slot exactly once.
+
+    A manual verification run costs a Gemini generation and an owner email, so a
+    double-submit — a refreshed confirmation page, an impatient second click —
+    must not produce a second live run. Backed by the same create-once primitive
+    the delivery commands use, so the guard is atomic rather than advisory.
+    """
+    token = str(command_id or "").strip()
+    if not _QA_MANUAL_COMMAND_RE.fullmatch(token):
+        raise ValueError("invalid qa_manual command id")
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "command_id": token,
+        "program_id": str(program_id or "")[:80],
+        "operator_id": str(operator_id or "unknown")[:120],
+        "reserved_at": now_kst_iso(),
+    }
+    return _create_json_once(f"qa_manual_runs/{token}.json", payload)
+
+
 def append_operator_audit(
     action: str,
     *,
