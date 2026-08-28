@@ -137,11 +137,26 @@ def _bind_prose(
     field_name: str,
     authored: Mapping[str, Any],
     evidence_forms: Sequence[str],
+    *,
+    source_is_reader_language: bool = False,
 ) -> Tuple[str, Optional[str]]:
-    """One reader field, or the unavailable marker plus the reason it failed."""
+    """One reader field, or the unavailable marker plus the reason it failed.
+
+    ``source_is_reader_language`` relaxes the equality rule for the headline
+    only. Korea's sources are already Korean, so a display headline that tracks
+    the source headline closely is ordinary editing, not a graft — the rule
+    exists to stop *foreign* source text becoming reader prose. Explanatory
+    fields stay strict for every program: those must be authored analysis, not a
+    copied source sentence.
+    """
     value = _text(authored.get(field_name))
     if not value:
         return UNAVAILABLE_MARKER, READER_PROSE_MISSING
+
+    if field_name == "headline" and source_is_reader_language:
+        if _looks_like_raw_source_prose(value):
+            return UNAVAILABLE_MARKER, READER_PROSE_NOT_KOREAN
+        return value, None
 
     normalized = _normalized(value)
     if normalized and normalized in evidence_forms:
@@ -170,9 +185,15 @@ def build_reader_article(
     evidence_forms = _evidence_texts(evidence)
     issues: List[str] = []
 
+    source_is_reader_language = bool(_HANGUL_RE.search(_text(evidence.get("headline"))))
     bound: Dict[str, str] = {}
     for name in PROSE_FIELDS:
-        value, issue = _bind_prose(name, authored, evidence_forms)
+        value, issue = _bind_prose(
+            name,
+            authored,
+            evidence_forms,
+            source_is_reader_language=source_is_reader_language,
+        )
         bound[name] = value
         if issue and name in REQUIRED_PROSE_FIELDS:
             issues.append(f"{issue}:{name}")

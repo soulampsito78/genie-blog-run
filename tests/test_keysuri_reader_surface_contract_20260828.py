@@ -154,6 +154,79 @@ class AuthoredProseSurvivesTests(unittest.TestCase):
         self.assertEqual(out["top_5_news"]["items"][0]["summary"], item["summary"])
 
 
+class SameLanguageSourceTests(unittest.TestCase):
+    """Korea's sources are already Korean; reusing a headline is editing, not grafting."""
+
+    KOREA_EVIDENCE = [
+        {
+            "rank": 1,
+            "news_id": "kr-1",
+            "headline": "YMTC, 2027년 삼성·SK 제치고 낸드 1위 목표 제시",
+            "summary": "중국 YMTC가 2027년까지 낸드 1위를 목표로 제시했습니다.",
+            "source_ids": ["src-k1"],
+            "source_url": "https://example.co.kr/ymtc",
+            "source_name": "전자신문",
+        }
+    ]
+    KOREA_PROMPT = {"top_5_news": {"items": KOREA_EVIDENCE}}
+
+    def test_a_korean_headline_may_track_its_korean_source(self) -> None:
+        item = {
+            "rank": 1,
+            "news_id": "kr-1",
+            "headline": "YMTC, 2027년 삼성·SK 제치고 낸드 1위 목표 제시",
+            "summary": "중국 YMTC가 낸드 1위 목표를 제시하면서 국내 메모리 경쟁 구도가 흔들립니다.",
+            "why_it_matters": "국내 메모리 업체의 가격 전략에 직접 영향을 줍니다.",
+            "business_implication": "메모리 조달 단가 가정을 다시 볼 시점입니다.",
+            "source_ids": ["src-k1"],
+        }
+        out, diag = enforce_reader_surface(
+            {"top_5_news": {"items": [item]}},
+            program_id="keysuri_korea_tech",
+            prompt_input=self.KOREA_PROMPT,
+        )
+        self.assertEqual(out["top_5_news"]["items"][0]["headline"], item["headline"])
+        self.assertEqual(diag["reader_surface_ready_item_count"], 1)
+
+    def test_an_explanatory_field_may_still_not_be_the_source_sentence(self) -> None:
+        item = {
+            "rank": 1,
+            "news_id": "kr-1",
+            "headline": "YMTC, 낸드 1위 목표 제시",
+            "summary": self.KOREA_EVIDENCE[0]["summary"],
+            "why_it_matters": "국내 메모리 업체의 가격 전략에 직접 영향을 줍니다.",
+            "source_ids": ["src-k1"],
+        }
+        out, _diag = enforce_reader_surface(
+            {"top_5_news": {"items": [item]}},
+            program_id="keysuri_korea_tech",
+            prompt_input=self.KOREA_PROMPT,
+        )
+        self.assertEqual(out["top_5_news"]["items"][0]["summary"], UNAVAILABLE_MARKER)
+
+    def test_an_english_headline_is_still_refused_for_a_korean_source(self) -> None:
+        item = {
+            "rank": 1,
+            "news_id": "kr-1",
+            "headline": "YMTC aims to overtake Samsung and SK by twenty twenty seven",
+            "summary": "중국 YMTC가 낸드 1위 목표를 제시했습니다.",
+            "source_ids": ["src-k1"],
+        }
+        out, _diag = enforce_reader_surface(
+            {"top_5_news": {"items": [item]}},
+            program_id="keysuri_korea_tech",
+            prompt_input=self.KOREA_PROMPT,
+        )
+        self.assertEqual(out["top_5_news"]["items"][0]["headline"], UNAVAILABLE_MARKER)
+
+    def test_a_global_english_headline_graft_is_unaffected_by_the_relaxation(self) -> None:
+        item = _authored("claim-1", headline=EVIDENCE[0]["headline"])
+        out, _diag = enforce_reader_surface(
+            _briefing([item]), program_id=PROGRAM, prompt_input=PROMPT_INPUT
+        )
+        self.assertEqual(out["top_5_news"]["items"][0]["headline"], UNAVAILABLE_MARKER)
+
+
 class IdentityIsImmutableTests(unittest.TestCase):
     """Card A can never wear card B's identity or evidence."""
 
