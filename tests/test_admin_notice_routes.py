@@ -36,9 +36,30 @@ class AdminNoticeRoutesTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
 
     def test_notice_new_page_prefills_template(self) -> None:
-        resp = self.client.get("/admin/notices/new?notice_type=delay_notice")
+        resp = self.client.get(
+            "/admin/notices/new?notice_type=delay_notice&program_id=keysuri_global_tech"
+        )
         self.assertEqual(resp.status_code, 200)
         self.assertIn("오늘 키수리 글로벌테크 브리핑은 품질 확인 과정", resp.text)
+
+    def test_template_names_the_program_the_notice_is_about(self) -> None:
+        """Every template used to say 키수리 글로벌테크, whichever program was picked."""
+        for program_id, name in (
+            ("today_genie", "투데이 지니"),
+            ("keysuri_korea_tech", "키수리 코리아테크"),
+        ):
+            resp = self.client.get(
+                f"/admin/notices/new?notice_type=delay_notice&program_id={program_id}"
+            )
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn(f"오늘 {name} 브리핑은", resp.text, program_id)
+            self.assertNotIn("키수리 글로벌테크 브리핑은", resp.text, program_id)
+
+    def test_program_scope_survives_a_template_switch(self) -> None:
+        resp = self.client.get(
+            "/admin/notices/new?notice_type=delay_notice&program_id=today_genie"
+        )
+        self.assertIn("program_id=today_genie", resp.text)
 
     def test_preview_creates_notice_without_sending(self) -> None:
         with patch("admin_routes.send_admin_notice_email") as mock_send:
@@ -165,7 +186,18 @@ class AdminNoticeDashboardEntryTests(unittest.TestCase):
         resp = self.client.get("/admin/runs")
         self.assertEqual(resp.status_code, 200)
         self.assertIn('href="/admin/notices"', resp.text)
-        self.assertIn("공지 메일 관리", resp.text)
+
+    def test_notice_link_is_not_inside_a_hidden_container(self) -> None:
+        """The link existed before, inside display:none — reachable only by URL."""
+        import re
+
+        resp = self.client.get("/admin/runs")
+        for hidden in re.findall(
+            r'<(\w+)[^>]*style="[^"]*display:\s*none[^"]*"[^>]*>(.*?)</\1>',
+            resp.text,
+            re.S,
+        ):
+            self.assertNotIn("/admin/notices", hidden[1])
 
 
 if __name__ == "__main__":

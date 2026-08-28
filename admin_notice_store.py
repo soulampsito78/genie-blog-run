@@ -72,38 +72,75 @@ _NOTICE_ID_RE = re.compile(
     r"_[0-9]{8}_[a-f0-9]{8}$"
 )
 
-# Default subject/body templates. custom_notice has no default body (free text).
-NOTICE_TEMPLATES: Dict[str, Dict[str, str]] = {
+# Customer-facing program names. A notice names the program it is about; the
+# templates below carried "키수리 글로벌테크" in every string, so a Today or Korea
+# notice would have told customers the wrong service was affected.
+NOTICE_PROGRAM_NAMES: Dict[str, str] = {
+    "today_genie": "투데이 지니",
+    "keysuri_global_tech": "키수리 글로벌테크",
+    "keysuri_korea_tech": "키수리 코리아테크",
+    "all": "지니 구독",
+}
+DEFAULT_NOTICE_PROGRAM = "all"
+
+
+def notice_program_name(program_id: str) -> str:
+    key = str(program_id or "").strip() or DEFAULT_NOTICE_PROGRAM
+    return NOTICE_PROGRAM_NAMES.get(key, NOTICE_PROGRAM_NAMES[DEFAULT_NOTICE_PROGRAM])
+
+
+# Default subject/body templates, parameterized by program. custom_notice has no
+# default body (free text).
+_NOTICE_TEMPLATE_SPECS: Dict[str, Dict[str, str]] = {
     "quality_check_notice": {
-        "subject": "[키수리 글로벌테크] 오늘 브리핑 품질 점검 안내",
+        "subject": "[{program}] 오늘 브리핑 품질 점검 안내",
         "body_text": (
-            "오늘 키수리 글로벌테크 브리핑은 품질 점검으로 인해 평소보다 발송이 지연되고 있습니다.\n"
+            "오늘 {program} 브리핑은 품질 점검으로 인해 평소보다 발송이 지연되고 있습니다.\n"
             "검수 완료 후 발송하겠습니다.\n"
             "기다려 주셔서 감사합니다."
         ),
     },
     "delay_notice": {
-        "subject": "[키수리 글로벌테크] 오늘 브리핑 발송 지연 안내",
+        "subject": "[{program}] 오늘 브리핑 발송 지연 안내",
         "body_text": (
-            "오늘 키수리 글로벌테크 브리핑은 품질 확인 과정으로 인해 발송이 지연되었습니다.\n"
+            "오늘 {program} 브리핑은 품질 확인 과정으로 인해 발송이 지연되었습니다.\n"
             "정확한 내용을 보내드리기 위해 검수 후 발송하겠습니다."
         ),
     },
     "resolved_notice": {
-        "subject": "[키수리 글로벌테크] 지연된 브리핑 발송 완료 안내",
+        "subject": "[{program}] 지연된 브리핑 발송 완료 안내",
         "body_text": (
-            "품질 점검으로 지연되었던 오늘 키수리 글로벌테크 브리핑 발송이 완료되었습니다.\n"
+            "품질 점검으로 지연되었던 오늘 {program} 브리핑 발송이 완료되었습니다.\n"
             "기다려 주셔서 감사합니다."
         ),
     },
     "incident_notice": {
-        "subject": "[키수리 글로벌테크] 서비스 장애 안내",
+        "subject": "[{program}] 서비스 장애 안내",
         "body_text": "",
     },
     "custom_notice": {
         "subject": "",
         "body_text": "",
     },
+}
+
+
+def notice_template(notice_type: str, program_id: str = DEFAULT_NOTICE_PROGRAM) -> Dict[str, str]:
+    """Subject/body defaults for one notice type, named for one program."""
+    spec = _NOTICE_TEMPLATE_SPECS.get(str(notice_type or "").strip())
+    if spec is None:
+        return {"subject": "", "body_text": ""}
+    program = notice_program_name(program_id)
+    return {
+        "subject": spec["subject"].format(program=program),
+        "body_text": spec["body_text"].format(program=program),
+    }
+
+
+#: Backwards-compatible default rendering (all-programs wording).
+NOTICE_TEMPLATES: Dict[str, Dict[str, str]] = {
+    notice_type: notice_template(notice_type)
+    for notice_type in _NOTICE_TEMPLATE_SPECS
 }
 
 

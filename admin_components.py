@@ -18,7 +18,11 @@ PRIMARY_NAV = (
     ("system", "/admin/system", "시스템 상태", "System"),
 )
 
+# Customer notices are an incident-response capability, not a setting: burying
+# them under Settings is what kept them out of the path an owner actually walks
+# when a scheduled briefing is not customer-ready.
 SECONDARY_NAV = (
+    ("notices", "/admin/notices", "고객 공지"),
     ("history", "/admin/history", "실행 이력"),
     ("settings", "/admin/settings", "설정"),
 )
@@ -149,14 +153,14 @@ button,input,select,textarea{{font:inherit;}}
 button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{{outline:3px solid #65a87f;outline-offset:3px;}}
 .admin-shell{{width:min(1180px,calc(100% - 32px));margin:0 auto 64px;}}
 .login-shell{{width:min(520px,calc(100% - 32px));margin:8vh auto;}}
-.admin-header{{min-height:82px;display:flex;align-items:center;justify-content:space-between;gap:24px;}}
+.admin-header{{min-height:82px;display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;}}
 .brand{{display:flex;align-items:center;gap:12px;text-decoration:none;}}
 .brand-mark{{display:grid;place-items:center;width:38px;height:38px;border-radius:11px;background:var(--ink);color:white;font-weight:850;}}
 .brand strong,.brand small{{display:block;letter-spacing:.04em;}}
 .brand small{{font-size:11px;color:var(--muted);margin-top:1px;}}
 .header-utilities{{display:flex;align-items:center;gap:18px;font-size:14px;}}
 .header-utilities form{{margin:0;}}
-.utility-link,.text-button{{color:var(--muted);text-decoration:none;border:0;background:none;padding:6px 0;cursor:pointer;}}
+.utility-link,.text-button{{color:var(--muted);text-decoration:none;border:0;background:none;padding:6px 0;cursor:pointer;min-height:32px;display:inline-flex;align-items:center;}}
 .utility-link.is-active{{color:var(--ink);font-weight:750;}}
 .primary-nav{{display:grid;grid-template-columns:repeat(5,1fr);background:#e8ede8;padding:5px;border-radius:14px;gap:4px;position:sticky;top:8px;z-index:10;box-shadow:0 6px 18px rgba(23,47,31,.05);}}
 .nav-link{{display:flex;align-items:baseline;justify-content:center;gap:7px;padding:11px 10px;border-radius:10px;color:#536158;text-decoration:none;font-weight:720;white-space:nowrap;}}
@@ -252,7 +256,7 @@ th{{background:#f1f4f1;}}
 @media(max-width:820px){{
   .admin-shell{{width:min(100% - 22px,1180px);}}
   .admin-header{{min-height:68px;}}
-  .header-utilities{{gap:10px;}} .utility-link{{display:none;}}
+  .header-utilities{{gap:10px 14px;flex-wrap:wrap;justify-content:flex-end;font-size:13px;}}
   .brand strong{{font-size:13px;}}
   .primary-nav{{grid-template-columns:repeat(3,minmax(0,1fr));position:static;}}
   .nav-link{{display:block;text-align:center;padding:10px 7px;font-size:13px;}}

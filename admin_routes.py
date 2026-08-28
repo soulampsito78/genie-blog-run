@@ -1331,8 +1331,8 @@ def _history_page(request: Request) -> HTMLResponse:
 {''.join(group_html) if group_html else _ui_empty_state('조건에 맞는 이력 없음','필터를 바꾸거나 새 실행 기록을 기다리세요.')}
 {_admin_pagination_controls(str(request.url.path), page, preserved_query={'program': mode_filter, 'state': state_filter, 'date': date_filter})}
 <details class="technical-details"><summary>Operator action audit</summary><div class="technical-details__body"><p>저장소: {_esc(safety_storage_display_path())}</p><div class="table-wrap"><table><thead><tr><th>시각</th><th>행동</th><th>대상</th><th>결과</th></tr></thead><tbody>{audit_rows}</tbody></table></div>{_admin_pagination_controls(str(request.url.path), audit_page, preserved_query={'program': mode_filter, 'state': state_filter, 'date': date_filter, 'cursor': str(page.get('cursor') or '')}, cursor_param='audit_cursor')}</div></details>
-<div class="table-wrap" style="display:none" aria-hidden="true"></div>
-<div style="display:none"><a href="/admin/customer-recipients">베타 고객 수신자 관리</a><a href="/admin/costs">비용 ledger</a><a href="/admin/notices">공지 메일 관리</a></div>
+<nav class="surface" aria-label="운영 보조 메뉴" style="margin-top:18px;display:flex;flex-wrap:wrap;gap:12px 18px;">
+<a href="/admin/notices">고객 공지 메일</a><a href="/admin/customer-recipients">베타 고객 수신자 관리</a><a href="/admin/costs">비용 ledger</a></nav>
 """
     return _finish_heavy_admin_projection(
         memory, title="History", inner=inner, active="history"
@@ -1353,6 +1353,97 @@ def admin_runs_list(request: Request):
     if need is not None:
         return need
     return _history_page(request)
+
+
+_SERVICE_HEALTH_TONE = {"HEALTHY": "success", "DEGRADED": "warn", "INCIDENT": "danger"}
+_CONTENT_STATUS_LABELS = {
+    "ready": "고객 발송 가능",
+    "quality_degraded": "품질 미달 — 고객 발송 불가",
+    "unusable": "발행 본문 없음",
+    "missing": "예정 실행 기록 없음",
+}
+_NOTICE_STATE_LABELS = {
+    "not_required": "불필요",
+    "recommended": "권장",
+    "required": "필요",
+    "sent": "발송됨",
+}
+
+
+def _program_service_state_cards(runs, incidents) -> dict:
+    """One card per program, from the canonical service state.
+
+    The incident store alone cannot answer "is today's briefing customer-ready":
+    a run that produced an unreadable surface still completes without writing an
+    incident, which is how a degraded Global slot read as "현재 장애 없음".
+    """
+    from admin_view_models import ACTIVE_PROGRAMS, latest_by_program
+    from service_state import DEGRADED, HEALTHY, INCIDENT, derive_service_state
+
+    try:
+        from admin_notice_store import list_notices
+
+        notices = list_notices(limit=20)
+    except Exception:  # noqa: BLE001 - notice history is advisory here.
+        notices = []
+
+    latest = latest_by_program(runs)
+    incident_by_program = {}
+    for item in incidents or []:
+        pid = str(item.get("program_id") or "")
+        if pid and pid not in incident_by_program:
+            incident_by_program[pid] = item
+
+    cards = []
+    unhealthy = 0
+    for program in ACTIVE_PROGRAMS:
+        pid = program["id"]
+        state = derive_service_state(
+            latest.get(pid),
+            program=program,
+            incident=incident_by_program.get(pid),
+            notices=notices,
+        )
+        if state["service_health"] != HEALTHY:
+            unhealthy += 1
+        action = state["owner_next_action"]
+        action_html = ""
+        if action.get("href"):
+            action_html = (
+                f'<div class="actions"><a class="btn" href="{_esc(action["href"])}">'
+                f'{_esc(action["label"])}</a></div>'
+            )
+        else:
+            action_html = f'<p class="page-description">{_esc(action["label"])}</p>'
+        notice_html = ""
+        if state["customer_notice_state"] in {"recommended", "required"}:
+            notice_html = (
+                '<div class="actions" style="margin-top:8px;">'
+                f'<a class="btn btn--secondary" href="/admin/notices/new?program_id={_esc(pid)}">'
+                "고객 공지 작성</a></div>"
+            )
+        reasons = "".join(f"<li>{_esc(r)}</li>" for r in state["reasons"][:4])
+        cards.append(f"""
+<article class="run-card">
+  <div class="run-card__top"><div><p class="eyebrow">{_esc(state['program_display'])} · {_esc(state['scheduled_time'])}</p>
+  <h3>{_esc(state['program_name'])}</h3></div>{_ui_badge(state['service_health'], _SERVICE_HEALTH_TONE.get(state['service_health'], 'neutral'))}</div>
+  <div class="metrics" style="margin:14px 0;grid-template-columns:repeat(3,minmax(0,1fr));">
+    {_ui_metric('콘텐츠 상태', _CONTENT_STATUS_LABELS.get(state['content_status'], state['content_status']))}
+    {_ui_metric('고객 발송 가능', '예' if state['customer_ready'] else '아니오')}
+    {_ui_metric('고객 공지', _NOTICE_STATE_LABELS.get(state['customer_notice_state'], state['customer_notice_state']))}
+  </div>
+  {f'<ul class="page-description">{reasons}</ul>' if reasons else ''}
+  {action_html}{notice_html}
+</article>""")
+
+    if unhealthy:
+        empty = _ui_empty_state(
+            "장애 기록은 없음",
+            "장애 기록은 없지만 위 프로그램 상태에 고객 발송이 불가한 항목이 있습니다.",
+        )
+    else:
+        empty = _ui_empty_state("현재 장애 없음", "현재 조치가 필요한 활성 프로그램 장애가 없습니다.")
+    return {"html": "".join(cards), "incident_empty_state": empty, "unhealthy": unhealthy}
 
 
 @router.get("/admin/incidents", response_class=HTMLResponse)
@@ -1377,6 +1468,7 @@ def admin_incidents_list(request: Request):
     ]
     runs = [meta for meta in list_run_artifacts(limit=100) if is_active_program(meta)]
     projected = incident_current_projection(incidents, runs)
+    service_cards = _program_service_state_cards(runs, incidents)
     cards = []
     for item in projected["current"]:
         view = incident_projection(item)
@@ -1394,8 +1486,10 @@ def admin_incidents_list(request: Request):
     inner = f"""
 {_ui_page_header('장애·복구', '고객 영향과 안전한 다음 행동을 먼저 보여줍니다. 자동 재실행과 자동 고객 발송은 없습니다.', 'INCIDENTS & RECOVERY')}
 <div class="notice">장애 상세를 여는 것만으로 복구가 실행되지 않습니다. 기존 확인 화면과 명시적 POST 안전 장치를 유지합니다.</div>
+<div class="section-heading"><div><h2>프로그램 서비스 상태</h2></div></div>
+<div class="stack" style="margin-top:14px;">{service_cards['html']}</div>
 <div class="section-heading"><div><h2>현재 장애 / 조치 필요</h2></div></div>
-<div class="stack" style="margin-top:14px;">{''.join(cards) if cards else _ui_empty_state('현재 장애 없음','현재 조치가 필요한 활성 프로그램 장애가 없습니다.')}</div>
+<div class="stack" style="margin-top:14px;">{''.join(cards) if cards else service_cards['incident_empty_state']}</div>
 <details class="technical-details"><summary>해결된 장애 / 이력 ({len(projected['historical'])})</summary><div class="technical-details__body"><p>명시적 종료·복구 성공 또는 이후 검증된 정상 고객 발송 근거가 있는 기록입니다.</p><div class="stack">{''.join(f'<article class="run-card"><div class="run-card__top"><div><p class="eyebrow">{_esc(incident_projection(item)["program"]["display"])}</p><h3>{_esc(incident_projection(item)["scheduled"] or "실행 시각 미기록")} 발행 장애</h3></div>{_ui_badge("해결됨 / 이력", "neutral")}</div><div class="actions"><a class="btn btn--secondary" href="/admin/incidents/{_esc(item.get("incident_id"))}">기록 보기</a></div></article>' for item in projected['historical']) or _ui_empty_state('해결된 장애 이력 없음','현재 표시할 해결된 활성 프로그램 장애가 없습니다.')}</div></div></details>
 {_admin_pagination_controls('/admin/incidents', page)}
 """
@@ -2240,7 +2334,7 @@ def admin_run_detail(request: Request, run_id: str):
 </section>
 <details class="technical-details"><summary>비용 추정 보기</summary><div class="technical-details__body">{cost_section}</div></details>
 {technical}
-<div class="table-wrap" style="display:none" aria-hidden="true">{email_link}<a href="/admin/customer-recipients">베타 고객 수신자 관리</a><a href="/admin/notices">공지 메일 관리</a></div>
+<nav class="surface" aria-label="운영 보조 메뉴" style="margin-top:18px;display:flex;flex-wrap:wrap;gap:12px 18px;">{email_link}<a href="/admin/customer-recipients">베타 고객 수신자 관리</a><a href="/admin/notices">고객 공지 메일</a></nav>
 """
     memory.record("after_projection")
     return _finish_heavy_admin_projection(
@@ -3185,14 +3279,23 @@ def admin_notice_new(request: Request):
     if need is not None:
         return need
 
+    from admin_notice_store import DEFAULT_NOTICE_PROGRAM, notice_template
+
     selected_type = str(request.query_params.get("notice_type") or "quality_check_notice")
     if selected_type not in NOTICE_TYPES:
         selected_type = "quality_check_notice"
-    template = NOTICE_TEMPLATES.get(selected_type, {"subject": "", "body_text": ""})
+    # A notice reached from a degraded program arrives scoped to that program, so
+    # the wording names the affected service instead of defaulting to Global.
+    selected_program = str(request.query_params.get("program_id") or "").strip()
+    valid_programs = {pid for pid, _label in NOTICE_PROGRAM_OPTIONS}
+    if selected_program not in valid_programs:
+        selected_program = DEFAULT_NOTICE_PROGRAM
+    template = notice_template(selected_type, selected_program)
 
     type_links = " ".join(
         f'<a class="btn" style="background:{"#0f172a" if t == selected_type else "#94a3b8"};" '
-        f'href="/admin/notices/new?notice_type={t}">{_esc(_NOTICE_TYPE_LABELS.get(t, t))}</a>'
+        f'href="/admin/notices/new?notice_type={t}&program_id={_esc(selected_program)}">'
+        f'{_esc(_NOTICE_TYPE_LABELS.get(t, t))}</a>'
         for t in NOTICE_TYPES
     )
     type_options = "".join(
@@ -3201,7 +3304,9 @@ def admin_notice_new(request: Request):
         for t in NOTICE_TYPES
     )
     program_options = "".join(
-        f'<option value="{pid}">{_esc(label)}</option>' for pid, label in NOTICE_PROGRAM_OPTIONS
+        f'<option value="{pid}" {"selected" if pid == selected_program else ""}>'
+        f'{_esc(label)}</option>'
+        for pid, label in NOTICE_PROGRAM_OPTIONS
     )
 
     inner = f"""
