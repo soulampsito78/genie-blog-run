@@ -626,6 +626,25 @@ def _repair_startup_founder_category(item: dict, meta: dict) -> Tuple[dict, dict
     return fixed_item, fixed_meta
 
 
+def _pick(index: int, variants: Tuple[str, ...]) -> str:
+    return variants[index % len(variants)]
+
+
+
+
+def _checkpoint_variant_index(item: dict) -> int:
+    """Which phrasing this card uses, from its own rank.
+
+    Deterministic so a rerun of the same briefing renders identically, and
+    rank-keyed so the five TOP5 cards never draw the same sentence shape.
+    """
+    try:
+        rank = int(item.get("rank") or 0)
+    except (TypeError, ValueError):
+        rank = 0
+    return max(rank - 1, 0)
+
+
 def _item_specific_checkpoint(item: dict, meta: dict, *, style: str) -> str:
     """Padding sentence anchored on this item's subject phrase + category checkpoints.
 
@@ -645,21 +664,71 @@ def _item_specific_checkpoint(item: dict, meta: dict, *, style: str) -> str:
         subject = full_title
     else:
         subject = _category_label(meta, item) or "이번 이슈"
+    # Anchoring padding on each item's own title makes the five sentences
+    # textually distinct but leaves them structurally identical, which is what
+    # `global_visible_repeated_template_skeleton_blocked` measures — and what
+    # put the 2026-08-28 17:29 Global run into REVIEW with the same skeleton on
+    # 5/5 cards. Rotating the phrasing by rank gives each card a different
+    # sentence shape as well as a different subject.
+    variant = _checkpoint_variant_index(item)
     if style == "why_now":
-        return f"{subject} 확인 포인트는 {checkpoint_a}, 그리고 {checkpoint_b}입니다."
+        return _pick(
+            variant,
+            (
+                f"{subject} 확인 포인트는 {checkpoint_a}, 그리고 {checkpoint_b}입니다.",
+                f"{subject} 먼저 볼 지표는 {checkpoint_a}이며, 이어서 {checkpoint_b}를 봅니다.",
+                f"{subject} 판단을 가르는 변수는 {checkpoint_a}와 {checkpoint_b}입니다.",
+                f"{subject} 흐름은 {checkpoint_a}에서 먼저 드러나고 {checkpoint_b}로 확인됩니다.",
+                f"{subject} 관찰 순서는 {checkpoint_a} 다음 {checkpoint_b}입니다.",
+            ),
+        )
     if style == "owner":
-        return f"{subject} 후속은 {checkpoint_a} 중심으로 보면 됩니다."
+        return _pick(
+            variant,
+            (
+                f"{subject} 후속은 {checkpoint_a} 중심으로 보면 됩니다.",
+                f"{subject} 다음 확인은 {checkpoint_a}에서 시작하면 충분합니다.",
+                f"{subject} 이어지는 신호는 {checkpoint_a}에 먼저 나타납니다.",
+                f"{subject} 실무 점검은 {checkpoint_a}부터 잡으면 됩니다.",
+                f"{subject} 추적 대상은 우선 {checkpoint_a}입니다.",
+            ),
+        )
     if style == "what":
-        return f"{subject} 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다."
+        return _pick(
+            variant,
+            (
+                f"{subject} 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다.",
+                f"{subject} 공개된 범위 밖의 계약 조건은 아직 확인되지 않았습니다.",
+                f"{subject} 규모와 시점은 원문이 갱신되면 달라질 수 있습니다.",
+                f"{subject} 지금까지 확인된 사실은 이번 발표 내용까지입니다.",
+                f"{subject} 구체적인 실행 단계는 아직 공개되지 않았습니다.",
+            ),
+        )
     if style == "decision":
         # 이/가 must agree with the subject's last syllable. A bare category
         # label subject ends on a consonant — "정책·규제·자본·공급망가" reached the
         # 2026-08-14 Global email because the particle was hard-coded.
-        return (
-            f"{attach_korean_subject_particle(subject)}"
-            " 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다."
+        marked = attach_korean_subject_particle(subject)
+        return _pick(
+            variant,
+            (
+                f"{marked} 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+                f"{marked} 예산과 일정에 실제로 반영되는지를 보고 판단합니다.",
+                f"{marked} 발표에 그치는지 집행으로 넘어가는지가 갈림길입니다.",
+                f"{marked} 계약 조건까지 확정되는 시점이 판단 지점입니다.",
+                f"{marked} 운영 비용에 닿기 시작하면 그때 무게가 달라집니다.",
+            ),
         )
-    return f"{subject} 후속 일정과 공식 발표부터 보면 됩니다."
+    return _pick(
+        variant,
+        (
+            f"{subject} 후속 일정과 공식 발표부터 보면 됩니다.",
+            f"{subject} 공식 일정 공지가 나오면 다시 확인합니다.",
+            f"{subject} 다음 발표 시점을 기준으로 이어서 봅니다.",
+            f"{subject} 후속 공지가 나올 때까지는 관찰 상태로 둡니다.",
+            f"{subject} 일정이 구체화되면 그때 다시 짚습니다.",
+        ),
+    )
 
 
 def _build_selection_reason(item: dict, meta: dict) -> str:
@@ -668,13 +737,37 @@ def _build_selection_reason(item: dict, meta: dict) -> str:
     category = _category_label(meta, item)
     source = _text(meta.get("source_name") or item.get("source_name"))
     hook = _item_title_hook(item, meta)
+    variant = _checkpoint_variant_index(item)
+    chosen = (
+        _pick(
+            variant,
+            (
+                f"「{hook}」를 {category} 축에서 먼저 볼 신호로 골라 포함했습니다.",
+                f"{category} 축에서 「{hook}」의 움직임이 가장 먼저 눈에 띄었습니다.",
+                f"「{hook}」 건은 {category} 판단에 바로 걸리는 사안이라 넣었습니다.",
+                f"오늘 {category} 흐름을 대표하는 신호로 「{hook}」를 골랐습니다.",
+                f"「{hook}」를 {category} 관점에서 먼저 확인할 항목으로 봤습니다.",
+            ),
+        )
+        if hook
+        else f"오늘 흐름에서 {category} 축과 맞닿는 공식 보도라 포함했습니다."
+    )
     padding = [
         existing,
         _text(meta.get("selection_rationale")),
-        f"「{hook}」를 {category} 축에서 먼저 볼 신호로 골라 포함했습니다."
-        if hook
-        else f"오늘 흐름에서 {category} 축과 맞닿는 공식 보도라 포함했습니다.",
-        f"{source} 공식 보도 기준으로 의사결정과 연결되는 신호입니다." if source else "",
+        chosen,
+        _pick(
+            variant,
+            (
+                f"{source} 공식 보도 기준으로 의사결정과 연결되는 신호입니다.",
+                f"근거는 {source} 공식 보도입니다.",
+                f"{source} 보도라 판단 근거로 쓸 수 있습니다.",
+                f"출처는 {source} 공식 보도입니다.",
+                f"{source} 공식 보도라 신뢰도를 두었습니다.",
+            ),
+        )
+        if source
+        else "",
     ]
     if meta.get("hype_warning") or meta.get("sponsored_warning"):
         padding.append("다만 마케팅·사례·스폰서 성격이 있을 수 있어 해석에 주의가 필요합니다.")
@@ -695,8 +788,23 @@ def _build_what_happened(item: dict, meta: dict) -> Tuple[str, bool]:
     # this item's title so each item's padding stays distinct. Any model-written
     # disclaimer repeats are deduped by sanitize_global_repeated_common_filler
     # (keep-first, ≤1 per briefing) and hard-blocked by the final email QA.
+    variant = _checkpoint_variant_index(item)
+    attribution = (
+        _pick(
+            variant,
+            (
+                f"{source} 공개 요약에 따르면 「{title}」 관련 변화가 보고되었습니다.",
+                f"{source} 보도가 「{title}」 내용을 전했습니다.",
+                f"「{title}」 관련 내용은 {source} 공개 보도에서 확인됩니다.",
+                f"{source} 보도를 기준으로 「{title}」 상황이 정리됩니다.",
+                f"「{title}」에 대해 {source} 공개 요약을 근거로 삼았습니다.",
+            ),
+        )
+        if title and source
+        else ""
+    )
     padding = [
-        f"{source} 공개 요약에 따르면 「{title}」 관련 변화가 보고되었습니다." if title and source else "",
+        attribution,
         _item_specific_checkpoint(item, meta, style="what"),
     ]
     if thin:
@@ -838,18 +946,29 @@ def _category_fallback_is_grounded(meta: dict, item: dict, category: str) -> boo
     return _same_item_category_evidence(meta, item, category)
 
 
+#: Second checkpoint of the neutral pair. Rotated by rank so several items
+#: falling back to the same-source follow-up do not all read identically.
+_NEUTRAL_SECOND_CHECKPOINTS: Tuple[str, ...] = (
+    "원문 업데이트·구체 수치 공개 여부",
+    "공식 자료의 수치 보강 시점",
+    "발표 범위가 넓어지는지 여부",
+    "후속 문서에서 조건이 구체화되는지",
+    "추가 공지에서 일정이 확정되는지",
+)
+
+
 def _neutral_next_watch_pair(meta: dict, item: dict) -> Tuple[str, str]:
-    """Same-source grounded follow-up that asserts no vertical."""
+    """Same-source grounded follow-up that asserts no vertical.
+
+    Several TOP5 items can legitimately land here at once — the category is
+    plausible but uncorroborated for each of them — and a fixed pair then puts
+    the same checkpoint skeleton on every one of those cards.
+    """
     source = _text(meta.get("source_name") or item.get("source_name"))
+    second = _pick(_checkpoint_variant_index(item), _NEUTRAL_SECOND_CHECKPOINTS)
     if source:
-        return (
-            f"{source} 후속 공식 발표",
-            "원문 업데이트·구체 수치 공개 여부",
-        )
-    return (
-        "해당 출처의 후속 공식 발표",
-        "원문 업데이트·구체 수치 공개 여부",
-    )
+        return (f"{source} 후속 공식 발표", second)
+    return ("해당 출처의 후속 공식 발표", second)
 
 
 def _concrete_next_watch_pair(meta: dict, item: dict) -> Tuple[str, str]:
@@ -866,10 +985,19 @@ def _concrete_next_watch_pair(meta: dict, item: dict) -> Tuple[str, str]:
         # something true about the source instead of something specific and
         # wrong about a vertical.
         return _neutral_next_watch_pair(meta, item)
+    # Last-resort category pair. Several items can share a generic category
+    # label, so this rotates too — otherwise the same two checkpoints land on
+    # every card that reaches this branch.
     category = _category_label(meta, item)
-    return (
-        f"{category} 후속 일정·공식 발표",
-        f"{category} 파트너·고객·규제 반응",
+    return _pick(
+        _checkpoint_variant_index(item),
+        (
+            (f"{category} 후속 일정·공식 발표", f"{category} 파트너·고객·규제 반응"),
+            (f"{category} 공식 확인 시점", f"{category} 수요·공급 쪽 반응"),
+            (f"{category} 다음 공지", f"{category} 경쟁사 대응 여부"),
+            (f"{category} 일정 확정 여부", f"{category} 규제·계약 조건 변화"),
+            (f"{category} 추가 발표 유무", f"{category} 도입 사례 확대 여부"),
+        ),
     )
 
 

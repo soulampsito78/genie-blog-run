@@ -78,11 +78,14 @@ class KoreaProductionDanglingTitleTests(unittest.TestCase):
             "category_display_label": fx["category_display_label"],
         }
         visible, _thin = _build_what_happened(item, meta)
-        grounded_sentence = (
-            f'{fx["source_name"]} 공개 요약에 따르면 「{canonical}」 관련 변화가 보고되었습니다.'
-        )
-        self.assertIn(grounded_sentence, visible)
+        # The invariant is the grounded surface, not the padding wording: the
+        # attribution sentence must quote the whole canonical headline and must
+        # never reproduce the truncated fragment. The phrasing itself rotates by
+        # rank so five TOP5 cards do not share one sentence skeleton.
+        self.assertIn(f"「{canonical}」", visible)
+        self.assertIn(fx["source_name"], visible)
         self.assertNotIn(fx["exact_offending_sentence"], visible)
+        self.assertFalse(contains_dangling_quoted_title_fragment(visible))
 
         repaired, fields = validate_and_repair_keysuri_visible_text_quality(
             {"top_5_news": {"items": [{}, {"what_happened": visible}]}}
