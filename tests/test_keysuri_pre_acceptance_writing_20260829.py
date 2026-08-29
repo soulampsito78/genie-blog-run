@@ -263,5 +263,74 @@ class SelectionQualityFloorTests(unittest.TestCase):
             self.assertLess(score, TOP5_QUALITY_FLOOR_BASE_SCORE)
 
 
+class KoreaHasNoCategoryLinesTests(unittest.TestCase):
+    """Korea's category templates reached the reader by two routes.
+
+    ``_owner_action_line`` and ``_next_day_impact_line`` are built in
+    ``keysuri_korea_signal_scoring`` from the category label alone. They arrive
+    per claim on the source pack, which made them look article-specific, and
+    2026-08-29 kept them on that reading. Qualification on 2026-08-30 measured
+    one distinct owner_angle ending across five Korea cards: the enricher was
+    appending ``owner_action_line`` to owner_angle *and* the card renderer was
+    reading both fields directly as the emphasis line, so removing one route
+    left the sentence on screen.
+    """
+
+    def test_the_category_line_generators_produce_nothing(self) -> None:
+        from keysuri_korea_signal_scoring import (
+            _next_day_impact_line,
+            _owner_action_line,
+        )
+
+        for category in ("korea_semiconductor", "korea_startup_investment", ""):
+            self.assertEqual(_owner_action_line(category), "")
+            self.assertEqual(_next_day_impact_line(category), "")
+
+    def test_korea_explanatory_fields_carry_no_category_sentence(self) -> None:
+        from keysuri_briefing_content_enricher import enrich_korea_top5_item_content
+
+        item = {
+            "korean_title": "삼성전자 HBM 국내 증설",
+            "what_happened": "삼성전자가 국내 HBM 증설 계획을 공개했습니다.",
+            "why_now": "국내 공급망 재편이 걸린 시점이기 때문입니다.",
+            "owner_angle": "국내 파트너 계약 조건을 다시 보셔야 합니다.",
+            "source_ids": ["k1"],
+        }
+        meta = {
+            "category_display_label": "국내 반도체 / 장비 / 소재",
+            "owner_action_line": "내일 국내 반도체 관련 파트너·고객·입찰·정책 일정을 점검하세요.",
+            "next_day_impact_line": "내일 영향: 국내 반도체 신호가 의사결정·미팅 우선순위에 반영될 수 있습니다.",
+        }
+        enriched = enrich_korea_top5_item_content(item, meta=meta)
+        blob = " ".join(
+            str(enriched.get(f) or "")
+            for f in ("what_happened", "why_now", "owner_angle", "selection_reason")
+        )
+        for fragment in (
+            "파트너·고객·입찰·정책 일정을 점검",
+            "우선순위에 반영될 수 있습니다",
+            "의미 있는 신호로 선정했습니다",
+        ):
+            self.assertNotIn(fragment, blob, fragment)
+        # The model's own prose survives.
+        self.assertIn("국내 HBM 증설", blob)
+        self.assertIn("파트너 계약 조건", blob)
+
+
+class NextWatchFormattingTests(unittest.TestCase):
+    def test_the_model_s_list_numbering_does_not_reach_the_card(self) -> None:
+        """The model numbers its own next_watch entries; the separator is ours."""
+        from keysuri_visible_text import strip_watch_arrow_prefixes
+
+        out = strip_watch_arrow_prefixes("1. 람다의 칩 공급 속도; 2. 경쟁사 대응")
+        self.assertEqual(out, "람다의 칩 공급 속도; 경쟁사 대응")
+
+    def test_a_leading_year_is_not_mistaken_for_a_list_marker(self) -> None:
+        from keysuri_visible_text import strip_watch_arrow_prefixes
+
+        self.assertEqual(
+            strip_watch_arrow_prefixes("2027년 목표 달성 여부"), "2027년 목표 달성 여부")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

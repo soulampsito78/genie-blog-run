@@ -573,8 +573,16 @@ class KeysuriKoreaDuplicateGuardTests(unittest.TestCase):
             selection,
         )
         claim = source_pack["claims"][0]
+        # The domestic angle is the claim being made here, and it still holds.
         self.assertEqual(claim.get("angle_chip"), "국내 적용")
-        self.assertTrue(claim.get("next_day_impact_line"))
+        # ``next_day_impact_line`` used to be asserted non-empty. It was built
+        # from the category label alone — "내일 영향: {label} 신호가 의사결정·
+        # 미팅 우선순위에 반영될 수 있습니다." — so it said nothing about the
+        # article and put one identical sentence on every card in a category,
+        # reaching the reader both through owner_angle and through the card
+        # emphasis line. A domestic-angle *marking* is what this test is about;
+        # a category sentence is not evidence of one.
+        self.assertEqual(claim.get("next_day_impact_line"), "")
 
     def test_load_global_selection_report_invalid_path(self) -> None:
         with self.assertRaises(FileNotFoundError):

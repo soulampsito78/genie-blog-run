@@ -322,13 +322,22 @@ class KeysuriBriefingContentEnricherTests(unittest.TestCase):
         }
         enriched = enrich_korea_top5_item_content(item, meta=meta)
         self.assertEqual(enriched.get("angle_chip"), "국내 적용")
-        # The domestic next-day impact line from metadata is what fills why_now
-        # — this item's own line, not a fixed evening sentence appended to every
-        # Korea card.
-        self.assertIn("우선순위에 반영될 수 있습니다", enriched["why_now"])
-        self.assertNotIn("퇴근 전에 내일 영향을 짚어볼 가치가 있습니다", enriched["why_now"])
-        self.assertIn("파트너·입찰 일정", enriched["owner_angle"])
-        self.assertIn("국내 적용", enriched["selection_reason"])
+        # 2026-08-29 kept ``next_day_impact_line`` and ``owner_action_line`` in
+        # the visible fields on the reading that they were this item's own
+        # facts. They are not. Both are built in
+        # ``keysuri_korea_signal_scoring`` from the *category label* alone:
+        #
+        #   f"내일 영향: {label} 신호가 의사결정·미팅 우선순위에 반영될 수 있습니다."
+        #   f"내일 {label} 관련 파트너·고객·입찰·정책 일정을 점검하세요."
+        #
+        # so every card in a category carries the same sentence. Qualification
+        # on 2026-08-30 measured one distinct owner_angle ending across five
+        # Korea cards because of it. They arrive per claim on the source pack,
+        # which is what made them look article-specific; nothing in them comes
+        # from the article.
+        self.assertNotIn("우선순위에 반영될 수 있습니다", enriched["why_now"])
+        self.assertNotIn("파트너·고객·입찰·정책 일정을 점검", enriched["owner_angle"])
+        self.assertNotIn("의미 있는 신호로 선정했습니다", enriched["selection_reason"])
 
     def test_korea_generated_enricher_avoids_internal_gate_phrases(self) -> None:
         prompt_input = {

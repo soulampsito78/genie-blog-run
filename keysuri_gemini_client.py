@@ -80,6 +80,31 @@ def is_max_tokens_no_text_error(exc: BaseException) -> bool:
     return "keysuri_gemini_max_tokens_no_text" in str(exc)
 
 
+def is_max_tokens_error(exc: BaseException) -> bool:
+    """True when Gemini hit MAX_TOKENS, with or without partial text.
+
+    Both shapes mean the same thing: the model ran out of room before finishing
+    the contract, so there is nothing usable to parse. They are separate codes
+    because the diagnostics differ, but the recovery is identical — a smaller
+    prompt and a fresh draw.
+
+    Measured on gemini-3-flash-preview against real Global packs, reasoning is
+    bimodal: normally ~1.4k-3.4k tokens, and occasionally it runs away and
+    consumes the entire allowance (15,724 / 15,725 / 15,725 against a 16,384
+    ceiling — and 31,453 when the ceiling was raised to 32,768, so a larger
+    allowance only buys a larger runaway). ``thinking_budget`` does not bound
+    it: this model ignores the field, while gemini-2.5-flash honours it
+    (budget 128 -> 99 thoughts, 1024 -> 771, 6144 -> 3039). The runaway is
+    stochastic and provider-side, so the answer is to detect it and draw again;
+    on one pack three consecutive draws went truncate, 2207, 1964.
+    """
+    text = str(exc)
+    return (
+        "keysuri_gemini_max_tokens_no_text" in text
+        or "keysuri_gemini_max_tokens_truncated_text" in text
+    )
+
+
 def resolve_vertex_project_id(project_id: Optional[str] = None) -> str:
     pid = (
         (project_id or "").strip()

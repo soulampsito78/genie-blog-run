@@ -804,6 +804,353 @@ def _closing_message_presence(value: Any) -> str:
     return "empty"
 
 
+#: The same reader field under two names. The codebase uses both — the schema
+#: example asks for ``why_it_matters`` / ``business_implication`` while the rest
+#: of the pipeline reads ``why_now`` / ``owner_angle`` — and the prompt carries
+#: both vocabularies, so the model may legitimately answer in either. Binding
+#: them at parse time is the same alias-group rule the reader surface applies:
+#: one field, several names, one decision.
+_TOP5_ITEM_FIELD_ALIASES: Tuple[Tuple[str, str], ...] = (
+    ("why_it_matters", "why_now"),
+    ("business_implication", "owner_angle"),
+    ("summary", "what_happened"),
+    # Korea answers in ``korean_title``; the schema asks for ``headline``.
+    ("headline", "korean_title"),
+)
+
+#: Identity the evidence already carries. These are not written by the model —
+#: they are given to it — so a briefing must not be rejected because the model
+#: did not echo them back. Bound from the prompt's own evidence by ``news_id``,
+#: never invented and never taken from a neighbouring item.
+_TOP5_ITEM_IDENTITY_FIELDS: Tuple[str, ...] = (
+    "source_ids",
+    "category",
+    "confidence_label",
+)
+
+
+def _repair_top5_item_field_aliases_for_parse(
+    obj: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Fill a required item field from its alias when the model used the other name.
+
+    On 2026-08-30 qualification the model returned ``why_now`` and
+    ``owner_angle`` on all five items and the contract rejected the whole
+    briefing for missing ``why_it_matters`` / ``business_implication`` — two
+    names for one field, and the prompt teaches both. Rejecting a complete,
+    well-written briefing over which synonym it chose is a contract defect, not
+    a model defect.
+
+    Copies only; never invents, never overwrites a value the model supplied,
+    and never crosses item boundaries.
+    """
+    diagnostics: Dict[str, Any] = {
+        "top5_item_alias_repair_applied": False,
+        "top5_item_alias_repair_count": 0,
+    }
+    top = obj.get("top_5_news")
+    if not isinstance(top, dict):
+        return obj, diagnostics
+    items = top.get("items")
+    if not isinstance(items, list) or not items:
+        return obj, diagnostics
+
+    repaired_items: List[Any] = []
+    filled = 0
+    filled_fields: List[str] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            repaired_items.append(item)
+            continue
+        new_item = dict(item)
+        for canonical, alias in _TOP5_ITEM_FIELD_ALIASES:
+            if str(new_item.get(canonical) or "").strip():
+                continue
+            alias_value = str(new_item.get(alias) or "").strip()
+            if not alias_value:
+                continue
+            new_item[canonical] = alias_value
+            filled += 1
+            filled_fields.append(f"top_5_news.items[{index}].{canonical}")
+        repaired_items.append(new_item)
+
+    if not filled:
+        return obj, diagnostics
+
+    out = dict(obj)
+    out_top = dict(top)
+    out_top["items"] = repaired_items
+    out["top_5_news"] = out_top
+    diagnostics["top5_item_alias_repair_applied"] = True
+    diagnostics["top5_item_alias_repair_count"] = filled
+    diagnostics["repaired_fields"] = filled_fields
+    return out, diagnostics
+
+
+def _repair_top5_item_order_for_parse(
+    obj: Dict[str, Any],
+    prompt_input: dict,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Restore the canonical TOP5 order when the model returned the same five.
+
+    Rank is ours. It comes out of scoring and diversity selection, and the model
+    is given it — so a briefing that carries exactly the five selected articles
+    but presents two of them in a different order is not a contract violation,
+    it is the model editorialising over a decision it does not own. On
+    2026-08-30 qualification a complete, correctly grounded briefing was
+    rejected by ``top_5_sequence_mismatch`` because ranks 3 and 4 were swapped.
+
+    Only reorders when the set of ``news_id`` values matches the prompt exactly.
+    A briefing that invented, dropped or duplicated an article still fails: that
+    is a real mismatch, and reordering must never be able to hide it.
+    """
+    diagnostics: Dict[str, Any] = {"top5_item_order_repair_applied": False}
+    top = obj.get("top_5_news")
+    if not isinstance(top, dict):
+        return obj, diagnostics
+    items = top.get("items")
+    if not isinstance(items, list) or not items:
+        return obj, diagnostics
+
+    evidence_top = (prompt_input or {}).get("top_5_news")
+    evidence_items = evidence_top.get("items") if isinstance(evidence_top, dict) else None
+    if not isinstance(evidence_items, list) or len(evidence_items) != len(items):
+        return obj, diagnostics
+
+    expected = [str((e or {}).get("news_id") or "").strip() for e in evidence_items]
+    actual = [str((i or {}).get("news_id") or "").strip() for i in items
+              if isinstance(i, dict)]
+    if len(actual) != len(items) or not all(expected) or not all(actual):
+        return obj, diagnostics
+    if sorted(expected) != sorted(actual):
+        # Not the same five articles — a genuine mismatch, left to fail.
+        return obj, diagnostics
+    if expected == actual:
+        return obj, diagnostics
+
+    by_id = {str(i.get("news_id") or "").strip(): i for i in items if isinstance(i, dict)}
+    reordered: List[Any] = []
+    for position, news_id in enumerate(expected, start=1):
+        item = dict(by_id[news_id])
+        item["rank"] = position
+        reordered.append(item)
+
+    out = dict(obj)
+    out_top = dict(top)
+    out_top["items"] = reordered
+    out["top_5_news"] = out_top
+    diagnostics["top5_item_order_repair_applied"] = True
+    diagnostics["repaired_fields"] = ["top_5_news.items[].rank"]
+    return out, diagnostics
+
+
+def _repair_top5_item_identity_for_parse(
+    obj: Dict[str, Any],
+    prompt_input: dict,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Restore item identity from the evidence the model was given.
+
+    On 2026-08-30 qualification the Korea model returned five complete, well
+    written cards and the contract rejected every one of them for missing
+    ``source_ids`` / ``category`` / ``confidence_label`` — three fields the
+    prompt had just handed it. Requiring the model to copy our own data back to
+    us, and discarding a good briefing when it does not, is a contract defect.
+
+    Matched by ``news_id`` only. An item whose identity cannot be matched is
+    left exactly as it is rather than borrowing a neighbour's — the same rule
+    the reader surface applies.
+    """
+    diagnostics: Dict[str, Any] = {
+        "top5_item_identity_repair_applied": False,
+        "top5_item_identity_repair_count": 0,
+    }
+    top = obj.get("top_5_news")
+    if not isinstance(top, dict):
+        return obj, diagnostics
+    items = top.get("items")
+    if not isinstance(items, list) or not items:
+        return obj, diagnostics
+
+    evidence_top = (prompt_input or {}).get("top_5_news")
+    evidence_items = evidence_top.get("items") if isinstance(evidence_top, dict) else None
+    if not isinstance(evidence_items, list):
+        return obj, diagnostics
+    evidence_by_id: Dict[str, dict] = {}
+    for ev in evidence_items:
+        if isinstance(ev, dict):
+            key = str(ev.get("news_id") or "").strip()
+            if key:
+                evidence_by_id[key] = ev
+
+    repaired_items: List[Any] = []
+    filled = 0
+    filled_fields: List[str] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            repaired_items.append(item)
+            continue
+        evidence = evidence_by_id.get(str(item.get("news_id") or "").strip())
+        if not evidence:
+            repaired_items.append(item)
+            continue
+        new_item = dict(item)
+        for field in _TOP5_ITEM_IDENTITY_FIELDS:
+            current = new_item.get(field)
+            if isinstance(current, list):
+                if current:
+                    continue
+            elif str(current or "").strip():
+                continue
+            value = evidence.get(field)
+            if isinstance(value, list):
+                if not value:
+                    continue
+                new_item[field] = list(value)
+            else:
+                if not str(value or "").strip():
+                    continue
+                new_item[field] = value
+            filled += 1
+            filled_fields.append(f"top_5_news.items[{index}].{field}")
+        repaired_items.append(new_item)
+
+    if not filled:
+        return obj, diagnostics
+
+    out = dict(obj)
+    out_top = dict(top)
+    out_top["items"] = repaired_items
+    out["top_5_news"] = out_top
+    diagnostics["top5_item_identity_repair_applied"] = True
+    diagnostics["top5_item_identity_repair_count"] = filled
+    diagnostics["repaired_fields"] = filled_fields
+    return out, diagnostics
+
+
+def _repair_deep_dive_identity_for_parse(
+    obj: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Ground the deep dive in the briefing's own TOP5 identity.
+
+    ``deep_dive.source_ids`` and ``deep_dive.confidence_label`` are identity,
+    not analysis: the deep dive is written about the five selected articles, so
+    its sources are their sources. On 2026-08-30 qualification the Korea model
+    returned a full, well-formed deep dive and the contract rejected it for
+    omitting both — data it was never going to invent and did not need to.
+
+    Bound from the TOP5 items *of this same briefing*, after item identity has
+    already been restored, so a source id can only be one the prompt supplied.
+    Nothing is invented and no default confidence is asserted: if the items
+    carry none, the deep dive keeps none and the contract still fails.
+    """
+    diagnostics: Dict[str, Any] = {"deep_dive_identity_repair_applied": False}
+    deep = obj.get("deep_dive")
+    if not isinstance(deep, dict):
+        return obj, diagnostics
+    top = obj.get("top_5_news")
+    items = top.get("items") if isinstance(top, dict) else None
+    if not isinstance(items, list) or not items:
+        return obj, diagnostics
+
+    repaired_fields: List[str] = []
+    new_deep = dict(deep)
+
+    source_ids = new_deep.get("source_ids")
+    if not isinstance(source_ids, list) or not source_ids:
+        collected: List[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for sid in item.get("source_ids") or []:
+                text = str(sid).strip()
+                if text and text not in collected:
+                    collected.append(text)
+        if collected:
+            new_deep["source_ids"] = collected
+            repaired_fields.append("deep_dive.source_ids")
+
+    confidence = str(new_deep.get("confidence_label") or "").strip()
+    if not confidence:
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            candidate = str(item.get("confidence_label") or "").strip()
+            if candidate:
+                new_deep["confidence_label"] = candidate
+                repaired_fields.append("deep_dive.confidence_label")
+                break
+
+    if not repaired_fields:
+        return obj, diagnostics
+
+    out = dict(obj)
+    out["deep_dive"] = new_deep
+    diagnostics["deep_dive_identity_repair_applied"] = True
+    diagnostics["repaired_fields"] = repaired_fields
+    return out, diagnostics
+
+
+def _repair_closing_source_labels_for_parse(
+    obj: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Fill ``closing_sources.source_list[*].label`` from the entry's own name.
+
+    ``keysuri_generated_briefing`` requires a ``label`` on every source entry,
+    and the schema example the model is shown lists only ``source_id`` /
+    ``source_name`` / ``source_url``. The model therefore returned exactly what
+    it was asked for and the contract rejected it — a requirement it could not
+    have satisfied. This surfaced only once the model started returning a real
+    ``closing_sources`` again; before that the scaffold built the section.
+
+    The label *is* the outlet's name, so it is completed deterministically from
+    the entry's own identity rather than asked for a second time. This is a
+    factual transformation of structured evidence: no prose, nothing invented,
+    and no entry created that the model did not supply.
+    """
+    diagnostics: Dict[str, Any] = {
+        "closing_source_label_repair_applied": False,
+        "closing_source_label_repair_count": 0,
+    }
+    closing = obj.get("closing_sources")
+    if not isinstance(closing, dict):
+        return obj, diagnostics
+    source_list = closing.get("source_list")
+    if not isinstance(source_list, list) or not source_list:
+        return obj, diagnostics
+
+    repaired_entries: List[Any] = []
+    filled = 0
+    for entry in source_list:
+        if not isinstance(entry, dict):
+            repaired_entries.append(entry)
+            continue
+        if str(entry.get("label") or "").strip():
+            repaired_entries.append(entry)
+            continue
+        derived = str(entry.get("source_name") or "").strip() or str(
+            entry.get("source_id") or ""
+        ).strip()
+        if not derived:
+            repaired_entries.append(entry)
+            continue
+        new_entry = dict(entry)
+        new_entry["label"] = derived
+        repaired_entries.append(new_entry)
+        filled += 1
+
+    if not filled:
+        return obj, diagnostics
+
+    out = dict(obj)
+    out_closing = dict(closing)
+    out_closing["source_list"] = repaired_entries
+    out["closing_sources"] = out_closing
+    diagnostics["closing_source_label_repair_applied"] = True
+    diagnostics["closing_source_label_repair_count"] = filled
+    diagnostics["repaired_fields"] = ["closing_sources.source_list[].label"]
+    return out, diagnostics
+
+
 def _repair_closing_message_for_parse(
     obj: Dict[str, Any],
     program_id: str,
@@ -1143,8 +1490,14 @@ def _repair_parsed_candidate_for_parse(
         repaired, prompt_input, program_id
     )
     repaired, closing_diag = _repair_closing_message_for_parse(repaired, program_id)
+    repaired, label_diag = _repair_closing_source_labels_for_parse(repaired)
+    repaired, alias_diag = _repair_top5_item_field_aliases_for_parse(repaired)
+    repaired, identity_diag = _repair_top5_item_identity_for_parse(repaired, prompt_input)
+    repaired, order_diag = _repair_top5_item_order_for_parse(repaired, prompt_input)
+    repaired, dd_id_diag = _repair_deep_dive_identity_for_parse(repaired)
     return repaired, _merge_parse_repair_diagnostics(
-        deep_diag, lens_diag, scope_diag, pid_diag, scaffold_diag, closing_diag
+        deep_diag, lens_diag, scope_diag, pid_diag, scaffold_diag, closing_diag,
+        label_diag, alias_diag, identity_diag, order_diag, dd_id_diag
     )
 
 
@@ -1689,7 +2042,18 @@ def build_keysuri_generation_prompt_compact(
         "- Return exactly one JSON object. No markdown. No preface/postscript.",
         "- Keep top_5_news rank/news_id sequence exactly as provided.",
         "- All reader-facing prose in Korean. Address 주인님 in opening/closing.",
-        "- Keep fields short: what_happened/why_now/owner_angle 1-2 sentences each.",
+        # The recovery this prompt serves is a *reasoning* overrun, not an output
+        # overrun: when gemini-3-flash-preview truncates it has spent ~15.7k
+        # tokens thinking and emitted ~645. Shortening the answer never
+        # addressed that, and it made every retry-path briefing editorially
+        # thinner than a first-call one — 1 sentence per field against the 2-3
+        # the main prompt asks for. What this prompt usefully does is shrink the
+        # *input* and take a fresh draw; the retry also carries 24,576 output
+        # tokens against a largest-observed successful answer of ~5.2k, so there
+        # is room to ask for real prose.
+        "- what_happened/why_now/owner_angle: 2-3 Korean sentences each.",
+        "- Every sentence must be true of its own article and not of the other "
+        "four. Do not restate the headline.",
         "- deep_dive.body: 3-5 short Korean sentences. key_implications: 2 short sentences.",
         "- one_line_checkpoint and closing_message: one short sentence each.",
         "- Do not invent sources, numbers, or dates.",
@@ -1912,6 +2276,7 @@ def generate_keysuri_body_raw_text(
         KEYSURI_GLOBAL_BODY_MAX_OUTPUT_TOKENS_RETRY,
         KeysuriGeminiError,
         call_keysuri_gemini_text,
+        is_max_tokens_error,
         is_max_tokens_no_text_error,
         resolve_keysuri_body_max_output_tokens,
     )
@@ -2006,7 +2371,7 @@ def generate_keysuri_body_raw_text(
         if not (
             is_global
             and allow_compact_retry
-            and is_max_tokens_no_text_error(first_exc)
+            and is_max_tokens_error(first_exc)
         ):
             try:
                 first_exc.diagnostics = {**first_diag, **diagnostics, **first_diag}
@@ -2016,7 +2381,11 @@ def generate_keysuri_body_raw_text(
 
         # Global-only internal recovery: one compact prompt + expanded budget retry.
         diagnostics["retry_applied"] = True
-        diagnostics["retry_reason"] = "max_tokens_empty_text"
+        diagnostics["retry_reason"] = (
+            "max_tokens_empty_text"
+            if is_max_tokens_no_text_error(first_exc)
+            else "max_tokens_truncated_text"
+        )
         diagnostics["compact_prompt_used"] = True
         retry_max = max(max_out, KEYSURI_GLOBAL_BODY_MAX_OUTPUT_TOKENS_RETRY)
         diagnostics["max_output_tokens"] = retry_max

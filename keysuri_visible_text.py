@@ -448,6 +448,11 @@ def strip_watch_arrow_prefixes(text: str) -> str:
     for part in parts:
         chunk = re.sub(r"^(?:→\s*)+", "", part.strip())
         chunk = re.sub(r"^(?:-\s*)+", "", chunk).strip()
+        # The model returns next_watch as a JSON list and numbers its own
+        # entries ("1. …", "2. …"). Joined with "; " for display that reads
+        # "1. … ; 2. …" — its list markup surfacing inside our sentence. The
+        # separator is ours; the numbering is not needed twice.
+        chunk = re.sub(r"^\(?\d{1,2}[.)]\s+", "", chunk).strip()
         if chunk:
             cleaned.append(chunk)
     return "; ".join(cleaned)

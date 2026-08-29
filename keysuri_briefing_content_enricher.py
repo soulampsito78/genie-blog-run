@@ -969,7 +969,9 @@ def _build_next_watch(item: dict, meta: dict) -> str:
     for it in items:
         if it and it not in deduped:
             deduped.append(it)
-    return "; ".join(deduped[:4])
+    # Korea already routes through this; Global did not, so the model's own
+    # "1. " / "2. " list numbering reached the card.
+    return strip_watch_arrow_prefixes("; ".join(deduped[:4]))
 
 
 def _short_title(item: dict) -> str:
@@ -1195,7 +1197,9 @@ def _build_korea_selection_reason(item: dict, meta: dict) -> str:
         padding.append(existing)
     if meta_reason and not looks_like_internal_owner_copy(meta_reason):
         padding.append(meta_reason)
-    padding.append(f"국내 {category} 관점에서 오늘 한국에서 의미 있는 신호로 선정했습니다.")
+    # No category selection sentence. "국내 <category> 관점에서 오늘 한국에서
+    # 의미 있는 신호로 선정했습니다." named the card's own category and nothing
+    # else, so it read identically on all five.
     if meta.get("global_duplicate_detected") and meta.get("korea_angle_satisfied"):
         padding.append("글로벌 이슈와 겹치지만 국내 적용·한국 기업·정책·공급망 관점이 달라 포함했습니다.")
     if meta.get("pr_hype_warning") or meta.get("press_release_only"):
@@ -1214,13 +1218,17 @@ def _build_korea_why_now(item: dict, meta: dict) -> str:
         meta.get("next_day_impact_line") or "",
         category=str(meta.get("primary_category") or ""),
     )
-    # ``impact`` is this item's own next-day line from the source pack — a
-    # factual transformation, kept. The two sentences that followed it were
-    # fixed strings: every Korea card carried the same evening framing and the
-    # same "퇴근 전에 …" closer, which is the Global category-padding defect in
-    # its Korea form. A field the model did not write stays empty and is
-    # withheld at the reader-surface boundary.
-    padding = [existing, impact]
+    # ``impact`` is dropped too. It looked article-specific because it arrives
+    # per claim on the source pack, but ``_next_day_impact_line`` builds it from
+    # the *category label* alone —
+    #   f"내일 영향: {label} 신호가 의사결정·미팅 우선순위에 반영될 수 있습니다."
+    # — so every card in a category carries the same sentence, and the
+    # 번역 신호 label even renders it as "신호 신호가". Classifying it as a
+    # factual transformation on 2026-08-29 was wrong: nothing in it comes from
+    # the article. Korea's explanatory fields now carry the model's prose or
+    # nothing, exactly as Global's do.
+    del impact
+    padding = [existing]
     why = _ensure_sentence_depth(
         existing,
         min_sentences=MIN_SECTION_SENTENCES,
@@ -1231,9 +1239,13 @@ def _build_korea_why_now(item: dict, meta: dict) -> str:
 
 def _build_korea_owner_angle(item: dict, meta: dict) -> str:
     existing = _get_field(item, "owner_angle", "business_implication")
-    # owner_action_line is this item's own; the sentence after it was the same
-    # on every card.
-    padding = [existing, _text(meta.get("owner_action_line"))]
+    # Same correction for owner_action_line: ``_owner_action_line`` is
+    #   f"내일 {label} 관련 파트너·고객·입찰·정책 일정을 점검하세요."
+    # keyed on the category and nothing else. It was ending all five Korea cards
+    # identically — one distinct ending out of five on the 2026-08-30
+    # qualification — and the imperative-softening rewriter downstream only
+    # changed its wording, never its interchangeability.
+    padding = [existing]
     return dedupe_sentences_in_paragraph(
         dedupe_repeated_paragraph(
             _ensure_sentence_depth(

@@ -1134,13 +1134,32 @@ def _classify_total(total: int, *, hard_reject: bool) -> Classification:
 
 
 def _owner_action_line(category: str) -> str:
-    label = CATEGORY_KO_LABELS.get(category, "국내 테크")
-    return f"내일 {label} 관련 파트너·고객·입찰·정책 일정을 점검하세요."
+    """No line. A category is not an action.
+
+    This built ``f"내일 {label} 관련 파트너·고객·입찰·정책 일정을 점검하세요."``
+    from the category alone, so every card in a category carried the same
+    sentence. Because it arrives per claim on the source pack it looked
+    article-specific, and it reached the reader by two separate routes: the
+    Korea enricher appended it to ``owner_angle`` (one distinct ending across
+    five cards on the 2026-08-30 qualification), and the card renderer reads it
+    directly as the emphasis line — so removing it from the enricher alone left
+    it on screen.
+
+    Emptied at the source rather than at each consumer, because the next
+    consumer would have inherited it too.
+    """
+    del category
+    return ""
 
 
 def _next_day_impact_line(category: str) -> str:
-    label = CATEGORY_KO_LABELS.get(category, "국내 테크")
-    return f"내일 영향: {label} 신호가 의사결정·미팅 우선순위에 반영될 수 있습니다."
+    """No line, for the same reason as ``_owner_action_line``.
+
+    ``f"내일 영향: {label} 신호가 의사결정·미팅 우선순위에 반영될 수 있습니다."``
+    — and for the 글로벌→한국 번역 신호 label it rendered "신호 신호가".
+    """
+    del category
+    return ""
 
 
 def _build_reason_for_selection(scores: KoreaScoreBreakdown, tags: Sequence[str]) -> str:

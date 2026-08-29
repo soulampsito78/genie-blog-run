@@ -76,7 +76,21 @@ IDENTITY_FIELDS: Tuple[str, ...] = (
 #: write that one decision to **every** alias and to the nested mirror, so no
 #: shadow copy of the evidence survives the boundary.
 PROSE_FIELD_GROUPS: Tuple[Tuple[str, ...], ...] = (
-    ("headline",),
+    # Renderer order: every title reader in the codebase asks for
+    # ``korean_title`` before ``headline`` (``_get_title_field``,
+    # ``_short_title``, the preview fixture), because ``headline`` is where
+    # the model echoes the *source's* English title back.
+    #
+    # 2026-08-30 qualification, five cards from a real pack:
+    #   headline      "Securing the Infrastructure of Intelligence"
+    #   korean_title  "지능형 인프라 보안: AI 팩토리를 통한 수익 창출 전략"
+    #
+    # Binding only ``headline`` withheld all five - the boundary refusing the
+    # source's own words, correctly, while the article's real Korean title sat
+    # unread in the next key. ``_authored_value`` skips an alias that is
+    # plainly the source's own text when a later alias carries real prose,
+    # so the Korean title is taken and written back over the English echo.
+    ("headline", "korean_title"),
     ("what_happened", "summary"),
     ("why_now", "why_it_matters"),
     ("owner_angle", "business_implication"),
@@ -173,7 +187,11 @@ def _evidence_texts(evidence: Mapping[str, Any]) -> List[str]:
     return out
 
 
-def _authored_value(authored: Mapping[str, Any], group: Sequence[str]) -> Tuple[str, str]:
+def _authored_value(
+    authored: Mapping[str, Any],
+    group: Sequence[str],
+    evidence_forms: Sequence[str] = (),
+) -> Tuple[str, str]:
     """Read a prose group the way the renderer reads it: first alias wins.
 
     Returns the value and the alias it came from, so a rejection can say which
@@ -181,11 +199,31 @@ def _authored_value(authored: Mapping[str, Any], group: Sequence[str]) -> Tuple[
     """
     nested = authored.get("briefing_item")
     nested = nested if isinstance(nested, Mapping) else {}
+    candidates: List[Tuple[str, str]] = []
     for name in group:
         value = _text(authored.get(name)) or _text(nested.get(name))
         if value:
+            candidates.append((value, name))
+    if not candidates:
+        return "", group[0]
+    # Prefer an alias that is not the source's own text. The model answers the
+    # schema field with the source's English and writes its own Korean into the
+    # alias — headline / korean_title on every card of the 2026-08-30
+    # qualification — so first-non-empty would hand the boundary the echo and
+    # withhold the article's real title.
+    #
+    # Tested against this item's evidence, not by length: the echo that started
+    # this was "Securing the Infrastructure of Intelligence", five words, which
+    # sits under every prose-shaped heuristic while being the source headline
+    # character for character.
+    forms = set(evidence_forms or ())
+    for value, name in candidates:
+        if _normalized(value) not in forms and not _looks_like_raw_source_prose(value):
             return value, name
-    return "", group[0]
+    for value, name in candidates:
+        if _normalized(value) not in forms:
+            return value, name
+    return candidates[0]
 
 
 def _bind_prose(
@@ -209,7 +247,7 @@ def _bind_prose(
     headline became an owner-review subject line.
     """
     field_name = group[0]
-    value, _alias = _authored_value(authored, group)
+    value, _alias = _authored_value(authored, group, evidence_forms)
     if not value:
         return "", READER_PROSE_MISSING
 
