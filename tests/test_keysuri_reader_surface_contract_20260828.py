@@ -27,6 +27,7 @@ from keysuri_reader_surface import (  # noqa: E402
     PROSE_FIELDS,
     READER_IDENTITY_UNMATCHED,
     READER_PROSE_WAS_SOURCE_TEXT,
+    READER_STATUS_WITHHELD,
     UNAVAILABLE_MARKER,
     ReaderArticle,
     build_reader_article,
@@ -87,6 +88,22 @@ def _briefing(items):
     return {"top_5_news": {"news_scope": "global", "items": items}}
 
 
+def assert_field_withheld(test, item, field, msg=""):
+    """A refused reader field is *empty*, and the item says so structurally.
+
+    Until 2026-08-29 a refusal wrote ``UNAVAILABLE_MARKER`` into the field. A
+    marker is prose to every producer downstream: the run's email subject
+    became "(본문 준비되지 않음 — 운영자 확인 필요): 8월 29일 글로벌 테크 브리핑",
+    and the deep dive read the same string back as an article title. A refusal
+    is now a state on the item, never a value in the prose.
+    """
+    label = msg or field
+    test.assertEqual(item.get(field) or "", "", label)
+    test.assertNotIn(UNAVAILABLE_MARKER, str(item.get(field) or ""), label)
+    test.assertEqual(item.get("reader_status"), READER_STATUS_WITHHELD, label)
+    test.assertFalse(item.get("customer_visible"), label)
+
+
 class ScaffoldCannotPublishSourceProseTests(unittest.TestCase):
     """The exact 2026-08-28 mechanism."""
 
@@ -96,12 +113,17 @@ class ScaffoldCannotPublishSourceProseTests(unittest.TestCase):
             scaffolded, program_id=PROGRAM, prompt_input=PROMPT_INPUT
         )
         for item in out["top_5_news"]["items"]:
-            for field in ("headline", "summary", "why_it_matters"):
-                self.assertEqual(item[field], UNAVAILABLE_MARKER, field)
+            for field in ("headline", "what_happened", "summary", "why_now", "why_it_matters"):
+                assert_field_withheld(self, item, field)
             self.assertFalse(item["reader_surface_ready"])
         self.assertEqual(diag["reader_surface_ready_item_count"], 0)
+        # Reported under the group's canonical name. "summary" is an alias of
+        # "what_happened", and it was binding only the alias — while the
+        # renderer read the canonical name — that let the 2026-08-29 run ship
+        # five English source sentences the boundary believed it had withheld.
         self.assertIn(
-            f"{READER_PROSE_WAS_SOURCE_TEXT}:summary", diag["reader_surface_issue_codes"]
+            f"{READER_PROSE_WAS_SOURCE_TEXT}:what_happened",
+            diag["reader_surface_issue_codes"],
         )
 
     def test_no_english_source_sentence_survives_into_a_reader_field(self) -> None:
@@ -125,7 +147,7 @@ class ScaffoldCannotPublishSourceProseTests(unittest.TestCase):
         out, _diag = enforce_reader_surface(
             _briefing([item]), program_id=PROGRAM, prompt_input=PROMPT_INPUT
         )
-        self.assertEqual(out["top_5_news"]["items"][0]["headline"], UNAVAILABLE_MARKER)
+        assert_field_withheld(self, out["top_5_news"]["items"][0], "headline")
 
 
 class AuthoredProseSurvivesTests(unittest.TestCase):
@@ -202,7 +224,7 @@ class SameLanguageSourceTests(unittest.TestCase):
             program_id="keysuri_korea_tech",
             prompt_input=self.KOREA_PROMPT,
         )
-        self.assertEqual(out["top_5_news"]["items"][0]["summary"], UNAVAILABLE_MARKER)
+        assert_field_withheld(self, out["top_5_news"]["items"][0], "summary")
 
     def test_an_english_headline_is_still_refused_for_a_korean_source(self) -> None:
         item = {
@@ -217,14 +239,14 @@ class SameLanguageSourceTests(unittest.TestCase):
             program_id="keysuri_korea_tech",
             prompt_input=self.KOREA_PROMPT,
         )
-        self.assertEqual(out["top_5_news"]["items"][0]["headline"], UNAVAILABLE_MARKER)
+        assert_field_withheld(self, out["top_5_news"]["items"][0], "headline")
 
     def test_a_global_english_headline_graft_is_unaffected_by_the_relaxation(self) -> None:
         item = _authored("claim-1", headline=EVIDENCE[0]["headline"])
         out, _diag = enforce_reader_surface(
             _briefing([item]), program_id=PROGRAM, prompt_input=PROMPT_INPUT
         )
-        self.assertEqual(out["top_5_news"]["items"][0]["headline"], UNAVAILABLE_MARKER)
+        assert_field_withheld(self, out["top_5_news"]["items"][0], "headline")
 
 
 class IdentityIsImmutableTests(unittest.TestCase):
@@ -277,7 +299,7 @@ class UpstreamStageInjectionTests(unittest.TestCase):
             briefing, program_id=PROGRAM, prompt_input=PROMPT_INPUT
         )
         item = out["top_5_news"]["items"][0]
-        self.assertEqual(item["summary"], UNAVAILABLE_MARKER, label)
+        assert_field_withheld(self, item, "summary", label)
 
     def test_parse_failure_shell_carrying_source_text(self) -> None:
         self._assert_withheld(
@@ -306,7 +328,7 @@ class UpstreamStageInjectionTests(unittest.TestCase):
         out, _diag = enforce_reader_surface(
             _briefing([item]), program_id=PROGRAM, prompt_input=PROMPT_INPUT
         )
-        self.assertEqual(out["top_5_news"]["items"][0]["summary"], UNAVAILABLE_MARKER)
+        assert_field_withheld(self, out["top_5_news"]["items"][0], "summary")
 
 
 class BoundaryIsTheOnlyPathTests(unittest.TestCase):
@@ -320,13 +342,14 @@ class BoundaryIsTheOnlyPathTests(unittest.TestCase):
         self.assertIsNotNone(diag)
         self.assertTrue(diag["reader_surface_enforced"])
         for item in out["top_5_news"]["items"]:
-            self.assertEqual(item["summary"], UNAVAILABLE_MARKER)
+            assert_field_withheld(self, item, "summary")
 
     def test_the_enricher_preserves_authored_korean_prose(self) -> None:
         item = _authored("claim-1")
         out = enrich_generated_briefing_content(_briefing([item]), PROGRAM, PROMPT_INPUT)
         result = out["top_5_news"]["items"][0]
-        self.assertNotEqual(result["summary"], UNAVAILABLE_MARKER)
+        self.assertNotEqual(result["summary"], "")
+        self.assertNotIn(UNAVAILABLE_MARKER, result["summary"])
         self.assertTrue(result["reader_surface_ready"])
 
 
@@ -345,7 +368,8 @@ class ReaderArticleTypeTests(unittest.TestCase):
     def test_an_article_with_no_authored_prose_is_not_reader_ready(self) -> None:
         article = build_reader_article({"news_id": "claim-1"}, EVIDENCE[0])
         self.assertFalse(article.reader_ready)
-        self.assertEqual(article.what_happened, UNAVAILABLE_MARKER)
+        self.assertEqual(article.what_happened, "")
+        self.assertEqual(article.reader_status, READER_STATUS_WITHHELD)
         # Identity survives even when no prose could be produced.
         self.assertEqual(article.canonical_url, EVIDENCE[0]["source_url"])
 

@@ -995,17 +995,65 @@ def _run_card(meta: Dict[str, Any], *, recipient_count: int, action_label: str =
 """
 
 
+def reader_surface_preview_labels(meta: Mapping[str, Any] | None) -> Dict[str, str]:
+    """How to label a stored briefing preview, given what the boundary allowed.
+
+    A run whose reader surface is incomplete carries candidate content the
+    producer refused. It is legitimate for the owner to read it — that is how
+    a bad run gets diagnosed — but it must not be presented as the briefing
+    customers see, which is what the 2026-08-29 15:11 Global run showed under
+    "FINAL CONTENT / 고객에게 보이는 브리핑 / 저장된 실제 HTML" while every one
+    of its five cards had been withheld.
+    """
+    meta = meta if isinstance(meta, Mapping) else {}
+    if not bool(meta.get("reader_surface_enforced")):
+        # Older artifacts predate the boundary; make no claim either way.
+        return {
+            "eyebrow": "FINAL CONTENT",
+            "title": "고객에게 보이는 브리핑",
+            "evidence_label": "저장된 실제 HTML",
+            "note": "",
+        }
+    if bool(meta.get("reader_surface_complete")):
+        return {
+            "eyebrow": "FINAL CONTENT",
+            "title": "고객에게 보이는 브리핑",
+            "evidence_label": "저장된 실제 HTML",
+            "note": "",
+        }
+    ready = int(meta.get("reader_surface_ready_item_count") or 0)
+    withheld = [str(x) for x in (meta.get("reader_surface_unavailable_fields") or [])]
+    codes = [str(x) for x in (meta.get("reader_surface_issue_codes") or [])]
+    detail = f"고객 노출 가능 카드 {ready}/5. 보류된 필드 {len(withheld)}건."
+    if codes:
+        detail += " 사유: " + ", ".join(sorted(set(codes))[:4])
+    return {
+        "eyebrow": "BLOCKED CANDIDATE",
+        "title": "차단된 후보 — 고객에게 보이지 않음",
+        "evidence_label": "진단용 후보 내용",
+        "note": detail,
+    }
+
+
 def _admin_email_preview_for_run(
     run_id: str,
     *,
-    title: str = "고객에게 보이는 브리핑",
+    title: str = "",
     approval_snapshot_id: str = "",
+    meta: Mapping[str, Any] | None = None,
 ) -> str:
     """Point at the bounded preview route; never duplicate HTML in ``srcdoc``."""
     url = f"/admin/runs/{run_id}/email"
     if approval_snapshot_id:
         url += f"?approval_snapshot_id={approval_snapshot_id}"
-    return _ui_email_preview(url, title=title)
+    labels = reader_surface_preview_labels(meta)
+    return _ui_email_preview(
+        url,
+        title=title or labels["title"],
+        eyebrow=labels["eyebrow"],
+        evidence_label=labels["evidence_label"],
+        note=labels["note"],
+    )
 
 
 @router.get("/admin/operations", response_class=HTMLResponse)
@@ -2316,7 +2364,7 @@ def admin_run_detail(request: Request, run_id: str):
   <p>{_esc(validation['summary'])}</p><ul class="validation-list">{validation_items}</ul>
 </section>
 {graded_panel}
-{_admin_email_preview_for_run(run_id) if has_email else _ui_email_preview(None)}
+{_admin_email_preview_for_run(run_id, meta=meta) if has_email else _ui_email_preview(None)}
 <section class="surface">
   <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">DELIVERY</p><h2>고객 이메일 발송 상태</h2></div>{_ui_badge(delivery['label'], delivery['tone'])}</div>
   <div class="metrics">{delivery_metrics}</div><p style="color:var(--muted);">{_esc(delivery['summary'])} Provider acceptance는 수신함 도착 확인이 아닙니다.</p>

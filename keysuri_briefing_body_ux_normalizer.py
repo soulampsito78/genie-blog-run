@@ -62,6 +62,9 @@ _MECHANICAL_PHRASES: Tuple[Tuple[str, str], ...] = (
     ("단기 과장과 구조 변화를 구분해 보시고, 불확실한 부분은 추가 확인 후 반영하시면 됩니다.", "단기 과장과 구조 변화는 구분해 보시면 됩니다."),
 )
 
+#: Any Hangul syllable — used to tell reader-language text from source text.
+_HANGUL_RE = re.compile(r"[가-힣]")
+
 _COMPANY_ALIASES: Tuple[Tuple[str, str], ...] = (
     ("nvidia", "엔비디아"),
     ("notion", "Notion"),
@@ -212,6 +215,20 @@ def rewrite_signal_marker_sentence_to_natural_prose(
     companies_b = [label for needle, label in _COMPANY_ALIASES if needle in tb.lower()]
     lead_a = companies_a[0] if companies_a else _short_title_without_ellipsis(ta, 24)
     lead_b = companies_b[0] if companies_b else _short_title_without_ellipsis(tb, 24)
+
+    # A lead is a *name*, not a slice of a source headline. A recognized company
+    # alias is a name; so is a Korean title, which is the reader's language and
+    # already editorial. An arbitrary foreign headline cut to 24 characters is
+    # neither — it is the source's own words, truncated mid-clause, welded into
+    # a Korean sentence. On 2026-08-29 that produced "Open-weight AI 흐름과
+    # Trump admin considers 이슈가 동시에 보인다는 것입니다": the deep dive was
+    # written out of two English source titles the reader never sees in full.
+    # Without a usable name there is no sentence to write, so write none.
+    def _is_name(lead: str, matched_company: bool) -> bool:
+        return bool(matched_company or (lead and _HANGUL_RE.search(lead)))
+
+    if not (_is_name(lead_a, bool(companies_a)) and _is_name(lead_b, bool(companies_b))):
+        return remove_internal_validation_markers(text)
 
     natural = (
         f"오늘 눈에 띄는 점은 {lead_a} 흐름과 {lead_b} 이슈가 동시에 보인다는 것입니다. "

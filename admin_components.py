@@ -99,17 +99,36 @@ def technical_details(
 """
 
 
-def email_preview(preview_url: str | None, *, title: str = "고객에게 보이는 브리핑") -> str:
-    """Render an iframe URL, never a duplicated full-HTML ``srcdoc`` value."""
+def email_preview(
+    preview_url: str | None,
+    *,
+    title: str = "고객에게 보이는 브리핑",
+    eyebrow: str = "FINAL CONTENT",
+    evidence_label: str = "저장된 실제 HTML",
+    note: str = "",
+) -> str:
+    """Render an iframe URL, never a duplicated full-HTML ``srcdoc`` value.
+
+    The heading is a claim about what the owner is looking at, so the caller
+    must be able to say something other than "고객에게 보이는 브리핑". A
+    candidate the reader-surface boundary refused is not customer-visible
+    content, and on 2026-08-29 showing it under this label told the owner that
+    five withheld cards of English source text were the briefing customers
+    would receive.
+    """
     if not str(preview_url or "").strip():
         return empty_state("저장된 브리핑 없음", "고객 발송용 HTML이 없어 승인할 수 없습니다.")
+    note_html = (
+        f'<p style="color:var(--muted);margin:0 0 10px;">{esc(note)}</p>' if note else ""
+    )
     return f"""
 <section class="briefing-section" aria-labelledby="briefing-preview-title">
   <div class="section-heading">
-    <div><p class="eyebrow">FINAL CONTENT</p><h2 id="briefing-preview-title">{esc(title)}</h2></div>
-    <span class="evidence-label">저장된 실제 HTML</span>
+    <div><p class="eyebrow">{esc(eyebrow)}</p><h2 id="briefing-preview-title">{esc(title)}</h2></div>
+    <span class="evidence-label">{esc(evidence_label)}</span>
   </div>
-  <iframe class="briefing-frame" title="저장된 고객 브리핑 미리보기" sandbox="allow-same-origin" src="{esc(preview_url)}" loading="lazy"></iframe>
+  {note_html}
+  <iframe class="briefing-frame" title="저장된 브리핑 미리보기" sandbox="allow-same-origin" src="{esc(preview_url)}" loading="lazy"></iframe>
 </section>
 """
 

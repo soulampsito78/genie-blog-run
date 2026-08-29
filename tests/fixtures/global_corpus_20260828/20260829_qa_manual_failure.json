@@ -1,0 +1,179 @@
+{
+  "case": "20260829_qa_manual_failure",
+  "run_id": "20260829_151157_keysuri_global_tech_d4a7f5da",
+  "program_id": "keysuri_global_tech",
+  "editorial_verdict": "POOR",
+  "safety_verdict": "SAFE",
+  "review_issue_codes": [
+    "global_visible_raw_english_prose_blocked",
+    "global_visible_repeated_template_skeleton_blocked",
+    "global_visible_deep_dive_duplication_blocked",
+    "global_visible_repeated_low_information_label"
+  ],
+  "owner_delivery_behavior": "SEND_OWNER_QUALITY_NOTICE",
+  "customer_send": 0,
+  "customer_approval_available": false,
+  "reader_surface_ready_item_count": 0,
+  "observed_email_subject": "(본문 준비되지 않음 — 운영자 확인 필요): 8월 29일 글로벌 테크 브리핑",
+  "items": [
+    {
+      "rank": 1,
+      "news_id": "claim-live-techcrunch-ai-fea5f6e87e",
+      "headline": "(본문 준비되지 않음 — 운영자 확인 필요)",
+      "category": "policy_regulation_capital_supplychain",
+      "primary_category": "policy_regulation_capital_supplychain",
+      "category_label_ko": "정책·규제·자본·공급망",
+      "summary": "(본문 준비되지 않음 — 운영자 확인 필요)",
+      "why_it_matters": "(본문 준비되지 않음 — 운영자 확인 필요)",
+      "business_implication": "정책·규제·자본·공급망 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. 정책·규제·자본·공급망 후속은 TechCrunch AI 후속 공식 발표 중심으로 보면 됩니다. 정책·규제·자본·공급망이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+      "next_watch": "TechCrunch AI 후속 공식 발표; 원문 업데이트·구체 수치 공개 여부",
+      "what_happened": "There's a lot of capital pouring into the business of giving models away. TechCrunch AI 공개 요약에 따르면 「Open-weight AI companies are the Valley’s hottest acquisition targets」 관련 변화가 보고되었습니다. 정책·규제·자본·공급망 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다.",
+      "why_now": "TechCrunch AI 공개 발표: 「Open-weight AI companies are the Valley’s hottest acquisition targets」. 정책·규제·자본·공급망 확인 포인트는 TechCrunch AI 후속 공식 발표, 그리고 원문 업데이트·구체 수치 공개 여부입니다. 정책·규제·자본·공급망 후속 일정과 공식 발표부터 보면 됩니다.",
+      "owner_angle": "정책·규제·자본·공급망 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. 정책·규제·자본·공급망 후속은 TechCrunch AI 후속 공식 발표 중심으로 보면 됩니다. 정책·규제·자본·공급망이 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
+      "selection_reason": "총점 44점(구조 4, 주인님 12, 사업 4). 오늘 흐름에서 정책·규제·자본·공급망 축과 맞닿는 공식 보도라 포함했습니다.",
+      "source_name": "TechCrunch AI",
+      "source_url": "https://techcrunch.com/2026/08/28/open-weight-ai-companies-are-the-valleys-hottest-acquisition-targets/"
+    },
+    {
+      "rank": 2,
+      "news_id": "claim-live-datacenter-dynamics-698c032847",
+      "headline": "(본문 준비되지 않음 — 운영자 확인 필요)",
+      "category": "semiconductor_chip_infra",
+      "primary_category": "semiconductor_chip_infra",
+      "category_label_ko": "반도체·칩·AI 인프라",
+      "summary": "(본문 준비되지 않음 — 운영자 확인 필요)",
+      "why_it_matters": "(본문 준비되지 않음 — 운영자 확인 필요)",
+      "business_implication": "반도체·칩·AI 인프라 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. 반도체·칩·AI 인프라 다음 확인은 공급 일정·파운드리/벤더 고객 발표에서 시작하면 충분합니다. 반도체·칩·AI 인프라가 예산과 일정에 실제로 반영되는지를 보고 판단합니다.",
+      "next_watch": "공급 일정·파운드리/벤더 고객 발표; 벤치마크·양산 일정",
+      "what_happened": "Because it went so well before. Datacenter Dynamics 보도가 「Trump admin considers more semiconductor tariffs, could include data center servers」 내용을 전했습니다. 반도체·칩·AI 인프라 공개된 범위 밖의 계약 조건은 아직 확인되지 않았습니다.",
+      "why_now": "Datacenter Dynamics 공개 발표: 「Trump admin considers more semiconductor tariffs, could include data center servers」. 반도체·칩·AI 인프라 먼저 볼 지표는 공급 일정·파운드리/벤더 고객 발표, 이어서 벤치마크·양산 일정입니다. 반도체·칩·AI 인프라 공식 일정 공지가 나오면 다시 확인합니다.",
+      "owner_angle": "반도체·칩·AI 인프라 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. 반도체·칩·AI 인프라 다음 확인은 공급 일정·파운드리/벤더 고객 발표에서 시작하면 충분합니다. 반도체·칩·AI 인프라가 예산과 일정에 실제로 반영되는지를 보고 판단합니다.",
+      "selection_reason": "총점 43점(구조 4, 주인님 11, 사업 4). 오늘 흐름에서 반도체·칩·AI 인프라 축과 맞닿는 공식 보도라 포함했습니다.",
+      "source_name": "Datacenter Dynamics",
+      "source_url": "https://www.datacenterdynamics.com/en/news/trump-admin-considers-more-semiconductor-tariffs-and-possibly-data-center-servers/"
+    },
+    {
+      "rank": 3,
+      "news_id": "claim-live-openai-blog-b42ac281ec",
+      "headline": "(본문 준비되지 않음 — 운영자 확인 필요)",
+      "category": "aerospace_satellite_defense_tech",
+      "primary_category": "aerospace_satellite_defense_tech",
+      "category_label_ko": "항공우주·위성·방산 테크",
+      "summary": "(본문 준비되지 않음 — 운영자 확인 필요)",
+      "why_it_matters": "(본문 준비되지 않음 — 운영자 확인 필요)",
+      "business_implication": "항공우주·위성·방산 테크 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. 항공우주·위성·방산 테크 이어지는 신호는 계약 규모·발사/납품 일정에 먼저 나타납니다. 항공우주·위성·방산 테크가 발표에 그치는지 집행으로 넘어가는지가 갈림길입니다.",
+      "next_watch": "계약 규모·발사/납품 일정; 파트너십·후속 수주",
+      "what_happened": "Our decision to wind down our contract providing OpenAI models to Cursor following its acquisition by SpaceX. 「Our decision on Cursor following its acquisition by SpaceX」 관련 내용은 OpenAI News 공개 보도에서 확인됩니다. 항공우주·위성·방산 테크 규모와 시점은 원문이 갱신되면 달라질 수 있습니다.",
+      "why_now": "OpenAI News 공개 발표: 「Our decision on Cursor following its acquisition by SpaceX」. 항공우주·위성·방산 테크 판단을 가르는 변수는 계약 규모·발사/납품 일정, 파트너십·후속 수주입니다. 항공우주·위성·방산 테크 다음 발표 시점을 기준으로 이어서 봅니다.",
+      "owner_angle": "항공우주·위성·방산 테크 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. 항공우주·위성·방산 테크 이어지는 신호는 계약 규모·발사/납품 일정에 먼저 나타납니다. 항공우주·위성·방산 테크가 발표에 그치는지 집행으로 넘어가는지가 갈림길입니다.",
+      "selection_reason": "총점 41점(구조 4, 주인님 8, 사업 4). 오늘 흐름에서 항공우주·위성·방산 테크 축과 맞닿는 공식 보도라 포함했습니다.",
+      "source_name": "OpenAI News",
+      "source_url": "https://openai.com/index/our-decision-on-cursor-following-its-acquisition-by-spacex"
+    },
+    {
+      "rank": 4,
+      "news_id": "claim-live-techcrunch-startups-9d933e87ed",
+      "headline": "(본문 준비되지 않음 — 운영자 확인 필요)",
+      "category": "policy_regulation_capital_supplychain",
+      "primary_category": "policy_regulation_capital_supplychain",
+      "category_label_ko": "정책·규제·자본·공급망",
+      "summary": "(본문 준비되지 않음 — 운영자 확인 필요)",
+      "why_it_matters": "(본문 준비되지 않음 — 운영자 확인 필요)",
+      "business_implication": "정책·규제·자본·공급망 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. 정책·규제·자본·공급망 실무 점검은 TechCrunch 후속 공식 발표부터 잡으면 됩니다. 정책·규제·자본·공급망이 계약 조건까지 확정되는 시점이 판단 지점입니다.",
+      "next_watch": "TechCrunch 후속 공식 발표; 후속 문서에서 조건이 구체화되는지",
+      "what_happened": "Are XREAL's smart glasses the way of the future for home entertainment?. TechCrunch 보도를 기준으로 「Is the best way to watch a movie on a pair of sunglasses?」 상황이 정리됩니다. 정책·규제·자본·공급망 지금까지 확인된 사실은 이번 발표 내용까지입니다.",
+      "why_now": "TechCrunch 공개 발표: 「Is the best way to watch a movie on a pair of sunglasses?」. 정책·규제·자본·공급망 흐름은 TechCrunch 후속 공식 발표에서 먼저 드러납니다. 이어서 후속 문서에서 조건이 구체화되는지 쪽을 봅니다.",
+      "owner_angle": "정책·규제·자본·공급망 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. 정책·규제·자본·공급망 실무 점검은 TechCrunch 후속 공식 발표부터 잡으면 됩니다. 정책·규제·자본·공급망이 계약 조건까지 확정되는 시점이 판단 지점입니다.",
+      "selection_reason": "총점 39점(구조 0, 주인님 10, 사업 4). 오늘 흐름에서 정책·규제·자본·공급망 축과 맞닿는 공식 보도라 포함했습니다.",
+      "source_name": "TechCrunch",
+      "source_url": "https://techcrunch.com/2026/08/28/is-the-best-way-to-watch-a-movie-on-a-pair-of-sunglasses/"
+    },
+    {
+      "rank": 5,
+      "news_id": "claim-live-techcrunch-ai-8152c5575e",
+      "headline": "(본문 준비되지 않음 — 운영자 확인 필요)",
+      "category": "ai_software_platform",
+      "primary_category": "ai_software_platform",
+      "category_label_ko": "AI·소프트웨어·플랫폼",
+      "summary": "(본문 준비되지 않음 — 운영자 확인 필요)",
+      "why_it_matters": "(본문 준비되지 않음 — 운영자 확인 필요)",
+      "business_implication": "AI·소프트웨어·플랫폼 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. AI·소프트웨어·플랫폼 추적 대상은 우선 API 공개·엔터프라이즈 도입 일정입니다. AI·소프트웨어·플랫폼이 운영 비용에 닿기 시작하면 그때 무게가 달라집니다.",
+      "next_watch": "API 공개·엔터프라이즈 도입 일정; 가격·파트너/고객 발표",
+      "what_happened": "Given 10 benchmarks for specific misaligned behaviors, the automated systems were able to improve performance on every single one without degrading overall performance. 「An Anthropic researcher just gave us a peek at self-improving AI」에 대해 TechCrunch AI 공개 요약을 근거로 삼았습니다. AI·소프트웨어·플랫폼 구체적인 실행 단계는 아직 공개되지 않았습니다.",
+      "why_now": "TechCrunch AI 공개 발표: 「An Anthropic researcher just gave us a peek at self-improving AI」. AI·소프트웨어·플랫폼 관찰 순서는 API 공개·엔터프라이즈 도입 일정 다음 가격·파트너/고객 발표입니다. AI·소프트웨어·플랫폼 일정이 구체화되면 그때 다시 짚습니다.",
+      "owner_angle": "AI·소프트웨어·플랫폼 영역의 공개 발표로, 사업 영향은 후속 공식 발표에서 확인이 필요합니다. AI·소프트웨어·플랫폼 추적 대상은 우선 API 공개·엔터프라이즈 도입 일정입니다. AI·소프트웨어·플랫폼이 운영 비용에 닿기 시작하면 그때 무게가 달라집니다.",
+      "selection_reason": "총점 39점(구조 0, 주인님 10, 사업 4). 오늘 흐름에서 AI·소프트웨어·플랫폼 축과 맞닿는 공식 보도라 포함했습니다.",
+      "source_name": "TechCrunch AI",
+      "source_url": "https://techcrunch.com/2026/08/28/an-anthropic-researcher-just-gave-us-a-peek-at-self-improving-ai/"
+    }
+  ],
+  "evidence": [
+    {
+      "news_id": "claim-live-techcrunch-ai-fea5f6e87e",
+      "headline": "Open-weight AI companies are the Valley’s hottest acquisition targets",
+      "summary": "There's a lot of capital pouring into the business of giving models away.",
+      "why_it_matters": "TechCrunch AI 공개 발표: 「Open-weight AI companies are the Valley’s hottest acquisition targets」.",
+      "title": "Open-weight AI companies are the Valley’s hottest acquisition targets",
+      "source_name": "TechCrunch AI",
+      "category": "policy_regulation_capital_supplychain",
+      "source_ids": [
+        "live-techcrunch-ai-fea5f6e87e"
+      ]
+    },
+    {
+      "news_id": "claim-live-datacenter-dynamics-698c032847",
+      "headline": "Trump admin considers more semiconductor tariffs, could include data center servers",
+      "summary": "Because it went so well before",
+      "why_it_matters": "Datacenter Dynamics 공개 발표: 「Trump admin considers more semiconductor tariffs, could include data center servers」.",
+      "title": "Trump admin considers more semiconductor tariffs, could include data center servers",
+      "source_name": "Datacenter Dynamics",
+      "category": "semiconductor_chip_infra",
+      "source_ids": [
+        "live-datacenter-dynamics-698c032847"
+      ]
+    },
+    {
+      "news_id": "claim-live-openai-blog-b42ac281ec",
+      "headline": "Our decision on Cursor following its acquisition by SpaceX",
+      "summary": "Our decision to wind down our contract providing OpenAI models to Cursor following its acquisition by SpaceX.",
+      "why_it_matters": "OpenAI News 공개 발표: 「Our decision on Cursor following its acquisition by SpaceX」.",
+      "title": "Our decision on Cursor following its acquisition by SpaceX",
+      "source_name": "OpenAI News",
+      "category": "aerospace_satellite_defense_tech",
+      "source_ids": [
+        "live-openai-blog-b42ac281ec"
+      ]
+    },
+    {
+      "news_id": "claim-live-techcrunch-startups-9d933e87ed",
+      "headline": "Is the best way to watch a movie on a pair of sunglasses?",
+      "summary": "Are XREAL's smart glasses the way of the future for home entertainment?",
+      "why_it_matters": "TechCrunch 공개 발표: 「Is the best way to watch a movie on a pair of sunglasses?」.",
+      "title": "Is the best way to watch a movie on a pair of sunglasses?",
+      "source_name": "TechCrunch",
+      "category": "policy_regulation_capital_supplychain",
+      "source_ids": [
+        "live-techcrunch-startups-9d933e87ed"
+      ]
+    },
+    {
+      "news_id": "claim-live-techcrunch-ai-8152c5575e",
+      "headline": "An Anthropic researcher just gave us a peek at self-improving AI",
+      "summary": "Given 10 benchmarks for specific misaligned behaviors, the automated systems were able to improve performance on every single one without degrading overall performance.",
+      "why_it_matters": "TechCrunch AI 공개 발표: 「An Anthropic researcher just gave us a peek at self-improving AI」.",
+      "title": "An Anthropic researcher just gave us a peek at self-improving AI",
+      "source_name": "TechCrunch AI",
+      "category": "ai_software_platform",
+      "source_ids": [
+        "live-techcrunch-ai-8152c5575e"
+      ]
+    }
+  ],
+  "deep_dive_body": "오늘 눈에 띄는 점은 Open-weight AI 흐름과 Trump admin considers 이슈가 동시에 보인다는 것입니다. 한쪽은 산업·인프라 쪽이고, 다른 쪽은 소프트웨어·운영 쪽입니다. 주인님, 오늘 글로벌 테크 시장은 자본의 흐름과 정책적 불확실성, 그리고 기술적 자율성이 복잡하게 얽힌 양상을 보이고 있습니다. 오픈 웨이트 모델로의 자본 집중과 트럼프 행정부의 인프라 관세 검토는 사업 환경의 급격한 변화를 예고하는 강력한 신호입니다. 특히 기술 공급망의 재편과 AI의 자기 개선 능력은 우리가 향후 48시간 내에 주목해야 할 핵심 지표들입니다.",
+  "deep_dive_key_implications": [
+    "TechCrunch AI 공개 발표: 「Open-weight AI companies are the Valley’s hottest acquisition targets」.",
+    "Datacenter Dynamics 공개 발표: 「Trump admin considers more semiconductor tariffs, could include data center servers」.",
+    "OpenAI News 공개 발표: 「Our decision on Cursor following its acquisition by SpaceX」."
+  ],
+  "notes": "Persisted artifact of the 2026-08-29 15:11 KST qa_manual Global run. The model returned a display-only shell twice; the scaffold completed top_5_news from the evidence pack; the enricher copied the evidence out of summary/why_it_matters into what_happened/why_now, which the old boundary did not bind. Nothing here is invented."
+}

@@ -70,7 +70,13 @@ def _keyword_edges(keyword: str) -> "re.Pattern[str]":
     # produced, so the parts are escaped individually.
     parts = [re.escape(part) for part in re.split(r"[\s\-]+", keyword) if part]
     body = r"[\s\-]+".join(parts) if parts else re.escape(keyword)
-    return re.compile(rf"(?<![0-9a-z]){body}(?![0-9a-z])")
+    # A plural is the same word. Without this the edges are too sharp to be
+    # useful: "satellite" misses "satellites", "chip" misses "chips",
+    # "tariff" misses "tariffs" — so a Starlink launch scored zero aerospace
+    # hits and fell to ai_software_platform. The leading edge is what stops
+    # 'ess' matching inside 'addresses', and it is unchanged, so admitting a
+    # trailing plural does not reopen that.
+    return re.compile(rf"(?<![0-9a-z]){body}(?:e?s)?(?![0-9a-z])")
 
 
 @lru_cache(maxsize=2048)
@@ -126,6 +132,14 @@ CATEGORY_KEYWORD_GROUPS: Dict[str, Tuple[str, ...]] = {
         "smartphone", "xr", "wearable", "display", "oled", "sensor", "edge ai device", "gadget",
         "pixel", "google pixel", "android", "phone", "mobile device", "on-device ai",
         "온디바이스 ai", "스마트폰", "픽셀",
+        # Head-worn displays. Without these an XREAL smart-glasses review scored
+        # zero content hits and fell through to the *feed's* default category,
+        # so a consumer AR-eyewear story from the TechCrunch Startups feed was
+        # published as 정책·규제·자본·공급망 on 2026-08-29. "xr" alone does not
+        # match "XREAL" under whole-word matching.
+        "smart glasses", "ar glasses", "sunglasses", "eyewear", "xreal",
+        "headset", "ar headset", "vr headset", "head-mounted",
+        "스마트 글래스", "헤드셋",
     ),
     "cybersecurity_cloud_datacenter": (
         "cybersecurity", "cloud infrastructure", "datacenter", "data center", "liquid cooling",
@@ -804,7 +818,16 @@ def classify_global_tech_category(
     # Guard: only allow aerospace/defense through when an unambiguous
     # aerospace/defense/military term is present — a stray "launch" hit from a
     # Pixel/Android/consumer-device headline must never win this category.
-    has_strict_aerospace_signal = any(kw in lower for kw in AEROSPACE_DEFENSE_REQUIRED_KEYWORDS)
+    # Whole words, like every other keyword test in this function. As a
+    # substring test this guard read "space" out of "SpaceX" and admitted the
+    # category it exists to withhold: on 2026-08-29 "Our decision on Cursor
+    # following its acquisition by SpaceX" — OpenAI ending a model-supply
+    # contract — was filed under 항공우주·위성·방산 테크 because the acquirer's
+    # name contains four aerospace letters. An entity name is not evidence of a
+    # domain; "satellite", "space", "defense" as words are.
+    has_strict_aerospace_signal = any(
+        _keyword_matches(kw, lower) for kw in AEROSPACE_DEFENSE_REQUIRED_KEYWORDS
+    )
     if not has_strict_aerospace_signal:
         hits = [(cat, n) for cat, n in hits if cat != "aerospace_satellite_defense_tech"]
 

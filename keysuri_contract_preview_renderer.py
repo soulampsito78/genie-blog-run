@@ -464,6 +464,50 @@ def _render_theme_top_insert(fixture: Mapping[str, Any], *, program_id: str) -> 
     </section>"""
 
 
+
+#: A card the reader-surface boundary refused. It is shown to the operator as a
+#: blocked candidate — never as customer content, and never as a card with
+#: labelled sections standing empty where the prose was withheld.
+WITHHELD_CARD_NOTICE = "이 카드의 본문은 보류되었습니다 — 고객에게 보이지 않습니다."
+
+
+def _card_is_withheld(item: Mapping[str, Any]) -> bool:
+    """Whether the producer refused this card's reader prose.
+
+    Read structurally. The 2026-08-29 run is why this is not a text test: the
+    withheld state used to be a marker string inside the prose, so telling a
+    blocked card from a real one meant pattern-matching Korean out of the body.
+    """
+    if not isinstance(item, Mapping):
+        return False
+    if "customer_visible" in item:
+        return not bool(item.get("customer_visible"))
+    if "reader_surface_ready" in item:
+        return not bool(item.get("reader_surface_ready"))
+    return False
+
+
+def _premium_withheld_notice(item: Mapping[str, Any]) -> str:
+    if not _card_is_withheld(item):
+        return ""
+    return (
+        '<p class="block-body" style="color:var(--ks-warn);font-weight:600;">'
+        f"{_esc(WITHHELD_CARD_NOTICE)}</p>"
+    )
+
+
+def _premium_block(label: str, text: str, *, extra_class: str = "") -> str:
+    """A labelled block, or nothing. A label with no body under it is a hole."""
+    if not str(text or "").strip():
+        return ""
+    cls = f"brief-block {extra_class}".strip()
+    return (
+        f'<div class="{cls}">'
+        f'<h4 class="block-label">{_esc(label)}</h4>'
+        f'<p class="block-body">{_esc(text)}</p>'
+        f"</div>"
+    )
+
 def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> str:
     source_url = _item_field(item, "source_url")
     source_name = _item_field(item, "source_name") or "출처"
@@ -619,18 +663,10 @@ def _render_top_item(item: Mapping[str, Any], rank: int, *, program_id: str) -> 
       {insuff_badge}
       {hype_badge}{selection_block}
       {emphasis_html}
-      <div class="brief-block">
-        <h4 class="block-label">무슨 일이 있었나</h4>
-        <p class="block-body">{_esc(what_happened)}</p>
-      </div>
-      <div class="brief-block">
-        <h4 class="block-label">왜 지금 중요한가</h4>
-        <p class="block-body">{_esc(why_now)}</p>
-      </div>
-      <div class="brief-block owner-angle-block">
-        <h4 class="block-label">주인님 관점</h4>
-        <p class="block-body">{_esc(owner_angle)}</p>
-      </div>
+      {_premium_withheld_notice(item)}
+      {_premium_block("무슨 일이 있었나", what_happened)}
+      {_premium_block("왜 지금 중요한가", why_now)}
+      {_premium_block("주인님 관점", owner_angle, extra_class="owner-angle-block")}
       {market_impact_html}
       <div class="judgment-row">
         <span class="judgment-label">키수리 판단</span>
@@ -1537,6 +1573,24 @@ def _gmail_render_global_top_item(item: Mapping[str, Any], rank: int) -> str:
             f'{_esc(text)}</p>'
         )
 
+    def _pair(label: str, text: str) -> str:
+        """A labelled block, or nothing.
+
+        A label standing over an empty body is what a withheld field looks
+        like once the marker is no longer written into the prose: the card
+        keeps "무슨 일이 있었나" with nothing under it. A refused field
+        must leave no trace on the reader surface.
+        """
+        return f"{_label(label)}{_body(text)}" if str(text or "").strip() else ""
+
+    def _withheld_notice() -> str:
+        if not _card_is_withheld(item):
+            return ""
+        return (
+            f'<p style="margin:0 0 12px 0;font-size:13px;line-height:1.6;font-weight:700;'
+            f'color:{c["dim"]};">{_esc(WITHHELD_CARD_NOTICE)}</p>'
+        )
+
     emphasis_html = ""
     if emphasis_body:
         emphasis_html = (
@@ -1578,12 +1632,13 @@ def _gmail_render_global_top_item(item: Mapping[str, Any], rank: int) -> str:
         f'<h3 style="margin:0 0 12px 0;font-size:18px;line-height:1.45;font-weight:700;color:{c["text"]};">'
         f'{rank}. {_esc(headline)}</h3>'
         f'{selection_html}{emphasis_html}'
-        f'{_label("무슨 일이 있었나")}{_body(what_happened)}'
-        f'{_label("왜 지금 중요한가")}{_body(why_now)}'
+        f'{_withheld_notice()}'
+        f'{_pair("무슨 일이 있었나", what_happened)}'
+        f'{_pair("왜 지금 중요한가", why_now)}'
         f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
         f'style="background:#f5f9fd;border-left:3px solid {c["accent"]};border-radius:8px;">'
         f'<tr><td style="padding:12px 14px;">'
-        f'{_label("주인님 관점")}{_body(owner_angle)}'
+        f'{_pair("주인님 관점", owner_angle)}'
         f'</td></tr></table>'
         f'{_gmail_spacer(12)}{judgment_html}{source_html}'
         f'</td></tr></table>'
@@ -1852,6 +1907,24 @@ def _gmail_render_korea_top_item(item: Mapping[str, Any], rank: int) -> str:
             f'{_esc(text)}</p>'
         )
 
+    def _pair(label: str, text: str) -> str:
+        """A labelled block, or nothing.
+
+        A label standing over an empty body is what a withheld field looks
+        like once the marker is no longer written into the prose: the card
+        keeps "무슨 일이 있었나" with nothing under it. A refused field
+        must leave no trace on the reader surface.
+        """
+        return f"{_label(label)}{_body(text)}" if str(text or "").strip() else ""
+
+    def _withheld_notice() -> str:
+        if not _card_is_withheld(item):
+            return ""
+        return (
+            f'<p style="margin:0 0 12px 0;font-size:13px;line-height:1.6;font-weight:700;'
+            f'color:{c["dim"]};">{_esc(WITHHELD_CARD_NOTICE)}</p>'
+        )
+
     emphasis_html = ""
     if emphasis_body:
         emphasis_html = (
@@ -1906,12 +1979,13 @@ def _gmail_render_korea_top_item(item: Mapping[str, Any], rank: int) -> str:
         f'<h3 style="margin:0 0 12px 0;font-size:18px;line-height:1.45;font-weight:700;color:{c["text"]};">'
         f'{rank}. {_esc(headline)}</h3>'
         f'{selection_html}{emphasis_html}'
-        f'{_label("무슨 일이 있었나")}{_body(what_happened)}'
-        f'{_label("왜 지금 중요한가")}{_body(why_now)}'
+        f'{_withheld_notice()}'
+        f'{_pair("무슨 일이 있었나", what_happened)}'
+        f'{_pair("왜 지금 중요한가", why_now)}'
         f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
         f'style="background:{c["surface2"]};border-left:3px solid {c["accent"]};border-radius:8px;">'
         f'<tr><td style="padding:12px 14px;">'
-        f'{_label("주인님 관점")}{_body(owner_angle)}'
+        f'{_pair("주인님 관점", owner_angle)}'
         f'</td></tr></table>'
         f'{_gmail_spacer(12)}{market_impact_html}{judgment_html}{tomorrow_html}{source_html}'
         f'</td></tr></table>'

@@ -300,6 +300,13 @@ def _map_top_item(
         "checked_at": str(src.get("fetched_at") or source_pack.get("generated_at") or "").strip(),
         "verification_status": LIVE_VERIFICATION_STATUS,
     }
+    # Reader state must survive the projection. This mapping is an allow-list,
+    # so a field it does not name is invisible to every renderer downstream —
+    # which is why the 2026-08-29 preview could not tell a card the boundary
+    # had refused from one it had passed, and drew both the same way.
+    for key in ("customer_visible", "reader_status", "reader_surface_ready"):
+        if key in item:
+            mapped[key] = item.get(key)
     if category_key:
         mapped["primary_category"] = category_key
     if category_label_ko:

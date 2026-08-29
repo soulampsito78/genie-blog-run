@@ -39,8 +39,13 @@ READER_PROSE_NOT_KOREAN = "keysuri_reader_prose_not_korean"
 READER_IDENTITY_UNMATCHED = "keysuri_reader_identity_unmatched"
 READER_SURFACE_ENFORCED = "keysuri_reader_surface_enforced"
 
-#: Shown when a reader field could not be produced. Reader-safe Korean, and
-#: deliberately not mistakable for editorial prose.
+#: Operator-facing label for a field this boundary refused. It is a
+#: *diagnostic string*, not a value: it is reported in Admin diagnostics and
+#: never written into a prose field. Writing it into ``headline`` is what put
+#: "(본문 준비되지 않음 — 운영자 확인 필요)" into the 2026-08-29 owner-review
+#: subject line and into the deep dive, where later producers read it back as
+#: if it were an article title. A withheld field is empty and says so
+#: structurally instead — see ``READER_STATUS_WITHHELD``.
 UNAVAILABLE_MARKER = "(본문 준비되지 않음 — 운영자 확인 필요)"
 
 #: Factual identity. Bound from evidence, immutable, never model-editable.
@@ -52,17 +57,47 @@ IDENTITY_FIELDS: Tuple[str, ...] = (
     "canonical_headline",
 )
 
-#: Reader-facing prose. Bound only from authored model output.
-PROSE_FIELDS: Tuple[str, ...] = (
-    "headline",
-    "summary",
-    "why_it_matters",
-    "business_implication",
-    "next_watch",
+#: Reader-facing prose, as **alias groups**.
+#:
+#: A reader field does not have one name. ``keysuri_contract_preview_renderer``
+#: reads ``_item_field(item, "what_happened", "summary")`` — the *first* name is
+#: what the customer sees and the second is only a fallback — while the
+#: deterministic enricher writes both, plus a third copy inside the nested
+#: ``briefing_item`` dict.
+#:
+#: Binding one name of a group is therefore not a decision about the field. On
+#: 2026-08-29 this boundary withheld ``summary`` on all five Global cards and
+#: the run still shipped five English source sentences to owner review, because
+#: the enricher had already copied the evidence out of ``summary`` into
+#: ``what_happened`` — the name the renderer actually reads. The boundary wrote
+#: the fallback; the renderer read the primary.
+#:
+#: So a group is bound as a unit: read in renderer order, decide once, then
+#: write that one decision to **every** alias and to the nested mirror, so no
+#: shadow copy of the evidence survives the boundary.
+PROSE_FIELD_GROUPS: Tuple[Tuple[str, ...], ...] = (
+    ("headline",),
+    ("what_happened", "summary"),
+    ("why_now", "why_it_matters"),
+    ("owner_angle", "business_implication"),
+    ("next_watch",),
+    ("selection_reason",),
 )
 
-#: Prose fields a briefing must carry for a card to read as a briefing at all.
-REQUIRED_PROSE_FIELDS: Tuple[str, ...] = ("headline", "summary", "why_it_matters")
+#: Canonical name of each group, in the same order.
+PROSE_FIELDS: Tuple[str, ...] = tuple(group[0] for group in PROSE_FIELD_GROUPS)
+
+#: Every alias this boundary owns. Nothing outside a group is reader prose.
+PROSE_ALIASES: Tuple[str, ...] = tuple(
+    name for group in PROSE_FIELD_GROUPS for name in group
+)
+
+#: Prose groups a briefing must carry for a card to read as a briefing at all.
+REQUIRED_PROSE_FIELDS: Tuple[str, ...] = ("headline", "what_happened", "why_now")
+
+#: Reader state, recorded structurally on the item.
+READER_STATUS_READY = "READY"
+READER_STATUS_WITHHELD = "WITHHELD"
 
 _LATIN_RUN_RE = re.compile(r"(?:[A-Za-z][A-Za-z0-9'’\-]*\s+){5,}[A-Za-z][A-Za-z0-9'’\-]*")
 _HANGUL_RE = re.compile(r"[가-힣]")
@@ -83,6 +118,7 @@ class ReaderArticle:
     why_now: str
     business_implication: str
     next_watch: str
+    selection_reason: str
     category: str
     uncertainty: str
     source_attribution: str
@@ -92,10 +128,14 @@ class ReaderArticle:
     @property
     def reader_ready(self) -> bool:
         """Whether every required reader field carries real authored prose."""
-        return not any(
-            getattr(self, name) == UNAVAILABLE_MARKER
+        return all(
+            _text(getattr(self, name))
             for name in ("display_headline", "what_happened", "why_now")
         )
+
+    @property
+    def reader_status(self) -> str:
+        return READER_STATUS_READY if self.reader_ready else READER_STATUS_WITHHELD
 
 
 def _text(value: Any) -> str:
@@ -133,14 +173,29 @@ def _evidence_texts(evidence: Mapping[str, Any]) -> List[str]:
     return out
 
 
+def _authored_value(authored: Mapping[str, Any], group: Sequence[str]) -> Tuple[str, str]:
+    """Read a prose group the way the renderer reads it: first alias wins.
+
+    Returns the value and the alias it came from, so a rejection can say which
+    name actually carried the offending text.
+    """
+    nested = authored.get("briefing_item")
+    nested = nested if isinstance(nested, Mapping) else {}
+    for name in group:
+        value = _text(authored.get(name)) or _text(nested.get(name))
+        if value:
+            return value, name
+    return "", group[0]
+
+
 def _bind_prose(
-    field_name: str,
+    group: Sequence[str],
     authored: Mapping[str, Any],
     evidence_forms: Sequence[str],
     *,
     source_is_reader_language: bool = False,
 ) -> Tuple[str, Optional[str]]:
-    """One reader field, or the unavailable marker plus the reason it failed.
+    """One reader field, or empty plus the reason the boundary refused it.
 
     ``source_is_reader_language`` relaxes the equality rule for the headline
     only. Korea's sources are already Korean, so a display headline that tracks
@@ -148,28 +203,62 @@ def _bind_prose(
     exists to stop *foreign* source text becoming reader prose. Explanatory
     fields stay strict for every program: those must be authored analysis, not a
     copied source sentence.
+
+    A refused field returns ``""``. It does not return a marker string: a
+    marker is prose to every producer downstream, and that is how a withheld
+    headline became an owner-review subject line.
     """
-    value = _text(authored.get(field_name))
+    field_name = group[0]
+    value, _alias = _authored_value(authored, group)
     if not value:
-        return UNAVAILABLE_MARKER, READER_PROSE_MISSING
+        return "", READER_PROSE_MISSING
+
+    # The boundary's own refusal is never an input to it. A reissue, a repair
+    # pass, or a replay reads back a briefing this boundary already wrote; if
+    # the marker counted as authored Korean prose, a field refused once would
+    # come back "prepared" the second time, and the marker would go on to be an
+    # article headline — which is how it reached the 2026-08-29 subject line.
+    # This also makes the boundary idempotent: enforcing twice equals once.
+    if UNAVAILABLE_MARKER in value:
+        return "", READER_PROSE_MISSING
 
     if field_name == "headline" and source_is_reader_language:
         if _looks_like_raw_source_prose(value):
-            return UNAVAILABLE_MARKER, READER_PROSE_NOT_KOREAN
+            return "", READER_PROSE_NOT_KOREAN
         return value, None
 
     normalized = _normalized(value)
     if normalized and normalized in evidence_forms:
         # The scaffold's signature: the field *is* the evidence, byte for byte.
-        return UNAVAILABLE_MARKER, READER_PROSE_WAS_SOURCE_TEXT
+        return "", READER_PROSE_WAS_SOURCE_TEXT
     for form in evidence_forms:
         # A prefix graft (statement[:120]) is the same failure, truncated.
         if form and normalized and (form.startswith(normalized) or normalized.startswith(form)):
             if min(len(form), len(normalized)) >= 40:
-                return UNAVAILABLE_MARKER, READER_PROSE_WAS_SOURCE_TEXT
+                return "", READER_PROSE_WAS_SOURCE_TEXT
+        # A *leading graft* is the 2026-08-29 shape. The enricher seeds each
+        # field with whatever the item already carried and pads behind it, so
+        # when the scaffold had put the evidence there the field became
+        # "<English source sentence>. <Korean padding>". It is not equal to the
+        # evidence and not a prefix of it — the evidence is a prefix of *it* —
+        # and the Korean tail defeats the not-Korean check, so all five 08-29
+        # cards passed both rules above with the source's own words leading.
+        #
+        # Restricted to a lead segment with no Hangul in it: this is the rule
+        # against *foreign* source text opening a Korean field. A Korea item
+        # whose authored prose legitimately opens by restating its Korean source
+        # headline is ordinary editing and must not be caught here.
+        if (
+            form
+            and normalized
+            and len(form) >= 12
+            and normalized.startswith(form)
+            and not _HANGUL_RE.search(form)
+        ):
+            return "", READER_PROSE_WAS_SOURCE_TEXT
 
     if _looks_like_raw_source_prose(value):
-        return UNAVAILABLE_MARKER, READER_PROSE_NOT_KOREAN
+        return "", READER_PROSE_NOT_KOREAN
     return value, None
 
 
@@ -187,9 +276,10 @@ def build_reader_article(
 
     source_is_reader_language = bool(_HANGUL_RE.search(_text(evidence.get("headline"))))
     bound: Dict[str, str] = {}
-    for name in PROSE_FIELDS:
+    for group in PROSE_FIELD_GROUPS:
+        name = group[0]
         value, issue = _bind_prose(
-            name,
+            group,
             authored,
             evidence_forms,
             source_is_reader_language=source_is_reader_language,
@@ -197,7 +287,10 @@ def build_reader_article(
         bound[name] = value
         if issue and name in REQUIRED_PROSE_FIELDS:
             issues.append(f"{issue}:{name}")
-        elif issue and value is UNAVAILABLE_MARKER and name != "next_watch":
+        elif issue and issue != READER_PROSE_MISSING:
+            # An optional field that was *refused* still matters — it is the
+            # same evidence leak, just in a field a card can live without.
+            # Merely absent optional prose is not a finding.
             issues.append(f"{issue}:{name}")
 
     source_ids = evidence.get("source_ids") or authored.get("source_ids") or []
@@ -214,10 +307,11 @@ def build_reader_article(
         canonical_headline=_text(evidence.get("headline")),
         # Prose is the model's, or nothing.
         display_headline=bound["headline"],
-        what_happened=bound["summary"],
-        why_now=bound["why_it_matters"],
-        business_implication=bound["business_implication"],
+        what_happened=bound["what_happened"],
+        why_now=bound["why_now"],
+        business_implication=bound["owner_angle"],
         next_watch=bound["next_watch"],
+        selection_reason=bound["selection_reason"],
         category=_text(authored.get("category") or evidence.get("category")),
         uncertainty=_text(authored.get("confidence_label") or evidence.get("confidence_label")),
         source_attribution=_text(evidence.get("source_name") or evidence.get("source")),
@@ -293,15 +387,27 @@ def enforce_reader_surface(
             ready += 1
 
         item = dict(authored)
-        item["headline"] = article.display_headline
-        item["summary"] = article.what_happened
-        item["why_it_matters"] = article.why_now
-        if article.business_implication != UNAVAILABLE_MARKER or _text(
-            authored.get("business_implication")
-        ):
-            item["business_implication"] = article.business_implication
-        if _text(authored.get("next_watch")) or article.next_watch != UNAVAILABLE_MARKER:
-            item["next_watch"] = article.next_watch
+        values = {
+            "headline": article.display_headline,
+            "what_happened": article.what_happened,
+            "why_now": article.why_now,
+            "owner_angle": article.business_implication,
+            "next_watch": article.next_watch,
+            "selection_reason": article.selection_reason,
+        }
+        # One decision, written to every alias of the group and to the nested
+        # mirror. Leaving any alias unwritten is what let the enricher's copy of
+        # the evidence outlive the boundary's refusal of the original.
+        nested = item.get("briefing_item")
+        nested = dict(nested) if isinstance(nested, dict) else None
+        for group in PROSE_FIELD_GROUPS:
+            value = values[group[0]]
+            for alias in group:
+                item[alias] = value
+                if nested is not None and alias in nested:
+                    nested[alias] = value
+        if nested is not None:
+            item["briefing_item"] = nested
         # Identity may not drift, whatever the model or a scaffold wrote.
         if article.news_id:
             item["news_id"] = article.news_id
@@ -312,7 +418,14 @@ def enforce_reader_surface(
         item["source_ids"] = list(evidence.get("source_ids") or []) if evidence else []
         item["source_url"] = article.canonical_url
         item["source_name"] = article.source_name
+        # Reader state, structural. A consumer asks whether this card may be
+        # shown; it does not pattern-match a marker string out of the prose.
         item["reader_surface_ready"] = article.reader_ready
+        item["reader_status"] = article.reader_status
+        item["customer_visible"] = article.reader_ready
+        item["reader_withheld_fields"] = [
+            group[0] for group in PROSE_FIELD_GROUPS if not _text(values[group[0]])
+        ]
         rebound.append(item)
 
     out = dict(generated_briefing)
