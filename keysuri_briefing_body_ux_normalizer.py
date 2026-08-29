@@ -66,6 +66,24 @@ _MECHANICAL_PHRASES: Tuple[Tuple[str, str], ...] = (
 _HANGUL_RE = re.compile(r"[가-힣]")
 
 
+#: Endings that require a following noun. A lead that stops on one is a phrase
+#: cut in half, not a name.
+_DANGLING_MODIFIER_ENDINGS: Tuple[str, ...] = (
+    "위한", "위해", "통한", "통해", "대한", "관한", "의한",
+    "하는", "되는", "있는", "없는", "같은", "따른", "인한",
+    "및", "와", "과", "의", "을", "를", "에", "로", "으로",
+)
+
+
+def _ends_on_dangling_modifier(text: str) -> bool:
+    """Whether ``text`` stops on a word that must be followed by a noun."""
+    cleaned = _text(text).rstrip(" ,·.\u2026")
+    if not cleaned:
+        return True
+    last = cleaned.split()[-1]
+    return last in _DANGLING_MODIFIER_ENDINGS
+
+
 def _card_may_lend_a_title(item: Any) -> bool:
     """Whether this card's title may be quoted in synthesized prose."""
     if not isinstance(item, dict):
@@ -250,7 +268,16 @@ def rewrite_signal_marker_sentence_to_natural_prose(
     # written out of two English source titles the reader never sees in full.
     # Without a usable name there is no sentence to write, so write none.
     def _is_name(lead: str, matched_company: bool) -> bool:
-        return bool(matched_company or (lead and _HANGUL_RE.search(lead)))
+        if matched_company:
+            return True
+        if not lead or not _HANGUL_RE.search(lead):
+            return False
+        # A Korean title cut to 24 characters can land mid-modifier, and the
+        # sentence then welds a dangling adnominal to the next noun:
+        # "네오클라우드 람다, AI 칩 구매를 위한 흐름과 …" from
+        # "…AI 칩 구매를 위한 10억 달러 부채 조달". The fragment is Korean, so a
+        # language test admits it; the defect is grammatical, not linguistic.
+        return not _ends_on_dangling_modifier(lead)
 
     if not (_is_name(lead_a, bool(companies_a)) and _is_name(lead_b, bool(companies_b))):
         return remove_internal_validation_markers(text)

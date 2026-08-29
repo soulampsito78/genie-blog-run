@@ -332,5 +332,44 @@ class NextWatchFormattingTests(unittest.TestCase):
             strip_watch_arrow_prefixes("2027년 목표 달성 여부"), "2027년 목표 달성 여부")
 
 
+class DeepDiveLeadTests(unittest.TestCase):
+    """The synthesized deep-dive lead may only use a whole name."""
+
+    def test_a_title_cut_mid_modifier_is_not_a_name(self) -> None:
+        from keysuri_briefing_body_ux_normalizer import _ends_on_dangling_modifier
+
+        # 2026-08-30: "네오클라우드 람다, AI 칩 구매를 위한 10억 달러 부채 조달"
+        # cut to 24 characters became "…AI 칩 구매를 위한", and the lead welded
+        # it to the next noun: "…구매를 위한 흐름과 … 이슈가 동시에 보인다는
+        # 것입니다." The fragment is Korean, so a reader-language test admits
+        # it; what is wrong with it is grammatical.
+        for fragment in (
+            "네오클라우드 람다, AI 칩 구매를 위한",
+            "태국 차세대 AI 스타트업 육성을 위한",
+            "국내 반도체 공급망에 대한",
+        ):
+            self.assertTrue(_ends_on_dangling_modifier(fragment), fragment)
+
+    def test_a_complete_name_still_leads(self) -> None:
+        from keysuri_briefing_body_ux_normalizer import _ends_on_dangling_modifier
+
+        for name in ("엔비디아", "삼성전자 HBM4 양산", "구글 검색"):
+            self.assertFalse(_ends_on_dangling_modifier(name), name)
+
+    def test_no_lead_is_written_without_two_usable_names(self) -> None:
+        from keysuri_briefing_body_ux_normalizer import (
+            rewrite_signal_marker_sentence_to_natural_prose,
+        )
+
+        items = [
+            {"news_id": "n1", "korean_title": "네오클라우드 람다, AI 칩 구매를 위한 10억 달러 부채 조달"},
+            {"news_id": "n2", "korean_title": "태국 차세대 AI 스타트업 육성을 위한 오픈AI의 지원"},
+        ]
+        out = rewrite_signal_marker_sentence_to_natural_prose("본문입니다.", items)
+        self.assertNotIn("흐름과", out)
+        self.assertNotIn("위한 흐름", out)
+        self.assertIn("본문입니다", out)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
