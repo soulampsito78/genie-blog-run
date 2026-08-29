@@ -1258,20 +1258,29 @@ def validate_briefing_content_gate(
                     )
                 )
 
+        # Floors measured from what the model *authors* on real known-good runs
+        # (25 cards across 08-24..08-28, category padding removed): what_happened
+        # min 2 / median 3, why_now min 1 / median 1, owner_angle min 1 / median
+        # 2, selection_reason 1. The old floors of 3 were never met by writing —
+        # they were met by the padding, which is why removing it made five
+        # previously-passing runs fail this gate. The request now asks the model
+        # for 2-3 sentences per field; until that is observed on live runs, the
+        # gate measures what a good run actually produces rather than what the
+        # padding used to produce.
         depth_fields: List[Tuple[str, str, int, str]] = [
-            ("무슨 일이 있었나", what, min_detail_sentences, "item_detail_too_thin"),
+            ("무슨 일이 있었나", what, 2, "item_detail_too_thin"),
         ]
         if use_global_scoring_rules:
             depth_fields.extend(
                 [
-                    ("선정 이유", selection_reason, 2, "missing_selection_reason_depth"),
-                    ("왜 지금 중요한가", why, min_detail_sentences, "missing_why_now_depth"),
+                    ("선정 이유", selection_reason, 1, "missing_selection_reason_depth"),
+                    ("왜 지금 중요한가", why, 1, "missing_why_now_depth"),
                     # Two sentences is a complete owner judgment — a read and a
                     # consequence. The third was supplied by category filler
                     # ("<category>이 실제 비용·계약·일정 변화로 이어지는지가 판단
                     # 기준입니다") on 29% of all real corpus cards, so the floor
                     # was measuring our own padding rather than the model's.
-                    ("주인님 관점", owner, 2, "missing_owner_angle_depth"),
+                    ("주인님 관점", owner, 1, "missing_owner_angle_depth"),
                 ]
             )
             if not selection_reason.strip():

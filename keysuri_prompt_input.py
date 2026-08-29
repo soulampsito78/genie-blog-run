@@ -91,6 +91,23 @@ def _generation_instructions(program_id: str, news_scope: str, section_heading: 
         "top_5_news.items must contain exactly 5 items grounded in source_pack claims.",
         "Use only facts, numbers, dates, and sources present in the provided source_pack.",
         "Maintain Kee-Suri premium private secretary tone; not public news anchor tone.",
+        # Depth was never requested here. Measured across the real 2026-08-24..
+        # 08-28 Global runs, the model's authored why_it_matters was a single
+        # sentence on most cards — and the enricher padded every field to three
+        # with sentences keyed on the item's category. The requirement lived on
+        # the downstream gate and on the padding that satisfied it, never on the
+        # request. Ask for the depth the product needs, from the one writer that
+        # can supply it about this article.
+        "Write summary in 2-3 sentences, why_it_matters in 2-3 sentences, and "
+        "business_implication in 2-3 sentences, for every one of the 5 items.",
+        "Every sentence must say something that is true of this article and not "
+        "of the other four. Do not restate the headline, and do not write a "
+        "sentence that would remain correct if this item were swapped for "
+        "another in the same category.",
+        "Vary sentence shape across the 5 items: do not reuse one opener, "
+        "connective, or ending pattern.",
+        "next_watch must name checkpoints this article's own source supports; "
+        "give one real checkpoint rather than two generic ones.",
         "Set operational_status to review_required.",
         "Do not produce email HTML, Naver paste, or attachment-package language.",
     ]
