@@ -18,7 +18,29 @@ KEYSURI_GEMINI_MODE = "keysuri_generation"
 # give Global a higher default without raising Korea's budget.
 KEYSURI_DEFAULT_BODY_MAX_OUTPUT_TOKENS = 12288
 KEYSURI_GLOBAL_BODY_MAX_OUTPUT_TOKENS = 16384
-KEYSURI_GLOBAL_BODY_MAX_OUTPUT_TOKENS_RETRY = 16384
+KEYSURI_GLOBAL_BODY_MAX_OUTPUT_TOKENS_RETRY = 24576
+
+#: Ceiling on model *reasoning* tokens per body call.
+#:
+#: On a thinking model, reasoning is billed against ``max_output_tokens`` — the
+#: same allowance the JSON contract has to fit in. Nothing bounded it, so the
+#: two competed, and a run that reasoned at length had no room left to answer.
+#: Measured on three real Global runs at the same prompt size (~9.4k):
+#:
+#:   2026-08-26  thoughts    930 -> output 4,848 -> full contract, READY
+#:   2026-08-24  thoughts  3,317 -> output 3,838 -> full contract, REVIEW
+#:   2026-08-29  thoughts 15,700 -> output   642 -> contract truncated after the
+#:                                                  display fields, twice
+#:
+#: A complete Global contract costs ~3.8k-4.9k output tokens, so with a 16,384
+#: allowance any run reasoning past ~11.5k loses the contract outright. This
+#: budget keeps reasoning under the largest amount a *successful* run has ever
+#: needed (3,317) plus wide headroom, which leaves >=10k for the answer — twice
+#: the largest good output on record.
+KEYSURI_BODY_THINKING_BUDGET = 6144
+
+#: Minimum output room the contract must be left after reasoning.
+KEYSURI_BODY_MIN_ANSWER_TOKENS = 8192
 
 # Program-specific body-model overrides. These take priority over the shared
 # KEYSURI_BODY_GEMINI_MODEL so Global Tech (working on gemini-3-flash-preview)
@@ -129,6 +151,58 @@ def resolve_keysuri_body_max_output_tokens(
     return KEYSURI_DEFAULT_BODY_MAX_OUTPUT_TOKENS
 
 
+def resolve_keysuri_body_thinking_budget(
+    max_output_tokens: int,
+    *,
+    thinking_budget: "Optional[int]" = None,
+) -> int:
+    """Reasoning ceiling that always leaves the contract room to be written.
+
+    Priority: explicit arg > ``GENIE_THINKING_BUDGET`` env > default. The result
+    is clamped so the answer keeps at least
+    ``KEYSURI_BODY_MIN_ANSWER_TOKENS``, because a reasoning budget that starves
+    the answer is the failure this exists to prevent, not a tuning choice.
+    """
+    raw = thinking_budget
+    if raw is None:
+        env_raw = os.getenv("GENIE_THINKING_BUDGET", "").strip()
+        if env_raw:
+            try:
+                raw = int(env_raw)
+            except ValueError:
+                raw = None
+    if raw is None:
+        raw = KEYSURI_BODY_THINKING_BUDGET
+    budget = max(0, int(raw))
+    headroom = int(max_output_tokens) - KEYSURI_BODY_MIN_ANSWER_TOKENS
+    if headroom < 0:
+        headroom = int(max_output_tokens) // 2
+    return min(budget, max(0, headroom))
+
+
+def _apply_thinking_budget(generation_config: object, budget: int) -> bool:
+    """Bound reasoning on the underlying proto.
+
+    The legacy ``vertexai.generative_models.GenerationConfig`` wrapper takes no
+    thinking argument, but the v1beta1 proto it builds carries
+    ``thinking_config``. Setting it there is the only way to bound reasoning
+    without changing SDK. Returns whether it was applied; a model or SDK that
+    does not carry the field must degrade to current behaviour, never fail the
+    run.
+    """
+    if budget <= 0:
+        return False
+    try:
+        raw = getattr(generation_config, "_raw_generation_config", None)
+        if raw is None or not hasattr(raw, "thinking_config"):
+            return False
+        raw.thinking_config.thinking_budget = int(budget)
+        raw.thinking_config.include_thoughts = False
+        return True
+    except Exception:
+        return False
+
+
 def _finish_reason_name(candidate: object) -> str:
     reason = getattr(candidate, "finish_reason", None)
     if reason is None:
@@ -210,6 +284,24 @@ def _extract_gemini_text_safe(response: object) -> str:
             "Gemini returned empty text response",
             diagnostics=empty_diag,
         )
+
+    # A response cut off at the token ceiling is not a response, even when some
+    # text came back. Every guard above tests for *no* text, so on 2026-08-29 a
+    # contract truncated after its display fields was accepted as complete: the
+    # JSON parsed (the model closed the object early), the missing TOP5 read as
+    # "the model omitted it", and the scaffold filled it from the evidence pack.
+    # The finish reason was recorded in diagnostics and never consulted, because
+    # the text was non-empty. Refusing here is what makes the corrective call a
+    # retry of a *failed* request rather than a repair of a bad answer.
+    if "MAX_TOKENS" in finish_reason:
+        truncated_diag = dict(base_diag)
+        truncated_diag["text_length"] = len(str(text))
+        raise KeysuriGeminiError(
+            "keysuri_gemini_max_tokens_truncated_text: Gemini hit "
+            f"max_output_tokens after producing {len(str(text))} characters "
+            f"(finish_reason={finish_reason}); the response is incomplete",
+            diagnostics=truncated_diag,
+        )
     return str(text)
 
 
@@ -272,14 +364,17 @@ def call_keysuri_gemini_text(
     try:
         vertexai.init(project=pid, location=loc)
         generative_model = GenerativeModel(model_name)
+        generation_config = GenerationConfig(
+            temperature=0.3,
+            top_p=0.9,
+            max_output_tokens=max_out,
+            response_mime_type="application/json",
+        )
+        thinking_budget = resolve_keysuri_body_thinking_budget(max_out)
+        thinking_applied = _apply_thinking_budget(generation_config, thinking_budget)
         response = generative_model.generate_content(
             prompt,
-            generation_config=GenerationConfig(
-                temperature=0.3,
-                top_p=0.9,
-                max_output_tokens=max_out,
-                response_mime_type="application/json",
-            ),
+            generation_config=generation_config,
         )
     except KeysuriGeminiError:
         raise
@@ -290,6 +385,8 @@ def call_keysuri_gemini_text(
         try:
             usage_sink["model"] = model_name
             usage_sink["max_output_tokens"] = max_out
+            usage_sink["thinking_budget"] = thinking_budget
+            usage_sink["thinking_budget_applied"] = thinking_applied
             usage_sink["program_id"] = (program_id or "").strip() or None
             usage_sink.update(extract_gemini_usage_metadata(response))
         except Exception:

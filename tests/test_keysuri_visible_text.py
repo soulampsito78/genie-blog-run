@@ -83,9 +83,23 @@ class KeysuriVisibleTextTests(unittest.TestCase):
 
         out = build_visible_selection_reason(item, {}, program_id="keysuri_global_tech")
 
-        self.assertIn("AI·소프트웨어·플랫폼", out)
+        # The internal score never reaches the reader. It is no longer replaced
+        # by a category sentence either: "「X」 신호가 <category> 판단 기준과
+        # 맞닿아 있어 먼저 확인 대상으로 골랐습니다" named the card's own
+        # category and nothing else, so it read identically on all five cards.
+        # A reason we cannot ground is omitted, and the block with it.
+        self.assertEqual(out, "")
         for forbidden in ("총점", "점수", "스코어", "score", "scoring", "기록했으며"):
             self.assertNotIn(forbidden, out.lower() if forbidden in ("score", "scoring") else out)
+
+    def test_a_grounded_global_selection_reason_is_kept(self) -> None:
+        item = {
+            "korean_title": "구글, 풀스택 AI 에이전트 전략 공개",
+            "primary_category": "ai_software_platform",
+            "selection_reason": "근거는 Google The Keyword 공식 보도입니다.",
+        }
+        out = build_visible_selection_reason(item, {}, program_id="keysuri_global_tech")
+        self.assertIn("Google The Keyword", out)
 
     def test_repair_obvious_korean_quality_artifact_repeated_token(self) -> None:
         raw = "이 흐름은 국내 산업에 어떤 영향을 미 미칠 것인가?"

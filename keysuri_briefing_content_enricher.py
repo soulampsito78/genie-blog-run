@@ -645,117 +645,44 @@ def _checkpoint_variant_index(item: dict) -> int:
     return max(rank - 1, 0)
 
 
-def _item_specific_checkpoint(item: dict, meta: dict, *, style: str) -> str:
-    """Padding sentence anchored on this item's subject phrase + category checkpoints.
-
-    Replaces the shared per-category constants (_WHY_NOW_CONCRETE_BY_CAT /
-    _OWNER_CONTEXT / category follow sentences) as default padding — those
-    repeated verbatim across same-category items. Never wraps an incomplete
-    truncated title in 「」.
-    """
-    hook = _item_title_hook(item, meta)
-    checkpoint_a, checkpoint_b = _concrete_next_watch_pair(meta, item)
-    full_title = _grounded_title(item, meta).rstrip(".")
-    # Prefer a clean subject phrase; otherwise use the complete title unquoted,
-    # or omit the title wrapper entirely.
-    if hook and not contains_dangling_quoted_title_fragment(f"「{hook}」"):
-        subject = f"「{hook}」"
-    elif full_title and len(full_title) <= 48:
-        subject = full_title
-    else:
-        subject = _category_label(meta, item) or "이번 이슈"
-    # Anchoring padding on each item's own title makes the five sentences
-    # textually distinct but leaves them structurally identical, which is what
-    # `global_visible_repeated_template_skeleton_blocked` measures — and what
-    # put the 2026-08-28 17:29 Global run into REVIEW with the same skeleton on
-    # 5/5 cards. Rotating the phrasing by rank gives each card a different
-    # sentence shape as well as a different subject.
-    variant = _checkpoint_variant_index(item)
-    if style == "why_now":
-        return _pick(
-            variant,
-            (
-                f"{subject} 확인 포인트는 {checkpoint_a}, 그리고 {checkpoint_b}입니다.",
-                f"{subject} 먼저 볼 지표는 {checkpoint_a}, 이어서 {checkpoint_b}입니다.",
-                f"{subject} 판단을 가르는 변수는 {checkpoint_a}, {checkpoint_b}입니다.",
-                f"{subject} 흐름은 {checkpoint_a}에서 먼저 드러납니다. 이어서 {checkpoint_b} 쪽을 봅니다.",
-                f"{subject} 관찰 순서는 {checkpoint_a} 다음 {checkpoint_b}입니다.",
-            ),
-        )
-    if style == "owner":
-        return _pick(
-            variant,
-            (
-                f"{subject} 후속은 {checkpoint_a} 중심으로 보면 됩니다.",
-                f"{subject} 다음 확인은 {checkpoint_a}에서 시작하면 충분합니다.",
-                f"{subject} 이어지는 신호는 {checkpoint_a}에 먼저 나타납니다.",
-                f"{subject} 실무 점검은 {checkpoint_a}부터 잡으면 됩니다.",
-                f"{subject} 추적 대상은 우선 {checkpoint_a}입니다.",
-            ),
-        )
-    if style == "what":
-        return _pick(
-            variant,
-            (
-                f"{subject} 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다.",
-                f"{subject} 공개된 범위 밖의 계약 조건은 아직 확인되지 않았습니다.",
-                f"{subject} 규모와 시점은 원문이 갱신되면 달라질 수 있습니다.",
-                f"{subject} 지금까지 확인된 사실은 이번 발표 내용까지입니다.",
-                f"{subject} 구체적인 실행 단계는 아직 공개되지 않았습니다.",
-            ),
-        )
-    if style == "decision":
-        # 이/가 must agree with the subject's last syllable. A bare category
-        # label subject ends on a consonant — "정책·규제·자본·공급망가" reached the
-        # 2026-08-14 Global email because the particle was hard-coded.
-        marked = attach_korean_subject_particle(subject)
-        return _pick(
-            variant,
-            (
-                f"{marked} 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다.",
-                f"{marked} 예산과 일정에 실제로 반영되는지를 보고 판단합니다.",
-                f"{marked} 발표에 그치는지 집행으로 넘어가는지가 갈림길입니다.",
-                f"{marked} 계약 조건까지 확정되는 시점이 판단 지점입니다.",
-                f"{marked} 운영 비용에 닿기 시작하면 그때 무게가 달라집니다.",
-            ),
-        )
-    return _pick(
-        variant,
-        (
-            f"{subject} 후속 일정과 공식 발표부터 보면 됩니다.",
-            f"{subject} 공식 일정 공지가 나오면 다시 확인합니다.",
-            f"{subject} 다음 발표 시점을 기준으로 이어서 봅니다.",
-            f"{subject} 후속 공지가 나올 때까지는 관찰 상태로 둡니다.",
-            f"{subject} 일정이 구체화되면 그때 다시 짚습니다.",
-        ),
-    )
+#: ``_item_specific_checkpoint`` used to live here: five rotations each of a
+#: why_now / owner / what / decision / follow sentence, anchored on the item's
+#: title and filled from ``_NEXT_WATCH_BY_CAT``. It was the engine that met
+#: ``MIN_SECTION_SENTENCES`` when the model wrote less than three sentences, and
+#: measured across the real 2026-08-24..08-28 Global corpus it was supplying 32%
+#: of why_now and 29% of owner_angle — 60% on the run accepted on 08-28.
+#:
+#: Rotating the phrasing made the five cards textually distinct while leaving
+#: them structurally identical, and the content came from the *category*, so any
+#: article in that category would have carried the same sentence. It is deleted
+#: rather than left unwired: a depth quota and a bank of category sentences in
+#: the same module is how this returns.
 
 
 def _build_selection_reason(item: dict, meta: dict) -> str:
+    """Why this article was picked — the model's reason, plus its source.
+
+    The category sentence that used to pad this field ("「X」를 <category> 축에서
+    먼저 볼 신호로 골라 포함했습니다") named the category and the title and said
+    nothing else, so it read the same on all five cards and would have been just
+    as true of any article in that category. Naming the source is different: it
+    is a fact about this item, and it is the reader's warrant for the card.
+    """
     existing = _get_field(item, "selection_reason", "selection_rationale")
-    title = _grounded_title(item, meta)
-    category = _category_label(meta, item)
+    # "총점 44점(구조 4, 주인님 12, 사업 4)." is internal owner copy. Carrying it
+    # into the visible field meant the whole field was rejected downstream as
+    # internal, and a category sentence was written in its place — so the score
+    # never reached the reader but neither did any real reason.
+    if existing and looks_like_internal_owner_copy(existing):
+        existing = ""
     source = _text(meta.get("source_name") or item.get("source_name"))
-    hook = _item_title_hook(item, meta)
     variant = _checkpoint_variant_index(item)
-    chosen = (
-        _pick(
-            variant,
-            (
-                f"「{hook}」를 {category} 축에서 먼저 볼 신호로 골라 포함했습니다.",
-                f"{category} 축에서 「{hook}」의 움직임이 가장 먼저 눈에 띄었습니다.",
-                f"「{hook}」 건은 {category} 판단에 바로 걸리는 사안이라 넣었습니다.",
-                f"오늘 {category} 흐름을 대표하는 신호로 「{hook}」를 골랐습니다.",
-                f"「{hook}」를 {category} 관점에서 먼저 확인할 항목으로 봤습니다.",
-            ),
-        )
-        if hook
-        else f"오늘 흐름에서 {category} 축과 맞닿는 공식 보도라 포함했습니다."
-    )
+    meta_reason = _text(meta.get("selection_rationale"))
+    if meta_reason and looks_like_internal_owner_copy(meta_reason):
+        meta_reason = ""
     padding = [
         existing,
-        _text(meta.get("selection_rationale")),
-        chosen,
+        meta_reason,
         _pick(
             variant,
             (
@@ -803,12 +730,27 @@ def _build_what_happened(item: dict, meta: dict) -> Tuple[str, bool]:
         if title and source
         else ""
     )
-    padding = [
-        attribution,
-        _item_specific_checkpoint(item, meta, style="what"),
-    ]
-    if thin:
-        padding.append(_UNCERTAINTY_MARKER)
+    # Attribution is a *factual transformation*: this article's own source name
+    # and title, rendered deterministically. It stays.
+    #
+    # The category checkpoint that used to follow it does not. It says nothing
+    # about this article — "세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다"
+    # is true of every story ever written — and it existed only to reach
+    # MIN_SECTION_SENTENCES. Measured across the real 08-24..08-28 corpus, that
+    # quota was filling 12% of what_happened, 32% of why_now and 29% of
+    # owner_angle with category prose, reaching 60% on the 08-28 run that was
+    # accepted. A depth requirement met with generic sentences is not depth.
+    #
+    # When the source really is thin the honest signal already exists and is
+    # already rendered: the limitation marker, which the content-quality gate
+    # accepts in place of depth (``insufficient_marked``).
+    # Thinness is a *state*, not a sentence. Appending the limitation marker to
+    # the body put the identical sentence — "향후 공식 발표를 통해 세부 내용이
+    # 보완될 가능성이 있습니다." — on every thin card, which is a repeated
+    # skeleton across TOP5 by construction. ``detail_insufficient`` already
+    # carries the state, and the card already renders it as a badge
+    # ("공개 요약 한계 · 공식 발표 대기") which the content gate reads.
+    padding = [attribution]
     out = _ensure_sentence_depth(
         existing,
         min_sentences=MIN_SECTION_SENTENCES,
@@ -825,34 +767,34 @@ def _build_why_now(item: dict, meta: dict) -> str:
     ``sanitize_global_repeated_common_filler`` after all TOP5 items are enriched.
     """
     existing = _get_field(item, "why_now", "why_it_matters")
-    # Item-anchored checkpoints — the shared per-category constants repeated
-    # verbatim across same-category items ("확인 포인트는 API 공개 일정·엔터프라이즈
-    # 도입·가격 조건입니다" / "{category} 후속 일정과 공식 발표만 확인하면 됩니다"
-    # ×3 each in the 2026-07-10 Gmail).
-    concrete = _item_specific_checkpoint(item, meta, style="why_now")
-    follow = _item_specific_checkpoint(item, meta, style="follow")
-    padding = [existing, concrete, follow]
+    # No padding. Anchoring a category checkpoint on the item's own title made
+    # the five sentences textually distinct while leaving them structurally
+    # identical, and the checkpoints themselves come from _NEXT_WATCH_BY_CAT —
+    # they are keyed on the *category*, so any article in that category gets the
+    # same advice. That is the "could this paragraph move to another article
+    # with only the headline changed?" failure, manufactured by us.
+    #
+    # A field the model did not write is now empty, and the reader-surface
+    # boundary withholds it. Fallback filler must not stand in for missing
+    # authored prose.
     return _ensure_sentence_depth(
         existing,
         min_sentences=MIN_SECTION_SENTENCES,
-        padding=[p for p in padding if p],
+        padding=[],
     )
 
 
 def _build_owner_angle(item: dict, meta: dict) -> str:
     existing = _get_field(item, "owner_angle", "business_implication")
-    # No shared contrast sentence ("단기 과장과 구조 변화는 구분해 보시면 됩니다"
-    # ×5) and no shared per-category owner context — pad with this item's own
-    # checkpoint sentence instead.
-    padding = [
-        existing,
-        _item_specific_checkpoint(item, meta, style="owner"),
-        _item_specific_checkpoint(item, meta, style="decision"),
-    ]
+    # Same reasoning as why_now. The "owner" and "decision" checkpoints were the
+    # most visibly mechanical prose in the product — on 2026-08-29 every card
+    # read "<category> 영역의 공개 발표로 ... <category> 후속은 ... <category>이
+    # 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다", the category name
+    # carrying three sentences in place of an argument.
     return _ensure_sentence_depth(
         existing,
         min_sentences=MIN_SECTION_SENTENCES,
-        padding=[p for p in padding if p],
+        padding=[],
     )
 
 
@@ -1003,7 +945,6 @@ def _concrete_next_watch_pair(meta: dict, item: dict) -> Tuple[str, str]:
 
 def _build_next_watch(item: dict, meta: dict) -> str:
     items = _next_watch_items(_raw_field(item, "next_watch", "next_check_point"))
-    concrete_a, concrete_b = _concrete_next_watch_pair(meta, item)
     startup_item = _looks_startup_founder_item(item, meta)
     # Drop generic filler bullets so category-specific checkpoints can replace
     # them; on startup/founder items also drop energy/EV/grid bullets left by a
@@ -1018,10 +959,12 @@ def _build_next_watch(item: dict, meta: dict) -> str:
             continue
         kept.append(it)
     items = kept
-    if len(items) < MIN_NEXT_WATCH_ITEMS:
-        items.append(concrete_a)
-    if len(items) < MIN_NEXT_WATCH_ITEMS:
-        items.append(concrete_b)
+    # No category top-up. `_concrete_next_watch_pair` reads its checkpoints out
+    # of `_NEXT_WATCH_BY_CAT`, so every article in a category was told to watch
+    # the same two things — "공급 일정·파운드리/벤더 고객 발표" appeared on the
+    # 08-24 card about AI-factory *security*, which that article said nothing
+    # about. A checkpoint the article does not support is not a checkpoint; one
+    # real one is better than two, and none is better than a wrong one.
     deduped: List[str] = []
     for it in items:
         if it and it not in deduped:
@@ -1075,25 +1018,15 @@ def _replace_or_pad_after_filler_removal(
     cat: str,
     field: str,
 ) -> str:
-    out = dedupe_sentences_in_paragraph(dedupe_repeated_paragraph(_text(text)))
-    if not removed:
-        return out
-    if _sentence_count(out) >= 2:
-        return out
-    concrete = _WHY_NOW_CONCRETE_BY_CAT.get(cat, "확인 포인트는 후속 공식 발표·일정입니다.")
-    if field == "owner_angle":
-        concrete = _OWNER_CONTEXT.get(
-            cat,
-            "운영·파트너·서비스 의사결정에 어떤 경계가 생기는지 보면 됩니다.",
-        )
-    if concrete and concrete not in out:
-        if out:
-            out = f"{out.rstrip('.')}. {concrete}"
-        else:
-            out = concrete
-    if out and not out.endswith((".", "!", "?")):
-        out += "."
-    return dedupe_sentences_in_paragraph(out)
+    # Removing a sentence that repeated across cards leaves the field shorter,
+    # and that is the correct outcome. Substituting a sentence from
+    # ``_WHY_NOW_CONCRETE_BY_CAT`` / ``_OWNER_CONTEXT`` swapped one piece of
+    # category prose for another: the *repeat* was gone, the interchangeability
+    # was not, since every article in the category received the same
+    # replacement. A field carries what the model wrote for this article, or
+    # less of it — never a substitute written for its category.
+    del cat, field
+    return dedupe_sentences_in_paragraph(dedupe_repeated_paragraph(_text(text)))
 
 
 _GLOBAL_PROSE_FIELDS: Tuple[Tuple[str, ...], ...] = (

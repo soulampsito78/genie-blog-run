@@ -337,6 +337,20 @@ SOURCE_CONCENTRATION_SCORE_GAP = 15
 REPLACEMENT_POOL_MAX_REJECTED = 12
 REPLACEMENT_POOL_MIN_BASE_SCORE = 30
 
+#: The score at which ``_classify_total`` stops calling a candidate "reject".
+#: A briefing card is a claim on the owner's attention, and an item the scorer
+#: rejected does not clear that bar merely because five slots must be filled.
+#:
+#: 2026-08-29 12:30 Global: cross-day dedup removed all five real picks — the
+#: three best candidates in the pool scored 45/49/50 and were watchlist-grade —
+#: and the replacement pool then supplied every one of the five published cards,
+#: scoring 39-44, all five classified "reject", two with structural_impact 0.
+#: ``_is_safe_replacement_candidate`` says in its own docstring that these are
+#: allowed "as duplicate replacements, not as primary picks", and nothing
+#: enforced it. The mandatory semiconductor and robotics slots already require
+#: this floor; the general score-rank fill did not.
+TOP5_QUALITY_FLOOR_BASE_SCORE = 45
+
 _GENERIC_MARKETING = (
     "ai adoption is accelerating",
     "companies are adopting ai",
@@ -886,10 +900,11 @@ def classify_global_tech_category(
 
 
 def _is_qualifying_candidate(item: ScoredGlobalSignal) -> bool:
+    """Clears the product quality floor for a customer-visible TOP5 card."""
     return (
         item.classification != "hard_reject"
         and not item.hard_reject_reason
-        and item.scores.base_total >= 45
+        and item.scores.base_total >= TOP5_QUALITY_FLOOR_BASE_SCORE
     )
 
 
@@ -1044,6 +1059,11 @@ def _select_diverse_top5(
             break
         if _key(item) in selected_keys:
             continue
+        if not _is_qualifying_candidate(item):
+            decisions.append(
+                f"below_quality_floor:{item.scores.base_total}:{item.title[:50]}"
+            )
+            continue
         _try_add(item, "score_rank")
 
     if diversity_limited and len(selected) < 5:
@@ -1053,7 +1073,17 @@ def _select_diverse_top5(
                 break
             if _key(item) in selected_keys:
                 continue
+            if not _is_qualifying_candidate(item):
+                continue
             _try_add(item, "diversity_limited_fill")
+
+    # Fewer than five candidates cleared the floor. Returning fewer is the
+    # honest outcome: a short, real briefing can be handled downstream, whereas
+    # topping up from the reject pile publishes five cards the scorer already
+    # judged not worth the owner's attention. Recorded so the shortfall is
+    # visible rather than inferred from a count.
+    if len(selected) < 5:
+        decisions.append(f"quality_floor_shortfall:{5 - len(selected)}")
 
     if not diversity_limited:
         non_ai_selected = sum(1 for s in selected if s.primary_category != AI_PRIMARY_CATEGORY)

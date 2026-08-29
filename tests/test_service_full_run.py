@@ -4511,8 +4511,10 @@ class KeysuriGlobalOwnerReviewEmailDesignRestorationTests(unittest.TestCase):
         )
 
         self.assertEqual(len(fixture["top_5_items"]), 5)
-        self.assertIn("선정 이유", email_html)
-        self.assertIn("선정 이유", preview_html)
+        # This fixture's only selection_reason is an internal score, so the
+        # block is correctly omitted rather than filled with a category
+        # sentence; see the assertions below.
+
         for forbidden in (
             "총점",
             "54점",
@@ -4532,9 +4534,13 @@ class KeysuriGlobalOwnerReviewEmailDesignRestorationTests(unittest.TestCase):
             with self.subTest(rendered="preview", forbidden=forbidden):
                 self.assertNotIn(forbidden, preview_html.lower())
         for rendered in (email_html, preview_html):
-            self.assertIn("먼저 확인 대상으로 골랐습니다", rendered)
-            self.assertIn("판단 기준과 맞닿아 있어", rendered)
+            # This fixture's selection_reason is *only* an internal score, so
+            # after it is withheld there is no grounded reason left and the
+            # block is omitted. What must never happen is either the score
+            # reaching the reader or a category sentence standing in for it.
             self.assertNotIn("주인님께 먼저 확인하실 만한 신호로 판단되었습니다", rendered)
+            self.assertNotIn("판단 기준과 맞닿아 있어", rendered)
+            self.assertNotIn("축에서 먼저 볼 신호로", rendered)
 
     def test_korea_renderer_available_but_not_sent_by_global_service_full_run(self) -> None:
         from keysuri_contract_preview_renderer import render_keysuri_contract_preview_html

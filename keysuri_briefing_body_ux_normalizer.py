@@ -65,6 +65,20 @@ _MECHANICAL_PHRASES: Tuple[Tuple[str, str], ...] = (
 #: Any Hangul syllable — used to tell reader-language text from source text.
 _HANGUL_RE = re.compile(r"[가-힣]")
 
+
+def _card_may_lend_a_title(item: Any) -> bool:
+    """Whether this card's title may be quoted in synthesized prose."""
+    if not isinstance(item, dict):
+        return False
+    if "customer_visible" in item and not item.get("customer_visible"):
+        return False
+    if "reader_surface_ready" in item and not item.get("reader_surface_ready"):
+        return False
+    from keysuri_reader_surface import UNAVAILABLE_MARKER
+
+    title = str(item.get("korean_title") or item.get("headline") or "")
+    return bool(title.strip()) and UNAVAILABLE_MARKER not in title
+
 _COMPANY_ALIASES: Tuple[Tuple[str, str], ...] = (
     ("nvidia", "엔비디아"),
     ("notion", "Notion"),
@@ -205,6 +219,17 @@ def rewrite_signal_marker_sentence_to_natural_prose(
         return remove_internal_validation_markers(text)
 
     items = [i for i in top5_items if isinstance(i, dict)]
+    if len(items) < 2:
+        return remove_internal_validation_markers(text)
+
+    # A card whose reader prose was withheld has no title to lend. Its headline
+    # is empty in a fresh run, but a reissue or replay reads back a stored
+    # briefing where the withheld headline was the unavailable marker — and the
+    # marker is Korean, so a "does this look like reader language?" test admits
+    # it. That is how the deep dive came to open "오늘 눈에 띄는 점은 (본문
+    # 준비되지 않음 — 운영자 확인 필요) 흐름과 ... 이슈가 동시에 보인다는
+    # 것입니다". Reader state is structural; read it, do not infer it.
+    items = [i for i in items if _card_may_lend_a_title(i)]
     if len(items) < 2:
         return remove_internal_validation_markers(text)
 

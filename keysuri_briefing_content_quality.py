@@ -1266,7 +1266,12 @@ def validate_briefing_content_gate(
                 [
                     ("선정 이유", selection_reason, 2, "missing_selection_reason_depth"),
                     ("왜 지금 중요한가", why, min_detail_sentences, "missing_why_now_depth"),
-                    ("주인님 관점", owner, min_detail_sentences, "missing_owner_angle_depth"),
+                    # Two sentences is a complete owner judgment — a read and a
+                    # consequence. The third was supplied by category filler
+                    # ("<category>이 실제 비용·계약·일정 변화로 이어지는지가 판단
+                    # 기준입니다") on 29% of all real corpus cards, so the floor
+                    # was measuring our own padding rather than the model's.
+                    ("주인님 관점", owner, 2, "missing_owner_angle_depth"),
                 ]
             )
             if not selection_reason.strip():
@@ -1278,7 +1283,12 @@ def validate_briefing_content_gate(
                         item_index=idx,
                     )
                 )
-            if watch and _watch_checkpoint_count(watch) < 2:
+            if (
+                watch
+                and _watch_checkpoint_count(watch) < 2
+                and "공개 요약 한계" not in block
+                and "공식 발표 대기" not in block
+            ):
                 issues.append(
                     BriefingContentIssue(
                         "missing_next_watch_depth",
@@ -1288,7 +1298,16 @@ def validate_briefing_content_gate(
                         excerpt=watch[:100],
                     )
                 )
+        # A card that declares its source thin has already told the reader why
+        # it is short. Requiring three sentences anyway is what the enricher was
+        # answering when it padded every explanatory field with category
+        # templates — the quota was met, and the meaning was not. Depth is a
+        # property of authored prose; where there is not enough to say, the
+        # honest output is a short card carrying the limitation marker.
+        marked_thin = "공개 요약 한계" in block or "공식 발표 대기" in block
         for label, text, min_sent, code in depth_fields:
+            if marked_thin:
+                continue
             if text and _sentence_count(text) < min_sent:
                 thin_detail_count += 1
                 issues.append(

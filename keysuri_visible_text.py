@@ -673,7 +673,12 @@ def build_visible_selection_reason(
             raw = normalize_visible_text(item.get(key) or meta.get(key) or "", style="inline")
             if raw and not looks_like_internal_owner_copy(raw):
                 return dedupe_sentences_in_paragraph(raw)
-        return _global_visible_selection_reason(item, meta)
+        # Nothing authored survived. The sentence that used to be written here
+        # named the category and the title and said nothing else, so it read the
+        # same on all five cards and would have been equally true of any article
+        # in that category. An omitted block is honest; a manufactured reason is
+        # not.
+        return ""
 
     candidate = normalize_visible_text(existing, style="inline")
     if candidate and not looks_like_internal_owner_copy(candidate):

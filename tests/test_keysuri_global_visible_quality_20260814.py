@@ -458,23 +458,29 @@ class KoreanAssemblyTests(unittest.TestCase):
         broken = "정책·규제·자본·공급망가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다."
         self.assertTrue(korean_particle_defects(broken))
 
-    def test_enricher_decision_padding_now_agrees(self) -> None:
-        from keysuri_briefing_content_enricher import _item_specific_checkpoint
+    def test_subject_particle_agrees_with_a_category_label(self) -> None:
+        """이/가 must follow the subject's last syllable.
 
-        sentence = _item_specific_checkpoint(
-            {"primary_category": "policy_regulation_capital_supplychain"},
-            {
-                "primary_category": "policy_regulation_capital_supplychain",
-                "category_label_ko": "정책·규제·자본·공급망",
-                "statement": (
-                    "NVIDIA AI Factory Compute Is Becoming an Investable Asset Class "
-                    "and a new financing standard for the whole industry"
-                ),
-            },
-            style="decision",
-        )
-        self.assertNotIn("공급망가", sentence)
-        self.assertEqual(korean_particle_defects(sentence), [], sentence)
+        "정책·규제·자본·공급망가" reached the 2026-08-14 Global email because the
+        particle was hard-coded. The padding sentence that carried it is gone,
+        but the helper is still used wherever a dynamic noun phrase takes a
+        subject particle, so the agreement itself is what is pinned here.
+        """
+        from keysuri_global_visible_surface import attach_korean_subject_particle
+
+        for subject, expected in (
+            ("정책·규제·자본·공급망", "정책·규제·자본·공급망이"),
+            ("반도체·칩·AI 인프라", "반도체·칩·AI 인프라가"),
+        ):
+            marked = attach_korean_subject_particle(subject)
+            self.assertEqual(marked, expected)
+            sentence = f"{marked} 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다."
+            self.assertNotIn("공급망가", sentence)
+            self.assertEqual(korean_particle_defects(sentence), [], sentence)
+
+    def test_production_defect_is_reported(self) -> None:
+        broken = "정책·규제·자본·공급망가 실제 비용·계약·일정 변화로 이어지는지가 판단 기준입니다."
+        self.assertTrue(korean_particle_defects(broken))
 
 
 class CategoryGroundingTests(unittest.TestCase):

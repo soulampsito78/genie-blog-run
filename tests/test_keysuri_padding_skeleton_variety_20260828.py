@@ -12,8 +12,15 @@ structurally identical, which is exactly what
     5 items ranks [1,2,3,4,5]: 「X」 세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다.
     3 items ranks [2,3,4]:     {source} 후속 공식 발표; 원문 업데이트·구체 수치 공개 여부
 
-The padding now rotates by rank, so each card draws a different sentence shape
-as well as a different subject.
+Rotating the padding by rank was the first answer, and it was the wrong one: it
+varied the wording of sentences whose *content* still came from the category, so
+the prose stayed interchangeable between articles in the same category. The
+padding is gone instead. Explanatory fields now carry the model's prose or
+nothing, and a field with nothing in it is withheld at the reader-surface
+boundary rather than filled.
+
+Measured across the real 08-24..08-28 corpus, category templates supplied 32% of
+why_now and 29% of owner_angle before this change, and 0% after.
 """
 from __future__ import annotations
 
@@ -26,8 +33,6 @@ sys.path.insert(0, str(_ROOT))
 
 from keysuri_briefing_content_enricher import (  # noqa: E402
     _build_what_happened,
-    _concrete_next_watch_pair,
-    _item_specific_checkpoint,
     enrich_generated_briefing_content,
 )
 from keysuri_global_visible_surface import repeated_skeleton_hits  # noqa: E402
@@ -129,30 +134,45 @@ class PaddingVarietyTests(unittest.TestCase):
         hits = repeated_skeleton_hits(items)
         self.assertEqual(hits, [], [h["excerpt"] for h in hits])
 
-    def test_each_card_draws_a_different_checkpoint_shape(self) -> None:
-        for style in ("what", "why_now", "owner", "decision", "follow"):
-            rendered = {
-                _item_specific_checkpoint(
-                    dict(evidence), {"source_name": evidence["source_name"]}, style=style
-                )
-                for evidence in EVIDENCE
-            }
-            self.assertEqual(len(rendered), 5, f"{style} reused a sentence shape")
+    def test_no_category_sentence_is_added_to_any_explanatory_field(self) -> None:
+        """The category may label a card; it may not explain it.
 
-    def test_the_neutral_next_watch_pair_varies_across_cards(self) -> None:
-        seconds = {
-            _concrete_next_watch_pair({"source_name": e["source_name"]}, dict(e))[1]
-            for e in EVIDENCE
-        }
-        self.assertGreater(len(seconds), 1)
+        Every sentence below was produced by the padding engine and appeared on
+        all five cards of a real run. None of them says anything about the
+        article it was attached to.
+        """
+        out = enrich_generated_briefing_content(_thin_briefing(), PROGRAM, _prompt_input())
+        blob = " ".join(
+            str(item.get(field) or "")
+            for item in out["top_5_news"]["items"]
+            for field in ("what_happened", "why_now", "owner_angle", "next_watch")
+        )
+        for fragment in (
+            "판단 기준입니다",
+            "확인 포인트는",
+            "먼저 볼 지표는",
+            "추적 대상은",
+            "이어지는 신호는",
+            "세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다",
+            "공개된 범위 밖의 계약 조건은 아직 확인되지 않았습니다",
+            "예산과 일정에 실제로 반영되는지를 보고 판단합니다",
+        ):
+            self.assertNotIn(fragment, blob, fragment)
 
-    def test_authored_prose_is_kept_ahead_of_the_padding(self) -> None:
+    def test_a_field_the_model_did_not_write_stays_empty(self) -> None:
+        """Fallback filler must not stand in for missing authored prose."""
+        out = enrich_generated_briefing_content(_thin_briefing(), PROGRAM, _prompt_input())
+        for item in out["top_5_news"]["items"]:
+            # The fixture supplies no owner_angle, and none is manufactured.
+            self.assertEqual(str(item.get("owner_angle") or "").strip(), "")
+
+    def test_authored_prose_is_kept(self) -> None:
         for index, evidence in enumerate(EVIDENCE):
             item = {**evidence, "what_happened": AUTHORED_WHAT[index]}
             visible, _thin = _build_what_happened(item, {"source_name": evidence["source_name"]})
             self.assertTrue(visible.startswith(AUTHORED_WHAT[index]), evidence["news_id"])
 
-    def test_padding_is_deterministic_for_the_same_card(self) -> None:
+    def test_enrichment_is_deterministic_for_the_same_card(self) -> None:
         first = enrich_generated_briefing_content(_thin_briefing(), PROGRAM, _prompt_input())
         second = enrich_generated_briefing_content(_thin_briefing(), PROGRAM, _prompt_input())
         self.assertEqual(

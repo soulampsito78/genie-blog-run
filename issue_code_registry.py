@@ -204,6 +204,18 @@ ISSUE_CODE_REGISTRY: tuple[IssueCodeEntry, ...] = (
         notes="Source-pack scaffolding text reached the customer surface.",
     ),
     IssueCodeEntry(
+        code="global_selection_below_quality_floor",
+        program="global",
+        stage="selection",
+        severity=SEVERITY_BLOCK,
+        repairability=REPAIRABILITY_TERMINAL_BLOCK,
+        notes=(
+            "TOP5 contains cards the scorer classified reject. Filling five "
+            "slots is not a reason to publish an article that did not clear the "
+            "product quality floor."
+        ),
+    ),
+    IssueCodeEntry(
         code="global_visible_raw_english_prose_blocked",
         program="global",
         stage="post_render_visible_text",
@@ -532,6 +544,7 @@ _GRADED_REVIEW_CODES = frozenset(
         "keysuri_korea_post_render_qa_blocked",
         "global_visible_subject_integrity_blocked",
         "global_visible_internal_template_leak_blocked",
+        "global_selection_below_quality_floor",
         "global_visible_raw_english_prose_blocked",
         # The legacy heuristic detects clipped source prose, but does not prove
         # an ungrounded meaning change.  Proven ungrounded truncation uses the

@@ -258,7 +258,7 @@ class ContentQualityGlobalSubjectTests(unittest.TestCase):
     """E. Global subject phrases — scenarios 28–32."""
 
     def test_28_32_natural_boundary_no_blind_slice(self) -> None:
-        from keysuri_briefing_content_enricher import _item_specific_checkpoint, _item_title_hook
+        from keysuri_briefing_content_enricher import _item_title_hook
         from keysuri_visible_text import contains_dangling_quoted_title_fragment
 
         item = {
@@ -266,8 +266,9 @@ class ContentQualityGlobalSubjectTests(unittest.TestCase):
         }
         hook = _item_title_hook(item, {})
         self.assertFalse(hook.endswith(("와", "과", "의", "를", "을")))
-        sentence = _item_specific_checkpoint(item, {}, style="why_now")
-        self.assertFalse(contains_dangling_quoted_title_fragment(sentence))
+        # The hook still feeds quoted subjects elsewhere, so a hook that would
+        # produce a dangling 「…」 fragment is still the defect being guarded.
+        self.assertFalse(contains_dangling_quoted_title_fragment(f"「{hook}」"))
 
     def test_29_dangling_quoted_fragment_detected(self) -> None:
         from keysuri_visible_text import contains_dangling_quoted_title_fragment

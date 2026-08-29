@@ -25,6 +25,13 @@ KEYSURI_TOP_NEWS_COUNT = 5
 # so on scheduled runs re-showing an already-exposed item is preferable to a hard
 # HTTP 500. This code must never surface in reader-facing HTML.
 KEYSURI_EXPOSURE_DEDUP_BACKFILL_ISSUE_CODE = "keysuri_korea_exposure_dedup_backfill_used"
+
+#: Raised when the final TOP5 carries cards the scorer classified "reject".
+GLOBAL_SELECTION_BELOW_QUALITY_FLOOR = "global_selection_below_quality_floor"
+
+#: Score at which a candidate stops being "reject". Imported rather than
+#: duplicated so the selector and the contract stage cannot drift apart.
+from keysuri_global_signal_scoring import TOP5_QUALITY_FLOOR_BASE_SCORE  # noqa: E402
 NEWS_SCOPE_GLOBAL = "global"
 NEWS_SCOPE_KOREA = "korea"
 
@@ -1448,6 +1455,30 @@ def select_top_5_news(
     internal_issue_codes: List[str] = []
     if exposure_backfill_used:
         internal_issue_codes.append(KEYSURI_EXPOSURE_DEDUP_BACKFILL_ISSUE_CODE)
+
+    # A card the scorer classified "reject" is not made customer-worthy by the
+    # fact that five slots must be filled. On 2026-08-29 cross-day dedup removed
+    # all five real picks and the replacement pool supplied the whole briefing:
+    # five cards scoring 39-44, every one classified reject, two with structural
+    # impact 0. The replacement pool is meant for swapping out a duplicate, not
+    # for composing a briefing — the count is recorded either way, and a floor
+    # breach is a finding rather than a silent substitution.
+    below_floor = [
+        item
+        for item in selected
+        if isinstance(item, dict)
+        and (
+            str(item.get("selection_classification") or "") == "reject"
+            or (
+                isinstance(item.get("selection_score"), (int, float))
+                and float(item["selection_score"]) < TOP5_QUALITY_FLOOR_BASE_SCORE
+            )
+        )
+    ]
+    candidate_funnel_summary["below_quality_floor_selected_count"] = len(below_floor)
+    candidate_funnel_summary["quality_floor_base_score"] = TOP5_QUALITY_FLOOR_BASE_SCORE
+    if below_floor:
+        internal_issue_codes.append(GLOBAL_SELECTION_BELOW_QUALITY_FLOOR)
     top_5_news = {
         "news_scope": expected_news_scope_for_program(program_id),
         "section_heading": expected_top5_heading_for_program(program_id),

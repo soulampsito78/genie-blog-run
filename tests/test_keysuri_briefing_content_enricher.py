@@ -33,7 +33,16 @@ class KeysuriBriefingContentEnricherTests(unittest.TestCase):
         base.update(kwargs)
         return base
 
-    def test_thin_item_enriched_to_three_sentences_without_invented_facts(self) -> None:
+    def test_thin_item_keeps_its_authored_prose_and_is_not_padded(self) -> None:
+        """A short card stays short rather than being filled to a quota.
+
+        Until 2026-08-29 each explanatory field was padded to
+        MIN_SECTION_SENTENCES with sentences keyed on the item's *category*,
+        so a one-line owner_angle became three lines of prose that would read
+        identically on any other article in that category. Measured on the real
+        08-24..08-28 corpus that quota was supplying 32% of why_now and 29% of
+        owner_angle, and 60% on the run that was accepted on 08-28.
+        """
         item = {
             "korean_title": "테스트 AI 플랫폼 업데이트",
             "what_happened": "공식 요약에 따르면 업데이트가 보고되었습니다.",
@@ -43,18 +52,43 @@ class KeysuriBriefingContentEnricherTests(unittest.TestCase):
         }
         meta = self._meta(summary="Short summary.")
         enriched = enrich_top5_item_content(item, meta=meta)
-        self.assertGreaterEqual(_sentence_count(enriched["what_happened"]), 3)
-        self.assertGreaterEqual(_sentence_count(enriched["why_now"]), 3)
-        self.assertGreaterEqual(_sentence_count(enriched["owner_angle"]), 3)
+        # The model's own sentence survives in every field.
+        self.assertIn("배포 레이어 경쟁", enriched["why_now"])
+        self.assertIn("파트너 조건", enriched["owner_angle"])
+        # And nothing was invented to reach a sentence count.
+        self.assertEqual(_sentence_count(enriched["why_now"]), 1)
+        self.assertEqual(_sentence_count(enriched["owner_angle"]), 1)
+        self.assertNotIn("판단 기준입니다", enriched["owner_angle"])
+        self.assertNotIn("확인 포인트는", enriched["why_now"])
         self.assertNotIn("100%", enriched["what_happened"])
         self.assertNotIn("확정적으로", enriched["what_happened"])
 
-    def test_thin_source_includes_additional_confirmation(self) -> None:
+    def test_what_happened_keeps_its_article_specific_attribution(self) -> None:
+        """Source name + this article's title is a factual transformation."""
+        item = {
+            "korean_title": "테스트 AI 플랫폼 업데이트",
+            "what_happened": "공식 요약에 따르면 업데이트가 보고되었습니다.",
+            "source_ids": ["live-openai-1"],
+        }
+        enriched = enrich_top5_item_content(item, meta=self._meta(summary="Short summary."))
+        self.assertIn("테스트 AI 플랫폼 업데이트", enriched["what_happened"])
+        self.assertIn("OpenAI News", enriched["what_happened"])
+
+    def test_thin_source_is_marked_structurally_not_in_the_prose(self) -> None:
+        """Thinness is a state on the item, not a sentence in the body.
+
+        Appending the limitation marker to the body put one identical sentence
+        on every thin card, which is a repeated skeleton across TOP5 by
+        construction. The card renders the state as a badge instead.
+        """
         item = {"korean_title": "짧은 헤드라인", "what_happened": "한 줄.", "source_ids": ["s1"]}
         meta = self._meta(summary="tiny", primary_category="semiconductor_chip_infra")
         enriched = enrich_top5_item_content(item, meta=meta)
-        self.assertIn("향후 공식 발표를 통해 세부 내용이 보완될 가능성이 있습니다.", enriched["what_happened"])
         self.assertTrue(enriched.get("detail_insufficient"))
+        self.assertNotIn(
+            "향후 공식 발표를 통해 세부 내용이 보완될 가능성이 있습니다.",
+            enriched["what_happened"],
+        )
 
     def test_customer_case_includes_hype_caution(self) -> None:
         item = {
@@ -82,10 +116,22 @@ class KeysuriBriefingContentEnricherTests(unittest.TestCase):
         enriched = enrich_top5_item_content(item, meta=meta)
         self.assertIn("스폰서", enriched.get("hype_caution", ""))
 
-    def test_next_watch_gets_two_items(self) -> None:
-        item = {"korean_title": "신호", "next_watch": "공식 발표를 확인하세요.", "source_ids": ["s1"]}
+    def test_next_watch_is_not_topped_up_from_the_category(self) -> None:
+        """One real checkpoint beats two, one of which the article never said.
+
+        The top-up drew from ``_NEXT_WATCH_BY_CAT``, so every article in a
+        category was told to watch the same two things: the 2026-08-24 card
+        about AI-factory *security* carried "공급 일정·파운드리/벤더 고객 발표",
+        which its source never mentioned.
+        """
+        item = {
+            "korean_title": "신호",
+            "next_watch": "엔비디아 Blackwell 양산 일정 발표",
+            "source_ids": ["s1"],
+        }
         enriched = enrich_top5_item_content(item, meta=self._meta())
-        self.assertGreaterEqual(_watch_checkpoint_count(enriched["next_watch"]), 2)
+        self.assertEqual(_watch_checkpoint_count(enriched["next_watch"]), 1)
+        self.assertIn("Blackwell", enriched["next_watch"])
 
     def test_deep_dive_references_two_signals_without_internal_markers(self) -> None:
         items = [
@@ -241,7 +287,10 @@ class KeysuriBriefingContentEnricherTests(unittest.TestCase):
         }
         out = enrich_generated_briefing_content(generated, "keysuri_global_tech", prompt_input)
         item = out["top_5_news"]["items"][0]
-        self.assertGreaterEqual(_sentence_count(item["what_happened"]), 3)
+        # Program scope, not sentence count, is what this test is about; a short
+        # card is no longer padded up to a quota, so its own prose is what
+        # survives.
+        self.assertIn("짧음", item["what_happened"])
         self.assertNotIn("TOP 신호", out["deep_dive"]["body"])
         self.assertGreaterEqual(len(out["deep_dive"].get("linked_signal_titles") or []), 2)
 
@@ -435,9 +484,11 @@ class GlobalRepeatedFillerSanitizerTests(unittest.TestCase):
         }
         enriched = enrich_top5_item_content(item, meta=meta)
         watch = enriched["next_watch"]
-        self.assertIn("API", watch)
+        # The model's generic checkpoint is still dropped...
         self.assertNotIn("시장 반응을 지켜봐야", watch)
-        self.assertGreaterEqual(_watch_checkpoint_count(watch), 2)
+        # ...and nothing category-derived is substituted for it. An empty
+        # next_watch is the honest result of an article that named no checkpoint.
+        self.assertEqual(watch.strip(), "")
 
     def test_startup_founder_advice_repairs_energy_category_and_next_watch(self) -> None:
         item = {
@@ -458,9 +509,13 @@ class GlobalRepeatedFillerSanitizerTests(unittest.TestCase):
         )
         self.assertEqual(enriched["category_label_ko"], "스타트업·자본·운영 리스크")
         self.assertEqual(enriched["category_repair_reason"], "startup_founder_not_energy")
+        # The wrong-domain checkpoints the model supplied are still removed.
         self.assertNotIn("ESS", enriched["next_watch"])
         self.assertNotIn("그리드", enriched["next_watch"])
-        self.assertIn("창업자 실행 리스크", enriched["next_watch"])
+        self.assertNotIn("전력", enriched["next_watch"])
+        # And they are not replaced by a different category's constants: the
+        # article named no checkpoint, so the card carries none.
+        self.assertEqual(enriched["next_watch"].strip(), "")
 
     def test_enrich_generated_briefing_dedupes_common_filler_across_items(self) -> None:
         prompt_input = {
