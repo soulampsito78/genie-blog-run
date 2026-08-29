@@ -322,7 +322,12 @@ class KeysuriBriefingContentEnricherTests(unittest.TestCase):
         }
         enriched = enrich_korea_top5_item_content(item, meta=meta)
         self.assertEqual(enriched.get("angle_chip"), "국내 적용")
-        self.assertIn("내일", enriched["why_now"])
+        # The domestic next-day impact line from metadata is what fills why_now
+        # — this item's own line, not a fixed evening sentence appended to every
+        # Korea card.
+        self.assertIn("우선순위에 반영될 수 있습니다", enriched["why_now"])
+        self.assertNotIn("퇴근 전에 내일 영향을 짚어볼 가치가 있습니다", enriched["why_now"])
+        self.assertIn("파트너·입찰 일정", enriched["owner_angle"])
         self.assertIn("국내 적용", enriched["selection_reason"])
 
     def test_korea_generated_enricher_avoids_internal_gate_phrases(self) -> None:

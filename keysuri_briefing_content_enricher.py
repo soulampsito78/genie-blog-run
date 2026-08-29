@@ -1214,12 +1214,13 @@ def _build_korea_why_now(item: dict, meta: dict) -> str:
         meta.get("next_day_impact_line") or "",
         category=str(meta.get("primary_category") or ""),
     )
-    padding = [
-        existing,
-        impact,
-        _KOREA_EVENING_CONTEXT,
-        "퇴근 전에 내일 영향을 짚어볼 가치가 있습니다.",
-    ]
+    # ``impact`` is this item's own next-day line from the source pack — a
+    # factual transformation, kept. The two sentences that followed it were
+    # fixed strings: every Korea card carried the same evening framing and the
+    # same "퇴근 전에 …" closer, which is the Global category-padding defect in
+    # its Korea form. A field the model did not write stays empty and is
+    # withheld at the reader-surface boundary.
+    padding = [existing, impact]
     why = _ensure_sentence_depth(
         existing,
         min_sentences=MIN_SECTION_SENTENCES,
@@ -1230,11 +1231,9 @@ def _build_korea_why_now(item: dict, meta: dict) -> str:
 
 def _build_korea_owner_angle(item: dict, meta: dict) -> str:
     existing = _get_field(item, "owner_angle", "business_implication")
-    padding = [
-        existing,
-        _text(meta.get("owner_action_line")),
-        "내일 파트너·고객·입찰·정책 일정에 반영할지 점검하시면 됩니다.",
-    ]
+    # owner_action_line is this item's own; the sentence after it was the same
+    # on every card.
+    padding = [existing, _text(meta.get("owner_action_line"))]
     return dedupe_sentences_in_paragraph(
         dedupe_repeated_paragraph(
             _ensure_sentence_depth(
