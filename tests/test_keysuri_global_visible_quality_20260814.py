@@ -237,12 +237,16 @@ class ProductionFixtureFinalGateTests(unittest.TestCase):
         )
         codes = {issue.code for issue in result.issues}
         self.assertNotIn(GLOBAL_VISIBLE_CATEGORY_GROUNDING_MISMATCH, codes)
-        self.assertNotIn(GLOBAL_VISIBLE_KOREAN_PARTICLE_DEFECT, codes)
+        # A Hangul particle disagreement is now BLOCK, not REVIEW: it is
+        # deterministic, it is corrected automatically upstream, and anything
+        # still present here is simply wrong Korean. "흐름와" and "후속를"
+        # reached the owner's Gmail on 2026-08-29 while this was review-only.
+        self.assertIn(GLOBAL_VISIBLE_KOREAN_PARTICLE_DEFECT, codes)
         review_codes = {
             f["issue_code"] for f in result.diagnostics["visible_surface_review_findings"]
         }
         self.assertIn(GLOBAL_VISIBLE_CATEGORY_GROUNDING_MISMATCH, review_codes)
-        self.assertIn(GLOBAL_VISIBLE_KOREAN_PARTICLE_DEFECT, review_codes)
+        self.assertNotIn(GLOBAL_VISIBLE_KOREAN_PARTICLE_DEFECT, review_codes)
 
     def test_gate_reads_the_subject_even_though_it_is_outside_the_html(self) -> None:
         clean_html = _as_html("주인님, 오늘 신호를 정리했습니다.")

@@ -120,6 +120,8 @@ _GLOBAL_TOP5_METADATA_KEYS: Tuple[str, ...] = (
     "source_concentration_reason",
 )
 
+from keysuri_editorial_policy import EDITORIAL_POLICY_RULES as _EDITORIAL_POLICY_RULES
+
 # Generation-safe subset of the ``epoko77-ai/im-not-ai`` editorial method.
 #
 # The upstream project is a post-editing workflow, so its frequency and
@@ -128,22 +130,10 @@ _GLOBAL_TOP5_METADATA_KEYS: Tuple[str, ...] = (
 # adopts only source-fidelity, locality, internal-copy isolation, and
 # non-repetition principles here.  There is no third-party runtime dependency,
 # extra model call, or additional blocking validator.
-GLOBAL_NATURAL_KOREAN_RULES: Tuple[str, ...] = (
-    "- Start from this item's source-backed facts. Natural Korean is not permission to add "
-    "anecdotes, quotations, metaphors, background events, or likely explanations.",
-    "- Preserve source-backed names, numbers, dates, direct quotations, attribution verbs, "
-    "causality, and modality. Never turn '~일 수 있다' or '~로 보인다' into a confirmed fact.",
-    "- Never emit, translate, or echo internal template/schema prose, including "
-    "'Public tech source (...) published:', 'source summary:', 'claim statement:', field names, "
-    "instruction text, or scaffold notes.",
-    "- Empty significance labels such as '결론적으로', '요약하면', '시사하는 바가 크다', "
-    "'주목할 만하다', or '매우 중요하다' must not stand in for evidence. State the "
-    "source-backed fact or omit the empty label; never invent a replacement conclusion.",
-    "- Do not mechanically reuse one opener, connective sequence, antithesis frame "
-    "('A가 아니라 B'), or sentence ending across TOP5 items. Ordinary Korean expressions "
-    "are not banned; repeated boilerplate is.",
-    "- Keep edits local to each item. Never merge article identities, borrow prose from another "
-    "rank, or trade factual fidelity for a more human-sounding sentence.",
+# Sourced from the shared editorial policy so the deterministic enricher, the
+# local field repair and every generation path state the same rules.
+GLOBAL_NATURAL_KOREAN_RULES: Tuple[str, ...] = tuple(
+    f"- {rule}" for rule in _EDITORIAL_POLICY_RULES
 )
 
 _KOREA_TOP5_METADATA_KEYS: Tuple[str, ...] = (

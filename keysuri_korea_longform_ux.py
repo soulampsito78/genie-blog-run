@@ -14,6 +14,7 @@ from keysuri_visible_text import (
     strip_watch_arrow_prefixes,
 )
 from keysuri_korea_signal_scoring import is_weak_startup_support_signal
+from keysuri_korean_particles import CONJUNCTION, OBJECT, SUBJECT, TOPIC, attach_or
 
 KOREA_DEEP_MAX_PARAGRAPH_CHARS = 220
 KOREA_CLOSING_PARAGRAPH_MAX_CHARS = 220
@@ -1022,7 +1023,7 @@ def _build_global_impact_block(
     pressure = "·".join(global_pressure[:2]) if global_pressure else "글로벌 AI 인프라·플랫폼 경쟁"
     body = (
         f"글로벌 AI 인프라·플랫폼 경쟁과 반도체 공급망·로봇과 AI 에이전트 축은 "
-        f"{pressure}와 맞물려 한국 기업·스타트업·공급망과 정책·자본시장에 압력을 전달합니다. "
+        f"{attach_or(pressure, CONJUNCTION, pressure + ' 축과')} 맞물려 한국 기업·스타트업·공급망과 정책·자본시장에 압력을 전달합니다. "
         f"한국 쪽에서는 해외 인프라·조달 구조 변화에 맞춰 투자·조달·파트너십 우선순위를 "
         f"재배치해야 하는 단계입니다."
     )
@@ -1835,7 +1836,7 @@ def build_korea_market_frame_line(items: Sequence[Mapping[str, Any]]) -> str:
             industries.append(cat)
     industry_phrase = _join_korea_industry_phrase(industries[:3], sep=", ") or "반도체·AI·정책·투자"
     return (
-        f"오늘 다섯 신호를 하나로 보면, {theme}를 축으로 {industry_phrase} 흐름이 "
+        f"오늘 다섯 신호를 하나로 보면, {attach_or(theme, OBJECT, theme + ' 흐름을')} 축으로 {industry_phrase} 흐름이 "
         f"같은 방향으로 움직이는 시장 구조입니다. 개별 뉴스보다 발주·일정·정책 확인 순서가 먼저입니다."
     )
 
@@ -1888,7 +1889,7 @@ def _memo_summary_line(items: Sequence[Mapping[str, Any]], theme: str) -> str:
         if cat and cat not in industries:
             industries.append(cat)
     industry_phrase = _join_korea_industry_phrase(industries[:3], sep="·") or "국내 테크"
-    return f"오늘은 {theme}가 {industry_phrase} 흐름을 한 번에 묶었습니다."
+    return f"오늘은 {attach_or(theme, SUBJECT, theme + ' 축이')} {industry_phrase} 흐름을 한 번에 묶었습니다."
 
 
 def build_korea_evening_memo(

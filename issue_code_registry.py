@@ -244,6 +244,14 @@ ISSUE_CODE_REGISTRY: tuple[IssueCodeEntry, ...] = (
         notes="Rendered category contradicts the item's own category evidence.",
     ),
     IssueCodeEntry(
+        code="keysuri_korean_particle_repaired",
+        program="global",
+        stage="post_render_visible_text",
+        severity=SEVERITY_REPAIR,
+        repairability=REPAIRABILITY_DETERMINISTICALLY_REPAIRABLE,
+        notes="Hangul particle agreement corrected deterministically before adjudication.",
+    ),
+    IssueCodeEntry(
         code="global_visible_korean_particle_defect",
         program="global",
         stage="post_render_visible_text",

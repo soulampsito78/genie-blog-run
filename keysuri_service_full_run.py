@@ -79,6 +79,7 @@ from keysuri_briefing_content_quality import (
     validate_global_post_render_visible_quality,
     validate_korea_post_render_visible_quality,
 )
+from keysuri_korean_particles import SUBJECT, attach_or
 from keysuri_live_source_smoke import (
     PROGRAM_GLOBAL,
     PROGRAM_KOREA,
@@ -2319,7 +2320,7 @@ def _reissue_clean_fallback_templates(
         hook_core = hook.strip()
         return {
             "summary": (
-                f"{source_label}가 전한 {hook_core} 소식을 AI·테크 관점에서 선별해 정리했습니다."
+                f"{attach_or(source_label, SUBJECT, source_label + ' 보도가')} 전한 {hook_core} 소식을 AI·테크 관점에서 선별해 정리했습니다."
             ),
             "why_it_matters": (
                 f"{hook_core} 관련 흐름은 산업 경쟁과 도입 일정에 영향을 줄 수 있습니다."

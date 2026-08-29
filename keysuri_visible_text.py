@@ -5,6 +5,7 @@ import ast
 import html as html_module
 import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence
+from keysuri_korean_particles import SUBJECT, attach_or
 
 PROGRAM_KOREA = "keysuri_korea_tech"
 
@@ -583,7 +584,10 @@ def _korea_reason_from_tags_and_category(
         base = _KOREA_CATEGORY_REASON[category]
         hook = _entity_hook_from_title(title)
         if hook and category == "korea_semiconductor" and ("협력" in hook or "HBM" in hook.upper()):
-            return f"{hook}이 공급망 판단에 직접 연결되는 신호라서 우선 확인이 필요합니다."
+            return (
+                f"{attach_or(hook, SUBJECT, hook + ' 건이')}"
+                " 공급망 판단에 직접 연결되는 신호라서 우선 확인이 필요합니다."
+            )
         if hook and category in ("korea_big_company_strategy", "korea_semiconductor"):
             return f"{hook} 관련 {base}"
         return base

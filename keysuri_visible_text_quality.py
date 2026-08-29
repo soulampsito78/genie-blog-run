@@ -472,6 +472,47 @@ def _finalize_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
     return fields
 
 
+KEYSURI_KOREAN_PARTICLE_REPAIRED = "keysuri_korean_particle_repaired"
+
+
+def _repair_korean_particles_in_tree(node):
+    """Deterministic particle agreement over every visible string in the tree.
+
+    Mechanical only: each replacement swaps one particle for the one the noun's
+    final consonant requires, so it cannot change what a sentence says. Anything
+    it cannot decide — a Latin, digit or bracket ending — is left alone for the
+    detector to report.
+    """
+    from keysuri_korean_particles import correct_particles
+
+    repaired_count = 0
+    samples = []
+
+    def _walk(value):
+        nonlocal repaired_count
+        if isinstance(value, str):
+            fixed, findings = correct_particles(value)
+            if findings:
+                repaired_count += len(findings)
+                for finding in findings[:4]:
+                    samples.append(
+                        {
+                            "token": finding["token"],
+                            "corrected_token": finding["corrected_token"],
+                            "expected_particle": finding["expected_particle"],
+                            "actual_particle": finding["actual_particle"],
+                        }
+                    )
+            return fixed
+        if isinstance(value, list):
+            return [_walk(v) for v in value]
+        if isinstance(value, dict):
+            return {k: _walk(v) for k, v in value.items()}
+        return value
+
+    return _walk(node), repaired_count, samples
+
+
 def repair_keysuri_visible_text_fields(
     payload: Any,
     *,
@@ -479,7 +520,19 @@ def repair_keysuri_visible_text_fields(
 ) -> tuple[Any, Dict[str, Any]]:
     fields = _new_quality_fields()
     repaired = _walk_and_repair(copy.deepcopy(payload), path=root_path, fields=fields)
-    return repaired, _finalize_fields(fields)
+    # Korean particle agreement is deterministic, so it is corrected here rather
+    # than left to block an otherwise sound briefing. Residual defects — the ones
+    # this cannot decide — are reported by the visible-surface detector.
+    repaired, particle_count, particle_samples = _repair_korean_particles_in_tree(repaired)
+    out = _finalize_fields(fields)
+    if particle_count:
+        out["korean_particle_repaired_count"] = particle_count
+        out["korean_particle_repaired_samples"] = particle_samples
+        codes = list(out.get("visible_text_quality_issue_codes") or [])
+        if KEYSURI_KOREAN_PARTICLE_REPAIRED not in codes:
+            codes.append(KEYSURI_KOREAN_PARTICLE_REPAIRED)
+        out["visible_text_quality_issue_codes"] = codes
+    return repaired, out
 
 
 def validate_and_repair_keysuri_visible_text_quality(

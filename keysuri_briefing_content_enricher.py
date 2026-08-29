@@ -676,9 +676,9 @@ def _item_specific_checkpoint(item: dict, meta: dict, *, style: str) -> str:
             variant,
             (
                 f"{subject} 확인 포인트는 {checkpoint_a}, 그리고 {checkpoint_b}입니다.",
-                f"{subject} 먼저 볼 지표는 {checkpoint_a}이며, 이어서 {checkpoint_b}를 봅니다.",
-                f"{subject} 판단을 가르는 변수는 {checkpoint_a}와 {checkpoint_b}입니다.",
-                f"{subject} 흐름은 {checkpoint_a}에서 먼저 드러나고 {checkpoint_b}로 확인됩니다.",
+                f"{subject} 먼저 볼 지표는 {checkpoint_a}, 이어서 {checkpoint_b}입니다.",
+                f"{subject} 판단을 가르는 변수는 {checkpoint_a}, {checkpoint_b}입니다.",
+                f"{subject} 흐름은 {checkpoint_a}에서 먼저 드러납니다. 이어서 {checkpoint_b} 쪽을 봅니다.",
                 f"{subject} 관찰 순서는 {checkpoint_a} 다음 {checkpoint_b}입니다.",
             ),
         )

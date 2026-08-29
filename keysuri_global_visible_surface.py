@@ -691,27 +691,31 @@ _SUBJECT_PARTICLE_RE = re.compile(r"([가-힣A-Za-z0-9])(이|가)\s+(?=실제)")
 
 
 def korean_particle_defects(text: str) -> List[Dict[str, Any]]:
-    """Subject particle that disagrees with the preceding syllable's jongseong."""
+    """Particles that disagree with the preceding noun's final consonant.
+
+    Previously this covered only 이/가 and only inside a few template tails,
+    which is why "흐름와" and "후속를" reached the owner's Gmail on 2026-08-29.
+    It now delegates to the shared particle contract, which covers 을/를, 과/와,
+    이/가, 은/는 and 으로/로 including the ㄹ exception, and which refuses to
+    judge a noun ending in Latin, a digit or a bracket rather than guessing its
+    pronunciation.
+    """
+    from keysuri_korean_particles import particle_findings
+
     blob = _text(text)
-    if not blob or not any(tail in blob for tail in _PARTICLE_TEMPLATE_TAILS):
+    if not blob:
         return []
-    defects: List[Dict[str, Any]] = []
-    for match in _SUBJECT_PARTICLE_RE.finditer(blob):
-        stem_char, particle = match.group(1), match.group(2)
-        expected = korean_subject_particle(stem_char)
-        if _has_final_consonant(stem_char) is None:
-            continue
-        if particle != expected:
-            start = max(0, match.start() - 24)
-            defects.append(
-                {
-                    "stem": stem_char,
-                    "particle": particle,
-                    "expected": expected,
-                    "excerpt": blob[start: match.end() + 8],
-                }
-            )
-    return defects
+    return [
+        {
+            "stem": str(finding["stem"]),
+            "token": str(finding["token"]),
+            "particle": str(finding["actual_particle"]),
+            "expected": str(finding["expected_particle"]),
+            "corrected": str(finding["corrected_token"]),
+            "excerpt": str(finding["sentence"])[:120],
+        }
+        for finding in particle_findings(blob)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -732,7 +736,10 @@ GLOBAL_VISIBLE_SEVERITY: Dict[str, str] = {
     GLOBAL_VISIBLE_REPEATED_LOW_INFORMATION_LABEL: "review",
     GLOBAL_VISIBLE_DEEP_DIVE_DUPLICATION_BLOCKED: "block",
     GLOBAL_VISIBLE_CATEGORY_GROUNDING_MISMATCH: "review",
-    GLOBAL_VISIBLE_KOREAN_PARTICLE_DEFECT: "review",
+    # BLOCK, not REVIEW: this fires only on deterministic Hangul agreement
+    # errors, which are corrected automatically upstream. Anything still present
+    # here survived that correction and is simply wrong Korean.
+    GLOBAL_VISIBLE_KOREAN_PARTICLE_DEFECT: "block",
 }
 
 

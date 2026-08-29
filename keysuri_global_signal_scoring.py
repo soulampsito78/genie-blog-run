@@ -4,9 +4,10 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Any, Dict, FrozenSet, List, Literal, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 from zoneinfo import ZoneInfo
@@ -26,6 +27,65 @@ GLOBAL_TECH_CATEGORIES: Tuple[str, ...] = (
 )
 
 AI_PRIMARY_CATEGORY = "ai_software_platform"
+
+#: Keywords that are too generic to decide a category on their own when the
+#: only evidence is in the body. Each still counts as supporting evidence
+#: alongside a title hit or a more specific same-category keyword.
+AMBIGUOUS_ALONE_KEYWORDS: FrozenSet[str] = frozenset(
+    {
+        "power demand", "charging", "networking", "supply chain", "policy",
+        "capital", "investment", "funding", "agent", "regulation", "cloud ai",
+        "developer tools", "chip",
+    }
+)
+
+#: Negative evidence. When a story carries an unmistakable signal from one
+#: domain, an incompatible category is dropped if anything else is available.
+#: The 2026-08-29 07:23 run filed a browser-privacy feature and a
+#: software-supply-chain arrest under battery/EV/energy.
+INCOMPATIBLE_CATEGORY_EVIDENCE: Dict[str, Tuple[str, ...]] = {
+    "battery_ev_energy_grid": (
+        "browser", "email alias", "privacy", "tracker", "hacking", "hacker",
+        "malware", "ransomware", "phishing", "supply-chain attack",
+        "vulnerability", "zero-day", "arrest", "accelerator", "startups",
+    ),
+    "aerospace_satellite_defense_tech": (
+        "browser", "email alias", "hacking", "malware", "ransomware",
+    ),
+}
+
+
+def _keyword_edges(keyword: str) -> "re.Pattern[str]":
+    """Word-boundary matcher for one keyword.
+
+    Korean is agglutinative — 로봇 must still match inside 로봇이 — so Hangul
+    keywords keep substring semantics. ASCII keywords get real edges, because
+    substring matching is what let 'ess' (energy storage system) match inside
+    'addresses', 'relentless' and 'wellness' and hand three unrelated articles
+    to battery/EV/energy on 2026-08-29.
+    """
+    # Split on the separators a source might vary ("supply chain" /
+    # "supply-chain") and rejoin them with one separator pattern. Chained
+    # str.replace on the escaped form corrupts the character class it just
+    # produced, so the parts are escaped individually.
+    parts = [re.escape(part) for part in re.split(r"[\s\-]+", keyword) if part]
+    body = r"[\s\-]+".join(parts) if parts else re.escape(keyword)
+    return re.compile(rf"(?<![0-9a-z]){body}(?![0-9a-z])")
+
+
+@lru_cache(maxsize=2048)
+def _keyword_pattern(keyword: str) -> "Optional[re.Pattern[str]]":
+    if any("\uac00" <= ch <= "\ud7a3" for ch in keyword):
+        return None
+    return _keyword_edges(keyword)
+
+
+def _keyword_matches(keyword: str, haystack: str) -> bool:
+    pattern = _keyword_pattern(keyword)
+    if pattern is None:
+        return keyword in haystack
+    return bool(pattern.search(haystack))
+
 
 CATEGORY_KEYWORD_GROUPS: Dict[str, Tuple[str, ...]] = {
     "ai_software_platform": (
@@ -70,6 +130,16 @@ CATEGORY_KEYWORD_GROUPS: Dict[str, Tuple[str, ...]] = {
     "cybersecurity_cloud_datacenter": (
         "cybersecurity", "cloud infrastructure", "datacenter", "data center", "liquid cooling",
         "networking", "enterprise security",
+        # Software supply-chain and intrusion vocabulary. The 2026-08-29 07:23
+        # run put a TeamPCP supply-chain arrest under battery/EV because nothing
+        # here matched and a stray substring did.
+        "hacking", "hacker", "malware", "ransomware", "breach", "exploit",
+        "vulnerability", "supply-chain attack", "software supply chain",
+        "phishing", "credential", "zero-day", "intrusion", "compromised",
+        # Privacy / browser / identity. Brave's email-alias feature is this
+        # domain, not energy.
+        "browser", "privacy", "email alias", "tracker", "anonymity",
+        "end-to-end encryption", "identity protection",
     ),
     "policy_regulation_capital_supplychain": (
         "export control", "regulation", "antitrust", "investment", "m&a", "funding", "tariff",
@@ -690,9 +760,13 @@ def classify_global_tech_category(
     title_lower = str(title or "").strip().lower()
     hits: List[Tuple[str, int]] = []
     hit_detail: Dict[str, Tuple[int, int]] = {}
+    matched_keywords: Dict[str, List[str]] = {}
     for cat, keywords in CATEGORY_KEYWORD_GROUPS.items():
-        title_hits = sum(1 for kw in keywords if title_lower and kw in title_lower)
-        all_hits = sum(1 for kw in keywords if kw in lower)
+        title_matches = [kw for kw in keywords if title_lower and _keyword_matches(kw, title_lower)]
+        all_matches = [kw for kw in keywords if _keyword_matches(kw, lower)]
+        title_hits = len(title_matches)
+        all_hits = len(all_matches)
+        matched_keywords[cat] = all_matches
         # Keywords found in the title are also present in the combined blob;
         # count the remainder as body evidence so the title is not double-paid.
         body_hits = max(0, all_hits - title_hits)
@@ -701,6 +775,31 @@ def classify_global_tech_category(
         weighted = title_hits * _TITLE_HIT_WEIGHT + body_hits * _BODY_HIT_WEIGHT
         hits.append((cat, weighted))
         hit_detail[cat] = (title_hits, body_hits)
+
+    # Guard: a category whose only evidence is a generic word appearing in the
+    # body cannot win. "power", "supply", "network" and friends appear in
+    # unrelated stories constantly; they need either title evidence or a second,
+    # more specific keyword from the same category behind them.
+    filtered: List[Tuple[str, int]] = []
+    for cat, weighted in hits:
+        title_hits, _body_hits = hit_detail.get(cat, (0, 0))
+        specific = [kw for kw in matched_keywords.get(cat, []) if kw not in AMBIGUOUS_ALONE_KEYWORDS]
+        if title_hits == 0 and not specific:
+            continue
+        filtered.append((cat, weighted))
+    if filtered:
+        hits = filtered
+
+    # Negative evidence: a story whose subject is unmistakably one domain must
+    # not be filed under an incompatible one on weak body evidence.
+    suppressed: List[str] = []
+    for cat, blockers in INCOMPATIBLE_CATEGORY_EVIDENCE.items():
+        if not any(_keyword_matches(kw, lower) for kw in blockers):
+            continue
+        remaining = [(c, n) for c, n in hits if c != cat]
+        if remaining:
+            suppressed.append(cat)
+            hits = remaining
 
     # Guard: only allow aerospace/defense through when an unambiguous
     # aerospace/defense/military term is present — a stray "launch" hit from a

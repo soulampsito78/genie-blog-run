@@ -150,10 +150,14 @@ def build_local_repair_prompt(requests: Sequence[FieldRepairRequest]) -> str:
     each article's evidence and plan under its own ``news_id``, and the response
     must come back keyed the same way.
     """
+    from keysuri_editorial_policy import policy_block
+
     payload = [r.as_prompt_dict() for r in requests]
     return "\n".join(
         [
             "=== BOUNDED LOCAL FIELD REPAIR ===",
+            policy_block(),
+            "",
             "Rewrite ONLY the fields listed below. This is not a regeneration.",
             "",
             "Rules:",
