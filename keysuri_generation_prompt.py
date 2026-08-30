@@ -1885,7 +1885,16 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
                 "- keysuri_judgment.label: one of 기회 / 관찰 / 경계 / 활용 후보 / 사업 신호 / 리스크 신호 / 추가 확인 필요 / 과장 주의.",
                 "- next_watch: 2+ distinct follow-up checkpoints in Korean (numbered or separated).",
                 "- hype_caution: required string when hype_warning or sponsored_warning — state 과장 주의 / 스폰서·파트너 콘텐츠.",
-                "- If source is thin: say '향후 공식 발표를 통해 세부 내용이 보완될 가능성이 있습니다.' and set detail_insufficient=true.",
+                # Thinness is a state, not a sentence. Asking for this exact
+                # string put it on all five cards of the 2026-08-30
+                # live-equivalent qualification — in summary *and*
+                # what_happened, ten copies in one briefing, one distinct
+                # what_happened ending out of five. The deterministic version of
+                # this same sentence was removed on 2026-08-29 for the same
+                # reason; the prompt was still asking the model for it.
+                # ``detail_insufficient`` already renders as a badge.
+                "- If source is thin: set detail_insufficient=true and simply write less. "
+                "Do not add a disclaimer sentence, and never repeat one wording across items.",
                 "- FORBIDDEN generic filler: 'AI 도입이 가속화', '기업들이 AI를 활용', '업무 효율이 높아질 수 있습니다'.",
                 "- FORBIDDEN in all visible fields: 총점, 점수, 스코어, score, scoring — never expose internal evaluation numbers in reader-facing copy.",
                 "- Do NOT invent facts beyond provided source_pack and TOP_5_SELECTED metadata.",
