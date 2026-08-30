@@ -555,7 +555,7 @@ class KeysuriGlobalSignalScoringTests(unittest.TestCase):
             + packed["global_top5_selection"]["replacement_source_ids"],
         )
 
-    def test_low_scoring_safe_rejected_items_can_replace_same_source_duplicates(self) -> None:
+    def test_below_floor_replacements_are_offered_but_never_spent(self) -> None:
         items = [
             _item(
                 "nvidia-1",
@@ -639,11 +639,34 @@ class KeysuriGlobalSignalScoringTests(unittest.TestCase):
             source_counts[item["normalized_source"]] = source_counts.get(item["normalized_source"], 0) + 1
 
         self.assertEqual(len(items_after), 5)
-        self.assertEqual(source_counts.get("nvidia blog"), 1)
-        self.assertEqual(source_counts.get("openai news"), 1)
-        self.assertFalse(result["diversity_summary"]["relaxed_due_to_candidate_shortage"])
-        self.assertGreaterEqual(result["diversity_summary"]["same_source_reject_count"], 2)
+        # The replacement pool is still built and still offered — the assertions
+        # above prove tc-1 reaches ``replacement_source_ids``. What changed on
+        # 2026-08-30 is that a below-floor candidate may no longer be *spent*:
+        # tc-1 scores under TOP5_QUALITY_FLOOR_BASE_SCORE, so it can no longer
+        # be promoted to displace a same-source duplicate, and the second NVIDIA
+        # card stays.
+        #
+        # That is the ordering the owner set: source concentration is a
+        # diversity preference, the quality floor is a product floor, and a
+        # briefing may not publish an article the scorer rejected in order to
+        # improve its own shape. Both remaining NVIDIA cards clear the floor;
+        # the promoted one would not have.
+        self.assertEqual(source_counts.get("nvidia blog"), 2)
+        self.assertEqual(source_counts.get("openai news"), 2)
+        # Neither below-floor replacement is spent.
+        news_ids = [i.get("news_id") for i in items_after]
+        self.assertNotIn("tc-1", news_ids)
+        self.assertNotIn("ars-1", news_ids)
+        # With the below-floor candidates refused the pool is exactly five, so
+        # the same-source cap has to relax to fill the briefing. That flag is the
+        # run telling the truth about a tight pool — previously it read False
+        # because the shortage was being absorbed by reject-grade backfill.
+        self.assertTrue(result["diversity_summary"]["relaxed_due_to_candidate_shortage"])
         self.assertEqual(result["candidate_funnel_summary"]["post_diversity_selected_count"], 5)
+        self.assertEqual(
+            result["candidate_funnel_summary"]["below_quality_floor_selected_count"], 0)
+        self.assertGreater(
+            result["candidate_funnel_summary"]["below_quality_floor_refused_count"], 0)
 
 
 class EvergreenProfileHonorsGateTests(unittest.TestCase):

@@ -1237,6 +1237,40 @@ def select_top_5_news(
     else:
         qualified.sort(key=lambda pair: (pair[0], str(pair[1].get("claim_id") or "")))
 
+    # The product quality floor, enforced where the briefing is actually built.
+    #
+    # It was added to ``_select_diverse_top5`` on 2026-08-29, which decides the
+    # *pack's* ``selected_top5``. This function does not read that decision — it
+    # picks from every qualified claim, replacement candidates included — so the
+    # floor never governed the briefing. Qualification on 2026-08-30 replayed the
+    # 08-29 pack and got three below-floor cards through:
+    #
+    #   3 new ways to plan and book travel in Search        base 44  reject
+    #   Trump admin considers more semiconductor tariffs    base 43  reject
+    #   Is the best way to watch a movie on sunglasses?     base 39  reject
+    #
+    # ``reject`` is the scorer's own verdict for "below the bar"
+    # (``_classify_total``: >=45 watchlist, below that reject). Filling five
+    # slots is not a reason to publish one.
+    #
+    # Applied only to claims that actually carry a numeric base score, so a pack
+    # produced without scoring is unaffected. Korea scores on the same field and
+    # sits well above the floor (58-69 on the pinned 08-26 pack).
+    below_floor_refused: List[str] = []
+    floored: List[Any] = []
+    for pair in qualified:
+        claim = pair[1]
+        base = claim.get("selection_score_before_diversity")
+        if base is None:
+            base = claim.get("selection_score")
+        if isinstance(base, (int, float)) and base < TOP5_QUALITY_FLOOR_BASE_SCORE:
+            below_floor_refused.append(
+                f"{claim.get('claim_id')}:{base}:{str(claim.get('headline') or '')[:60]}"
+            )
+            continue
+        floored.append(pair)
+    qualified = floored
+
     if missing_biz_impl:
         return {
             "verdict": "hold",
@@ -1249,14 +1283,21 @@ def select_top_5_news(
         }
 
     if len(qualified) < KEYSURI_TOP_NEWS_COUNT:
+        # Fail closed. Topping the list up from the reject pile is what put five
+        # cards the scorer had already refused in front of the owner.
+        detail = (
+            f"Need {KEYSURI_TOP_NEWS_COUNT} qualified claims, found {len(qualified)}"
+        )
+        if below_floor_refused:
+            detail += (
+                f"; {len(below_floor_refused)} refused below quality floor "
+                f"{TOP5_QUALITY_FLOOR_BASE_SCORE}: "
+                + "; ".join(below_floor_refused[:5])
+            )
         return {
             "verdict": "hold",
-            "issues": [
-                _issue(
-                    "insufficient_top_news_candidates",
-                    f"Need {KEYSURI_TOP_NEWS_COUNT} qualified claims, found {len(qualified)}",
-                )
-            ],
+            "issues": [_issue("insufficient_top_news_candidates", detail)],
+            "below_quality_floor_refused": below_floor_refused,
         }
 
     # Hydrate the FULL qualified pool (not just the first 5), then apply the
@@ -1463,19 +1504,26 @@ def select_top_5_news(
     # impact 0. The replacement pool is meant for swapping out a duplicate, not
     # for composing a briefing — the count is recorded either way, and a floor
     # breach is a finding rather than a silent substitution.
+    # Backstop. The pool was already floored above; this proves it on the way
+    # out. ``_claim_to_news_item`` does not copy the selection fields onto the
+    # news item, which is why reading them here reported zero while three
+    # below-floor cards were in the briefing — so the claim is consulted.
+    claim_scores = {
+        str(c.get("claim_id")): c.get("selection_score_before_diversity")
+        if c.get("selection_score_before_diversity") is not None
+        else c.get("selection_score")
+        for c in (source_pack.get("claims") or [])
+        if isinstance(c, dict)
+    }
     below_floor = [
         item
         for item in selected
         if isinstance(item, dict)
-        and (
-            str(item.get("selection_classification") or "") == "reject"
-            or (
-                isinstance(item.get("selection_score"), (int, float))
-                and float(item["selection_score"]) < TOP5_QUALITY_FLOOR_BASE_SCORE
-            )
-        )
+        and isinstance(claim_scores.get(str(item.get("news_id"))), (int, float))
+        and float(claim_scores[str(item.get("news_id"))]) < TOP5_QUALITY_FLOOR_BASE_SCORE
     ]
     candidate_funnel_summary["below_quality_floor_selected_count"] = len(below_floor)
+    candidate_funnel_summary["below_quality_floor_refused_count"] = len(below_floor_refused)
     candidate_funnel_summary["quality_floor_base_score"] = TOP5_QUALITY_FLOOR_BASE_SCORE
     if below_floor:
         internal_issue_codes.append(GLOBAL_SELECTION_BELOW_QUALITY_FLOOR)
