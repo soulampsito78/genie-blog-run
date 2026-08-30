@@ -105,11 +105,29 @@ GLOBAL_TECH_SMOKE_FEEDS: Tuple[Dict[str, str], ...] = (
         "default_category": "ai_product",
     },
     {
-        "feed_id": "microsoft-ai-blog",
-        "feed_name": "Microsoft AI Blog",
-        "feed_url": "https://blogs.microsoft.com/ai/feed/",
+        # https://blogs.microsoft.com/ai/feed/ has been retired — it answers
+        # HTTP 410 Gone. The fetch loop swallows per-feed errors so the run
+        # simply lost a first-party source without saying so; supply preflight
+        # now reports fetch failures for exactly this reason.
+        "feed_id": "microsoft-source",
+        "feed_name": "Microsoft Source",
+        "feed_url": "https://news.microsoft.com/source/feed/",
         "source_tier": "T1_OFFICIAL_SECONDARY",
         "default_category": "bigtech",
+    },
+    {
+        # Cloud / AI-infrastructure coverage. The eligible pool measured on
+        # 2026-08-30 was semiconductor 6, ai_software 4, policy 1 and nothing
+        # for cloud or datacenter, which is a standing Global category. Added on
+        # evidence, not to raise the count: it contributes an above-floor
+        # candidate of its own ("Runtime instances: persistent compute for
+        # production AI agents", base 47). The Register was measured the same
+        # way, produced no above-floor candidate, and is not added.
+        "feed_id": "aws-news-blog",
+        "feed_name": "AWS News Blog",
+        "feed_url": "https://aws.amazon.com/blogs/aws/feed/",
+        "source_tier": "T1_OFFICIAL_SECONDARY",
+        "default_category": "cloud",
     },
     {
         "feed_id": "arstechnica-tech-lab",

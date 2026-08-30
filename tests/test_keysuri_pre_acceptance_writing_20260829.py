@@ -64,11 +64,19 @@ TEMPLATE_FRAMES = (
     "판단을 가르는 변수는",
     "추적 대상은 우선",
     "관찰 순서는",
+    # Tails, not bare tokens. The engine's frames were
+    #   "{subject} 흐름은 {a}에서 먼저 드러납니다"
+    #   "{subject} 후속은 {a} 중심으로 보면 됩니다"
+    # and guarding on "흐름은" / "후속은" alone banned ordinary Korean: live
+    # qualification on 2026-08-30 flagged the model's own sentence "이러한
+    # 흐름은 AI가 단순한 채팅 인터페이스를 벗어나 …". The distinctive part is
+    # the tail, and that is what the engine owned.
     "이어지는 신호는",
-    "실무 점검은",
-    "다음 확인은",
-    "흐름은",
-    "후속은",
+    "에 먼저 나타납니다",
+    "부터 잡으면 됩니다",
+    "에서 시작하면 충분합니다",
+    "에서 먼저 드러납니다",
+    "중심으로 보면 됩니다",
     "세부 수치·일정은 후속 공식 발표에서 보완될 수 있습니다",
     "공개된 범위 밖의 계약 조건은 아직 확인되지 않았습니다",
     "규모와 시점은 원문이 갱신되면 달라질 수 있습니다",

@@ -254,22 +254,40 @@ _OFFICIAL_HOSTS = (
     "sec.gov",
 )
 
+#: Structural-impact vocabulary. Singular-only word boundaries made this
+#: measure the *grammar* of a headline rather than its content: a first-party
+#: post says "our model" and scores, while third-party reporting says "models",
+#: "chips", "agents" and scores zero.
+#:
+#: Measured over 82 real Global candidates from 2026-08-24..08-29, before this
+#: fix:
+#:
+#:   AI agents meant to replace Meta workers made large-scale, disruptive…  0
+#:   Amazon just tripled its order of Nvidia chips over surging demand      0
+#:   Offering Zero Data Retention for frontier models                       0
+#:   How OpenAI let a mob of LLM agents game a test and ransack Hugging…    0
+#:
+#: All four are exactly the substantive, owner-relevant reporting the briefing
+#: exists to surface, and all four were classified "reject". This is the same
+#: plural blindness fixed in ``_keyword_edges`` for category classification on
+#: 2026-08-29; the structural table has its own hand-written patterns and was
+#: missed then.
 _STRUCTURAL_KEYWORDS: Tuple[Tuple[str, int], ...] = (
     (r"\blaunch(?:ed|es)?\b", 4),
     (r"\brelease[ds]?\b", 3),
-    (r"\bmodel\b", 3),
-    (r"\bapi\b", 3),
-    (r"\bplatform\b", 3),
+    (r"\bmodels?\b", 3),
+    (r"\bapis?\b", 3),
+    (r"\bplatforms?\b", 3),
     (r"\bregulat", 5),
-    (r"\bpolicy\b", 4),
+    (r"\bpolic(?:y|ies)\b", 4),
     (r"\bpricing\b", 4),
     (r"\bfunding\b", 4),
-    (r"\bacquisition\b", 4),
-    (r"\bchip\b|\bgpu\b|\bsemiconductor\b", 4),
-    (r"\benterprise\b", 3),
-    (r"\bdeveloper\b", 3),
-    (r"\bagent\b", 4),
-    (r"\bworkflow\b", 3),
+    (r"\bacquisitions?\b", 4),
+    (r"\bchips?\b|\bgpus?\b|\bsemiconductors?\b", 4),
+    (r"\benterprises?\b", 3),
+    (r"\bdevelopers?\b", 3),
+    (r"\bagents?\b", 4),
+    (r"\bworkflows?\b", 3),
     (r"\bdistribution\b", 3),
     (r"\bsearch\b", 2),
 )
