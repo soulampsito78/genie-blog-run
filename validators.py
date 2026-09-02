@@ -13,6 +13,8 @@ from renderers import (
     today_genie_is_generic_hashtag,
 )
 from today_genie_top3_assembly import (
+    TODAY_INDEX_PROSE_LABELS,
+    canonical_market_observations,
     collect_valid_major_overseas_news,
     watchpoint_covers_feed_blobs,
 )
@@ -23,6 +25,28 @@ from today_genie_grounding import (
 )
 
 GateResultType = Literal["pass", "draft_only", "block"]
+
+# ``block`` is reserved for failures that leave no structurally usable, safe
+# owner-review artifact. All other Today findings retain their issue details
+# but use ``draft_only`` (the existing wire value for REVIEW_REQUIRED).
+_TODAY_GENIE_HARD_FAIL_CODES = frozenset(
+    {
+        "feed_json_decode_failed",
+        "internal_or_system_language_leak",
+        "core_section_breakdown",
+        "top3_watchpoints_missing",
+        "market_snapshot_missing_required_rows",
+        "market_snapshot_required_row_malformed",
+        "number_table_contract_malformed",
+        "market_index_rate_invalid",
+        "missing_image_prompt",
+        "invalid_market_snapshot",
+        "invalid_watchpoints",
+        "invalid_opportunities",
+        "invalid_risk_check",
+    }
+)
+_TODAY_GENIE_HARD_FAIL_PREFIXES = ("security_", "privacy_", "secret_")
 
 # today_genie market_snapshot extended contract (per index row)
 NUMBER_TABLE_ACCURACY_STATUSES = frozenset(
@@ -86,6 +110,23 @@ class ValidationResult:
     @property
     def ok(self) -> bool:
         return self.result in ("pass", "draft_only")
+
+
+def today_genie_issue_is_hard_fail(code: str, severity: str) -> bool:
+    """Whether a Today finding removes authority to create an owner artifact."""
+    normalized_code = str(code or "").strip()
+    return str(severity or "").strip().lower() == "error" and (
+        normalized_code in _TODAY_GENIE_HARD_FAIL_CODES
+        or normalized_code.startswith(_TODAY_GENIE_HARD_FAIL_PREFIXES)
+    )
+
+
+def _today_genie_result_from_issues(issues: List[ValidationIssue]) -> GateResultType:
+    if any(today_genie_issue_is_hard_fail(issue.code, issue.severity) for issue in issues):
+        return "block"
+    if issues:
+        return "draft_only"
+    return "pass"
 
 
 FORBIDDEN_FINANCE_PHRASES = [
@@ -694,6 +735,8 @@ def _validate_top_three_news_briefing(
                     "error",
                 )
             )
+    expected_ids = [str(item.get("news_id") or "").strip() for _, item in valid_news]
+    expected_id_set = {news_id for news_id in expected_ids if news_id}
     for i, (_, item) in enumerate(valid_news):
         if i >= 3:
             break
@@ -703,6 +746,20 @@ def _validate_top_three_news_briefing(
         wp = wps[i]
         head = _norm_text(wp.get("headline", ""))
         det = _norm_text(wp.get("detail", ""))
+        expected_id = expected_ids[i]
+        actual_id = str(wp.get("news_id") or "").strip()
+        if expected_id:
+            if actual_id != expected_id:
+                issues.append(
+                    ValidationIssue(
+                        "top3_not_grounded_in_input_news",
+                        f"TOP3 체크포인트 {i + 1}: canonical news_id가 선택 입력과 일치하지 않음",
+                        "error",
+                    )
+                )
+            # A matching immutable ID is the primary article binding. Text
+            # similarity remains only the compatibility path for legacy inputs.
+            continue
         if not (_watchpoint_covers_news_headline(nh, head, det) or _watchpoint_topic_aligns_news_headline(nh, wp)):
             issues.append(
                 ValidationIssue(
@@ -711,6 +768,17 @@ def _validate_top_three_news_briefing(
                     "error",
                 )
             )
+    if expected_id_set:
+        for i, wp in enumerate(wps[:3]):
+            actual_id = str(wp.get("news_id") or "").strip()
+            if actual_id and actual_id not in expected_id_set:
+                issues.append(
+                    ValidationIssue(
+                        "top3_not_grounded_in_input_news",
+                        f"TOP3 체크포인트 {i + 1}: 선택 입력에 없는 canonical news_id",
+                        "error",
+                    )
+                )
     for i in range(len(valid_news), 3):
         if not watchpoint_covers_feed_blobs(wps[i], runtime_input):
             issues.append(
@@ -1648,36 +1716,12 @@ def market_index_validation_report(
 
 
 # Reader-facing names that may refer to each instrument in generated prose.
-_INDEX_PROSE_LABELS: Dict[str, Tuple[str, ...]] = {
-    "KOSPI": ("코스피", "KOSPI"),
-    "KOSDAQ": ("코스닥", "KOSDAQ"),
-    "NIKKEI": ("니케이", "닛케이", "NIKKEI"),
-    "SPX": ("S&P 500", "S&P500", "에스앤피"),
-    "NASDAQ": ("나스닥", "NASDAQ"),
-    "DJI": ("다우존스", "다우", "DOW"),
-}
+_INDEX_PROSE_LABELS: Dict[str, Tuple[str, ...]] = TODAY_INDEX_PROSE_LABELS
 
 
 def _canonical_observations(runtime_input: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """Every normalized index observation the run is allowed to state as fact."""
-    out: Dict[str, Dict[str, Any]] = {}
-    for source_name in ("korea_japan_indices", "overnight_us_market"):
-        source = runtime_input.get(source_name)
-        if not isinstance(source, dict):
-            continue
-        indices = source.get("indices")
-        if not isinstance(indices, dict):
-            continue
-        for instrument, slot in indices.items():
-            if not isinstance(slot, dict):
-                continue
-            status = str(slot.get("observation_status") or "").strip()
-            out[str(instrument).upper()] = {
-                "observation_status": status or "settled",
-                "pct_change": _market_index_numeric(slot.get("change_pct")),
-                "market_date": slot.get("market_date"),
-            }
-    return out
+    return canonical_market_observations(runtime_input)
 
 
 def _today_market_fact_consistency_issues(
@@ -2492,11 +2536,8 @@ def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) ->
                 )
                 content_quality_warnings.append(issue.code)
 
-    has_error = any(i.severity == "error" for i in issues)
-    has_warning = any(i.severity == "warning" for i in issues)
-
     for i in issues:
-        if i.severity == "warning":
+        if i.severity == "warning" or not today_genie_issue_is_hard_fail(i.code, i.severity):
             content_quality_warnings.append(i.code)
 
     # Dedupe while preserving order
@@ -2507,15 +2548,11 @@ def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) ->
             seen_cq.add(c)
             cq_ordered.append(c)
 
-    if has_error:
-        return ValidationResult(
-            result="block", issues=issues, content_quality_warnings=cq_ordered
-        )
-    if has_warning:
-        return ValidationResult(
-            result="draft_only", issues=issues, content_quality_warnings=cq_ordered
-        )
-    return ValidationResult(result="pass", issues=issues, content_quality_warnings=cq_ordered)
+    return ValidationResult(
+        result=_today_genie_result_from_issues(issues),
+        issues=issues,
+        content_quality_warnings=cq_ordered,
+    )
 
 
 def validate_tomorrow_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) -> ValidationResult:

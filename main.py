@@ -25,9 +25,13 @@ from prompts import (
 )
 from today_genie_grounding import headline_grounding_anchors
 from today_genie_top3_assembly import (
+    TODAY_INDEX_PROSE_LABELS,
     apply_briefing_repetition_guard,
     assemble_key_watchpoints_from_slots,
+    canonical_market_observations,
+    ensure_canonical_news_identity,
     normalize_top3_slots_payload,
+    top3_identity_prompt_suffix,
 )
 from renderers import (
     TODAY_GENIE_LEGAL_DISCLAIMER,
@@ -1653,7 +1657,9 @@ def run_today_genie_text_pipeline(
     logging only; never affects generation itself.
     """
     prof: Dict[str, float] = {}
-    ext_prompt = build_top3_extraction_prompt(runtime_input)
+    ext_prompt = build_top3_extraction_prompt(runtime_input) + top3_identity_prompt_suffix(
+        runtime_input
+    )
     ext_usage: Dict[str, Any] = {}
     t0 = time.perf_counter()
     raw_ext = call_gemini(ext_prompt, "today_genie", max_output_tokens=4096, usage_sink=ext_usage)
@@ -2028,14 +2034,23 @@ def stabilize_today_genie_top3_grounding(
     if not isinstance(wps, list):
         return data
     valid = collect_valid_major_overseas_news(runtime_input, max_items=3)
+    by_news_id = {
+        str(item.get("news_id") or "").strip(): item
+        for _, item in valid
+        if str(item.get("news_id") or "").strip()
+    }
     patched: List[Any] = []
     for position, wp in enumerate(wps):
         if not isinstance(wp, dict):
             patched.append(wp)
             continue
         wp2 = dict(wp)
-        if position < len(valid):
-            nh = str(valid[position][1].get("headline") or "").strip()
+        news_id = str(wp2.get("news_id") or "").strip()
+        item = by_news_id.get(news_id)
+        if item is None and not news_id and position < len(valid):
+            item = valid[position][1]
+        if item is not None:
+            nh = str(item.get("headline") or "").strip()
             if nh:
                 wp2["detail"] = inject_headline_grounding_into_detail(
                     str(wp2.get("detail") or ""),
@@ -2045,6 +2060,70 @@ def stabilize_today_genie_top3_grounding(
     normalized = dict(data)
     normalized["key_watchpoints"] = patched
     return normalized
+
+
+def stabilize_today_genie_market_narrative(
+    data: Dict[str, Any], runtime_input: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Replace only contradictory sentences with the canonical settled session."""
+    from market_observation import prose_fact_conflicts
+
+    observations = canonical_market_observations(runtime_input)
+    surfaces = [data.get("summary"), data.get("market_setup")]
+    surfaces.extend(
+        wp.get("detail")
+        for wp in data.get("key_watchpoints", [])
+        if isinstance(wp, dict)
+    )
+    if not any(
+        prose_fact_conflicts(text, observations, TODAY_INDEX_PROSE_LABELS)
+        for text in surfaces
+    ):
+        return data
+
+    labels = {"KOSPI": "코스피", "KOSDAQ": "코스닥", "NIKKEI": "니케이",
+              "SPX": "S&P 500", "NASDAQ": "나스닥", "DJI": "다우존스"}
+    dates = sorted({str(v.get("market_date")) for v in observations.values() if v.get("market_date")})
+    groups: Dict[int, List[str]] = {1: [], -1: [], 0: []}
+    for instrument in labels:
+        obs = observations.get(instrument) or {}
+        if obs.get("observation_status") != "settled" or not isinstance(obs.get("pct_change"), (int, float)):
+            continue
+        pct = float(obs["pct_change"])
+        groups[1 if pct > 0 else -1 if pct < 0 else 0].append(
+            f"{labels[instrument]}({pct:+.2f}%)"
+        )
+    prefix = f"확정 마감 세션({', '.join(dates)}) 기준 " if dates else "확정 마감 기준 "
+    clauses: List[str] = []
+    for sign, heading in ((1, "상승 지수는 "), (-1, "하락 지수는 "), (0, "보합 지수는 ")):
+        if groups[sign]:
+            clauses.append((prefix if not clauses else "같은 세션에서 ") + heading + ", ".join(groups[sign]) + "입니다.")
+    canonical = " ".join(clauses)
+
+    def clean(text: Any) -> str:
+        sentences = re.split(r"(?<=[.!?])\s+|\n+", str(text or "").strip())
+        return " ".join(
+            sentence for sentence in sentences
+            if sentence and not prose_fact_conflicts(sentence, observations, TODAY_INDEX_PROSE_LABELS)
+        )
+
+    out = dict(data)
+    summary = clean(data.get("summary"))
+    out["summary"] = summary or canonical + " 오늘 장전에는 금리·환율과 외국인 수급을 함께 확인합니다."
+    market_setup = (canonical + " " + clean(data.get("market_setup"))).strip()
+    if len(market_setup) < 260:
+        market_setup += (
+            " 오늘 국내 시장에서는 코스피·코스닥의 엇갈림, 원/달러 환율, "
+            "외국인 선물·현물 수급을 차례로 확인하고 아시아 장의 니케이 반응도 함께 봅니다."
+        )
+    out["market_setup"] = market_setup
+    wps = []
+    for wp in data.get("key_watchpoints", []):
+        if isinstance(wp, dict):
+            wp = {**wp, "detail": clean(wp.get("detail"))}
+        wps.append(wp)
+    out["key_watchpoints"] = wps
+    return out
 
 
 def stabilize_today_genie_validation_fields(
@@ -2057,6 +2136,7 @@ def stabilize_today_genie_validation_fields(
     send attempts without weakening validators or publishing policy.
     """
     normalized = stabilize_today_genie_vague_phrases(data)
+    normalized = stabilize_today_genie_market_narrative(normalized, runtime_input)
     normalized = stabilize_today_genie_top3_grounding(normalized, runtime_input)
     normalized = stabilize_today_genie_image_prompt_anchors(normalized, runtime_input)
 
@@ -2318,6 +2398,7 @@ def _generate_impl(job: JobRequest) -> Dict[str, Any]:
 
     if mode == "today_genie":
         runtime_input = apply_today_genie_sent_news_dedup(runtime_input)
+        runtime_input = ensure_canonical_news_identity(runtime_input)
 
     if mode == "today_genie":
         data, raw_text, _layer_prof, gemini_usage = run_today_genie_text_pipeline(runtime_input)

@@ -4,7 +4,10 @@ from __future__ import annotations
 import os
 import unittest
 
+from admin_store import can_approve_customer_send, derive_artifact_status
 from publishing_policy import decide_publishing_actions
+from today_genie_execution_identity import natural_slot_completer_qualification
+from validators import ValidationIssue, _today_genie_result_from_issues
 
 _FULL_RUNTIME = {"overnight_us_market": {"k": 1}, "macro_indicators": {"k": 2}}
 _OWNER_TO = "soulampsito@gmail.com,ey2133@naver.com"
@@ -81,7 +84,7 @@ class OwnerReviewSendPolicyTests(unittest.TestCase):
         )
         self.assertFalse(d.send_email)
 
-    def test_draft_only_owner_gate_on_finance_issue_no_send(self) -> None:
+    def test_draft_only_owner_gate_on_reviewable_finance_issue_sends_owner(self) -> None:
         os.environ["GENIE_OWNER_REVIEW_SEND"] = "1"
         os.environ["EMAIL_TO"] = _OWNER_TO
         d = decide_publishing_actions(
@@ -91,8 +94,74 @@ class OwnerReviewSendPolicyTests(unittest.TestCase):
             _FINANCE_ISSUES,
             _FULL_RUNTIME,
         )
-        self.assertFalse(d.send_email)
-        self.assertTrue(d.suppress_external)
+        self.assertTrue(d.send_email)
+        self.assertFalse(d.suppress_external)
+        self.assertFalse(d.send_customer_email)
+
+    def test_0902_review_required_is_owner_handoff_not_missed_delivery(self) -> None:
+        issues = [
+            ValidationIssue("market_fact_narrative_conflict", "market", "error"),
+            ValidationIssue("top3_not_grounded_in_input_news", "news", "error"),
+        ]
+        validation_result = _today_genie_result_from_issues(issues)
+        self.assertEqual(validation_result, "draft_only")
+
+        os.environ["GENIE_OWNER_REVIEW_SEND"] = "1"
+        os.environ["EMAIL_TO"] = _OWNER_TO
+        decision = decide_publishing_actions(
+            "today_genie",
+            validation_result,
+            "review_required",
+            [
+                {"code": issue.code, "message": issue.message, "severity": issue.severity}
+                for issue in issues
+            ],
+            _FULL_RUNTIME,
+        )
+        self.assertTrue(decision.send_email)  # policy WOULD_SEND; no SMTP call
+        self.assertFalse(decision.send_customer_email)
+
+        artifact = {
+            "run_id": "20260902_063000_today_genie_abcdef12",
+            "mode": "today_genie",
+            "execution_class": "natural_scheduled",
+            "scheduled_slot": "06:30",
+            "trigger_source": "scheduled_service_full_run",
+            "response_status": 200,
+            "validation_result": validation_result,
+            "workflow_status": "review_required",
+            "issue_codes": [issue.code for issue in issues],
+            "email_sent": True,
+            "owner_review_status": "pending_review",
+            "customer_delivery_status": "not_sent",
+        }
+        artifact["artifact_status"] = derive_artifact_status(artifact)
+        self.assertEqual(artifact["artifact_status"], "emailed")
+        self.assertEqual(
+            artifact["issue_codes"],
+            ["market_fact_narrative_conflict", "top3_not_grounded_in_input_news"],
+        )
+        approvable, reason = can_approve_customer_send(artifact, has_email_html=True)
+        self.assertFalse(approvable)
+        self.assertEqual(reason, "review_required_remediation_needed")
+        natural = natural_slot_completer_qualification(
+            artifact, kst_date="2026-09-02", scheduled_slot="06:30"
+        )
+        self.assertTrue(natural.qualifies, natural.disqualify_reason)
+
+    def test_only_unusable_or_unsafe_today_artifacts_hard_fail(self) -> None:
+        self.assertEqual(
+            _today_genie_result_from_issues(
+                [ValidationIssue("feed_json_decode_failed", "feed", "error")]
+            ),
+            "block",
+        )
+        self.assertEqual(
+            _today_genie_result_from_issues(
+                [ValidationIssue("weak_opening", "editorial", "warning")]
+            ),
+            "draft_only",
+        )
 
     def test_block_result_no_send(self) -> None:
         os.environ["GENIE_OWNER_REVIEW_SEND"] = "1"

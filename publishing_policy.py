@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from programs.registry import UnknownProgramError, get_program, resolve_program_id
+from validators import today_genie_issue_is_hard_fail
 
 
 @dataclass(frozen=True)
@@ -92,7 +93,7 @@ def _today_owner_review_send_allowed(
         return False
     if _critical_today_inputs_missing(runtime_input):
         return False
-    if _has_finance_safety_issue(issues):
+    if _has_today_hard_fail_issue(issues):
         return False
     if not _owner_recipients_only():
         return False
@@ -114,6 +115,16 @@ def _has_finance_safety_issue(issues: List[Dict[str, Any]]) -> bool:
         return False
     codes = {i.get("code") for i in issues if isinstance(i, dict)}
     return bool(codes & FINANCE_SAFETY_CODES)
+
+
+def _has_today_hard_fail_issue(issues: List[Dict[str, Any]]) -> bool:
+    return any(
+        isinstance(issue, dict)
+        and today_genie_issue_is_hard_fail(
+            str(issue.get("code") or ""), str(issue.get("severity") or "error")
+        )
+        for issue in issues
+    )
 
 
 def _controlled_test_send_active() -> bool:
@@ -211,8 +222,10 @@ def decide_publishing_actions(
             send_customer_email=False,
         )
 
-    # Finance-safety issue: always suppress distribution
-    if mode == "today_genie" and _has_finance_safety_issue(issues):
+    # Only an unusable/unsafe Today artifact suppresses owner review. Factual
+    # and editorial findings remain visible in the owner-only handoff while
+    # scheduled customer delivery stays disabled below.
+    if mode == "today_genie" and _has_today_hard_fail_issue(issues):
         return PublishingDecision(
             send_email=False,
             create_naver_draft=False,

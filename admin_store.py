@@ -1617,6 +1617,8 @@ def can_approve_customer_send(meta: Dict[str, Any], *, has_email_html: bool) -> 
     vr = str(meta.get("validation_result") or "")
     if vr == "block" or str(meta.get("artifact_status") or "") == "failed":
         return False, "not_approvable"
+    if mode == "today_genie" and vr != "pass":
+        return False, "review_required_remediation_needed"
     if mode in {"keysuri_global_tech", "keysuri_korea_tech"}:
         if str(meta.get("safety_verdict") or "") != "SAFE":
             return False, "keysuri_safety_not_safe"

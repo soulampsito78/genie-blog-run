@@ -450,11 +450,21 @@ class KeysuriGradedValidationTests(unittest.TestCase):
             reserve.assert_called_once()
 
     def test_11_today_sources_are_outside_the_remediation_diff(self) -> None:
-        # Guardrail against accidentally broadening this patch into Today.
+        # Guard the original KeeSuri remediation itself. Inspecting the current
+        # dirty worktree couples this historical scope proof to unrelated Today
+        # development and creates a false full-suite failure.
         import subprocess
 
         changed = subprocess.run(
-            ["git", "diff", "--name-only", "--", "today_*.py"],
+            [
+                "git",
+                "show",
+                "--format=",
+                "--name-only",
+                "ac3f4f917149a422aa7b43d9aca6ceab732600a3",
+                "--",
+                "today_*.py",
+            ],
             cwd=ROOT,
             check=True,
             capture_output=True,

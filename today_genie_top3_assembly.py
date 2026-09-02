@@ -1,6 +1,7 @@
 """Deterministic assembly of today_genie key_watchpoints from structured TOP3 extraction slots."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from difflib import SequenceMatcher
@@ -11,6 +12,106 @@ def _norm_one_line(s: Any) -> str:
     if not isinstance(s, str):
         return ""
     return re.sub(r"\s+", " ", s).strip()
+
+
+TODAY_INDEX_PROSE_LABELS: Dict[str, Tuple[str, ...]] = {
+    "KOSPI": ("코스피", "KOSPI"),
+    "KOSDAQ": ("코스닥", "KOSDAQ"),
+    "NIKKEI": ("니케이", "닛케이", "NIKKEI"),
+    "SPX": ("S&P 500", "S&P500", "에스앤피"),
+    "NASDAQ": ("나스닥", "NASDAQ"),
+    "DJI": ("다우존스", "다우", "DOW"),
+}
+
+
+def canonical_news_id(item: Any) -> str:
+    """Stable article identity, preferring a source-supplied canonical ID."""
+    if not isinstance(item, dict):
+        return ""
+    for key in ("news_id", "claim_id", "source_id"):
+        value = _norm_one_line(item.get(key))
+        if value:
+            return value
+    headline = _norm_one_line(item.get("headline") or item.get("title"))
+    if not headline:
+        return ""
+    identity = "\x1f".join(
+        (
+            _norm_one_line(item.get("canonical_url") or item.get("url")),
+            _norm_one_line(item.get("source")),
+            _norm_one_line(item.get("date")),
+            re.sub(r"[^0-9a-z가-힣]+", " ", headline.lower()).strip(),
+        )
+    )
+    return "today-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+
+
+def ensure_canonical_news_identity(runtime_input: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach immutable article IDs before either model call or validation."""
+    raw = runtime_input.get("top_market_news")
+    if not isinstance(raw, list):
+        return runtime_input
+    enriched: List[Any] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            enriched.append(item)
+            continue
+        article = dict(item)
+        news_id = canonical_news_id(article)
+        if news_id:
+            article["news_id"] = news_id
+        enriched.append(article)
+    out = dict(runtime_input)
+    out["top_market_news"] = enriched
+    dedup = out.get("sent_news_dedup")
+    if isinstance(dedup, dict):
+        dedup_copy = dict(dedup)
+        dedup_copy["selected_items"] = [dict(x) for x in enriched if isinstance(x, dict)]
+        out["sent_news_dedup"] = dedup_copy
+    return out
+
+
+def top3_identity_prompt_suffix(runtime_input: Dict[str, Any]) -> str:
+    """Bind extraction slots to selected articles by ID, never by position alone."""
+    selected = collect_valid_major_overseas_news(runtime_input, max_items=3)
+    identities = [
+        {"news_id": canonical_news_id(item), "headline": item.get("headline")}
+        for _, item in selected
+    ]
+    return (
+        "\n\n[ARTICLE_IDENTITY_LOCK — binding]\n"
+        "Each news-backed slot MUST include the exact news_id below. "
+        "Do not invent, reorder, or replace an ID.\n"
+        + json.dumps(identities, ensure_ascii=False)
+    )
+
+
+def canonical_market_observations(runtime_input: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """The one settled observation map used by narrative repair and validation."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for source_name in ("korea_japan_indices", "overnight_us_market"):
+        source = runtime_input.get(source_name)
+        indices = source.get("indices") if isinstance(source, dict) else None
+        if not isinstance(indices, dict):
+            continue
+        for instrument, slot in indices.items():
+            if not isinstance(slot, dict):
+                continue
+            status = str(slot.get("observation_status") or "").strip() or "settled"
+            pct = slot.get("change_pct")
+            try:
+                pct_numeric = None if pct is None else float(str(pct).rstrip("%"))
+            except ValueError:
+                pct_numeric = None
+            out[str(instrument).upper()] = {
+                "observation_status": status,
+                "pct_change": pct_numeric,
+                "market_date": slot.get("market_date"),
+                "close": slot.get("close"),
+                "source_name": slot.get("source_name"),
+                "source_url": slot.get("source_url"),
+            }
+    return out
 
 
 _INVALID_NEWS_HEADLINE_PATTERNS = (
@@ -378,12 +479,22 @@ def assemble_key_watchpoints_from_slots(
     feed-anchored market-watch slots (no absence filler).
     """
     valid = collect_valid_major_overseas_news(runtime_input, max_items=3)
+    slots_by_news_id = {
+        str(slot.get("news_id") or "").strip(): slot
+        for slot in slots
+        if isinstance(slot, dict) and str(slot.get("news_id") or "").strip()
+    }
     result: List[Dict[str, Any]] = []
     for position in range(3):
+        news_id = ""
         if position < len(valid):
             raw_idx, item = valid[position]
             nh = str(item.get("headline") or "").strip()
-            slot = slots[raw_idx] if raw_idx < len(slots) else {}
+            news_id = canonical_news_id(item)
+            if str(item.get("news_id") or "").strip():
+                slot = slots_by_news_id.get(news_id, {})
+            else:  # Compatibility only; production selection is ID-enriched.
+                slot = slots[raw_idx] if raw_idx < len(slots) else {}
             hk, wh, wy, wk = _fallback_slot_fields(slot, nh, position + 1)
         else:
             fh, fw, fy, fk = _feed_watch_slot_fields(runtime_input, variant=position)
@@ -403,5 +514,8 @@ def assemble_key_watchpoints_from_slots(
             nh = str(valid[position][1].get("headline") or "").strip()
             if nh:
                 detail = _inject_headline_grounding_anchor(detail, nh)
-        result.append({"headline": hk, "detail": detail, "basis": "fact"})
+        watchpoint = {"headline": hk, "detail": detail, "basis": "fact"}
+        if news_id:
+            watchpoint["news_id"] = news_id
+        result.append(watchpoint)
     return result
