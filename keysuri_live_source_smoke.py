@@ -1157,6 +1157,7 @@ _STRUCTURAL_RECOVERY_CODES = frozenset(
         "gemini_multiple_json_objects_no_valid_schema",
         "gemini_json_missing_required_keys",
         "gemini_json_recovery_failed",
+        "top_5_news_heading_missing",
     }
 )
 _SEMANTIC_RECOVERY_CODES = frozenset(

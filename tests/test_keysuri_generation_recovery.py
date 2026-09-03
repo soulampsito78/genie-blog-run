@@ -160,6 +160,30 @@ def _semantic_corrective_response(prompt_input: dict, replacement_claim: dict) -
 
 
 class BoundedStructuralRecoveryTests(unittest.TestCase):
+    def test_missing_top5_heading_uses_corrective_generation(self) -> None:
+        initial = _generated()
+        initial["top_5_news"].pop("section_heading")
+        caller, calls = _fake_caller(
+            [
+                json.dumps(initial, ensure_ascii=False),
+                json.dumps(_generated(), ensure_ascii=False),
+            ]
+        )
+
+        result = generate_keysuri_with_bounded_recovery(
+            _prompt_input(), gemini_caller=caller, usage_sink={}
+        )
+
+        diagnostics = result["generation_diagnostics"]
+        self.assertEqual(result["parse_result"]["parse_status"], "parsed_valid")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(
+            diagnostics["generation_recovery_family"], STRUCTURAL_CONTRACT_FAILURE
+        )
+        self.assertEqual(diagnostics["generation_recovery_result"], "succeeded")
+        self.assertEqual(diagnostics["generation_attempt_count"], 2)
+        self.assertIn("top_5_news_heading_missing", calls[1]["prompt"])
+
     def test_three_fragments_then_valid_single_json_calls_gemini_twice(self) -> None:
         prompt_input = _prompt_input()
         first_raw = _three_incomplete_fragments("FIRST_RAW_MUST_NOT_BE_REPEATED")
