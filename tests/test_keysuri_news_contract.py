@@ -562,6 +562,103 @@ class KeysuriNewsSelectionDiversityTests(unittest.TestCase):
         self.assertEqual(relaxed[0]["diversity_relaxed_from"], "same_source_cap")
 
 
+class KeysuriGlobalFreshSupplyIncidentRegressionTests(unittest.TestCase):
+    """2026-09-03 12:30 Global candidate lifecycle, without live side effects."""
+
+    _SCHEDULED = "scheduled_service_full_run"
+
+    @staticmethod
+    def _claim(cid: str) -> dict:
+        headline = f"{cid} launches enterprise AI security platform contract"
+        return {
+            "claim_id": cid,
+            "statement": headline,
+            "claim_type": "general",
+            "source_ids": [f"s-{cid}"],
+            "confidence_label": "reported",
+            "category": "ai_software_platform",
+            "headline": headline,
+            "summary": f"{headline} for production customer workflows.",
+            "why_it_matters": f"Why {cid}",
+            "business_implication": f"Business implication {cid}",
+            "selection_score": 50,
+            "selection_score_before_diversity": 50,
+        }
+
+    @staticmethod
+    def _source(cid: str) -> dict:
+        return {
+            "source_id": f"s-{cid}",
+            "source_name": f"Publisher {cid}",
+            "source_url": f"https://publisher-{cid}.test/news/{cid}",
+            "source_tier": "T1_OFFICIAL_SECONDARY",
+            "fetched_at": "2026-09-03T12:30:01+09:00",
+        }
+
+    @classmethod
+    def _pack(cls, ids: list[str]) -> dict:
+        return {
+            "program_id": "keysuri_global_tech",
+            "generated_at": "2026-09-03T12:30:01+09:00",
+            "sources": [cls._source(cid) for cid in ids],
+            "claims": [cls._claim(cid) for cid in ids],
+            "global_top5_selection": {
+                "downstream_candidate_source_ids": [f"s-{cid}" for cid in ids]
+            },
+        }
+
+    @classmethod
+    def _log_row(cls, cid: str) -> dict:
+        return {
+            "title": cls._claim(cid)["headline"],
+            "url": cls._source(cid)["source_url"],
+            "source": cls._source(cid)["source_name"],
+        }
+
+    def test_deeper_global_supply_recovers_five_without_hard_reuse(self) -> None:
+        hard_ids = [f"hard-{index}" for index in range(1, 6)]
+        owner_only_id = "owner-only-1"
+        initial_fresh_ids = [f"fresh-{index}" for index in range(1, 4)]
+        initial_ids = hard_ids + [owner_only_id] + initial_fresh_ids
+        sent_rows = [self._log_row(cid) for cid in hard_ids]
+        exposure_rows = [self._log_row(owner_only_id)]
+
+        reproduced = select_top_5_news(
+            self._pack(initial_ids),
+            GateResult(verdict="pass", issues=()),
+            sent_log_rows=sent_rows,
+            exposure_log_rows=exposure_rows,
+            trigger_source=self._SCHEDULED,
+        )
+        self.assertEqual(reproduced["verdict"], "hold")
+        reproduced_funnel = reproduced["candidate_funnel_summary"]
+        self.assertEqual(reproduced_funnel["candidate_count_before_dedup"], 9)
+        self.assertEqual(reproduced_funnel["dedup_removed_by_sent_log_count"], 5)
+        self.assertEqual(reproduced_funnel["dedup_removed_by_exposure_log_count"], 1)
+        self.assertEqual(reproduced_funnel["exposure_backfill_used_count"], 1)
+        self.assertEqual(reproduced_funnel["candidate_count_after_dedup"], 4)
+
+        reserve_ids = [f"reserve-{index}" for index in range(1, 6)]
+        recovered = select_top_5_news(
+            self._pack(initial_ids + reserve_ids),
+            GateResult(verdict="pass", issues=()),
+            sent_log_rows=sent_rows,
+            exposure_log_rows=exposure_rows,
+            trigger_source=self._SCHEDULED,
+        )
+
+        self.assertEqual(recovered["verdict"], "pass", recovered.get("issues"))
+        selected = recovered["top_5_news"]["items"]
+        selected_ids = {str(item.get("news_id")) for item in selected}
+        self.assertEqual(len(selected), 5)
+        self.assertFalse(selected_ids & set(hard_ids))
+        self.assertEqual(len({item.get("normalized_source") for item in selected}), 5)
+        recovered_funnel = recovered["candidate_funnel_summary"]
+        self.assertEqual(recovered_funnel["below_quality_floor_selected_count"], 0)
+        self.assertEqual(recovered_funnel["quality_floor_base_score"], 45)
+        self.assertFalse(recovered_funnel["relaxed_due_to_candidate_shortage"])
+
+
 class KeysuriKoreaExposureDedupBackfillTests(unittest.TestCase):
     """Scheduled Korea runs must not 500 just because an earlier same-day
     owner-review exposed the same news. Customer-sent items stay a hard block;

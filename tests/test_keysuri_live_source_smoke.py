@@ -8,12 +8,15 @@ from tempfile import TemporaryDirectory
 from unittest import mock
 
 from keysuri_live_source_smoke import (
+    DEFAULT_ITEMS_PER_FEED,
+    GLOBAL_ITEMS_PER_FEED,
     GLOBAL_TECH_SMOKE_FEEDS,
     KOREA_TECH_ALLOWED_CATEGORIES,
     KOREA_TECH_SMOKE_FEEDS,
     PROGRAM_KOREA,
     SAMPLE_MARKER_PATTERNS,
     _feeds_for_program,
+    _items_per_feed_for_program,
     build_live_source_pack,
     extract_generated_body_text,
     normalize_generated_briefing_closing_aliases,
@@ -737,6 +740,17 @@ class KeysuriKoreaTechSmokeFeedConfigTests(unittest.TestCase):
         feeds = _feeds_for_program("keysuri_global_tech")
         self.assertIs(feeds, GLOBAL_TECH_SMOKE_FEEDS)
         self.assertGreater(len(feeds), 0)
+
+    def test_global_uses_bounded_depth_eight_candidate_reserve(self) -> None:
+        self.assertEqual(GLOBAL_ITEMS_PER_FEED, 8)
+        self.assertEqual(_items_per_feed_for_program("keysuri_global_tech"), 8)
+
+    def test_korea_keeps_existing_per_feed_depth(self) -> None:
+        self.assertEqual(DEFAULT_ITEMS_PER_FEED, 3)
+        self.assertEqual(
+            _items_per_feed_for_program("keysuri_korea_tech"),
+            DEFAULT_ITEMS_PER_FEED,
+        )
 
     def test_feeds_for_program_korea_returns_korea_feeds(self) -> None:
         feeds = _feeds_for_program("keysuri_korea_tech")

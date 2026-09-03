@@ -86,6 +86,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_FETCH_TIMEOUT_SEC = 12
 DEFAULT_ITEMS_PER_FEED = 3
+# Global needs a deeper bounded reserve before scoring/dedup. On 2026-09-03 the
+# first three rows from each feed produced only nine above-floor candidates; five
+# were customer-sent hard duplicates and the single owner-review-only duplicate
+# could backfill the pool only to four. Eight rows per feed was the
+# first bounded depth that restored five fresh, above-floor candidates without
+# relaxing source diversity. Korea keeps the established depth of three.
+GLOBAL_ITEMS_PER_FEED = 8
 DEFAULT_USER_AGENT = "GenieKeeSuriLiveSmoke/0.1 (+owner-review-smoke)"
 
 # Smoke-only public RSS endpoints — no API keys; conservative fetch limits.
@@ -2808,6 +2815,13 @@ def _feeds_for_program(program_id: str) -> Tuple[Dict[str, str], ...]:
     raise ValueError(f"No live smoke feed list configured for {program_id!r}")
 
 
+def _items_per_feed_for_program(program_id: str) -> int:
+    pid = str(program_id or "").strip()
+    if pid == PROGRAM_GLOBAL or pid.startswith("keysuri_global"):
+        return GLOBAL_ITEMS_PER_FEED
+    return DEFAULT_ITEMS_PER_FEED
+
+
 def extract_contract_visible_body_text(fixture: dict, generated_briefing: dict) -> Dict[str, str]:
     """Extract Korean visible body fields for owner review report."""
     out = extract_generated_body_text(generated_briefing)
@@ -3001,7 +3015,7 @@ def run_keysuri_live_source_smoke(
         feeds = _feeds_for_program(program_id)
         feed_urls = [f["feed_url"] for f in feeds]
         fetched = []
-        per_feed = max(1, DEFAULT_ITEMS_PER_FEED)
+        per_feed = max(1, _items_per_feed_for_program(program_id))
         fetch_errors: List[str] = []
 
         for feed in feeds:
