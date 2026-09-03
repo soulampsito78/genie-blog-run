@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 .DS_Store
 
+# Local Python virtualenv (created by dev setup; never commit)
+.venv/
+
 # Local secrets (never commit)
 today.env
 tomorrow.env
