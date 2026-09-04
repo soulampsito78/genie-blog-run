@@ -7,6 +7,8 @@ import re
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Tuple
 
+from product_surface_contract import build_korean_safe_reader_title
+
 
 def _norm_one_line(s: Any) -> str:
     if not isinstance(s, str):
@@ -265,8 +267,10 @@ def _fallback_slot_fields(slot: Dict[str, Any], news_headline: str, idx: int) ->
     wk = _norm_one_line(slot.get("what_to_watch_in_korea"))
     nh = (news_headline or "").strip()
 
+    safe_reader_title = build_korean_safe_reader_title(nh or hk, position=idx)
+
     if not wh and nh:
-        wh = f"야간·장전 맥락에서 {nh[:200]} 흐름이 대응 축으로 남아 있다."
+        wh = f"{safe_reader_title} 보도가 야간 시장의 주요 변수로 확인됐습니다."
     if not wy:
         wy_opts = (
             "오늘 장전에는 앞선 야간 데이터가 체크리스트 상단에 남습니다.",
@@ -276,17 +280,13 @@ def _fallback_slot_fields(slot: Dict[str, Any], news_headline: str, idx: int) ->
         wy = wy_opts[(max(idx, 1) - 1) % 3]
     if not wk:
         wk_opts = (
-            "코스피 선물 베이시스와 대형주 호가를 먼저 본다.",
-            "코스닥 변동성·테마주 분산을 다음 관전 축으로 본다.",
-            "단기금리·원화 스왑과 기관 선물 순매수를 짝지어 본다.",
+            "코스피 선물 베이시스와 대형주 호가를 먼저 확인합니다.",
+            "코스닥 변동성·테마주 분산을 다음 관전 축으로 확인합니다.",
+            "단기금리·원화 스왑과 기관 선물 순매수를 함께 확인합니다.",
         )
         wk = wk_opts[(max(idx, 1) - 1) % 3]
     if len(hk) < 4:
-        if wh:
-            base = wh[:36].strip()
-            hk = base + ("…" if len(wh) > 36 else "")
-        else:
-            hk = f"TOP{idx} 이슈"
+        hk = safe_reader_title
     return hk, wh, wy, wk
 
 
@@ -304,6 +304,10 @@ def _polite_top3_tone(text: str) -> str:
         ("보면 된다", "확인할 필요가 있습니다"),
         ("조정한다", "조정할 필요가 있습니다"),
         ("유지한다", "유지하는 편이 좋습니다"),
+        ("먼저 본다", "먼저 확인합니다"),
+        ("관전 축으로 본다", "관전 축으로 확인합니다"),
+        ("짝지어 본다", "함께 확인합니다"),
+        ("남아 있다", "남아 있습니다"),
     )
     for src, dst in replacements:
         patched = patched.replace(src, dst)

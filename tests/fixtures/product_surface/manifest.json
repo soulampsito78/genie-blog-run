@@ -1,0 +1,64 @@
+{
+  "contract_version": "genie-product-surface-v1",
+  "fixtures": [
+    {
+      "id": "today_20260416_contract_known_good",
+      "mode": "today_genie",
+      "expectation": "GOOD_EXPECTED_PASS",
+      "fixture": "today_20260416_contract_known_good.json",
+      "source_path": "ops/preview/today_genie_contract_run_latest.json",
+      "source_run_id": null,
+      "source_datetime": "2026-04-16T15:12:11.059555+09:00",
+      "source_note": "Minimal exact excerpt from the locally persisted validation-pass contract artifact; the original has no canonical run_id."
+    },
+    {
+      "id": "today_20260903_repeated_skeleton",
+      "mode": "today_genie",
+      "expectation": "BAD_EXPECTED_FAIL",
+      "fixture": "today_20260903_repeated_skeleton.json",
+      "source_path": "owner-reviewed Today artifact quoted in conversation 6a66d8e6-108c-83ee-bbbb-4ed55a5704ec",
+      "source_run_id": null,
+      "source_date": "2026-09-03",
+      "source_note": "Only the authoritative repeated sentence excerpt is retained; no full body or run_id was locally persisted."
+    },
+    {
+      "id": "today_20260904_customer_surface_regression",
+      "mode": "today_genie",
+      "expectation": "BAD_EXPECTED_FAIL",
+      "fixture": "today_20260904_customer_surface_regression.json",
+      "source_path": "owner-reviewed Today artifact quoted in the task and conversation 6a66d8e6-108c-83ee-bbbb-4ed55a5704ec",
+      "source_run_id": null,
+      "source_date": "2026-09-04",
+      "proof_repair": true,
+      "expected_issue_codes": [
+        "customer_surface_truncated_english_headline",
+        "customer_surface_internal_keyword_fragment",
+        "customer_surface_repeated_sentence_skeleton",
+        "customer_surface_repeated_canned_bridge",
+        "customer_surface_mixed_sentence_end_style"
+      ],
+      "source_note": "Minimal deterministic replay composed solely from the exact defect excerpts named by the owner; it is not represented as the complete email body."
+    },
+    {
+      "id": "global_20260826_natural_known_good",
+      "mode": "keysuri_global_tech",
+      "expectation": "GOOD_EXPECTED_PASS",
+      "source_ref": "../global_corpus_20260828/20260826_natural.json",
+      "source_run_id": "20260826_123001_keysuri_global_tech_ddc907ba"
+    },
+    {
+      "id": "global_20260814_repeated_deep_dive_bad",
+      "mode": "keysuri_global_tech",
+      "expectation": "BAD_EXPECTED_FAIL",
+      "source_ref": "../keysuri_global_20260814/production_visible_surface.json",
+      "source_run_id": "20260814_123001_keysuri_global_tech_089c413b"
+    },
+    {
+      "id": "korea_20260826_known_good",
+      "mode": "keysuri_korea_tech",
+      "expectation": "GOOD_EXPECTED_PASS",
+      "source_ref": "../global_corpus_20260828/20260826_korea_known_good.json",
+      "source_run_id": "20260826_183001_keysuri_korea_tech_4db792fd"
+    }
+  ]
+}

@@ -5,6 +5,8 @@ import re
 import unicodedata
 from typing import Dict, FrozenSet, List, Sequence, Set, Tuple
 
+from product_surface_contract import build_korean_safe_reader_title
+
 PRIMARY_MARKET_ENTITIES: FrozenSet[str] = frozenset(
     {"sp500", "nasdaq", "nikkei", "kospi", "kosdaq", "dow", "seoul_shares"}
 )
@@ -424,20 +426,13 @@ def inject_headline_grounding_into_detail(detail: str, headline: str) -> str:
         body = f"{anchor} {body}".strip()
     if text_covers_headline_entities(body, nh):
         return body
-    # Proper-noun lead only (no "원문 키워드" / "원문 헤드라인 기준" dumps).
-    topics = [
-        t
-        for t in headline_topic_tokens(nh, max_tokens=4)
-        if t.lower() not in _HEADLINE_TOPIC_STOPWORDS and len(t) >= 2
-    ]
-    # Prefer tokens that retain uppercase (proper nouns / acronyms).
-    proper = [t for t in topics if any(c.isupper() for c in t)]
-    use = proper[:2] or topics[:2]
-    banned = {"could", "face", "further", "stock", "stocks"}
-    if use and not any(tok.lower() in banned for tok in use):
-        lead = "·".join(use) + " 관련."
-        if lead not in body:
-            body = f"{lead} {body}".strip()
+    # The article is already bound by news_id.  If legacy textual grounding is
+    # still needed, add a natural reader title rather than a raw keyword dump
+    # such as ``Lululemon·Plunges 관련``.
+    safe_title = build_korean_safe_reader_title(nh)
+    lead = f"{safe_title} 관련 보도입니다."
+    if lead not in body:
+        body = f"{lead} {body}".strip()
     return body
 
 
@@ -484,9 +479,9 @@ def anchor_phrase_for_headline(headline: str) -> str:
     if index_parts:
         base = "·".join(index_parts)
         if context_parts:
-            return f"원문 지표 기준: {base} {', '.join(context_parts)}."
-        return f"원문 지표 기준: {base}."
+            return f"{base}와 {', '.join(context_parts)} 맥락의 관련 보도입니다."
+        return f"{base} 관련 보도입니다."
 
     if context_parts:
-        return f"원문 지표 기준: {', '.join(context_parts)}."
+        return f"{', '.join(context_parts)} 맥락의 관련 보도입니다."
     return ""

@@ -46,7 +46,8 @@ class TodayGenieGroundingHelperTests(unittest.TestCase):
         phrase = anchor_phrase_for_headline(SP_NASDAQ_HEADLINE)
         self.assertIn("S&P 500", phrase)
         self.assertIn("Nasdaq", phrase)
-        self.assertTrue(phrase.startswith("원문 지표 기준:"))
+        self.assertIn("관련 보도입니다", phrase)
+        self.assertNotIn("원문 지표 기준:", phrase)
 
     def test_headline_grounding_anchors_for_image_prompts(self) -> None:
         anchors = headline_grounding_anchors(SP_NASDAQ_HEADLINE)

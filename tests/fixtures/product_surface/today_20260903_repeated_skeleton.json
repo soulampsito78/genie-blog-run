@@ -1,0 +1,14 @@
+{
+  "source": {
+    "date": "2026-09-03",
+    "run_id": null,
+    "evidence": "owner-reviewed artifact excerpt"
+  },
+  "structured_output": {
+    "key_watchpoints": [
+      {"detail": "야간·장전 맥락에서 … 흐름이 대응 축으로 남아 있다."},
+      {"detail": "야간·장전 맥락에서 … 흐름이 대응 축으로 남아 있다."},
+      {"detail": "야간·장전 맥락에서 … 흐름이 대응 축으로 남아 있다."}
+    ]
+  }
+}

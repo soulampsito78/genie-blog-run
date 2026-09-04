@@ -47,6 +47,7 @@ from keysuri_contract_preview_renderer import (
     render_keysuri_contract_preview_html,
 )
 from keysuri_reader_surface import reader_surface_run_fields
+from product_surface_contract import product_surface_run_fields, runtime_safety_status
 from keysuri_briefing_content_enricher import (
     _GLOBAL_FILLER_SANITIZER_KEY,
     enrich_generated_briefing_content,
@@ -3860,6 +3861,8 @@ def run_keysuri_image_only_reissue(
     # Image-only reissue never regenerates text: the reader surface is the
     # parent's, and it is re-derived rather than assumed to have carried over.
     meta.update(reader_surface_run_fields(parent_briefing))
+    meta.update(product_surface_run_fields(parent_briefing))
+    meta["runtime_safety_status"] = runtime_safety_status(meta.get("validation_result"))
     meta.update(adjudication_artifact_fields(adjudication))
     meta.update(_post_render_qa_diagnostic_fields(post_render_qa))
     meta.update(
@@ -4167,6 +4170,8 @@ def run_keysuri_text_only_reissue(
     meta.update(repair_fields)
     meta.update(visible_text_quality_fields)
     meta.update(reader_surface_run_fields(generated_briefing))
+    meta.update(product_surface_run_fields(generated_briefing))
+    meta["runtime_safety_status"] = runtime_safety_status(meta.get("validation_result"))
     meta.update(adjudication_artifact_fields(adjudication))
     meta.update(_post_render_qa_diagnostic_fields(post_render_qa))
     meta.update(_scope_delivery_reason_fields("body_only"))
@@ -4520,6 +4525,8 @@ def run_keysuri_text_and_image_reissue(
     meta.update(repair_fields)
     meta.update(visible_text_quality_fields)
     meta.update(reader_surface_run_fields(generated_briefing))
+    meta.update(product_surface_run_fields(generated_briefing))
+    meta["runtime_safety_status"] = runtime_safety_status(meta.get("validation_result"))
     meta.update(adjudication_artifact_fields(adjudication))
     meta.update(_post_render_qa_diagnostic_fields(post_render_qa))
     meta.update(_scope_delivery_reason_fields("body_and_image"))
@@ -5447,6 +5454,8 @@ def _run_keysuri_service_full_run_impl(
             meta["generation_contract_fingerprint"] = contract_fingerprint
     meta.update(visible_text_quality_fields)
     meta.update(reader_surface_run_fields(generated_briefing))
+    meta.update(product_surface_run_fields(generated_briefing))
+    meta["runtime_safety_status"] = runtime_safety_status(meta.get("validation_result"))
     meta.update(adjudication_artifact_fields(adjudication))
     meta.update(_post_render_qa_diagnostic_fields(post_render_qa))
     meta["customer_send"] = 0

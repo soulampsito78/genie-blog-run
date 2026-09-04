@@ -52,6 +52,12 @@ from validators import (
 from weather_image_context import build_image_weather_context_for_today
 from keysuri_gemini_client import extract_gemini_usage_metadata
 from genie_cost_estimate import estimate_genie_generation_cost
+from product_surface_contract import (
+    CUSTOMER_SURFACE_PASS,
+    PRODUCT_SURFACE_DIAGNOSTIC_KEY,
+    prepare_final_customer_copy,
+    runtime_safety_status,
+)
 from memory_observability import memory_evidence_scope, record_memory_stage
 
 
@@ -2423,6 +2429,9 @@ def _generate_impl(job: JobRequest) -> Dict[str, Any]:
         data["hashtags"] = finalize_today_genie_hashtag_list(data, runtime_input)
         data = enforce_today_genie_market_snapshot_from_feeds(data, runtime_input)
         data = stabilize_today_genie_validation_fields(data, runtime_input)
+        data = prepare_final_customer_copy(
+            "today_genie", data, source_input=runtime_input
+        )
         validation = validate_today_genie(data, runtime_input)
         if any(i.code == "number_table_accuracy_not_verified" for i in validation.issues):
             logger.warning(
@@ -2458,6 +2467,14 @@ def _generate_impl(job: JobRequest) -> Dict[str, Any]:
                 "issue_details": runtime_check["issue_details"],
                 "content_quality_warnings": runtime_check["content_quality_warnings"],
                 "runtime_validation_check": runtime_check,
+                "runtime_safety_status": runtime_safety_status(validation.result),
+                "customer_surface_status": (
+                    data.get(PRODUCT_SURFACE_DIAGNOSTIC_KEY, {}).get(
+                        "customer_surface_status", CUSTOMER_SURFACE_PASS
+                    )
+                    if mode == "today_genie"
+                    else CUSTOMER_SURFACE_PASS
+                ),
                 "raw_preview": raw_text[:1200],
             },
         )
@@ -2509,6 +2526,19 @@ def _generate_impl(job: JobRequest) -> Dict[str, Any]:
         "type": mode,
         "workflow_status": workflow_status,
         "validation_result": validation.result,
+        "runtime_safety_status": runtime_safety_status(validation.result),
+        "customer_surface_status": (
+            data.get(PRODUCT_SURFACE_DIAGNOSTIC_KEY, {}).get(
+                "customer_surface_status", CUSTOMER_SURFACE_PASS
+            )
+            if mode == "today_genie"
+            else CUSTOMER_SURFACE_PASS
+        ),
+        "product_surface_qa": (
+            data.get(PRODUCT_SURFACE_DIAGNOSTIC_KEY, {})
+            if mode == "today_genie"
+            else {}
+        ),
         "issues": response_issues(validation.issues),
         "issue_codes": runtime_check["issue_codes"],
         "issue_details": runtime_check["issue_details"],

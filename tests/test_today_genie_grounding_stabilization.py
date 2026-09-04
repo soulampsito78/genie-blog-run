@@ -92,7 +92,8 @@ class TodayGenieGroundingStabilizationTests(unittest.TestCase):
         slot2 = wps[1]["detail"]
         self.assertIn("S&P 500", slot2)
         self.assertIn("Nasdaq", slot2)
-        self.assertIn("원문 지표 기준:", slot2)
+        self.assertIn("관련 보도입니다", slot2)
+        self.assertNotIn("원문 지표 기준:", slot2)
         for wp, nh in zip(wps, headlines):
             detail = wp.get("detail", "")
             self.assertTrue(text_covers_headline_entities(detail, nh), nh)
@@ -103,7 +104,8 @@ class TodayGenieGroundingStabilizationTests(unittest.TestCase):
         slots[0]["what_happened"] = "완전히 다른 이슈만 서술하는 한국어 문장입니다." * 2
         wps = assemble_key_watchpoints_from_slots(slots, ri)
         detail = wps[0]["detail"]
-        self.assertIn("원문 지표 기준:", detail)
+        self.assertIn("관련 보도입니다", detail)
+        self.assertNotIn("원문 지표 기준:", detail)
         self.assertTrue(
             text_covers_headline_entities(
                 detail,

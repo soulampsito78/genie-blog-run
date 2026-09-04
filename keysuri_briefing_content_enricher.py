@@ -1423,4 +1423,12 @@ def enrich_generated_briefing_content(
     )
     if isinstance(out, dict) and reader_diag.get("reader_surface_enforced"):
         out[_READER_SURFACE_DIAGNOSTIC_KEY] = reader_diag
-    return out
+
+    # Product readiness is a separate, read-only authority layer.  It may mark
+    # a usable briefing for remediation, but it does not feed the safety
+    # adjudicator and therefore cannot suppress owner review.
+    from product_surface_contract import prepare_final_customer_copy
+
+    return prepare_final_customer_copy(
+        program_id, out, source_input=prompt_input
+    )

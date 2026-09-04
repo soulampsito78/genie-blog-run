@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from delivery_trace import build_customer_email_delivery_fields, sanitize_email_diagnostic
+from product_surface_contract import PRODUCT_REVIEW_REQUIRED
 from sent_news_log_store import append_or_upsert_sent_news
 
 _RUN_ID_MODES = (
@@ -1617,6 +1618,8 @@ def can_approve_customer_send(meta: Dict[str, Any], *, has_email_html: bool) -> 
     vr = str(meta.get("validation_result") or "")
     if vr == "block" or str(meta.get("artifact_status") or "") == "failed":
         return False, "not_approvable"
+    if str(meta.get("customer_surface_status") or "") == PRODUCT_REVIEW_REQUIRED:
+        return False, "product_surface_remediation_needed"
     if mode == "today_genie" and vr != "pass":
         return False, "review_required_remediation_needed"
     if mode in {"keysuri_global_tech", "keysuri_korea_tech"}:

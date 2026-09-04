@@ -1,0 +1,33 @@
+{
+  "source": {
+    "date": "2026-09-04",
+    "run_id": null,
+    "evidence": "owner-reviewed exact defect excerpts; not a reconstructed full email"
+  },
+  "source_input": {
+    "top_market_news": [
+      {"news_id": "today-0904-fed", "headline": "Vance says Fed should low…"},
+      {"news_id": "today-0904-lulu", "headline": "Lululemon stock plunges 1…"},
+      {"news_id": "today-0904-jobs", "headline": "The big August jobs repor…"}
+    ]
+  },
+  "structured_output": {
+    "key_watchpoints": [
+      {
+        "news_id": "today-0904-fed",
+        "headline": "Vance says Fed should low…",
+        "detail": "야간·장전 맥락에서 Vance says Fed should low… 흐름이 대응 축으로 남아 있다. 국내에서는 코스피 선물 베이시스와 대형주 호가를 먼저 본다."
+      },
+      {
+        "news_id": "today-0904-lulu",
+        "headline": "Lululemon stock plunges 1…",
+        "detail": "Lululemon·Plunges 관련. 야간·장전 맥락에서 Lululemon stock plunges 1… 흐름이 대응 축으로 남아 있다. 오늘 장전에는 소비재 업종의 수급 변화를 확인하는 편이 좋습니다."
+      },
+      {
+        "news_id": "today-0904-jobs",
+        "headline": "The big August jobs repor…",
+        "detail": "야간·장전 맥락에서 The big August jobs repor… 흐름이 대응 축으로 남아 있다. 고용지표 발표 전에는 금리와 원화 흐름을 함께 확인하는 편이 좋습니다."
+      }
+    ]
+  }
+}

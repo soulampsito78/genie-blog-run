@@ -27,6 +27,7 @@ from service_full_run_contract import (
 from service_image_api import DEFAULT_VERTEX_IMAGE_MODEL, invoke_vertex_image_generation
 from admin_cost_ledger import save_cost_record_best_effort
 from genie_cost_estimate import estimate_genie_generation_cost
+from product_surface_contract import product_surface_run_fields, runtime_safety_status
 from memory_observability import (
     configured_memory_limit_gib,
     memory_evidence_scope,
@@ -46,6 +47,16 @@ _OUTPUT_IMAGES = _REPO / "output" / "images" / "today_genie"
 WATERMARK_LABEL = "MirAI:ON"
 WATERMARK_METHOD = "apply_today_genie_brand_footer"
 WATERMARK_ISSUE_CODE = "TODAY_GENIE_IMAGE_WATERMARK_FAILED"
+
+
+def _today_acceptance_fields(payload: Any) -> Dict[str, Any]:
+    body = payload if isinstance(payload, dict) else {}
+    data = body.get("data") if isinstance(body.get("data"), dict) else {}
+    fields = product_surface_run_fields(data)
+    fields["runtime_safety_status"] = runtime_safety_status(
+        body.get("validation_result")
+    )
+    return fields
 
 
 def _today_scheduled_natural_identity_fields(
@@ -238,7 +249,11 @@ def _extract_issue_codes(result: OrchestrationResult) -> List[str]:
 
 
 def _dedup_artifact_fields_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    runtime_input = payload.get("runtime_input") if isinstance(payload.get("runtime_input"), dict) else {}
+    runtime_input = (
+        payload.get("runtime_input")
+        if isinstance(payload.get("runtime_input"), dict)
+        else {}
+    )
     dedup = runtime_input.get("sent_news_dedup") if isinstance(runtime_input, dict) else None
     if not isinstance(dedup, dict) or not dedup.get("used_dedup_gate"):
         return {}
@@ -294,7 +309,12 @@ def _run_today_genie_service_full_run_impl(
     if _run_context is not None:
         _run_context["run_id"] = run_id
 
-    if result.response_status != 200 or validation_result != "pass":
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    runtime_input = payload.get("runtime_input") if isinstance(payload.get("runtime_input"), dict) else {}
+
+    # REVIEW_REQUIRED/draft_only is a usable owner-review artifact.  Only a
+    # transport failure or runtime HARD_FAIL suppresses artifact generation.
+    if result.response_status != 200 or validation_result not in {"pass", "draft_only"}:
         meta = build_service_artifact_fields(
             run_id=run_id,
             mode="today_genie",
@@ -307,6 +327,7 @@ def _run_today_genie_service_full_run_impl(
             email_sent=False,
         )
         meta.update(natural_identity)
+        meta.update(_today_acceptance_fields(payload))
         save_run_artifact(meta, email_html="")
         return {
             "ok": False,
@@ -320,8 +341,6 @@ def _run_today_genie_service_full_run_impl(
             "issue_codes": issue_codes,
         }
 
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    runtime_input = payload.get("runtime_input") if isinstance(payload.get("runtime_input"), dict) else {}
     image_bundle = generate_today_genie_service_images(
         data,
         runtime_input,
@@ -346,6 +365,7 @@ def _run_today_genie_service_full_run_impl(
             error_code=err,
         )
         meta.update(natural_identity)
+        meta.update(_today_acceptance_fields(payload))
         save_run_artifact(meta, email_html="")
         return {
             "ok": False,
@@ -386,6 +406,7 @@ def _run_today_genie_service_full_run_impl(
                 error_code="missing_admin_url",
             )
             meta.update(natural_identity)
+            meta.update(_today_acceptance_fields(payload))
             save_run_artifact(meta, email_html="")
             return {
                 "ok": False,
@@ -421,6 +442,7 @@ def _run_today_genie_service_full_run_impl(
                 error_code="admin_review_link_missing_in_html",
             )
             meta.update(natural_identity)
+            meta.update(_today_acceptance_fields(payload))
             save_run_artifact(meta, email_html=email_html)
             return {
                 "ok": False,
@@ -468,6 +490,7 @@ def _run_today_genie_service_full_run_impl(
         workflow_status=workflow_status,
     )
     meta.update(natural_identity)
+    meta.update(_today_acceptance_fields(payload))
     meta.update(_dedup_artifact_fields_from_payload(payload))
     # Persist the model-authored image prompts so a later image_only reissue can
     # regenerate images without a second text generation.
@@ -589,6 +612,9 @@ def _run_today_genie_service_full_run_impl(
         "cost_ledger_path": meta.get("cost_ledger_path"),
         "cost_record_saved": meta.get("cost_record_saved"),
         "cost_ledger_saved": meta.get("cost_ledger_saved"),
+        "runtime_safety_status": meta.get("runtime_safety_status"),
+        "customer_surface_status": meta.get("customer_surface_status"),
+        "product_surface_issue_codes": meta.get("product_surface_issue_codes", []),
     }
 
 
