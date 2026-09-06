@@ -229,6 +229,81 @@ class TodayGenericTitleRegressionTests(unittest.TestCase):
         self.assertEqual(len(prepared["key_watchpoints"]), 3)
 
 
+class Top3SlotBindingTests(unittest.TestCase):
+    """The extraction contract must actually deliver its facts to the card.
+
+    On 2026-09-07 the extraction schema shown to the model carried no news_id
+    field, so no slot matched, every extracted fact was discarded, and the whole
+    TOP3 fell through to deterministic filler.
+    """
+
+    def test_extraction_schema_requires_the_binding_field(self) -> None:
+        from prompts import TOP3_EXTRACTION_OUTPUT_SCHEMA
+
+        for slot in TOP3_EXTRACTION_OUTPUT_SCHEMA["slots"]:
+            self.assertIn("news_id", slot)
+            self.assertIn("headline_ko", slot)
+
+    def test_slot_without_echoed_id_still_binds_by_position(self) -> None:
+        runtime_input = _runtime_input()
+        slots = [
+            {k: v for k, v in slot.items() if k != "news_id"}
+            for slot in _grounded_slots()
+        ]
+        watchpoints = assemble_key_watchpoints_from_slots(
+            normalize_top3_slots_payload({"slots": slots}), runtime_input
+        )
+        self.assertEqual(
+            [wp["headline"] for wp in watchpoints],
+            [slot["headline_ko"] for slot in slots],
+        )
+        for wp in watchpoints:
+            self.assertIsNone(wp.get("product_review_required"))
+        # Identity still comes from the input article, not the model.
+        self.assertEqual(
+            [wp["news_id"] for wp in watchpoints],
+            [item["news_id"] for item in _INCIDENT_NEWS],
+        )
+
+    def test_slot_echoing_a_different_id_never_rebinds_the_card(self) -> None:
+        runtime_input = _runtime_input()
+        slots = []
+        for slot in _grounded_slots():
+            rebound = dict(slot)
+            rebound["news_id"] = "today-someone-elses-article"
+            slots.append(rebound)
+        watchpoints = assemble_key_watchpoints_from_slots(
+            normalize_top3_slots_payload({"slots": slots}), runtime_input
+        )
+        for wp, item in zip(watchpoints, _INCIDENT_NEWS):
+            # Content from a mismatched article is refused; the card is held for
+            # review rather than silently bound to the wrong story.
+            self.assertTrue(wp.get("product_review_required"))
+            self.assertEqual(wp["news_id"], item["news_id"])
+        prepared = prepare_final_customer_copy(
+            "today_genie", {"key_watchpoints": watchpoints}, source_input=runtime_input
+        )
+        self.assertEqual(
+            prepared["_product_surface_qa"]["customer_surface_status"],
+            PRODUCT_REVIEW_REQUIRED,
+        )
+
+    def test_correctly_bound_slots_pass_without_any_review_marker(self) -> None:
+        runtime_input = _runtime_input()
+        watchpoints = assemble_key_watchpoints_from_slots(
+            normalize_top3_slots_payload({"slots": _grounded_slots()}), runtime_input
+        )
+        for wp in watchpoints:
+            self.assertIsNone(wp.get("product_review_required"))
+        prepared = prepare_final_customer_copy(
+            "today_genie", {"key_watchpoints": watchpoints}, source_input=runtime_input
+        )
+        self.assertEqual(
+            prepared["_product_surface_qa"]["customer_surface_status"],
+            CUSTOMER_SURFACE_PASS,
+        )
+
+
 class ProductSurfaceImmutabilityTests(unittest.TestCase):
     """B — the QA boundary must never touch substantive customer prose."""
 

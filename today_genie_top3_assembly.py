@@ -551,8 +551,20 @@ def assemble_key_watchpoints_from_slots(
             raw_idx, item = valid[position]
             nh = str(item.get("headline") or "").strip()
             news_id = canonical_news_id(item)
+            positional = slots[position] if position < len(slots) else {}
             if str(item.get("news_id") or "").strip():
                 slot = slots_by_news_id.get(news_id, {})
+                # The extraction contract fixes slot order to input news order, so
+                # a slot that simply failed to echo its news_id is still bound to
+                # this article by position.  Falling back keeps grounded facts
+                # instead of silently discarding them and fabricating a card —
+                # the 2026-09-07 failure mode.  A slot that echoed a *different*
+                # ID is never reused: that would rebind the card to another
+                # article.
+                if not slot:
+                    echoed = str(positional.get("news_id") or "").strip()
+                    if not echoed:
+                        slot = positional
             else:  # Compatibility only; production selection is ID-enriched.
                 slot = slots[raw_idx] if raw_idx < len(slots) else {}
             alias = aliases[position] if position < len(aliases) else {}

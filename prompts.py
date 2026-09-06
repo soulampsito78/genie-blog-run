@@ -319,13 +319,19 @@ TOP3_EXTRACTION_OUTPUT_SCHEMA = {
     "slots": [
         {
             "slot": 1,
+            # ARTICLE_IDENTITY_LOCK echoes the selected article ID here.  The
+            # assembler binds each slot to its article by this field; when the
+            # schema omitted it the model left it out, every extracted fact was
+            # dropped, and the whole TOP3 fell through to deterministic filler
+            # (2026-09-07).
+            "news_id": "string (입력 ARTICLE_IDENTITY_LOCK의 news_id를 그대로 복사)",
             "headline_ko": "string (한글 6~28자, 이슈 한 줄)",
             "what_happened": "string (1문장 40~220자, 입력 헤드라인의 고유명사·숫자·지표명 중 최소 1개 포함)",
             "why_it_matters_today": "string (1문장 35~200자, 오늘 장전·장 초반 관점)",
             "what_to_watch_in_korea": "string (1문장 35~200자, 코스피·코스닥·원/달러·외국인·기관 중 명시)",
         },
-        {"slot": 2, "headline_ko": "string", "what_happened": "string", "why_it_matters_today": "string", "what_to_watch_in_korea": "string"},
-        {"slot": 3, "headline_ko": "string", "what_happened": "string", "why_it_matters_today": "string", "what_to_watch_in_korea": "string"},
+        {"slot": 2, "news_id": "string", "headline_ko": "string", "what_happened": "string", "why_it_matters_today": "string", "what_to_watch_in_korea": "string"},
+        {"slot": 3, "news_id": "string", "headline_ko": "string", "what_happened": "string", "why_it_matters_today": "string", "what_to_watch_in_korea": "string"},
     ],
 }
 
@@ -543,6 +549,7 @@ def build_top3_extraction_prompt(runtime_input: Dict[str, Any]) -> str:
     출력은 아래 스키마의 JSON **한 개만**(코드블록 없음).
     {slot_instr}
     필드 규칙(각 슬롯):
+    - news_id: ARTICLE_IDENTITY_LOCK에 주어진 해당 기사의 news_id를 **그대로** 복사한다(생략·변형 금지).
     - headline_ko: 한글 6~28자, 이슈 한 줄(영어 헤드라인 통째 복붙 금지; CPI·나스닥 등 고유 표기 유지).
     - what_happened: 1문장 40~220자, 해당 헤드라인의 **고유명사·숫자·지표명** 중 최소 1개 포함.
     - why_it_matters_today: 1문장 35~200자, 오늘 장전·장 초반 관점.
