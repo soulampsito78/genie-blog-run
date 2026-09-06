@@ -413,6 +413,14 @@ _APPROVE_ERROR_MESSAGES = {
     "missing_email_html": "저장된 이메일 HTML이 없습니다.",
     "missing_smtp": "SMTP 설정이 없습니다.",
     "not_approvable": "승인할 수 없는 검증 상태입니다.",
+    "product_surface_remediation_needed": (
+        "제품 표면 검수 필요(product_surface_remediation_needed): 고객 표면 QA가 "
+        "PRODUCT_REVIEW_REQUIRED입니다. 운영자 검수는 계속 가능하지만 고객 발송은 차단됩니다."
+    ),
+    "review_required_remediation_needed": (
+        "런타임 검증이 pass가 아닙니다(review_required_remediation_needed). "
+        "재발행 후 다시 승인하세요."
+    ),
     "keysuri_safety_not_safe": "안전성 판정이 SAFE가 아니어서 고객 발송할 수 없습니다.",
     "keysuri_editorial_poor": "편집 품질이 POOR인 후보는 고객 승인을 제공하지 않습니다.",
     "keysuri_editorial_unclassified": "편집 품질 판정이 없어 고객 발송할 수 없습니다.",

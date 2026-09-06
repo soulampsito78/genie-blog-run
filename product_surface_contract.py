@@ -8,8 +8,11 @@ It separates product/editorial readiness from the runtime safety validator:
 * owner-review delivery is controlled elsewhere and is never suppressed here.
 
 All three products cross :func:`prepare_final_customer_copy` immediately before
-rendering or persistence.  Raw evidence fields remain in their original
-structures; only reader-facing aliases are normalized.
+rendering or persistence.  That boundary is **inspect-only**: this module has no
+authority to author, rewrite, summarize, replace or delete customer prose.  It
+reports ``CUSTOMER_SURFACE_PASS`` or ``PRODUCT_REVIEW_REQUIRED`` as metadata and
+leaves the copy exactly as the grounded generation produced it, so an editorial
+defect reaches owner review instead of being papered over with filler.
 """
 from __future__ import annotations
 
@@ -17,7 +20,7 @@ import copy
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 TECHNICAL_TEST_PASS = "TECHNICAL_TEST_PASS"
 RUNTIME_SAFETY_PASS = "RUNTIME_SAFETY_PASS"
@@ -39,6 +42,14 @@ REPEATED_CANNED_BRIDGE = "customer_surface_repeated_canned_bridge"
 MIXED_SENTENCE_END_STYLE = "customer_surface_mixed_sentence_end_style"
 INTERNAL_PLACEHOLDER_LEAK = "customer_surface_internal_placeholder_leak"
 DUPLICATE_FILLER = "customer_surface_duplicate_filler"
+FABRICATED_GENERIC_READER_TITLE = "customer_surface_fabricated_generic_reader_title"
+MISSING_GROUNDED_READER_TITLE = "customer_surface_missing_grounded_reader_title"
+
+# Set by the grounded assembly layer when no grounded Korean reader title or
+# fact sentence existed for a card.  The assembly never invents one; it marks
+# the card and this contract turns the marker into PRODUCT_REVIEW_REQUIRED.
+PRODUCT_REVIEW_MARKER_KEY = "product_review_required"
+PRODUCT_REVIEW_REASON_KEY = "product_review_reason"
 
 _TRUNCATED_ENGLISH_RE = re.compile(
     r"(?:^|[\s「『(])(?:[A-Za-z][A-Za-z0-9'’&+.,:/()\-]*\s+){2,}"
@@ -67,6 +78,73 @@ _POLITE_END_RE = re.compile(
     r"(?:합니다|됩니다|있습니다|없습니다|봅니다|입니다|좋습니다|필요합니다|바랍니다|드립니다|해요|세요)\s*[.!?]?$"
 )
 _ENGLISH_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9'’&+.-]*")
+
+# A reader title is fabricated when the WHOLE title is a fixed generic frame with
+# one interchangeable slot: the frame carries no article-specific information, so
+# swapping the slot token changes nothing a reader could use.  These patterns
+# match the frame, never a specific entity — there is no per-token stopword list
+# here, and adding one would only move the same defect somewhere else.
+_GENERIC_TITLE_FRAMES: Tuple[re.Pattern[str], ...] = (
+    re.compile(r"^\S{1,24}\s*관련\s*시장\s*소식$"),
+    re.compile(r"^\S{1,24}\s*주가\s*변동$"),
+    re.compile(r"^\S{1,24}\s*관련\s*보도(?:입니다)?[.!?]?$"),
+    re.compile(r"^해외시장\s*주요\s*이슈\s*\d*$"),
+)
+# A manufactured *title* frame spliced into body prose.  Only the title frames
+# count here: a grounded entity anchor ("나스닥과 AI 맥락의 보도입니다.") names real
+# entities from the headline and is legitimate reader copy, whereas these frames
+# carry no article-specific information wherever they appear.
+_GENERIC_FRAME_IN_PROSE_RE = re.compile(
+    r"\S{1,24}\s*관련\s*시장\s*소식|\S{1,24}\s*주가\s*변동|해외시장\s*주요\s*이슈\s*\d"
+)
+
+
+def _looks_like_generic_frame_title(text: str) -> bool:
+    stripped = _one_line(text)
+    return any(pattern.match(stripped) for pattern in _GENERIC_TITLE_FRAMES)
+
+
+def is_grounded_korean_reader_title(text: Any) -> bool:
+    """True when ``text`` is usable as-is as a Korean reader-facing title.
+
+    This is a *selection* predicate for the grounded assembly layer: it decides
+    which already-generated candidate to bind to a card.  It never produces a
+    title, and there is deliberately no fallback that manufactures one.
+    """
+    stripped = _one_line(text)
+    if len(stripped) < 4 or _hangul_count(stripped) < 2:
+        return False
+    if _looks_like_generic_frame_title(stripped):
+        return False
+    if _TRUNCATED_ENGLISH_RE.search(stripped) or _looks_like_truncated_english(stripped):
+        return False
+    if _looks_like_raw_english_prose(stripped, role="headline"):
+        return False
+    if _KEYWORD_FRAGMENT_RE.search(stripped):
+        return False
+    if any(pattern.search(stripped) for pattern in _PLACEHOLDER_PATTERNS):
+        return False
+    return True
+
+
+def is_grounded_korean_reader_sentence(text: Any) -> bool:
+    """True when ``text`` is usable as-is as Korean reader-facing body prose."""
+    stripped = _one_line(text)
+    if len(stripped) < 12 or _hangul_count(stripped) < 6:
+        return False
+    if _GENERIC_FRAME_IN_PROSE_RE.search(stripped):
+        return False
+    if _TRUNCATED_ENGLISH_RE.search(stripped) or _looks_like_truncated_english(stripped):
+        return False
+    if _looks_like_raw_english_prose(stripped, role="body"):
+        return False
+    if _KEYWORD_FRAGMENT_RE.search(stripped):
+        return False
+    if any(pattern.search(stripped) for pattern in _PLACEHOLDER_PATTERNS):
+        return False
+    return True
+
+
 _REPETITION_FIELD_SUFFIXES = (
     ".detail",
     ".what_happened",
@@ -360,6 +438,37 @@ def evaluate_product_surface(
                     (field.card_index,) if field.card_index > 0 else (),
                 )
             )
+        generic_title = field.role in {"headline", "title", "anchor"} and (
+            _looks_like_generic_frame_title(field.text)
+        )
+        generic_prose = field.role == "body" and bool(
+            _GENERIC_FRAME_IN_PROSE_RE.search(field.text)
+        )
+        if generic_title or generic_prose:
+            findings.append(
+                ProductSurfaceFinding(
+                    FABRICATED_GENERIC_READER_TITLE,
+                    field.path,
+                    "기사 고유 정보가 없는 일반화 제목 틀이 독자면에 노출되었습니다.",
+                    (field.card_index,) if field.card_index > 0 else (),
+                )
+            )
+
+    # The grounded assembly marks a card when no grounded Korean reader title or
+    # fact sentence existed.  It never invents one, so the marker is the only
+    # signal that the card needs a human before it can reach a customer.
+    for index, item in enumerate(_surface_items(mode, structured_output), start=1):
+        if not item.get(PRODUCT_REVIEW_MARKER_KEY):
+            continue
+        reason = _one_line(item.get(PRODUCT_REVIEW_REASON_KEY)) or "unspecified"
+        findings.append(
+            ProductSurfaceFinding(
+                MISSING_GROUNDED_READER_TITLE,
+                f"items[{index}]",
+                f"근거 있는 한국어 독자 제목/사실 문장이 없어 검수가 필요합니다: {reason}",
+                (index,),
+            )
+        )
 
     # Repetition is compared across cards, never between aliases on one card.
     card_sentences: Dict[int, List[Tuple[str, str]]] = {}
@@ -476,144 +585,25 @@ def evaluate_product_surface(
     )
 
 
-def build_korean_safe_reader_title(source_headline: Any, *, position: int = 1) -> str:
-    """Return a deterministic Korean surface title without rewriting the source identity."""
-    headline = _one_line(source_headline)
-    if _hangul_count(headline) >= 5 and not _TRUNCATED_ENGLISH_RE.search(headline):
-        return headline[:72]
-    low = headline.lower()
-    if any(term in low for term in ("fed", "federal reserve", "rate", "powell")):
-        return "미국 통화정책 발언과 금리 경로"
-    if any(term in low for term in ("jobs ", "employment", "payroll", "unemployment")):
-        month = re.search(r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\b", low)
-        month_ko = {
-            "january": "1월", "february": "2월", "march": "3월", "april": "4월",
-            "may": "5월", "june": "6월", "july": "7월", "august": "8월",
-            "september": "9월", "october": "10월", "november": "11월", "december": "12월",
-        }.get(month.group(1) if month else "", "미국")
-        return f"{month_ko} 고용지표 발표"
-    company = ""
-    stop = {
-        "the", "a", "an", "stock", "stocks", "shares", "says", "said", "new",
-        "big", "report", "market", "markets", "plunges", "falls", "rises", "after",
-        "why", "how", "what", "this", "should", "could", "would", "fed", "vance",
-    }
-    for token in _ENGLISH_WORD_RE.findall(headline):
-        bare = token.strip(".'’")
-        if bare.lower() not in stop and len(bare) >= 2 and bare[:1].isupper():
-            company = bare
-            break
-    if company and any(term in low for term in ("stock", "shares", "plunge", "fall", "rise")):
-        return f"{company} 주가 변동"
-    if company:
-        return f"{company} 관련 시장 소식"
-    return f"해외시장 주요 이슈 {max(1, position)}"
-
-
-def _polite_sentence(text: str) -> str:
-    value = text.strip()
-    replacements = (
-        (r"먼저 본다([.!?]?)$", r"먼저 확인합니다\1"),
-        (r"다음 관전 축으로 본다([.!?]?)$", r"다음 관전 축으로 확인합니다\1"),
-        (r"짝지어 본다([.!?]?)$", r"함께 확인합니다\1"),
-        (r"남아 있다([.!?]?)$", r"남아 있습니다\1"),
-        (r"정한다([.!?]?)$", r"정합니다\1"),
-        (r"확인한다([.!?]?)$", r"확인합니다\1"),
-    )
-    for pattern, replacement in replacements:
-        value = re.sub(pattern, replacement, value)
-    return value
-
-
-def _unsafe_reader_sentence(sentence: str, source_titles: Sequence[str]) -> bool:
-    return bool(
-        _TRUNCATED_ENGLISH_RE.search(sentence)
-        or _looks_like_truncated_english(sentence)
-        or _KEYWORD_FRAGMENT_RE.search(sentence)
-        or any(pattern.search(sentence) for pattern in _PLACEHOLDER_PATTERNS)
-        or "야간·장전 맥락에서" in sentence
-        or "흐름이 대응 축으로 남아" in sentence
-        or "원문 키워드" in sentence
-        or _contains_source_headline(sentence, source_titles)
-        or _looks_like_raw_english_prose(sentence, role="body")
-    )
-
-
-def _today_source_by_id(source_input: Mapping[str, Any] | None) -> Dict[str, Mapping[str, Any]]:
-    if not isinstance(source_input, Mapping):
-        return {}
-    out: Dict[str, Mapping[str, Any]] = {}
-    raw = source_input.get("top_market_news")
-    if not isinstance(raw, list):
-        return out
-    for item in raw:
-        if not isinstance(item, Mapping):
-            continue
-        key = _one_line(item.get("news_id") or item.get("claim_id") or item.get("source_id"))
-        if key:
-            out[key] = item
-    return out
-
-
-def _repair_today_surface(
-    payload: MutableMapping[str, Any], source_input: Mapping[str, Any] | None
-) -> None:
-    items = payload.get("key_watchpoints")
-    if not isinstance(items, list):
-        return
-    source_map = _today_source_by_id(source_input)
-    source_titles = _source_headlines(source_input)
-    repaired_items: List[Any] = []
-    for position, raw_item in enumerate(items, start=1):
-        if not isinstance(raw_item, Mapping):
-            repaired_items.append(raw_item)
-            continue
-        item = dict(raw_item)
-        source = source_map.get(_one_line(item.get("news_id")), {})
-        source_headline = _one_line(
-            source.get("headline") if isinstance(source, Mapping) else ""
-        )
-        current_headline = _one_line(item.get("headline"))
-        safe_title = build_korean_safe_reader_title(
-            source_headline or current_headline, position=position
-        )
-        if (
-            _TRUNCATED_ENGLISH_RE.search(current_headline)
-            or _looks_like_truncated_english(current_headline)
-            or _looks_like_raw_english_prose(current_headline, role="headline")
-            or _KEYWORD_FRAGMENT_RE.search(current_headline)
-        ):
-            item["headline"] = safe_title
-
-        detail = _one_line(item.get("detail"))
-        kept = [
-            _polite_sentence(sentence)
-            for sentence in _split_sentences(detail)
-            if not _unsafe_reader_sentence(sentence, source_titles)
-        ]
-        if len(kept) != len(_split_sentences(detail)):
-            leads = (
-                f"{safe_title} 보도가 야간 시장의 주요 변수로 확인됐습니다.",
-                f"{safe_title} 이슈가 장전 점검 대상으로 부각됐습니다.",
-                f"{safe_title} 소식이 업종별 수급을 가를 변수로 올라왔습니다.",
-            )
-            kept.insert(0, leads[(position - 1) % len(leads)])
-        if kept:
-            item["detail"] = " ".join(kept)
-        repaired_items.append(item)
-    payload["key_watchpoints"] = repaired_items
-
-
 def prepare_final_customer_copy(
     mode: str,
     structured_output: Mapping[str, Any],
     *,
     source_input: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """The single deterministic boundary immediately before render/persistence."""
+    """Inspect the final customer copy immediately before render/persistence.
+
+    **This function must never author, rewrite, summarize, replace or delete
+    substantive customer prose.**  Product-surface QA is a diagnosis, not an
+    editor: it returns the payload byte-identical apart from the additive
+    ``_product_surface_qa`` diagnostic, so a defect is escalated to owner review
+    instead of being hidden behind deterministic filler.
+
+    The 2026-09-07 Today incident came from the opposite arrangement — a repair
+    pass here deleted grounded sentences and inserted manufactured leads, which
+    both damaged the copy and prevented the detectors from seeing the damage.
+    """
     out = copy.deepcopy(dict(structured_output))
-    if mode == "today_genie":
-        _repair_today_surface(out, source_input)
     result = evaluate_product_surface(mode, out, source_input=source_input)
     out[PRODUCT_SURFACE_DIAGNOSTIC_KEY] = result.as_dict()
     return out

@@ -1703,7 +1703,13 @@ def run_today_genie_text_pipeline(
             data = parse_model_json(raw_main, "today_genie")
         else:
             raise
-    data["key_watchpoints"] = assemble_key_watchpoints_from_slots(slots, runtime_input)
+    # The main briefing fills key_watchpoints as a schema slot.  Hand it to the
+    # assembler as a *second grounded source* for the Korean reader title / fact
+    # sentence when the TOP3 extraction slot came back sparse — same generation,
+    # no extra model call — then let the assembler own the final list.
+    data["key_watchpoints"] = assemble_key_watchpoints_from_slots(
+        slots, runtime_input, model_watchpoints=data.get("key_watchpoints")
+    )
     apply_briefing_repetition_guard(data)
     return data, raw_main, prof, _sum_usage_sinks(ext_usage, main_usage)
 
@@ -2227,6 +2233,28 @@ def stabilize_today_genie_validation_fields(
     return normalized
 
 
+def product_surface_review_fields(mode: str, data: Any) -> Dict[str, Any]:
+    """Owner-visible product-surface QA labels, separate from runtime safety."""
+    diag = {}
+    if str(mode or "") == "today_genie" and isinstance(data, dict):
+        raw = data.get(PRODUCT_SURFACE_DIAGNOSTIC_KEY)
+        if isinstance(raw, dict):
+            diag = raw
+    status = str(diag.get("customer_surface_status") or CUSTOMER_SURFACE_PASS)
+    codes = [str(code) for code in (diag.get("issue_codes") or [])]
+    if status == CUSTOMER_SURFACE_PASS:
+        label = "고객 표면 검수 통과"
+    else:
+        label = "제품 표면 검수 필요 — 고객 발송 차단(product_surface_remediation_needed)"
+        if codes:
+            label += " · " + ", ".join(codes[:4])
+    return {
+        "product_surface_status": status,
+        "product_surface_status_label": label,
+        "product_surface_issue_codes": codes,
+    }
+
+
 def email_operational_handoff_meta(
     mode: str,
     validation_result: str,
@@ -2294,6 +2322,9 @@ def email_operational_handoff_meta(
     return {
         "mode_label": mode_label,
         "status_label": status_label,
+        # Explicit runtime-safety gate value, so the owner surface never leaves
+        # "product surface QA" implied by the runtime label alone.
+        "runtime_safety_status": runtime_safety_status(validation_result),
         "execution_time_kst": exec_ts,
         "result_summary": result_summary,
         "email_delivery_label": email_delivery_label,
@@ -2323,6 +2354,7 @@ def build_today_genie_email_html_for_cid_mime_send(
         validation_result,
         owner_review_email_being_sent=True,
     )
+    op_meta = {**op_meta, **product_surface_review_fields("today_genie", data)}
     rid = str(run_id or "").strip()
     if rid:
         admin_url = build_owner_review_admin_url(rid)
@@ -2485,6 +2517,7 @@ def _generate_impl(job: JobRequest) -> Dict[str, Any]:
     web_html = render_web_html(mode, data)
     workflow_status = "validated" if validation.result == "pass" else "review_required"
     op_meta = email_operational_handoff_meta(mode, validation.result)
+    op_meta = {**op_meta, **product_surface_review_fields(mode, data)}
     email_base = os.getenv("GENIE_PUBLIC_BASE_URL", "").strip().rstrip("/")
     email_html = render_email_html(
         mode, data, op_meta, email_asset_base_url=email_base

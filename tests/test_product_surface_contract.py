@@ -1,6 +1,7 @@
 """Unit contract for customer-visible prose across Today, Global and Korea."""
 from __future__ import annotations
 
+import copy
 import unittest
 
 from product_surface_contract import (
@@ -11,6 +12,7 @@ from product_surface_contract import (
     INTERNAL_PLACEHOLDER_LEAK,
     MIXED_SENTENCE_END_STYLE,
     PRODUCT_REVIEW_REQUIRED,
+    PRODUCT_SURFACE_DIAGNOSTIC_KEY,
     RAW_ENGLISH_HEADLINE,
     REPEATED_CANNED_BRIDGE,
     REPEATED_SENTENCE_SKELETON,
@@ -114,7 +116,9 @@ class ProductSurfaceContractTests(unittest.TestCase):
         )
         self.assertIn(DUPLICATE_FILLER, _codes(result))
 
-    def test_today_boundary_repairs_structure_without_losing_source_identity(self) -> None:
+    def test_today_boundary_inspects_without_touching_prose_or_identity(self) -> None:
+        """The boundary reports; it never edits.  Rewriting here is what produced
+        the 2026-09-07 "U.S. U.S 관련 시장 소식" splice."""
         source = {
             "top_market_news": [
                 {"news_id": "n1", "headline": "Vance says Fed should low…"},
@@ -136,13 +140,23 @@ class ProductSurfaceContractTests(unittest.TestCase):
             evaluate_product_surface("today_genie", payload, source_input=source).status,
             PRODUCT_REVIEW_REQUIRED,
         )
-        repaired = prepare_final_customer_copy("today_genie", payload, source_input=source)
+        before = copy.deepcopy(payload)
+        inspected = prepare_final_customer_copy("today_genie", payload, source_input=source)
+        # Still failing, because the defect is real and must reach owner review.
         self.assertEqual(
-            evaluate_product_surface("today_genie", repaired, source_input=source).status,
-            CUSTOMER_SURFACE_PASS,
+            evaluate_product_surface("today_genie", inspected, source_input=source).status,
+            PRODUCT_REVIEW_REQUIRED,
         )
+        # Input untouched; output differs only by the additive diagnostic key.
+        self.assertEqual(payload, before)
+        echoed = {
+            key: value
+            for key, value in inspected.items()
+            if key != PRODUCT_SURFACE_DIAGNOSTIC_KEY
+        }
+        self.assertEqual(echoed, before)
         self.assertEqual(
-            [item["news_id"] for item in repaired["key_watchpoints"]],
+            [item["news_id"] for item in inspected["key_watchpoints"]],
             ["n1", "n2", "n3"],
         )
         self.assertEqual(

@@ -15,6 +15,7 @@ from renderers import (
 from today_genie_top3_assembly import (
     TODAY_INDEX_PROSE_LABELS,
     canonical_market_observations,
+    canonical_news_id,
     collect_valid_major_overseas_news,
     watchpoint_covers_feed_blobs,
 )
@@ -760,7 +761,16 @@ def _validate_top_three_news_briefing(
             # A matching immutable ID is the primary article binding. Text
             # similarity remains only the compatibility path for legacy inputs.
             continue
-        if not (_watchpoint_covers_news_headline(nh, head, det) or _watchpoint_topic_aligns_news_headline(nh, wp)):
+        derived_id = canonical_news_id(item)
+        if not (
+            _watchpoint_covers_news_headline(nh, head, det)
+            or _watchpoint_topic_aligns_news_headline(nh, wp)
+            # The card was assembled from this exact input article.  Identity is
+            # a stronger binding than prose similarity, and accepting it removes
+            # the need to splice raw English headline tokens into Korean reader
+            # copy purely to satisfy a text check (2026-09-07 keyword fragments).
+            or bool(derived_id and actual_id == derived_id)
+        ):
             issues.append(
                 ValidationIssue(
                     "top3_not_grounded_in_input_news",

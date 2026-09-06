@@ -648,6 +648,11 @@ def render_email_operational_box(meta: Dict[str, Any]) -> str:
     summary_line = _safe(meta.get("result_summary", ""))
     send_line = _safe(meta.get("email_delivery_label", ""))
     mode_code = _safe(meta.get("mode_code", ""))
+    # Runtime safety and product-surface QA are separate authorities and must both
+    # be visible: a runtime PASS never implies the copy is customer-ready.
+    runtime_gate = _safe(meta.get("runtime_safety_status", ""))
+    surface_gate = _safe(meta.get("product_surface_status", ""))
+    surface_note = _safe(meta.get("product_surface_status_label", ""))
     post_raw = str(meta.get("revision_request_post_url", "") or "").strip()
 
     row = (
@@ -692,6 +697,9 @@ def render_email_operational_box(meta: Dict[str, Any]) -> str:
     {row.format(label="모드", value=mode_line)}
     {row.format(label="현재 상태", value=status_line)}
     {row.format(label="실행 시각", value=exec_kst)}
+    {row.format(label="런타임 검증", value=runtime_gate) if runtime_gate else ""}
+    {row.format(label="제품 표면 검수", value=surface_gate) if surface_gate else ""}
+    {row.format(label="제품 표면 판정", value=surface_note) if surface_note else ""}
     {row.format(label="핵심 결과 요약", value=summary_line)}
     {row.format(label="이메일 발송 여부", value=send_line)}
   </div>

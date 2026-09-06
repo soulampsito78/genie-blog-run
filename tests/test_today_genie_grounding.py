@@ -74,25 +74,40 @@ class TodayGenieGroundingHelperTests(unittest.TestCase):
         self.assertIn("Trump", tokens)
         self.assertIn("Todd Blanche", tokens)
 
-    def test_inject_detail_grounds_proper_nouns_without_keyword_dump(self) -> None:
+    def test_non_market_headline_injects_nothing_into_korean_detail(self) -> None:
+        """No canonical market entity: leave the prose alone.
+
+        Splicing English headline tokens into Korean reader copy produced the
+        2026-09-07 internal keyword fragment ("U.S. Energy Secretary Wright·Iran
+        관련."). The article is bound to the card by news_id, so grounding does
+        not need — and must not use — a token dump on the customer surface.
+        """
         headline = "Trump nominates Todd Blanche for attorney general amid controversy over DOJ fund"
         detail = "트럼프 행정부가 법무장관 후보를 지명하며 정치적 논란이 이어지고 있습니다."
         out = inject_headline_grounding_into_detail(detail, headline)
-        self.assertIn("Trump", out)
+        self.assertEqual(out, detail)
         self.assertNotIn("원문 키워드", out)
         self.assertNotIn("원문 헤드라인 기준", out)
-        for banned in ("Could", "Face", "Further", "Stock"):
+        for banned in ("Trump", "Todd", "Blanche", "DOJ"):
             self.assertNotIn(banned, out)
 
     def test_spacex_ipo_headline_does_not_dump_stopwords(self) -> None:
         headline = "SpaceX IPO Stock Could Face Further Delays"
         detail = "스페이스X 상장 관련 관측이 이어지고 있습니다."
         out = inject_headline_grounding_into_detail(detail, headline)
+        self.assertEqual(out, detail)
         self.assertNotIn("원문 키워드", out)
         self.assertNotIn("원문 헤드라인 기준", out)
-        for banned in ("Could", "Face", "Further", "Stock"):
+        for banned in ("SpaceX", "Could", "Face", "Further", "Stock"):
             self.assertNotIn(banned, out)
-        self.assertIn("SpaceX", out)
+
+    def test_market_entity_headline_still_gets_a_canonical_korean_anchor(self) -> None:
+        """Canonical index names remain legitimate grounded Korean reader copy."""
+        detail = "미국 증시가 강세로 마감했습니다."
+        out = inject_headline_grounding_into_detail(detail, SP_NASDAQ_HEADLINE)
+        self.assertIn("S&P 500", out)
+        self.assertIn("Nasdaq", out)
+        self.assertIn(detail, out)
 
 
 if __name__ == "__main__":

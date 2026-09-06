@@ -7,7 +7,19 @@ import re
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Tuple
 
-from product_surface_contract import build_korean_safe_reader_title
+from product_surface_contract import (
+    PRODUCT_REVIEW_MARKER_KEY,
+    PRODUCT_REVIEW_REASON_KEY,
+    is_grounded_korean_reader_sentence,
+    is_grounded_korean_reader_title,
+)
+
+# Shown instead of a fabricated title when no grounded Korean reader title
+# exists.  It is an operator marker, not a claim about the article: the card
+# is flagged PRODUCT_REVIEW_REQUIRED and customer send stays blocked.
+REVIEW_REQUIRED_TITLE_MARKER = "[검수 필요] 근거 제목 없음"
+MISSING_TITLE_REASON = "missing_grounded_korean_reader_title"
+MISSING_FACT_REASON = "missing_grounded_fact_sentence"
 
 
 def _norm_one_line(s: Any) -> str:
@@ -260,17 +272,55 @@ def _finish_sentence(s: str) -> str:
     return s + "."
 
 
-def _fallback_slot_fields(slot: Dict[str, Any], news_headline: str, idx: int) -> tuple[str, str, str, str]:
-    hk = _norm_one_line(slot.get("headline_ko"))
-    wh = _norm_one_line(slot.get("what_happened"))
+def _grounded_reader_title(slot: Dict[str, Any], alias: Dict[str, Any]) -> str:
+    """Pick an already-generated Korean reader title; never manufacture one.
+
+    Authority order, both bound to the same article by news_id / slot order:
+      1. ``headline_ko`` from the TOP3 extraction contract;
+      2. the Korean ``headline`` alias from the same briefing generation.
+    No third source exists on purpose.  Deriving a title from source-headline
+    tokens is what produced "U.S 관련 시장 소식" on 2026-09-07.
+    """
+    for candidate in (slot.get("headline_ko"), alias.get("headline")):
+        value = _norm_one_line(candidate)
+        if is_grounded_korean_reader_title(value):
+            return value
+    return ""
+
+
+def _grounded_fact_sentence(slot: Dict[str, Any], alias: Dict[str, Any]) -> str:
+    """Pick an already-generated Korean fact sentence; never manufacture one."""
+    for candidate in (slot.get("what_happened"), alias.get("detail")):
+        value = _norm_one_line(candidate)
+        if is_grounded_korean_reader_sentence(value):
+            return value
+    return ""
+
+
+def _fallback_slot_fields(
+    slot: Dict[str, Any],
+    news_headline: str,
+    idx: int,
+    *,
+    alias: Dict[str, Any] | None = None,
+) -> tuple[str, str, str, str, str]:
+    """Return (headline, what_happened, why_today, korea_watch, review_reason)."""
+    alias = alias if isinstance(alias, dict) else {}
     wy = _norm_one_line(slot.get("why_it_matters_today"))
     wk = _norm_one_line(slot.get("what_to_watch_in_korea"))
-    nh = (news_headline or "").strip()
 
-    safe_reader_title = build_korean_safe_reader_title(nh or hk, position=idx)
+    hk = _grounded_reader_title(slot, alias)
+    wh = _grounded_fact_sentence(slot, alias)
 
-    if not wh and nh:
-        wh = f"{safe_reader_title} 보도가 야간 시장의 주요 변수로 확인됐습니다."
+    # No grounded title or fact: mark the card for review rather than inventing
+    # one.  Generic market guidance below carries no claim about the article.
+    review_reason = ""
+    if not hk:
+        review_reason = MISSING_TITLE_REASON
+        hk = REVIEW_REQUIRED_TITLE_MARKER
+    elif not wh:
+        review_reason = MISSING_FACT_REASON
+
     if not wy:
         wy_opts = (
             "오늘 장전에는 앞선 야간 데이터가 체크리스트 상단에 남습니다.",
@@ -285,9 +335,7 @@ def _fallback_slot_fields(slot: Dict[str, Any], news_headline: str, idx: int) ->
             "단기금리·원화 스왑과 기관 선물 순매수를 함께 확인합니다.",
         )
         wk = wk_opts[(max(idx, 1) - 1) % 3]
-    if len(hk) < 4:
-        hk = safe_reader_title
-    return hk, wh, wy, wk
+    return hk, wh, wy, wk, review_reason
 
 
 _MEANING_MARKERS = ("영향", "의미", "시사", "관건", "때문", "경로", "전제")
@@ -476,12 +524,20 @@ def watchpoint_covers_feed_blobs(wp: Dict[str, Any], runtime_input: Dict[str, An
 def assemble_key_watchpoints_from_slots(
     slots: List[Dict[str, Any]],
     runtime_input: Dict[str, Any],
+    model_watchpoints: Any = None,
 ) -> List[Dict[str, Any]]:
     """
     Always emit exactly 3 watchpoints (fixed TOP3 product rule).
     Positions map to valid headlines in order; any remaining positions are
     feed-anchored market-watch slots (no absence filler).
+
+    ``model_watchpoints`` is the ``key_watchpoints`` list from the same briefing
+    generation.  It is used only as a *second grounded source* for the Korean
+    reader title and fact sentence when the TOP3 extraction slot is sparse; it
+    adds no model call.  When neither source yields grounded Korean copy the
+    card is marked for review instead of being filled with invented text.
     """
+    aliases = model_watchpoints if isinstance(model_watchpoints, list) else []
     valid = collect_valid_major_overseas_news(runtime_input, max_items=3)
     slots_by_news_id = {
         str(slot.get("news_id") or "").strip(): slot
@@ -499,8 +555,12 @@ def assemble_key_watchpoints_from_slots(
                 slot = slots_by_news_id.get(news_id, {})
             else:  # Compatibility only; production selection is ID-enriched.
                 slot = slots[raw_idx] if raw_idx < len(slots) else {}
-            hk, wh, wy, wk = _fallback_slot_fields(slot, nh, position + 1)
+            alias = aliases[position] if position < len(aliases) else {}
+            hk, wh, wy, wk, review_reason = _fallback_slot_fields(
+                slot, nh, position + 1, alias=alias
+            )
         else:
+            review_reason = ""
             fh, fw, fy, fk = _feed_watch_slot_fields(runtime_input, variant=position)
             slot = slots[position] if position < len(slots) else {}
             hk_m = _norm_one_line(slot.get("headline_ko"))
@@ -521,5 +581,8 @@ def assemble_key_watchpoints_from_slots(
         watchpoint = {"headline": hk, "detail": detail, "basis": "fact"}
         if news_id:
             watchpoint["news_id"] = news_id
+        if review_reason:
+            watchpoint[PRODUCT_REVIEW_MARKER_KEY] = True
+            watchpoint[PRODUCT_REVIEW_REASON_KEY] = review_reason
         result.append(watchpoint)
     return result

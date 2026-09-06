@@ -308,6 +308,30 @@ def extract_email_html_for_artifact(
     return ""
 
 
+def _product_surface_fields_from_api_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Carry both acceptance gates from the API payload onto the run artifact."""
+    from product_surface_contract import (
+        product_surface_run_fields,
+        runtime_safety_status,
+    )
+
+    if not isinstance(payload, dict):
+        return {}
+    fields: Dict[str, Any] = {
+        "runtime_safety_status": runtime_safety_status(payload.get("validation_result"))
+    }
+    data = payload.get("data")
+    fields.update(product_surface_run_fields(data))
+    if not fields.get("customer_surface_status"):
+        status = str(payload.get("customer_surface_status") or "").strip()
+        if status:
+            fields["customer_surface_status"] = status
+            codes = payload.get("product_surface_qa")
+            if isinstance(codes, dict):
+                fields["product_surface_issue_codes"] = list(codes.get("issue_codes") or [])
+    return fields
+
+
 def build_run_artifact_metadata(
     result: OrchestrationResult,
     *,
@@ -391,6 +415,11 @@ def build_run_artifact_metadata(
         )
         if regen_inputs:
             meta[TODAY_IMAGE_REGEN_INPUTS_KEY] = regen_inputs
+    # Product-surface QA is a separate acceptance authority from runtime safety.
+    # Persisting it here is what lets can_approve_customer_send() block a customer
+    # send on PRODUCT_REVIEW_REQUIRED: before this, the scheduled path wrote no
+    # customer_surface_status at all, so the gate had nothing to read (2026-09-07).
+    meta.update(_product_surface_fields_from_api_payload(payload))
     dedup_fields = _dedup_fields_from_api_payload(payload)
     if dedup_fields:
         meta.update(dedup_fields)

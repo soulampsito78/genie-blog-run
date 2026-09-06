@@ -5,7 +5,6 @@ import re
 import unicodedata
 from typing import Dict, FrozenSet, List, Sequence, Set, Tuple
 
-from product_surface_contract import build_korean_safe_reader_title
 
 PRIMARY_MARKET_ENTITIES: FrozenSet[str] = frozenset(
     {"sp500", "nasdaq", "nikkei", "kospi", "kosdaq", "dow", "seoul_shares"}
@@ -414,7 +413,15 @@ def diagnostic_headline_topic_tokens(headline: str, *, max_tokens: int = 6) -> L
 
 
 def inject_headline_grounding_into_detail(detail: str, headline: str) -> str:
-    """Append a bounded Korean lead-in for validator grounding — never raw keyword dumps."""
+    """Prepend a grounded Korean market anchor only — never invented reader copy.
+
+    The article is bound to the card by immutable ``news_id``; that binding, not
+    textual similarity, is the validator's primary grounding authority.  So when
+    no canonical market anchor applies, this returns the body untouched rather
+    than manufacturing a lead sentence.  The removed fallback synthesized titles
+    from source-headline tokens and produced the 2026-09-07 "U.S 관련 시장 소식"
+    class of defect.
+    """
     nh = str(headline or "").strip()
     body = str(detail or "").strip()
     if not nh:
@@ -424,29 +431,15 @@ def inject_headline_grounding_into_detail(detail: str, headline: str) -> str:
     anchor = anchor_phrase_for_headline(nh)
     if anchor and anchor not in body:
         body = f"{anchor} {body}".strip()
-    if text_covers_headline_entities(body, nh):
-        return body
-    # The article is already bound by news_id.  If legacy textual grounding is
-    # still needed, add a natural reader title rather than a raw keyword dump
-    # such as ``Lululemon·Plunges 관련``.
-    safe_title = build_korean_safe_reader_title(nh)
-    lead = f"{safe_title} 관련 보도입니다."
-    if lead not in body:
-        body = f"{lead} {body}".strip()
     return body
 
 
 def anchor_phrase_for_headline(headline: str) -> str:
     found = extract_market_entities(headline)
     if not found:
-        # No market entities: do not dump raw English headline tokens into visible copy.
-        topics = [
-            t
-            for t in headline_topic_tokens(headline, max_tokens=3)
-            if t[:1].isupper() or t.isupper()
-        ]
-        if topics:
-            return "·".join(topics[:2]) + " 관련."
+        # No canonical market entity: emit nothing.  Joining raw English headline
+        # tokens ("U.S. Energy Secretary Wright·Iran 관련.") is an internal keyword
+        # fragment, not reader copy, and must never reach a customer surface.
         return ""
 
     index_parts: List[str] = []

@@ -245,11 +245,16 @@ class ContentQualityKeywordDumpTests(unittest.TestCase):
         )
 
         headline = "SpaceX IPO Stock Could Face Further Delays"
-        out = inject_headline_grounding_into_detail("요약 본문입니다.", headline)
+        body = "요약 본문입니다."
+        out = inject_headline_grounding_into_detail(body, headline)
         self.assertIsNone(_KEYWORD_DUMP_RE.search(out))
         for banned in ("Could", "Face", "Further"):
             self.assertNotIn(banned, out)
-        self.assertIn("SpaceX", out)
+        # A headline with no canonical market entity injects nothing at all: the
+        # card is bound to the article by news_id, so the customer surface never
+        # needs English headline tokens spliced into Korean prose (2026-09-07).
+        self.assertEqual(out, body)
+        self.assertNotIn("SpaceX", out)
         tokens = diagnostic_headline_topic_tokens(headline)
         self.assertTrue(tokens)  # diagnostics may retain bounded keywords
 

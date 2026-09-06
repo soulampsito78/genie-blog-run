@@ -1,6 +1,7 @@
 """Authoritative persisted/excerpt corpus for the cross-mode release gate."""
 from __future__ import annotations
 
+import copy
 import json
 import unittest
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Any, Dict, Tuple
 from product_surface_contract import (
     CUSTOMER_SURFACE_PASS,
     PRODUCT_REVIEW_REQUIRED,
+    PRODUCT_SURFACE_DIAGNOSTIC_KEY,
     evaluate_product_surface,
     prepare_final_customer_copy,
 )
@@ -49,38 +51,41 @@ class ProductRegressionCorpusTests(unittest.TestCase):
                 self.assertTrue(expected_codes.issubset(actual_codes))
 
                 if entry.get("proof_repair"):
-                    repaired = prepare_final_customer_copy(
+                    # The boundary diagnoses; it never repairs.  A defective
+                    # fixture must come back byte-identical and still failing, so
+                    # the defect reaches owner review instead of being masked.
+                    # (Before 2026-09-07 this asserted a repair that manufactured
+                    # titles such as "Lululemon 주가 변동" — the defect class itself.)
+                    before = copy.deepcopy(structured)
+                    inspected = prepare_final_customer_copy(
                         entry["mode"], structured, source_input=source_input
                     )
-                    repaired_result = evaluate_product_surface(
-                        entry["mode"], repaired, source_input=source_input
+                    self.assertEqual(structured, before)
+                    echoed = {
+                        key: value
+                        for key, value in inspected.items()
+                        if key != PRODUCT_SURFACE_DIAGNOSTIC_KEY
+                    }
+                    self.assertEqual(echoed, before)
+                    inspected_result = evaluate_product_surface(
+                        entry["mode"], inspected, source_input=source_input
                     )
-                    self.assertEqual(repaired_result.status, CUSTOMER_SURFACE_PASS)
+                    self.assertEqual(inspected_result.status, PRODUCT_REVIEW_REQUIRED)
                     self.assertEqual(
-                        [item["news_id"] for item in repaired["key_watchpoints"]],
-                        [item["news_id"] for item in structured["key_watchpoints"]],
+                        [item["news_id"] for item in inspected["key_watchpoints"]],
+                        [item["news_id"] for item in before["key_watchpoints"]],
                     )
                     self.assertEqual(
-                        [item["headline"] for item in repaired["key_watchpoints"]],
-                        [
-                            "미국 통화정책 발언과 금리 경로",
-                            "Lululemon 주가 변동",
-                            "8월 고용지표 발표",
-                        ],
+                        [item["headline"] for item in inspected["key_watchpoints"]],
+                        [item["headline"] for item in before["key_watchpoints"]],
                     )
+                    # No layer may manufacture a generic reader title.
                     reader_copy = " ".join(
                         str(item.get("headline", "")) + " " + str(item.get("detail", ""))
-                        for item in repaired["key_watchpoints"]
+                        for item in inspected["key_watchpoints"]
                     )
-                    for leaked in (
-                        "Vance says Fed should low…",
-                        "Lululemon stock plunges 1…",
-                        "The big August jobs repor…",
-                        "Lululemon·Plunges 관련",
-                        "야간·장전 맥락에서",
-                        "흐름이 대응 축으로 남아",
-                    ):
-                        self.assertNotIn(leaked, reader_copy)
+                    for fabricated in ("관련 시장 소식", "주가 변동", "해외시장 주요 이슈"):
+                        self.assertNotIn(fabricated, reader_copy)
 
 
 if __name__ == "__main__":
