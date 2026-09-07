@@ -147,6 +147,30 @@ class TodayGenericTitleRegressionTests(unittest.TestCase):
                 self.assertNotIn("관련 시장 소식", blob)
                 self.assertNotIn("주가 변동", blob)
 
+    def test_ordinary_korean_prose_is_not_flagged_as_a_generic_frame(self) -> None:
+        """The frame detector must not fire inside normal words.
+
+        "주가 변동성"/"주가 변동폭" are ordinary Korean nouns; matching "주가 변동"
+        inside them held a clean artifact at PRODUCT_REVIEW_REQUIRED and blocked
+        a customer send for no reason.
+        """
+        for detail in (
+            "국내 우주항공 및 위성 통신 관련 기업들의 주가 변동성과 외국인 매매 동향을 주시해야 합니다.",
+            "종목별 주가 변동폭이 커질 수 있어 분할 대응이 필요합니다.",
+            "관련 시장 소식지를 참고하는 것도 방법입니다.".replace("관련 시장 소식지", "업종 리포트"),
+        ):
+            with self.subTest(detail=detail[:24]):
+                payload = {
+                    "key_watchpoints": [
+                        {"headline": "우주 데이터센터, 머스크의 계획", "detail": detail}
+                    ]
+                }
+                result = evaluate_product_surface("today_genie", payload)
+                self.assertNotIn(
+                    FABRICATED_GENERIC_READER_TITLE,
+                    {finding.code for finding in result.findings},
+                )
+
     def test_generic_frame_title_is_detected_wherever_it_comes_from(self) -> None:
         """QA still diagnoses the fake-title shape if any layer ever emits one."""
         for title in (

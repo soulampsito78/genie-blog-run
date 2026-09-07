@@ -94,8 +94,13 @@ _GENERIC_TITLE_FRAMES: Tuple[re.Pattern[str], ...] = (
 # count here: a grounded entity anchor ("나스닥과 AI 맥락의 보도입니다.") names real
 # entities from the headline and is legitimate reader copy, whereas these frames
 # carry no article-specific information wherever they appear.
+# "주가 변동" must not fire inside ordinary Korean nouns such as "주가 변동성"
+# or "주가 변동폭", so the frame has to end the phrase; the other two frames are
+# unambiguous manufactured strings.
 _GENERIC_FRAME_IN_PROSE_RE = re.compile(
-    r"\S{1,24}\s*관련\s*시장\s*소식|\S{1,24}\s*주가\s*변동|해외시장\s*주요\s*이슈\s*\d"
+    r"\S{1,24}\s*관련\s*시장\s*소식"
+    r"|\S{1,24}\s*주가\s*변동(?![가-힣])"
+    r"|해외시장\s*주요\s*이슈\s*\d"
 )
 
 
