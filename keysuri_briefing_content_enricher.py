@@ -169,7 +169,7 @@ _KOREA_CATEGORY_KO: Dict[str, str] = {
     "korea_startup_investment": "국내 스타트업 / 투자 / M&A",
     "korea_big_company_strategy": "국내 대기업 테크 전략",
     "korea_consumer_mobility": "국내 소비자 테크 / 디바이스 / 모빌리티",
-    "global_to_korea_translation": "글로벌→한국 번역 신호",
+    "korea_domestic_impact": "국내 기업·산업 동향",
 }
 
 _KOREA_EVENING_CONTEXT = "오늘 한국 시장·정책·공급망에서 의미가 커진 시점입니다."

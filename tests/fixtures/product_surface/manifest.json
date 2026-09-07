@@ -54,11 +54,36 @@
       "source_run_id": "20260814_123001_keysuri_global_tech_089c413b"
     },
     {
-      "id": "korea_20260826_known_good",
+      "id": "korea_20260826_internal_concept_leak",
+      "mode": "keysuri_korea_tech",
+      "expectation": "BAD_EXPECTED_FAIL",
+      "source_ref": "../global_corpus_20260828/20260826_korea_known_good.json",
+      "source_run_id": "20260826_183001_keysuri_korea_tech_4db792fd",
+      "expected_issue_codes": [
+        "customer_surface_internal_pipeline_concept"
+      ],
+      "source_note": "Reclassified 2026-09-07. This persisted 08-26 surface was recorded as known-good, but it already carried the retired Korea category label '글로벌→한국 번역 신호' in owner_angle, business_implication and deep_dive_body. Under current product authority KeeSuri Korea is never a translated Global feed, so this artifact is BAD evidence, not a quality baseline. The evidence file is left byte-identical on purpose."
+    },
+    {
+      "id": "korea_20260907_internal_concept_leak",
+      "mode": "keysuri_korea_tech",
+      "expectation": "BAD_EXPECTED_FAIL",
+      "fixture": "korea_20260907_internal_concept_leak.json",
+      "source_run_id": "20260907_183002_keysuri_korea_tech_ac93e962",
+      "source_date": "2026-09-07",
+      "expected_issue_codes": [
+        "customer_surface_internal_pipeline_concept"
+      ],
+      "source_note": "Exact reader sentences from the 18:31 KST owner-review email, in which the retired category label rendered three times as a customer-facing industry axis."
+    },
+    {
+      "id": "korea_20260907_corrected_known_good",
       "mode": "keysuri_korea_tech",
       "expectation": "GOOD_EXPECTED_PASS",
-      "source_ref": "../global_corpus_20260828/20260826_korea_known_good.json",
-      "source_run_id": "20260826_183001_keysuri_korea_tech_4db792fd"
+      "fixture": "korea_20260907_corrected_known_good.json",
+      "source_run_id": "20260907_183002_keysuri_korea_tech_ac93e962",
+      "source_date": "2026-09-07",
+      "source_note": "The same 18:30 items rendered through the corrected taxonomy and the reader-label allowlist. Keeps a genuine Korea GOOD baseline in the corpus now that the 08-26 artifact is known to be contaminated."
     }
   ]
 }

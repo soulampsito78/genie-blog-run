@@ -26,7 +26,7 @@ def _valid_korea_payload() -> dict:
     cats = [
         "korea_semiconductor",
         "korea_semiconductor",
-        "global_to_korea_translation",
+        "korea_domestic_impact",
         "korea_startup_investment",
         "korea_big_company_strategy",
     ]

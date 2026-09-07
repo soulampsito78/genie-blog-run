@@ -22,10 +22,23 @@ KOREA_TECH_CATEGORIES: Tuple[str, ...] = (
     "korea_startup_investment",
     "korea_big_company_strategy",
     "korea_consumer_mobility",
-    "global_to_korea_translation",
+    "korea_domestic_impact",
 )
 
 AI_PRIMARY_CATEGORY = "korea_ai_enterprise"
+
+# Retired taxonomy slugs kept for reading persisted artifacts only.  They must
+# never be produced again and never resolve to a reader-facing label of their
+# own (2026-09-07: "글로벌→한국 번역 신호" reached the customer surface).
+RETIRED_CATEGORY_ALIASES: Dict[str, str] = {
+    "global_to_korea_translation": "korea_domestic_impact",
+}
+
+
+def canonical_korea_category(value: str) -> str:
+    """Resolve a possibly-retired category slug to a current one."""
+    raw = str(value or "").strip()
+    return RETIRED_CATEGORY_ALIASES.get(raw, raw)
 
 INDUSTRIAL_CATEGORIES = frozenset(
     {
@@ -52,7 +65,7 @@ CATEGORY_KO_LABELS: Dict[str, str] = {
     "korea_startup_investment": "국내 스타트업 / 투자 / M&A",
     "korea_big_company_strategy": "국내 대기업 테크 전략",
     "korea_consumer_mobility": "국내 소비자 테크 / 디바이스 / 모빌리티",
-    "global_to_korea_translation": "글로벌→한국 번역 신호",
+    "korea_domestic_impact": "국내 기업·산업 동향",
 }
 
 CATEGORY_KEYWORD_GROUPS: Dict[str, Tuple[str, ...]] = {
@@ -92,7 +105,11 @@ CATEGORY_KEYWORD_GROUPS: Dict[str, Tuple[str, ...]] = {
     "korea_consumer_mobility": (
         "출시", "단말", "스마트폰", "모빌리티", "요금제", "통신사", "ott", "디바이스",
     ),
-    "global_to_korea_translation": (
+    # Broadest Korea-relevance bucket.  It is a domestic industry/company
+    # bucket, never a "global news translated for Korea" bucket: KeeSuri Korea
+    # selects and interprets Korea signals independently and is not a downstream
+    # translation of KeeSuri Global (2026-09-07 internal-concept leak).
+    "korea_domestic_impact": (
         "한국 적용", "국내 파급", "국내 영향", "국내 도입", "국내 출시", "국내 계약",
         "수혜", "한국 기업", "korea", "korean", "국내",
     ),
@@ -942,9 +959,9 @@ def classify_korea_tech_category(
     # Downgrade semiconductor when only chaebol names appear without real chip signal.
     if not _has_any(text, _SEMICONDUCTOR_REAL_SIGNAL):
         hits = [(cat, n) for cat, n in hits if cat != "korea_semiconductor"]
-    # Global vendor names alone must not force global_to_korea_translation.
+    # Global vendor names alone must not force the broad domestic bucket.
     if is_global_vendor_core_without_korea(text):
-        hits = [(cat, n) for cat, n in hits if cat != "global_to_korea_translation"]
+        hits = [(cat, n) for cat, n in hits if cat != "korea_domestic_impact"]
     hits.sort(key=lambda pair: (-pair[1], pair[0]))
     if not hits:
         default = (feed_default or "").strip()
@@ -1048,9 +1065,9 @@ def _domestic_relevance_boost(text: str, category: str) -> Tuple[int, List[str]]
     if any(k in lower for k in _DOMESTIC_ENTITY_KEYWORDS):
         boost += 6
         tags.append("korean_entity_mention")
-    if category == "global_to_korea_translation":
+    if category == "korea_domestic_impact":
         boost += 5
-        tags.append("global_to_korea_translation")
+        tags.append("korea_domestic_impact")
     if category in POLICY_CAPITAL_CATEGORIES:
         boost += 4
         tags.append("policy_capital_signal")
@@ -1214,7 +1231,7 @@ def score_korea_tech_item(item: dict) -> ScoredKoreaSignal:
         hard_reject_reason = "stock_only_no_tech_signal"
     elif any(m in scope_text for m in _ENTERTAINMENT_MARKERS):
         hard_reject_reason = "entertainment_not_tech"
-    elif _is_overseas_without_korea(scope_text) and primary != "global_to_korea_translation":
+    elif _is_overseas_without_korea(scope_text) and primary != "korea_domestic_impact":
         hard_reject_reason = "overseas_no_korea_application"
 
     reliability, is_official = _score_source_reliability(url, source_tier)

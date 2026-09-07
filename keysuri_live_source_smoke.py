@@ -198,7 +198,7 @@ KOREA_TECH_ALLOWED_CATEGORIES: frozenset[str] = frozenset(
         "korea_startup_investment",
         "korea_big_company_strategy",
         "korea_consumer_mobility",
-        "global_to_korea_translation",
+        "korea_domestic_impact",
     }
 )
 
@@ -308,7 +308,7 @@ KOREA_TECH_SMOKE_FEEDS: Tuple[Dict[str, str], ...] = (
         "feed_name": "ZDNet Korea",
         "feed_url": "https://feeds.feedburner.com/zdkorea",
         "source_tier": "T3_QUALITY_PRESS",
-        "default_category": "global_to_korea_translation",
+        "default_category": "korea_domestic_impact",
         "language": "ko",
         "region": "KR",
     },

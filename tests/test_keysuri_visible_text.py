@@ -145,10 +145,12 @@ class KeysuriVisibleTextTests(unittest.TestCase):
         self.assertEqual(out, raw)
 
     def test_sanitize_visible_impact_line_removes_signal_signal(self) -> None:
-        raw = "글로벌→한국 번역 신호 신호가 의사결정·미팅 우선순위에 반영될 수 있습니다."
-        out = sanitize_visible_impact_line(raw, category="global_to_korea_translation")
+        raw = "국내 기업·산업 동향 신호 신호가 의사결정·미팅 우선순위에 반영될 수 있습니다."
+        out = sanitize_visible_impact_line(raw, category="korea_domestic_impact")
         self.assertNotIn("신호 신호", out)
-        self.assertIn("글로벌 발표", out)
+        # Korea impact copy never frames the product as translated Global.
+        self.assertNotIn("번역", out)
+        self.assertNotIn("→", out)
 
     def test_startup_impact_fallback_has_no_nuclear_bleed(self) -> None:
         out = sanitize_visible_impact_line(

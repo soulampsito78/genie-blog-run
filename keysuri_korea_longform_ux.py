@@ -13,7 +13,10 @@ from keysuri_visible_text import (
     sanitize_visible_impact_line,
     strip_watch_arrow_prefixes,
 )
-from keysuri_korea_signal_scoring import is_weak_startup_support_signal
+from keysuri_korea_signal_scoring import (
+    canonical_korea_category,
+    is_weak_startup_support_signal,
+)
 from keysuri_korean_particles import CONJUNCTION, OBJECT, SUBJECT, TOPIC, attach_or
 
 KOREA_DEEP_MAX_PARAGRAPH_CHARS = 220
@@ -569,7 +572,7 @@ _KOREA_INDUSTRY_LABELS: Dict[str, str] = {
     "korea_startup_investment": "스타트업 투자",
     "korea_big_company_strategy": "대기업 기술 전략",
     "korea_consumer_mobility": "소비자 테크·모빌리티",
-    "global_to_korea_translation": "글로벌→한국 번역 신호",
+    "korea_domestic_impact": "기업·산업 동향",
 }
 
 # Slash taxonomy display labels (scoring/enricher) → customer-facing prose labels.
@@ -584,7 +587,7 @@ _KOREA_SLASH_LABEL_TO_PROSE: Dict[str, str] = {
     "국내 스타트업 / 투자 / M&A": "스타트업 투자",
     "국내 대기업 테크 전략": "대기업 기술 전략",
     "국내 소비자 테크 / 디바이스 / 모빌리티": "소비자 테크·모빌리티",
-    "글로벌→한국 번역 신호": "글로벌→한국 번역 신호",
+    "국내 기업·산업 동향": "기업·산업 동향",
     # Already-prose / partial forms that still leak into card copy.
     "국내 AI·기업 도입": "기업 AI 도입",
     "국내 반도체·장비·소재": "반도체·장비·소재",
@@ -709,30 +712,6 @@ _KOREA_IMPERATIVE_SOFTEN_RES: tuple[tuple[re.Pattern[str], str], ...] = (
         r"\g<sub>가 다음 확인 지점입니다.",
     ),
 )
-
-
-def _sanitize_korea_customer_label(value: str) -> str:
-    """Map internal slash taxonomy labels to short customer-facing Korean."""
-    raw = _text(value)
-    if not raw:
-        return ""
-    if raw in _KOREA_SLASH_LABEL_TO_PROSE:
-        return _KOREA_SLASH_LABEL_TO_PROSE[raw]
-    if raw in _KOREA_INLINE_SLASH_TO_PROSE:
-        return _KOREA_INLINE_SLASH_TO_PROSE[raw]
-    if raw in _KOREA_INDUSTRY_LABELS:
-        return _KOREA_INDUSTRY_LABELS[raw]
-    if " / " in raw:
-        return raw.replace(" / ", "·")
-    if "/" in raw and "://" not in raw:
-        for src, dst in sorted(
-            _KOREA_INLINE_SLASH_TO_PROSE.items(), key=lambda kv: len(kv[0]), reverse=True
-        ):
-            if src in raw:
-                raw = raw.replace(src, dst)
-        if "/" in raw and "://" not in raw:
-            raw = raw.replace("/", "·")
-    return raw
 
 
 def _soften_korea_imperative_prose(text: str) -> str:
@@ -930,17 +909,27 @@ def _korea_top_axis(items: Sequence[Mapping[str, Any]]) -> str:
 
 
 def _korea_industry_label(value: str) -> str:
-    """Map category slug or slash taxonomy display label to customer prose."""
+    """Map a category slug or taxonomy display label to approved customer prose.
+
+    Reader-facing industry axes are an **allowlist**: a value that is not an
+    approved customer label yields "" and is dropped from the copy.  There is
+    deliberately no passthrough.  On 2026-09-07 a retired internal category
+    ("global_to_korea_translation" / "글로벌→한국 번역 신호") mapped to itself and
+    rendered verbatim as an industry axis beside "스타트업 투자" and "로봇 자동화",
+    telling customers KeeSuri Korea is translated Global.  A label this layer has
+    not explicitly approved must never reach the customer surface again.
+    """
     raw = _text(value)
     if not raw:
         return ""
-    if raw in _KOREA_INDUSTRY_LABELS:
-        return _KOREA_INDUSTRY_LABELS[raw]
+    canonical = canonical_korea_category(raw)
+    if canonical in _KOREA_INDUSTRY_LABELS:
+        return _KOREA_INDUSTRY_LABELS[canonical]
     if raw in _KOREA_SLASH_LABEL_TO_PROSE:
         return _KOREA_SLASH_LABEL_TO_PROSE[raw]
-    if "_" in raw:
-        return ""
-    return _sanitize_korea_customer_label(raw)
+    if raw in _KOREA_INLINE_SLASH_TO_PROSE:
+        return _KOREA_INLINE_SLASH_TO_PROSE[raw]
+    return ""
 
 
 def _join_korea_industry_phrase(industries: Sequence[str], *, sep: str = "·") -> str:

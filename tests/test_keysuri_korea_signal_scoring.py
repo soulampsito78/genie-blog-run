@@ -595,7 +595,7 @@ class KoreaTechScopeGateTests(unittest.TestCase):
             "g-openai",
             "오픈AI, 미 정부 검증 거친 GPT-5.6 공개 출시하며 프론티어 AI 접근 통제 본격화",
             summary="OpenAI가 미국 정부 검증을 거친 GPT 모델을 공개했다. frontier AI 접근 통제.",
-            category="global_to_korea_translation",
+            category="korea_domestic_impact",
         )
         scored = score_korea_tech_item(item)
         self.assertEqual(scored.hard_reject_reason, "korea_tech_scope_global_leak")

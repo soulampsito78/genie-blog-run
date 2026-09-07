@@ -231,7 +231,7 @@ _INTERNAL_SNAKE_TAGS: frozenset[str] = frozenset(
         "korean_entity_mention",
         "policy_capital_signal",
         "industrial_signal",
-        "global_to_korea_translation",
+        "korea_domestic_impact",
         "korea_ai_enterprise",
         "korea_semiconductor",
         "korea_robotics_manufacturing",
@@ -274,7 +274,7 @@ _KOREA_CATEGORY_KO: Dict[str, str] = {
     "korea_startup_investment": "국내 스타트업 / 투자 / M&A",
     "korea_big_company_strategy": "국내 대기업 테크 전략",
     "korea_consumer_mobility": "국내 소비자 테크 / 디바이스 / 모빌리티",
-    "global_to_korea_translation": "글로벌→한국 번역 신호",
+    "korea_domestic_impact": "국내 기업·산업 동향",
 }
 
 _KOREA_CATEGORY_REASON: Dict[str, str] = {
@@ -305,8 +305,8 @@ _KOREA_CATEGORY_REASON: Dict[str, str] = {
     "korea_consumer_mobility": (
         "국내 소비자·모빌리티 시장 일정과 실행 확인이 필요한 신호입니다."
     ),
-    "global_to_korea_translation": (
-        "글로벌 발표가 국내 AI 기업의 투자·GPU 확보 문제로 이어지는 신호라서 한국 적용 관점에서 확인해야 합니다."
+    "korea_domestic_impact": (
+        "국내 기업·산업 일정에 직접 연결되는 신호라서 우선 확인이 필요합니다."
     ),
 }
 
@@ -314,12 +314,12 @@ _TAG_REASON_LEAD: Dict[str, str] = {
     "policy_capital_signal": "국내 정책과 투자 흐름이 함께 움직인",
     "industrial_signal": "산업·공급망 판단에 직접 연결되는",
     "korean_entity_mention": "국내 주요 기업·기관이 직접 언급된",
-    "global_to_korea_translation": "글로벌 발표가 국내 적용으로 이어지는",
+    "korea_domestic_impact": "국내 기업·산업 일정에 직접 연결되는",
 }
 
 _KOREA_IMPACT_BY_CATEGORY: Dict[str, str] = {
-    "global_to_korea_translation": (
-        "글로벌 발표가 국내 AI 기업의 투자·GPU 확보 논의로 이어질 수 있습니다."
+    "korea_domestic_impact": (
+        "국내 기업·산업 일정과 내일 관련 사업 검토 우선순위가 올라갑니다."
     ),
     "korea_startup_investment": (
         "후속 투자 일정과 지원사업 공지 확인 우선순위가 올라갑니다."
@@ -551,8 +551,8 @@ def sanitize_visible_impact_line(
                 ):
                     return "내일 관련 투자·공급망·정책 확인 우선순위가 올라갑니다."
                 return replacement
-        if "글로벌→한국" in cat_label or "번역" in cat_label:
-            return _KOREA_IMPACT_BY_CATEGORY["global_to_korea_translation"]
+        if cat_label == _KOREA_CATEGORY_KO.get("korea_domestic_impact", ""):
+            return _KOREA_IMPACT_BY_CATEGORY["korea_domestic_impact"]
         if "스타트업" in cat_label or "투자" in cat_label:
             return _KOREA_IMPACT_BY_CATEGORY["korea_startup_investment"]
         return "내일 관련 투자·공급망·정책 확인 우선순위가 올라갑니다."
@@ -583,8 +583,8 @@ def _korea_reason_from_tags_and_category(
     title: str,
 ) -> str:
     tag_set = {str(t).strip() for t in tags if str(t).strip()}
-    if "global_to_korea_translation" in tag_set or category == "global_to_korea_translation":
-        return _KOREA_CATEGORY_REASON["global_to_korea_translation"]
+    if "korea_domestic_impact" in tag_set or category == "korea_domestic_impact":
+        return _KOREA_CATEGORY_REASON["korea_domestic_impact"]
     if category in _KOREA_CATEGORY_REASON:
         base = _KOREA_CATEGORY_REASON[category]
         hook = _entity_hook_from_title(title)

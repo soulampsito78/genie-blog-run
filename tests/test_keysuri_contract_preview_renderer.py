@@ -905,12 +905,23 @@ class KeysuriThemeSeparationRendererTests(unittest.TestCase):
         mod = _CONTRACT_RENDERER
         fixture = build_korea_contract_fixture()
         fixture["top_5_items"][0]["next_day_impact_line"] = (
-            "글로벌→한국 번역 신호 신호가 의사결정·미팅 우선순위에 반영될 수 있습니다."
+            "국내 기업·산업 동향 신호 신호가 의사결정·미팅 우선순위에 반영될 수 있습니다."
         )
-        fixture["top_5_items"][0]["primary_category"] = "global_to_korea_translation"
+        fixture["top_5_items"][0]["primary_category"] = "korea_domestic_impact"
         html = _render_contract_html(mod, fixture)
         self.assertNotIn("신호 신호", html)
         self.assertIn("card-emphasis-text", html)
+
+    @_require_contract_renderer
+    def test_retired_translation_label_never_renders(self) -> None:
+        """A persisted artifact carrying the retired label must not show it."""
+        mod = _CONTRACT_RENDERER
+        fixture = build_korea_contract_fixture()
+        fixture["top_5_items"][0]["primary_category"] = "global_to_korea_translation"
+        fixture["top_5_items"][0]["category_label_ko"] = "글로벌→한국 번역 신호"
+        html = _render_contract_html(mod, fixture)
+        self.assertNotIn("글로벌→한국", html)
+        self.assertNotIn("global_to_korea_translation", html)
 
     @_require_contract_renderer
     def test_korea_next_watch_single_arrow_marker(self) -> None:

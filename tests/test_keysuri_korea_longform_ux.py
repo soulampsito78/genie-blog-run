@@ -112,7 +112,7 @@ class KeysuriKoreaLongformUxTests(unittest.TestCase):
     def test_finalize_clamps_selection_reason_without_midword_cut(self) -> None:
         long_reason = (
             "국내 기업 언급이 명확하며, 미래 성장 동력인 로봇 산업에서 국내 부품 기업의 역할을 조명합니다. "
-            "글로벌→한국 번역 신호로 선정했습니다."
+            "국내 기업·산업 동향으로 선정했습니다."
         )
         finalized = finalize_korea_visible_field(long_reason)
         self.assertFalse(has_incomplete_korean_sentence_ending(finalized))

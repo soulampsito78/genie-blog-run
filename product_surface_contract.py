@@ -44,6 +44,7 @@ INTERNAL_PLACEHOLDER_LEAK = "customer_surface_internal_placeholder_leak"
 DUPLICATE_FILLER = "customer_surface_duplicate_filler"
 FABRICATED_GENERIC_READER_TITLE = "customer_surface_fabricated_generic_reader_title"
 MISSING_GROUNDED_READER_TITLE = "customer_surface_missing_grounded_reader_title"
+INTERNAL_PIPELINE_CONCEPT = "customer_surface_internal_pipeline_concept"
 
 # Set by the grounded assembly layer when no grounded Korean reader title or
 # fact sentence existed for a card.  The assembly never invents one; it marks
@@ -102,6 +103,36 @@ _GENERIC_FRAME_IN_PROSE_RE = re.compile(
     r"|\S{1,24}\s*주가\s*변동(?![가-힣])"
     r"|해외시장\s*주요\s*이슈\s*\d"
 )
+
+
+# Internal pipeline vocabulary must never describe the product to a reader.
+#
+# These match the *frame*, not the words.  "글로벌", "한국" and "번역" are all
+# legitimate on their own — "글로벌 기업의 한국 시장 진출", "한국어 번역 기능을
+# 출시했다" and "글로벌 공급망에서 한국 기업의 역할" must all stay clean.  What is
+# never reader copy is transformation notation between domain nouns, or a raw
+# internal identifier.  On 2026-09-07 the retired Korea category label
+# "글로벌→한국 번역 신호" rendered as a customer-facing industry axis, telling
+# readers that KeeSuri Korea is translated KeeSuri Global.
+_TRANSFORM_ARROW_RE = re.compile(
+    r"[0-9A-Za-z가-힣][ \t]*(?:->|→|=>|⇒)[ \t]*[0-9A-Za-z가-힣]"
+)
+# A raw snake_case identifier (source-pack field, category slug, stage label).
+_INTERNAL_IDENTIFIER_RE = re.compile(r"(?<![/\w.-])[a-z][a-z0-9]*(?:_[a-z0-9]+){1,}(?![\w/-])")
+
+
+def _internal_pipeline_concept(text: str) -> str:
+    """Return the offending fragment, or "" when the text is clean reader copy."""
+    stripped = _one_line(text)
+    if not stripped or "http://" in stripped or "https://" in stripped:
+        return ""
+    match = _TRANSFORM_ARROW_RE.search(stripped)
+    if match:
+        return match.group(0)
+    match = _INTERNAL_IDENTIFIER_RE.search(stripped)
+    if match:
+        return match.group(0)
+    return ""
 
 
 def _looks_like_generic_frame_title(text: str) -> bool:
@@ -440,6 +471,16 @@ def evaluate_product_surface(
                     INTERNAL_PLACEHOLDER_LEAK,
                     field.path,
                     "placeholder 또는 내부 진단 토큰이 독자면에 노출되었습니다.",
+                    (field.card_index,) if field.card_index > 0 else (),
+                )
+            )
+        leaked = _internal_pipeline_concept(field.text)
+        if leaked:
+            findings.append(
+                ProductSurfaceFinding(
+                    INTERNAL_PIPELINE_CONCEPT,
+                    field.path,
+                    f"내부 파이프라인 개념/식별자가 독자면에 노출되었습니다: {leaked}",
                     (field.card_index,) if field.card_index > 0 else (),
                 )
             )

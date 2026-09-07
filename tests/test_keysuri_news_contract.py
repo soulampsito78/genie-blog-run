@@ -183,11 +183,18 @@ class KeysuriNewsContractValidationTests(unittest.TestCase):
         issues = validate_top_5_news_block("keysuri_korea_tech", block)
         self.assertFalse(any(i["code"] == "top_5_news_item_category_unknown" for i in issues))
 
-    def test_global_to_korea_translation_valid_for_korea_program(self) -> None:
+    def test_korea_domestic_impact_valid_for_korea_program(self) -> None:
+        block = _top5_block("keysuri_korea_tech")
+        block["items"][1]["category"] = "korea_domestic_impact"
+        issues = validate_top_5_news_block("keysuri_korea_tech", block)
+        self.assertFalse(any(i["code"] == "top_5_news_item_category_unknown" for i in issues))
+
+    def test_retired_translation_category_is_rejected_for_korea_program(self) -> None:
+        """KeeSuri Korea is not a translated Global feed; the slug is retired."""
         block = _top5_block("keysuri_korea_tech")
         block["items"][1]["category"] = "global_to_korea_translation"
         issues = validate_top_5_news_block("keysuri_korea_tech", block)
-        self.assertFalse(any(i["code"] == "top_5_news_item_category_unknown" for i in issues))
+        self.assertTrue(any(i["code"] == "top_5_news_item_category_unknown" for i in issues))
 
     def test_korea_startup_investment_valid_for_korea_program(self) -> None:
         block = _top5_block("keysuri_korea_tech")
@@ -236,7 +243,7 @@ class KeysuriKoreaCategoryParseTests(unittest.TestCase):
         categories = [
             "korea_semiconductor",
             "korea_semiconductor",
-            "global_to_korea_translation",
+            "korea_domestic_impact",
             "korea_startup_investment",
             "korea_big_company_strategy",
         ]

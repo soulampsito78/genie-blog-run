@@ -29,9 +29,19 @@ class ProductRegressionCorpusTests(unittest.TestCase):
     def test_manifest_expectations_and_0904_proof_repair(self) -> None:
         manifest = json.loads((_BASE / "manifest.json").read_text(encoding="utf-8"))
         fixtures = manifest["fixtures"]
-        self.assertEqual(len(fixtures), 6)
+        self.assertEqual(len(fixtures), 8)
         self.assertEqual(
             {entry["mode"] for entry in fixtures},
+            {"today_genie", "keysuri_global_tech", "keysuri_korea_tech"},
+        )
+        # A mode with only BAD fixtures would let a regression pass unnoticed.
+        good_modes = {
+            entry["mode"]
+            for entry in fixtures
+            if entry["expectation"] == "GOOD_EXPECTED_PASS"
+        }
+        self.assertEqual(
+            good_modes,
             {"today_genie", "keysuri_global_tech", "keysuri_korea_tech"},
         )
 
