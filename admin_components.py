@@ -221,6 +221,9 @@ h3{{font-size:1rem;margin:0;}}
 .actions form{{margin:0;}}
 .danger-zone{{border:1px solid #efc5c0;background:#fff9f8;border-radius:14px;padding:18px;}}
 .danger-zone .btn{{background:var(--red);}}
+.btn--block{{display:flex;width:100%;min-height:52px;text-align:center;}}
+.hint{{margin:10px 0 0 0;font-size:13px;line-height:1.55;color:#5b6660;}}
+@media (max-width:640px){{.form-actions .btn{{width:100%;min-height:52px;}}}}
 .notice,.warn{{border:1px solid #e8c780;background:var(--amber-soft);color:#65400b;border-radius:12px;padding:14px 16px;}}
 .notice--danger{{border-color:#efc5c0;background:var(--red-soft);color:#762323;}}
 .notice--good{{border-color:#b9ddc7;background:var(--green-soft);color:#174e34;}}

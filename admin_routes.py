@@ -2260,11 +2260,17 @@ def admin_run_detail(request: Request, run_id: str):
     email_link = f'<a href="/admin/runs/{_esc(run_id)}/email" target="_blank">이메일 HTML 미리보기</a>' if has_email else "<em>저장된 이메일 HTML 없음</em>"
     can_approve, approve_err = can_approve_customer_send(meta, has_email_html=has_email)
     mode = str(meta.get("mode") or "")
+    recipient_count, recipients_ok = _current_recipient_count()
+    recipient_display = recipient_count if recipients_ok else "확인 필요"
     approve_block = ""
     if can_approve:
         approve_block = (
-            f'<div class="form-actions"><p style="margin:0;"><a class="btn" href="/admin/runs/{_esc(run_id)}/approve-confirm">'
-            "승인 검토 페이지 열기</a></p></div>"
+            '<div class="form-actions"><p style="margin:0;">'
+            f'<a class="btn btn--danger btn--block" href="/admin/runs/{_esc(run_id)}/approve-confirm">'
+            f"승인하고 {_esc(recipient_display)}명에게 발송 →</a></p></div>"
+            '<p class="hint" style="margin:10px 0 0 0;">'
+            "위 버튼을 누르면 최종 확인 화면이 열립니다. 실제 발송은 그 화면에서 "
+            "확인 체크 후 한 번 더 눌러야 실행됩니다.</p>"
         )
     else:
         approve_block = (
@@ -2292,7 +2298,6 @@ def admin_run_detail(request: Request, run_id: str):
             f"장애 보고 / 재실행 승인 ({_esc(linked_incident_id)})</a></p>"
         )
     scope_field = _render_reissue_scope_field(mode, meta)
-    recipient_count, recipients_ok = _current_recipient_count()
     view = run_projection(meta, current_recipient_count=recipient_count)
     validation = view["validation"]
     delivery = view["delivery"]
@@ -2303,12 +2308,10 @@ def admin_run_detail(request: Request, run_id: str):
     graded_panel = _render_keysuri_graded_quality_panel(meta)
     accepted = delivery.get("accepted")
     refused = delivery.get("refused")
-    recipient_display = recipient_count if recipients_ok else "확인 필요"
-    approval_heading = (
-        f"승인하고 {_esc(recipient_display)}명에게 발송"
-        if can_approve
-        else "고객 발송 차단"
-    )
+    # The send wording belongs on the tappable control, never on this heading:
+    # a <strong> reading "승인하고 N명에게 발송" is inert, and tapping it produced
+    # no request and no error at all (2026-09-07 owner report on iPhone).
+    approval_heading = "고객 발송 승인" if can_approve else "고객 발송 차단"
     approval_explanation = (
         "승인은 되돌릴 수 없습니다. 실제 발송은 기존 nonce와 확인 체크가 있는 별도 최종 확인 화면에서만 실행됩니다."
         if can_approve

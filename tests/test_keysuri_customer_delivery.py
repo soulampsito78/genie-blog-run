@@ -496,7 +496,12 @@ class KeysuriAdminApproveButtonTests(unittest.TestCase):
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
         resp = self.client.get(f"/admin/runs/{run_id}")
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("승인 검토 페이지 열기", resp.text)
+        # The send wording must sit on the real control. It used to label an
+        # inert <strong>, which tapped as a no-op on mobile (2026-09-07).
+        self.assertRegex(
+            resp.text,
+            r'<a[^>]+href="/admin/runs/' + run_id + r'/approve-confirm"[^>]*>\s*승인하고',
+        )
         self.assertNotIn("Kee-Suri 고객 발송은 아직 안전 검증 전입니다", resp.text)
 
     def test_admin_run_detail_keysuri_korea_no_active_approve_button(self) -> None:
