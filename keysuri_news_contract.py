@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from urllib.parse import urlsplit
 
@@ -858,6 +860,302 @@ GLOBAL_SIGNAL_EXCEPTION_ANCHORS: Tuple[str, ...] = (
 )
 
 
+# --- Event novelty: document date is not event date ------------------------
+# Incident 2026-09-09 (Global): an AWS Weekly Roundup published 2026-09-07 led
+# the briefing as a fresh "Claude Fable 5.1 출시" launch, even though the roundup
+# itself said the availability happened "Last week" (2026-09-01). Every existing
+# gate passed it, because every existing gate reads a *document* timestamp:
+#
+#   * source gate  -> fetched_at (when we collected the page)
+#   * _score_recency -> published_at (when the page was published)
+#
+# Neither is the time of the *news development* the item asserts. Re-fetching a
+# page, republishing it at a new URL, or recapping it a week later all move a
+# document timestamp forward while the underlying event stands still. This
+# section keeps the two apart and refuses to promote a backward-referenced
+# recap as a new development.
+#
+# Deliberately NOT a word blacklist and NOT a blanket age rule: a roundup that
+# carries its own newly-evidenced development stays eligible, and a genuinely
+# current story is never rejected for the age of its subject matter.
+
+# Roundup / week-in-review context. A context signal only — never a rejection
+# on its own.
+GLOBAL_ROUNDUP_CONTEXT_MARKERS: Tuple[str, ...] = (
+    "roundup",
+    "round-up",
+    "week in review",
+    "weekly recap",
+    "weekly digest",
+    "weekly wrap",
+    "this week in",
+    "week of ",
+    "주간 정리",
+    "주간 브리핑",
+    "주간 요약",
+    "이번 주 정리",
+    "이번 주 요약",
+)
+
+# Explicit backward attribution: the text itself says the development happened
+# before this document. The number is the separation the WORDING suggests, in
+# days, and is approximate by nature ("last week" from a Monday post can mean
+# 1 day or 13). It is recorded as a hint and never used as a hard date bound —
+# the only bound we assert is that the event predates its own document.
+GLOBAL_BACKWARD_EVENT_MARKERS: Tuple[Tuple[str, int], ...] = (
+    ("last week", 7),
+    ("a week ago", 7),
+    ("지난주", 7),
+    ("지난 주", 7),
+    ("last month", 30),
+    ("지난달", 30),
+    ("지난 달", 30),
+    ("earlier this month", 7),
+    ("earlier this year", 30),
+    ("last year", 180),
+    ("작년", 180),
+    ("previously announced", 1),
+    ("originally announced", 1),
+    ("announced earlier", 1),
+    ("as announced", 1),
+    ("we announced", 1),
+    ("앞서 발표", 1),
+    ("이미 발표", 1),
+    ("기존에 발표", 1),
+)
+
+# Wording that asserts a development. Used only to decide WHERE the novelty
+# claim sits (backward-attributed sentence vs. its own), never to rescue an
+# item by itself.
+GLOBAL_DEVELOPMENT_ANCHORS: Tuple[str, ...] = (
+    "launch",
+    "launches",
+    "launched",
+    "release",
+    "releases",
+    "released",
+    "announce",
+    "announces",
+    "announced",
+    "announcing",
+    "introduc",
+    "unveil",
+    "now available",
+    "became available",
+    "generally available",
+    "rolls out",
+    "rolling out",
+    "expands to",
+    "price",
+    "pricing",
+    "acquire",
+    "acquisition",
+    "vulnerability",
+    "breach",
+    "patch",
+    "출시",
+    "공개",
+    "발표",
+    "인수",
+    "가격",
+    "취약점",
+)
+
+# Present-time framing. Inside a roundup, novelty vocabulary alone proves
+# nothing — "launch", "release", "출시" and a famous brand name all appear in a
+# recap of last week's news. A development the roundup reports *itself* is
+# anchored to the document's own present.
+GLOBAL_PRESENT_TIME_ANCHORS: Tuple[str, ...] = (
+    "today",
+    "이번 주",
+    "오늘",
+    "this morning",
+    "is announcing",
+    "are announcing",
+    "we are announcing",
+    "effective immediately",
+    "starting today",
+    "as of today",
+    "now generally available",
+    "지금부터",
+    "부터 적용",
+)
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。])\s+|\n+")
+
+
+@dataclass(frozen=True)
+class EventNoveltyVerdict:
+    """How a candidate's news development relates in time to its document.
+
+    ``event_date_basis`` values:
+      * ``document_published`` — no backward attribution found; the development
+        is taken to belong to the document's own publication.
+      * ``backward_relative_unresolved`` — the text attributes the development
+        to an earlier period. ``event_not_later_than`` carries the only bound
+        that cannot be falsified (the event predates its own document), and
+        ``event_age_hint_days`` records what the wording loosely suggests. The
+        exact event date stays unknown on purpose.
+      * ``unknown`` — no usable publication date, so no event date can be
+        derived. Never silently replaced with a fetch time or with "today".
+    """
+
+    is_roundup: bool = False
+    backward_reference: str = ""
+    event_age_hint_days: int = 0
+    event_date_basis: str = "document_published"
+    event_not_later_than: str = ""
+    has_independent_development: bool = False
+    eligible_as_new_development: bool = True
+    reason: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "is_roundup": self.is_roundup,
+            "backward_reference": self.backward_reference,
+            "event_age_hint_days": self.event_age_hint_days,
+            "event_date_basis": self.event_date_basis,
+            "event_not_later_than": self.event_not_later_than,
+            "has_independent_development": self.has_independent_development,
+            "eligible_as_new_development": self.eligible_as_new_development,
+            "novelty_reason": self.reason,
+        }
+
+
+def _parse_event_dt(value: str) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        pass
+    for fmt in ("%a, %d %b %Y %H:%M:%S %z", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _backward_marker_in(text: str) -> Tuple[str, int]:
+    """Return the strongest backward attribution present in ``text``."""
+    best = ("", 0)
+    for marker, hint_days in GLOBAL_BACKWARD_EVENT_MARKERS:
+        if marker in text and hint_days > best[1]:
+            best = (marker, hint_days)
+    return best
+
+
+def classify_global_event_novelty(
+    headline: str,
+    summary: str = "",
+    *,
+    published_at: str = "",
+) -> EventNoveltyVerdict:
+    """Decide whether a candidate asserts a development that is new *now*.
+
+    The narrow rule this implements: **a recap whose development is attributed
+    to an earlier period, and which carries no independently-evidenced
+    development of its own, may not be promoted as a new development.**
+
+    A roundup that also reports something new on its own keeps its eligibility;
+    only the backward-referenced part loses it. The event date is never taken
+    from the roundup — a resolved bound is recorded against the *document's*
+    publication context, not against fetch time or "today".
+    """
+    head = str(headline or "")
+    body = str(summary or "")
+    text = f"{head} {body}".lower()
+
+    is_roundup = any(marker in text for marker in GLOBAL_ROUNDUP_CONTEXT_MARKERS)
+    backward_marker, min_age_days = _backward_marker_in(text)
+
+    pub_dt = _parse_event_dt(published_at)
+    if pub_dt is None:
+        # No usable publication date. Record the gap explicitly rather than
+        # borrowing a fetch time or asserting "today".
+        return EventNoveltyVerdict(
+            is_roundup=is_roundup,
+            backward_reference=backward_marker,
+            event_age_hint_days=min_age_days,
+            event_date_basis="unknown",
+            event_not_later_than="",
+            has_independent_development=False,
+            eligible_as_new_development=not (is_roundup and bool(backward_marker)),
+            reason=(
+                "global_recap_backward_referenced_event"
+                if (is_roundup and backward_marker)
+                else "event_date_unknown"
+            ),
+        )
+
+    if not backward_marker:
+        return EventNoveltyVerdict(
+            is_roundup=is_roundup,
+            event_date_basis="document_published",
+            event_not_later_than=pub_dt.isoformat(),
+            has_independent_development=True,
+            eligible_as_new_development=True,
+            reason="",
+        )
+
+    # The text attributes a development to an earlier period. The only bound
+    # the evidence actually supports is that the event predates its own
+    # document — anchored to the DOCUMENT's publication, never to the current
+    # clock. Subtracting the wording's nominal offset would manufacture a date
+    # ("last week" from a Monday post is anywhere from 1 to 13 days back), so
+    # the offset is kept as an approximate hint instead.
+    bound = pub_dt.isoformat()
+
+    # Does the item report anything new on its own? Independent evidence is a
+    # sentence that (a) carries no backward attribution, (b) asserts a
+    # development, and (c) anchors that development to the document's own
+    # present. All three are required: novelty vocabulary by itself is exactly
+    # what a recap of an old launch is full of, and a roundup headline is a
+    # table of contents, so it never counts on its own.
+    independent = False
+    for sentence in _SENTENCE_SPLIT_RE.split(body.lower()):
+        chunk = sentence.strip()
+        if not chunk:
+            continue
+        if _backward_marker_in(chunk)[0]:
+            continue
+        if not any(anchor in chunk for anchor in GLOBAL_DEVELOPMENT_ANCHORS):
+            continue
+        if any(anchor in chunk for anchor in GLOBAL_PRESENT_TIME_ANCHORS):
+            independent = True
+            break
+
+    if not is_roundup:
+        # A normal article that mentions an earlier announcement in passing is
+        # still a current story. Only record the provenance.
+        return EventNoveltyVerdict(
+            is_roundup=False,
+            backward_reference=backward_marker,
+            event_age_hint_days=min_age_days,
+            event_date_basis="backward_relative_unresolved",
+            event_not_later_than=bound,
+            has_independent_development=independent,
+            eligible_as_new_development=True,
+            reason="",
+        )
+
+    eligible = independent
+    return EventNoveltyVerdict(
+        is_roundup=True,
+        backward_reference=backward_marker,
+        event_age_hint_days=min_age_days,
+        event_date_basis="backward_relative_unresolved",
+        event_not_later_than=bound,
+        has_independent_development=independent,
+        eligible_as_new_development=eligible,
+        reason="" if eligible else "global_recap_backward_referenced_event",
+    )
+
+
 def _explainer_marker_present(text: str, markers: Sequence[str]) -> bool:
     """Match evergreen-explainer markers against lowercased text.
 
@@ -910,6 +1208,64 @@ def is_global_tech_low_signal_headline(headline: str, summary: str = "") -> Tupl
     return False, ""
 
 
+def _claim_published_at(
+    claim: Dict[str, Any],
+    smap: Dict[str, Dict[str, Any]],
+) -> str:
+    """Document publication date for a claim, from its sources.
+
+    Deliberately does NOT fall back to ``fetched_at``: when we collected a page
+    says nothing about when it was published, and substituting one for the
+    other is what lets an old event read as new.
+    """
+    direct = str(claim.get("published_at") or "").strip()
+    if direct:
+        return direct
+    for sid in claim.get("source_ids") or []:
+        src = smap.get(str(sid))
+        if isinstance(src, dict):
+            value = str(src.get("published_at") or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _news_item_is_current_development(item: Dict[str, Any]) -> bool:
+    """Item-level mirror of the claim-level event-novelty rule.
+
+    Used where an already-materialised news item (not a claim) re-enters the
+    pool, so no admission path reaches a different verdict than the primary
+    ranking did.
+    """
+    if not isinstance(item, dict):
+        return False
+    headline = str(item.get("headline") or item.get("title") or "").strip()
+    summary = str(item.get("summary") or "").strip()
+    verdict = classify_global_event_novelty(
+        headline,
+        summary,
+        published_at=str(item.get("published_at") or "").strip(),
+    )
+    return verdict.eligible_as_new_development
+
+
+def _claim_fetched_at(
+    claim: Dict[str, Any],
+    smap: Dict[str, Dict[str, Any]],
+) -> str:
+    """Collection timestamp for a claim — kept distinct from publication."""
+    direct = str(claim.get("fetched_at") or "").strip()
+    if direct:
+        return direct
+    for sid in claim.get("source_ids") or []:
+        src = smap.get(str(sid))
+        if isinstance(src, dict):
+            value = str(src.get("fetched_at") or "").strip()
+            if value:
+                return value
+    return ""
+
+
 def _claim_is_qualified(
     claim: Dict[str, Any],
     smap: Dict[str, Dict[str, Any]],
@@ -941,6 +1297,16 @@ def _claim_is_qualified(
         low_signal, reason = is_global_tech_low_signal_headline(headline, summary)
         if low_signal:
             return False, reason
+        # Temporal identity: a recap may not re-present an old event as new.
+        # Runs on the same gate as every other content rule, so the primary
+        # ranking and the backfill pool reach the same verdict.
+        verdict = classify_global_event_novelty(
+            headline,
+            summary,
+            published_at=_claim_published_at(claim, smap),
+        )
+        if not verdict.eligible_as_new_development:
+            return False, verdict.reason or "global_recap_backward_referenced_event"
     return True, "ok"
 
 
@@ -985,6 +1351,7 @@ def _claim_to_news_item(
     claim: Dict[str, Any],
     rank: int,
     smap: Optional[Dict[str, Dict[str, Any]]] = None,
+    program_id: str = "",
 ) -> Dict[str, Any]:
     primary = str(claim.get("primary_category") or "").strip()
     category = primary or claim_to_news_category(claim) or "market_signal"
@@ -1007,6 +1374,21 @@ def _claim_to_news_item(
         "confidence_label": str(claim.get("confidence_label") or "reported").strip(),
     }
     item.update(_resolve_claim_source(claim, smap or {}))
+    # Date provenance travels with the item: which timestamp we hold, what it
+    # means, and how the event relates to it. Downstream surfaces must be able
+    # to tell a document date from an event date without re-deriving it.
+    if program_id == "keysuri_global_tech":
+        published_at = _claim_published_at(claim, smap or {})
+        if published_at:
+            item["published_at"] = published_at
+        fetched_at = _claim_fetched_at(claim, smap or {})
+        if fetched_at:
+            item["fetched_at"] = fetched_at
+        item["event_novelty"] = classify_global_event_novelty(
+            item.get("headline") or statement,
+            summary,
+            published_at=published_at,
+        ).to_dict()
     risk = claim.get("risk_note")
     if _is_non_empty_str(risk):
         item["risk_note"] = str(risk).strip()
@@ -1305,7 +1687,7 @@ def select_top_5_news(
     # capped duplicate is replaced by the next distinct candidate instead of
     # only shrinking the final five.
     hydrated = [
-        _claim_to_news_item(claim, rank=i + 1, smap=smap)
+        _claim_to_news_item(claim, rank=i + 1, smap=smap, program_id=program_id)
         for i, (_t, claim) in enumerate(qualified)
     ]
 
@@ -1387,7 +1769,10 @@ def select_top_5_news(
             if not ok or not _is_non_empty_str(claim.get("business_implication")):
                 continue
             item = _claim_to_news_item(
-                claim, rank=candidate_count_before_dedup + j + 1, smap=bsmap
+                claim,
+                rank=candidate_count_before_dedup + j + 1,
+                smap=bsmap,
+                program_id=program_id,
             )
             if str(item.get("news_id") or "") in seen_ids:
                 continue
@@ -1408,8 +1793,15 @@ def select_top_5_news(
         and soft_rejected
     ):
         need = KEYSURI_TOP_NEWS_COUNT - len(deduped_pool)
-        for row in soft_rejected[:need]:
+        for row in soft_rejected:
+            if exposure_backfill_used_count >= need:
+                break
             item = {k: v for k, v in row.items() if k != "rejected_reason"}
+            # Last-resort re-injection is still an admission path. An item that
+            # the event-novelty rule refuses may not re-enter here just because
+            # it was exposed in an earlier owner-review email.
+            if program_id == "keysuri_global_tech" and not _news_item_is_current_development(item):
+                continue
             deduped_pool.append(item)
             exposure_backfill_used_count += 1
         exposure_backfill_used = exposure_backfill_used_count > 0

@@ -465,6 +465,8 @@ class ScoredGlobalSignal:
     is_breaking_launch: bool = False
     is_customer_case_study: bool = False
     is_official_source: bool = False
+    fetched_at: str = ""
+    event_novelty: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -472,6 +474,8 @@ class ScoredGlobalSignal:
             "title": self.title,
             "url": self.url,
             "published_at": self.published_at,
+            "fetched_at": self.fetched_at,
+            "event_novelty": dict(self.event_novelty),
             "source_name": self.source_name,
             "source_domain": self.source_domain or _host(self.url),
             "source_tier": self.source_tier,
@@ -623,13 +627,21 @@ def _text_blob(item: dict) -> str:
     return " ".join(parts).lower()
 
 
-def _score_recency(published_at: str, *, strategic_evergreen: bool) -> int:
+def _score_recency(
+    published_at: str,
+    *,
+    strategic_evergreen: bool,
+    now: Optional[datetime] = None,
+) -> int:
     dt = _parse_published(published_at)
     if dt is None:
         return 0
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    age_h = (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds() / 3600.0
+    ref = now or datetime.now(timezone.utc)
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=timezone.utc)
+    age_h = (ref.astimezone(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds() / 3600.0
     if age_h <= 24:
         return 10
     if age_h <= 48:
@@ -1164,12 +1176,25 @@ def _build_rationale(scores: ScoreBreakdown, *, tags: Sequence[str], penalty_not
     return " ".join(parts)
 
 
-def score_global_signal_item(item: dict) -> ScoredGlobalSignal:
-    """Score one candidate feed/source item."""
+def score_global_signal_item(
+    item: dict,
+    *,
+    now: Optional[datetime] = None,
+) -> ScoredGlobalSignal:
+    """Score one candidate feed/source item.
+
+    ``now`` fixes the evaluation clock so a replay of frozen evidence yields the
+    same verdict regardless of wall time.
+    """
     source_id = str(item.get("source_id") or item.get("claim_id") or "").strip()
     title = str(item.get("title") or item.get("headline") or item.get("statement") or "").strip()
     url = str(item.get("link") or item.get("source_url") or "").strip()
-    published_at = str(item.get("published_at") or item.get("fetched_at") or "").strip()
+    # published_at is when the DOCUMENT was published. fetched_at is when we
+    # collected it. Substituting one for the other makes a re-fetch look like a
+    # fresh publication, so the fallback is deliberately absent — a missing
+    # publication date stays missing and is hard-rejected below as "no_date".
+    published_at = str(item.get("published_at") or "").strip()
+    fetched_at = str(item.get("fetched_at") or "").strip()
     source_name = str(item.get("source_name") or item.get("publisher") or item.get("feed_name") or "").strip()
     source_tier = str(item.get("source_tier") or "T3_QUALITY_PRESS").strip()
     category = str(item.get("category") or item.get("default_category") or "market_signal").strip()
@@ -1214,7 +1239,9 @@ def score_global_signal_item(item: dict) -> ScoredGlobalSignal:
 
     strategic = is_case or "policy" in category or "regulation" in text
     scores = ScoreBreakdown()
-    scores.recency = _score_recency(published_at, strategic_evergreen=strategic)
+    scores.recency = _score_recency(
+        published_at, strategic_evergreen=strategic, now=now
+    )
     scores.source_reliability, is_official = _score_source_reliability(url, source_tier)
     scores.structural_impact = _score_structural(text)
     scores.owner_relevance = _score_owner_relevance(text, category)
@@ -1235,6 +1262,23 @@ def score_global_signal_item(item: dict) -> ScoredGlobalSignal:
         rationale = _build_rationale(scores, tags=tags, penalty_notes=penalty_notes)
 
     is_launch = _is_breaking_launch(text, is_case_study=is_case)
+
+    # Temporal identity, from the same authority the claim gate uses, so the
+    # primary ranking, the watchlist and the replacement pool cannot disagree
+    # about whether an item is a new development. Imported lazily:
+    # keysuri_news_contract imports this module.
+    from keysuri_news_contract import classify_global_event_novelty
+
+    novelty = classify_global_event_novelty(
+        title, summary, published_at=published_at
+    )
+    if not novelty.eligible_as_new_development and not hard_reject_reason:
+        hard_reject_reason = (
+            novelty.reason or "global_recap_backward_referenced_event"
+        )
+        classification = "hard_reject"
+        rationale = f"탈락: {hard_reject_reason}."
+        tags.append("recap_backward_referenced")
 
     return ScoredGlobalSignal(
         source_id=source_id,
@@ -1261,6 +1305,8 @@ def score_global_signal_item(item: dict) -> ScoredGlobalSignal:
         is_breaking_launch=is_launch,
         is_customer_case_study=is_case,
         is_official_source=is_official,
+        fetched_at=fetched_at,
+        event_novelty=novelty.to_dict(),
     )
 
 
@@ -1273,7 +1319,11 @@ def _duplicate_key(title: str, url: str = "") -> str:
     return " ".join(words[:8]) or norm_title
 
 
-def score_global_signal_candidates(items: Sequence[dict]) -> GlobalTop5SelectionResult:
+def score_global_signal_candidates(
+    items: Sequence[dict],
+    *,
+    now: Optional[datetime] = None,
+) -> GlobalTop5SelectionResult:
     """Score all candidates, dedupe, and partition into TOP5 / watchlist / rejected."""
     scored: List[ScoredGlobalSignal] = []
     dup_groups: Dict[str, List[str]] = {}
@@ -1284,14 +1334,14 @@ def score_global_signal_candidates(items: Sequence[dict]) -> GlobalTop5Selection
             continue
         url = str(raw.get("link") or raw.get("source_url") or "").strip()
         if url in seen_urls:
-            dup = score_global_signal_item(raw)
+            dup = score_global_signal_item(raw, now=now)
             dup.hard_reject_reason = dup.hard_reject_reason or "duplicate_story"
             dup.classification = "hard_reject"
             dup.duplicate_group = _duplicate_key(dup.title, dup.url)
             scored.append(dup)
             continue
         seen_urls.add(url)
-        item = score_global_signal_item(raw)
+        item = score_global_signal_item(raw, now=now)
         dkey = _duplicate_key(item.title, item.url)
         dup_groups.setdefault(dkey, []).append(item.source_id or item.url)
         if len(dup_groups[dkey]) > 1:
@@ -1371,7 +1421,8 @@ def _candidate_dict_from_source_pack(source_pack: dict) -> List[dict]:
                 "title": src.get("title") or claim.get("statement"),
                 "link": src.get("source_url"),
                 "source_url": src.get("source_url"),
-                "published_at": src.get("published_at") or src.get("fetched_at"),
+                "published_at": src.get("published_at") or "",
+                "fetched_at": src.get("fetched_at") or "",
                 "source_name": src.get("source_name") or src.get("publisher"),
                 "source_tier": src.get("source_tier"),
                 "category": claim.get("category"),
@@ -1382,8 +1433,14 @@ def _candidate_dict_from_source_pack(source_pack: dict) -> List[dict]:
     return out
 
 
-def score_candidates_from_source_pack(source_pack: dict) -> GlobalTop5SelectionResult:
-    return score_global_signal_candidates(_candidate_dict_from_source_pack(source_pack))
+def score_candidates_from_source_pack(
+    source_pack: dict,
+    *,
+    now: Optional[datetime] = None,
+) -> GlobalTop5SelectionResult:
+    return score_global_signal_candidates(
+        _candidate_dict_from_source_pack(source_pack), now=now
+    )
 
 
 def _is_safe_replacement_candidate(item: ScoredGlobalSignal) -> bool:
