@@ -3234,13 +3234,12 @@ def _path_from_parent_image_reference(raw: Any) -> Optional[Path]:
     return path
 
 
-def _saved_top_image_reference(parent: Dict[str, Any]) -> Tuple[Optional[Path], Dict[str, Any]]:
-    """Resolve a parent top-image reference for body_only reissue.
+def _parent_top_image_candidates(parent: Dict[str, Any]) -> List[Tuple[Path, str, str]]:
+    """Every ``(path, source_label, raw_reference)`` top-image reference a parent carries.
 
-    GCS-backed parent artifacts often retain the image path/hash metadata but the
-    ephemeral Cloud Run file is gone by the time an operator does a dry-run
-    body_only reissue. For no-send QA we can still render the child with the
-    preserved CID/reference; actual owner email send still requires a local file.
+    Gathering is separated from resolution so an eligibility check can ask
+    "does any reference survive?" without touching the filesystem or GCS, and
+    can never drift from what ``_saved_top_image_reference`` actually accepts.
     """
     candidates: List[Tuple[Path, str, str]] = []
 
@@ -3289,6 +3288,34 @@ def _saved_top_image_reference(parent: Dict[str, Any]) -> Tuple[Optional[Path], 
                     consider(item.get(subkey), f"{key}[{idx}].{subkey}")
         else:
             consider(raw, key)
+
+    return candidates
+
+
+def keysuri_parent_top_image_reference_present(parent: Any) -> bool:
+    """True when a parent still carries some resolvable top-image reference.
+
+    body_only regenerates the briefing text and REUSES the parent's top image, so
+    a parent with no surviving reference cannot serve that scope. Answering from
+    metadata alone lets Admin refuse before a full source-collection plus
+    generation cycle that would fail at ``_saved_top_image_reference`` anyway.
+    """
+    if not isinstance(parent, dict):
+        return False
+    return bool(_parent_top_image_candidates(parent)) or bool(
+        _parent_top_image_gcs_refs(parent)
+    )
+
+
+def _saved_top_image_reference(parent: Dict[str, Any]) -> Tuple[Optional[Path], Dict[str, Any]]:
+    """Resolve a parent top-image reference for body_only reissue.
+
+    GCS-backed parent artifacts often retain the image path/hash metadata but the
+    ephemeral Cloud Run file is gone by the time an operator does a dry-run
+    body_only reissue. For no-send QA we can still render the child with the
+    preserved CID/reference; actual owner email send still requires a local file.
+    """
+    candidates = _parent_top_image_candidates(parent)
 
     # 1) Prefer an existing local file (unchanged behavior).
     local_selected = next((c for c in candidates if c[0].is_file()), None)

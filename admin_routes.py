@@ -225,10 +225,13 @@ _DRY_RUN_REISSUE_MODES = frozenset(
 
 # Operator-facing text for each parent-eligibility block. Keeps the reason
 # actionable without echoing artifact internals onto the page.
+# Reissue-block copy. Each line must describe a condition the owner can act on,
+# and must never contradict the customer-send copy below: a run whose send was
+# blocked with "재발행 후 다시 승인하세요" has to actually be reissuable.
 _REISSUE_PARENT_BLOCK_MESSAGES = {
     "parent_validation_not_pass": (
-        "검증을 통과하지 못한 실행은 재발행 원본으로 사용할 수 없습니다. "
-        "정상 발행된 실행을 선택해 주세요."
+        "검증에서 하드 실패(block)했거나 판정을 알 수 없는 실행은 재발행 원본으로 "
+        "사용할 수 없습니다. 검토 필요(review_required) 실행은 재발행할 수 있습니다."
     ),
     "parent_run_errored": (
         "오류로 종료된 실행은 재발행 원본으로 사용할 수 없습니다. "
@@ -239,6 +242,17 @@ _REISSUE_PARENT_BLOCK_MESSAGES = {
     ),
     "parent_not_reissuable_dry_run": (
         "무발송 검증(dry-run) 실행은 재발행 원본으로 사용할 수 없습니다."
+    ),
+    "parent_artifact_unusable": (
+        "원본 실행 기록이 손상되어 재발행 원본으로 사용할 수 없습니다."
+    ),
+    "parent_missing_image_evidence": (
+        "본문 재발행은 원본 실행의 이미지를 그대로 사용합니다. "
+        "원본 이미지 근거가 남아 있지 않아 차단했습니다. 본문·이미지 재발행을 사용하세요."
+    ),
+    "parent_missing_body_evidence": (
+        "이미지 재발행은 원본 실행의 저장된 본문을 그대로 사용합니다. "
+        "저장된 운영자 검토 본문이 없어 차단했습니다. 본문·이미지 재발행을 사용하세요."
     ),
 }
 
@@ -415,11 +429,13 @@ _APPROVE_ERROR_MESSAGES = {
     "not_approvable": "승인할 수 없는 검증 상태입니다.",
     "product_surface_remediation_needed": (
         "제품 표면 검수 필요(product_surface_remediation_needed): 고객 표면 QA가 "
-        "PRODUCT_REVIEW_REQUIRED입니다. 운영자 검수는 계속 가능하지만 고객 발송은 차단됩니다."
+        "PRODUCT_REVIEW_REQUIRED입니다. 운영자 검수와 재발행은 계속 가능하지만 "
+        "고객 발송은 차단됩니다. 아래 재발행으로 교정한 뒤 새 실행을 승인하세요."
     ),
     "review_required_remediation_needed": (
         "런타임 검증이 pass가 아닙니다(review_required_remediation_needed). "
-        "재발행 후 다시 승인하세요."
+        "고객 발송만 차단되며 이 실행은 재발행할 수 있습니다. "
+        "아래 재발행으로 교정한 뒤 새 실행을 승인하세요."
     ),
     "keysuri_safety_not_safe": "안전성 판정이 SAFE가 아니어서 고객 발송할 수 없습니다.",
     "keysuri_editorial_poor": "편집 품질이 POOR인 후보는 고객 승인을 제공하지 않습니다.",
@@ -2298,6 +2314,31 @@ def admin_run_detail(request: Request, run_id: str):
             f"장애 보고 / 재실행 승인 ({_esc(linked_incident_id)})</a></p>"
         )
     scope_field = _render_reissue_scope_field(mode, meta)
+    # The remediation instruction on the blocked-send panel promises a reissue.
+    # Ask the same authority the reissue POST will ask, so this page can never
+    # tell the owner to reissue a run it would then refuse (2026-09-09 deadlock).
+    reissue_parent_block = reissue_parent_block_reason(meta)
+    if reissue_parent_block is not None:
+        reissue_body = (
+            f'<p class="warn">재발행 불가: '
+            f'{_esc(_REISSUE_PARENT_BLOCK_MESSAGES[reissue_parent_block])}</p>'
+        )
+    else:
+        reissue_body = f'''<p class="notice">재발행 결과는 운영자 검토용으로만 생성됩니다. 고객에게 자동 발송되지 않습니다.</p>
+<form method="post" action="/admin/runs/{_esc(run_id)}/reissue">
+{_csrf_field(request, f'reissue:{run_id}')}
+<label>재발행 범위<br>
+{scope_field}
+</label><br>
+<label>사유<br>
+{_render_reissue_reason_select(mode)}
+</label><br><br>
+<label>추가 메모 (선택)<br>
+<input type="text" name="reason_note" maxlength="500" placeholder="선택 사유 보완">
+</label><br><br>
+{_render_reissue_dry_run_field(mode)}
+<div class="form-actions"><button class="btn" type="submit">재발행 실행</button></div>
+</form>'''
     view = run_projection(meta, current_recipient_count=recipient_count)
     validation = view["validation"]
     delivery = view["delivery"]
@@ -2388,21 +2429,7 @@ def admin_run_detail(request: Request, run_id: str):
 </section>
 <section class="surface" style="margin-top:14px;">
   <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">REISSUE</p><h2>{'수정 요청' if str(meta.get('editorial_verdict') or '') in {'REVIEW', 'POOR'} else '다시 만들기'}</h2></div></div>
-<p class="notice">재발행 결과는 운영자 검토용으로만 생성됩니다. 고객에게 자동 발송되지 않습니다.</p>
-<form method="post" action="/admin/runs/{_esc(run_id)}/reissue">
-{_csrf_field(request, f'reissue:{run_id}')}
-<label>재발행 범위<br>
-{scope_field}
-</label><br>
-<label>사유<br>
-{_render_reissue_reason_select(mode)}
-</label><br><br>
-<label>추가 메모 (선택)<br>
-<input type="text" name="reason_note" maxlength="500" placeholder="선택 사유 보완">
-</label><br><br>
-{_render_reissue_dry_run_field(mode)}
-<div class="form-actions"><button class="btn" type="submit">재발행 실행</button></div>
-</form>
+{reissue_body}
 </section>
 <details class="technical-details"><summary>비용 추정 보기</summary><div class="technical-details__body">{cost_section}</div></details>
 {technical}
@@ -2820,17 +2847,6 @@ def admin_run_reissue(
             status_code=400,
         )
 
-    parent_block = reissue_parent_block_reason(parent)
-    if parent_block is not None:
-        return _render_reissue_failure_page(
-            title="Reissue blocked",
-            run_id=run_id,
-            mode=mode,
-            failed_step="parent_eligibility",
-            safe_message=_REISSUE_PARENT_BLOCK_MESSAGES[parent_block],
-            status_code=400,
-        )
-
     raw_scope = str(reissue_scope or "").strip()
     if not raw_scope:
         return RedirectResponse(
@@ -2849,6 +2865,25 @@ def admin_run_reissue(
         return RedirectResponse(
             url=f"/admin/runs/{run_id}?reissue_error=unsupported_reissue_scope",
             status_code=303,
+        )
+
+    # Scope is resolved first so eligibility can ask for the evidence this scope
+    # actually reuses, instead of rejecting every non-pass parent outright.
+    parent_block = reissue_parent_block_reason(
+        parent,
+        scope=scope,
+        has_parent_email_html=(
+            run_email_html_exists(run_id) if scope == "image_only" else None
+        ),
+    )
+    if parent_block is not None:
+        return _render_reissue_failure_page(
+            title="Reissue blocked",
+            run_id=run_id,
+            mode=mode,
+            failed_step="parent_eligibility",
+            safe_message=_REISSUE_PARENT_BLOCK_MESSAGES[parent_block],
+            status_code=400,
         )
     reason_code = reason_option.strip()
     note = reason_note.strip()

@@ -994,6 +994,9 @@ class AdminRoutesTests(unittest.TestCase):
                 "run_id": parent_id,
                 "mode": "keysuri_korea_tech",
                 "program_id": "keysuri_korea_tech",
+                # body_only reuses the parent top image, so a real parent
+                # always carries a reference to it.
+                "generated_image_path_watermarked": "output/keysuri_preview/parent_top.jpg",
                 "validation_result": "pass",
                 "workflow_status": "validated",
                 "email_sent": True,
@@ -1039,6 +1042,9 @@ class AdminRoutesTests(unittest.TestCase):
                 "run_id": parent_id,
                 "mode": "keysuri_korea_tech",
                 "program_id": "keysuri_korea_tech",
+                # body_only reuses the parent top image, so a real parent
+                # always carries a reference to it.
+                "generated_image_path_watermarked": "output/keysuri_preview/parent_top.jpg",
                 "validation_result": "pass",
                 "workflow_status": "validated",
                 "email_sent": True,
@@ -1339,6 +1345,9 @@ class AdminRoutesTests(unittest.TestCase):
                 "run_id": parent_id,
                 "mode": "keysuri_korea_tech",
                 "program_id": "keysuri_korea_tech",
+                # body_only reuses the parent top image, so a real parent
+                # always carries a reference to it.
+                "generated_image_path_watermarked": "output/keysuri_preview/parent_top.jpg",
                 "validation_result": "pass",
                 "workflow_status": "validated",
                 "email_sent": True,
@@ -1491,6 +1500,9 @@ class AdminRoutesTests(unittest.TestCase):
                 "run_id": parent_id,
                 "mode": "keysuri_global_tech",
                 "program_id": "keysuri_global_tech",
+                # body_only reuses the parent top image, so a real parent
+                # always carries a reference to it.
+                "generated_image_path_watermarked": "output/keysuri_preview/parent_top.jpg",
                 "validation_result": "pass",
                 "workflow_status": "validated",
                 "email_sent": True,
@@ -1529,6 +1541,9 @@ class AdminRoutesTests(unittest.TestCase):
                 "run_id": parent_id,
                 "mode": "keysuri_global_tech",
                 "program_id": "keysuri_global_tech",
+                # body_only reuses the parent top image, so a real parent
+                # always carries a reference to it.
+                "generated_image_path_watermarked": "output/keysuri_preview/parent_top.jpg",
                 "validation_result": "pass",
                 "workflow_status": "validated",
                 "email_sent": True,

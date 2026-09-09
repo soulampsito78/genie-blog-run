@@ -185,18 +185,41 @@ def normalize_reissue_scope(raw_scope: str) -> Optional[str]:
     return LEGACY_REISSUE_SCOPE_ALIASES.get(value)
 
 
-# A reissue copies the parent's grounding forward. Reissuing from a run that
-# never reached a publishable state carries that run's defect into a fresh
-# owner-review email, which is how the 2026-07-30 Global incident produced a
-# second batch of placeholder cards.
+# Reissue eligibility is NOT customer-send eligibility.
+#
+# A reissue exists to REPLACE defective output. Requiring the parent to have
+# passed validation made the only remediation path unreachable for exactly the
+# runs that need it: Admin told the owner "재발행 후 다시 승인하세요" while the
+# reissue entry answered "검증을 통과하지 못한 실행은 재발행 원본으로 사용할 수
+# 없습니다." That deadlock was observed in production on
+# 20260909_063102_today_genie_bc5aae92 (validation_result=draft_only).
+#
+# What a child run actually inherits from its parent is preserved EVIDENCE —
+# images, image prompts, the saved owner-review body — not the parent's verdict.
+# So eligibility turns on whether the artifact is structurally usable and that
+# evidence is intact. Customer send stays independently gated by
+# can_approve_customer_send(); nothing here relaxes it.
 REISSUE_PARENT_BLOCK_REASONS = frozenset(
     {
         "parent_validation_not_pass",
         "parent_run_errored",
         "parent_placeholder_content",
         "parent_not_reissuable_dry_run",
+        "parent_artifact_unusable",
+        "parent_missing_image_evidence",
+        "parent_missing_body_evidence",
     }
 )
+
+# How a parent artifact is classified for reissue purposes.
+REISSUE_PARENT_REVIEW_CLASSES = frozenset(
+    {"pass", "review_required", "product_review_required", "hard_fail", "unclassified"}
+)
+
+# Verdicts that mean "the run produced content a human may still salvage".
+_REISSUE_PARENT_REVIEWABLE_VALIDATION_RESULTS = frozenset({"draft_only", "review_required"})
+# Verdicts that mean "the run is structurally unusable".
+_REISSUE_PARENT_HARD_FAIL_VALIDATION_RESULTS = frozenset({"block"})
 
 # Fabricated "{source} 기반 AI·테크 신호 {rank}" cards — the incident signature.
 _REISSUE_PARENT_PLACEHOLDER_TITLE_RE = re.compile(r"기반\s*AI[·\s]*테크\s*신호\s*\d+\s*$")
@@ -223,17 +246,123 @@ def _reissue_parent_top5_titles(parent: Dict[str, Any]) -> List[str]:
     return titles
 
 
-def reissue_parent_block_reason(parent: Optional[Dict[str, Any]]) -> Optional[str]:
-    """Why this run must not be used as a reissue parent, or None if eligible.
+def reissue_parent_review_class(parent: Optional[Dict[str, Any]]) -> str:
+    """Classify a parent artifact for reissue purposes.
 
-    Scope-independent: a defective parent is defective for body_only,
-    image_only and body_and_image alike, because every scope inherits the
-    parent's article selection.
+    ``pass``                    — validation passed and the customer surface is clean.
+    ``review_required``         — runtime validation held the run for review
+                                  (validation_result=draft_only / workflow_status=review_required).
+    ``product_review_required`` — customer-surface QA held the run.
+    ``hard_fail``               — the run is structurally unusable (block / failed).
+    ``unclassified``            — an unrecognized verdict; treated as unusable (fail closed).
+
+    The first three are remediable and therefore reissuable; the last two are not.
     """
     if not isinstance(parent, dict):
-        return "parent_validation_not_pass"
+        return "hard_fail"
 
-    if str(parent.get("validation_result") or "").strip().lower() != "pass":
+    vr = str(parent.get("validation_result") or "").strip().lower()
+    wf = str(parent.get("workflow_status") or "").strip().lower()
+    artifact_status = str(parent.get("artifact_status") or "").strip().lower()
+
+    if vr in _REISSUE_PARENT_HARD_FAIL_VALIDATION_RESULTS or artifact_status == "failed":
+        return "hard_fail"
+    if str(parent.get("customer_surface_status") or "").strip() == PRODUCT_REVIEW_REQUIRED:
+        return "product_review_required"
+    if vr in _REISSUE_PARENT_REVIEWABLE_VALIDATION_RESULTS or wf == "review_required":
+        return "review_required"
+    if vr == "pass":
+        return "pass"
+    return "unclassified"
+
+
+def _reissue_parent_artifact_unusable(parent: Dict[str, Any]) -> bool:
+    """True when the artifact itself is corrupt, not merely low-graded."""
+    run_id = str(parent.get("run_id") or "").strip()
+    if run_id and not validate_run_id(run_id):
+        return True
+    for key in ("selected_items", "regen_generated_briefing_snapshot"):
+        raw = parent.get(key)
+        if raw is None:
+            continue
+        if key == "selected_items" and not isinstance(raw, list):
+            return True
+        if key == "regen_generated_briefing_snapshot" and not isinstance(raw, dict):
+            return True
+    return False
+
+
+def _reissue_parent_top_images_provably_gone(parent: Dict[str, Any]) -> bool:
+    """True only when the parent's own metadata proves its images cannot be reused.
+
+    body_only regenerates the body and REUSES the parent's images, so those
+    images are the evidence that scope depends on. This probe is deliberately
+    conservative: it blocks when the artifact claims generated imagery whose
+    backing references are gone, and stays silent otherwise so the runner's own
+    authoritative resolution (which can restore files from GCS, or fall back to
+    the static Today assets) remains the deciding gate. Absent metadata is not
+    proof of absent evidence — that mistake is what produced the false block
+    this rule replaces.
+    """
+    mode = str(parent.get("mode") or parent.get("program_id") or "").strip()
+
+    if mode == "today_genie":
+        generated_intent = any(
+            (
+                parent.get("image_source") == "generated",
+                parent.get("image_generation_status") == "generated",
+                bool(parent.get("generated_image_paths")),
+                parent.get("customer_image_source") == "generated_run_images",
+                parent.get("run_specific_images") is True,
+            )
+        )
+        if not generated_intent:
+            # No run-specific imagery was ever claimed; the static Today assets
+            # carry this scope. Nothing is provably missing.
+            return False
+        paths = parent.get("generated_image_paths")
+        if isinstance(paths, dict):
+            if str(paths.get("top") or "").strip() and str(paths.get("bottom") or "").strip():
+                return False
+        objects = parent.get("customer_image_gcs_objects")
+        if str(parent.get("customer_image_gcs_bucket") or "").strip() and isinstance(objects, dict):
+            if str(objects.get("top") or "").strip() and str(objects.get("bottom") or "").strip():
+                return False
+        return True
+
+    if mode in ("keysuri_global_tech", "keysuri_korea_tech"):
+        # Ask the module that owns the resolution rather than mirroring its key
+        # set here, so this gate can never be stricter than the runner it fronts.
+        # Imported lazily: keysuri_service_full_run imports this module.
+        from keysuri_service_full_run import keysuri_parent_top_image_reference_present
+
+        return not keysuri_parent_top_image_reference_present(parent)
+
+    return False
+
+
+def reissue_parent_block_reason(
+    parent: Optional[Dict[str, Any]],
+    *,
+    scope: Optional[str] = None,
+    has_parent_email_html: Optional[bool] = None,
+) -> Optional[str]:
+    """Why this run must not be used as a reissue parent, or None if eligible.
+
+    Eligibility is decided by artifact class and preserved evidence, never by
+    the parent's customer-send verdict — see REISSUE_PARENT_BLOCK_REASONS.
+    ``scope`` narrows the evidence requirement to what that scope actually
+    reuses; omit it to ask the scope-independent question. ``has_parent_email_html``
+    lets the caller supply the stored owner-review body (image_only reuses it)
+    without this function doing artifact I/O.
+    """
+    if not isinstance(parent, dict):
+        return "parent_artifact_unusable"
+    if _reissue_parent_artifact_unusable(parent):
+        return "parent_artifact_unusable"
+
+    review_class = reissue_parent_review_class(parent)
+    if review_class in ("hard_fail", "unclassified"):
         return "parent_validation_not_pass"
     if str(parent.get("error") or "").strip():
         return "parent_run_errored"
@@ -244,6 +373,11 @@ def reissue_parent_block_reason(parent: Optional[Dict[str, Any]]) -> Optional[st
     for title in _reissue_parent_top5_titles(parent):
         if _REISSUE_PARENT_PLACEHOLDER_TITLE_RE.search(title):
             return "parent_placeholder_content"
+
+    if scope == "body_only" and _reissue_parent_top_images_provably_gone(parent):
+        return "parent_missing_image_evidence"
+    if scope == "image_only" and has_parent_email_html is False:
+        return "parent_missing_body_evidence"
     return None
 
 
