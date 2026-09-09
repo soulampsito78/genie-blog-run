@@ -459,6 +459,110 @@ class ExecutionTests(_StoreBase):
         self.assertTrue(kwargs.get("frozen_parent"))
 
 
+class SweepTests(_StoreBase):
+    """Remediation runs on its own schedule, bounded, off the natural request.
+
+    A natural run already takes 61-152s against a 300s Cloud Run timeout and a
+    300s scheduler deadline; a second full generation inline would exceed that
+    on the tail and report a successful natural run as a scheduler failure.
+    """
+
+    def test_remediation_is_not_inline_in_the_natural_owner_review_request(self) -> None:
+        import internal_jobs
+
+        source = Path(internal_jobs.__file__).read_text(encoding="utf-8")
+        create_owner_review = source.split("def create_owner_review_endpoint")[1].split(
+            "\n@router.post"
+        )[0]
+        self.assertNotIn("run_auto_remediation", create_owner_review)
+        self.assertNotIn("sweep_auto_remediation", create_owner_review)
+
+    def test_sweep_endpoint_is_registered(self) -> None:
+        from main import app
+
+        paths = {getattr(route, "path", "") for route in app.routes}
+        self.assertIn("/internal/jobs/auto-remediate-reviewable", paths)
+
+    def _summary(self, run_id: str, **overrides: Any) -> Dict[str, Any]:
+        row = {
+            "run_id": run_id,
+            "execution_class": "natural_scheduled",
+            "parent_run_id": None,
+            "automatic_remediation_attempt_count": 0,
+        }
+        row.update(overrides)
+        return row
+
+    def test_sweep_remediates_at_most_one_run_per_invocation(self) -> None:
+        from auto_remediation import sweep_auto_remediation
+
+        first = "20260909_063102_today_genie_bc5aae92"
+        second = "20260909_073102_today_genie_bc5aae93"
+        self._save(today_meta(run_id=first))
+        self._save(today_meta(run_id=second))
+        rows = [self._summary(first), self._summary(second)]
+        result = sweep_auto_remediation(
+            now=__import__("datetime").datetime(2026, 9, 9, 12, 0),
+            runners=self._runners(self._runner()),
+            report_fn=self._report_fn,
+            list_fn=lambda **_kw: rows,
+        )
+        self.assertEqual(len(result["remediated"]), 1)
+        self.assertEqual(len(self.runner_calls), 1)
+
+    def test_sweep_ignores_runs_older_than_the_age_window(self) -> None:
+        from auto_remediation import sweep_auto_remediation
+
+        stale = "20260101_063102_today_genie_bc5aae92"
+        self._save(today_meta(run_id=stale))
+        result = sweep_auto_remediation(
+            now=__import__("datetime").datetime(2026, 9, 9, 12, 0),
+            runners=self._runners(self._runner()),
+            report_fn=self._report_fn,
+            list_fn=lambda **_kw: [self._summary(stale)],
+        )
+        self.assertEqual(result["remediated"], [])
+        self.assertEqual(self.runner_calls, [])
+
+    def test_sweep_skips_children_and_already_attempted_parents(self) -> None:
+        from auto_remediation import sweep_auto_remediation
+
+        child = "20260909_090000_today_genie_11223344"
+        done = "20260909_073102_today_genie_bc5aae93"
+        rows = [
+            self._summary(child, parent_run_id=_TODAY_PARENT),
+            self._summary(done, automatic_remediation_attempt_count=1),
+            self._summary("20260909_083102_today_genie_bc5aae94", execution_class="manual_qa"),
+        ]
+        result = sweep_auto_remediation(
+            now=__import__("datetime").datetime(2026, 9, 9, 12, 0),
+            runners=self._runners(self._runner()),
+            report_fn=self._report_fn,
+            list_fn=lambda **_kw: rows,
+        )
+        self.assertEqual(result["shortlisted"], 0)
+        self.assertEqual(self.runner_calls, [])
+
+    def test_sweep_is_a_noop_when_the_mechanism_is_disabled(self) -> None:
+        from auto_remediation import sweep_auto_remediation
+
+        run_id = self._save(today_meta())
+        with patch.dict(os.environ, {"GENIE_AUTO_REMEDIATION": "0"}, clear=False):
+            result = sweep_auto_remediation(
+                runners=self._runners(self._runner()),
+                report_fn=self._report_fn,
+                list_fn=lambda **_kw: [self._summary(run_id)],
+            )
+        self.assertFalse(result["auto_remediation_enabled"])
+        self.assertEqual(self.runner_calls, [])
+
+    def test_attempt_counter_survives_the_run_list_projection(self) -> None:
+        """The sweep shortlists from summaries; a lost counter would re-attempt."""
+        from admin_store import _RUN_LIST_SUMMARY_KEYS
+
+        self.assertIn("automatic_remediation_attempt_count", _RUN_LIST_SUMMARY_KEYS)
+
+
 class CustomerSafetyTests(_StoreBase):
     """Remediation is owner-review only; nothing here opens a customer path."""
 

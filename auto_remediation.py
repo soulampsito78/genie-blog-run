@@ -770,3 +770,120 @@ def _send_remediation_report(
             "auto_remediation: remediation report send failed parent=%s", parent_run_id
         )
         return False
+
+
+# --- sweep -----------------------------------------------------------------
+#
+# Remediation runs on its own schedule, NOT inside the natural run's request.
+# A natural run already takes 61-152s against a 300s Cloud Run timeout and a
+# 300s scheduler deadline (measured 2026-09-06..09); a second full generation
+# inline would exceed that on the tail, cutting the request mid-remediation and
+# reporting a natural run that actually succeeded as a scheduler failure.
+
+# Only very recent natural runs are swept, so enabling the mechanism can never
+# stampede through a backlog of historical reviewable runs.
+AUTO_REMEDIATION_SWEEP_MAX_AGE_DAYS = 1
+AUTO_REMEDIATION_SWEEP_SCAN_LIMIT = 60
+# One remediation per invocation keeps the sweep inside its own request budget.
+AUTO_REMEDIATION_SWEEP_MAX_PER_RUN = 1
+
+
+def _sweep_date_prefixes(now: Optional[Any] = None) -> List[str]:
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    kst = now or datetime.now(ZoneInfo("Asia/Seoul"))
+    return [
+        (kst - timedelta(days=offset)).strftime("%Y%m%d_")
+        for offset in range(AUTO_REMEDIATION_SWEEP_MAX_AGE_DAYS + 1)
+    ]
+
+
+def _sweep_shortlist(summaries: Sequence[Dict[str, Any]], prefixes: Sequence[str]) -> List[str]:
+    """Cheap pre-filter over list summaries; the real decision reloads the artifact."""
+    shortlist: List[str] = []
+    for raw in summaries:
+        if not isinstance(raw, dict):
+            continue
+        run_id = str(raw.get("run_id") or "").strip()
+        if not run_id or not any(run_id.startswith(p) for p in prefixes):
+            continue
+        if str(raw.get("execution_class") or "").strip() != "natural_scheduled":
+            continue
+        if str(raw.get("parent_run_id") or "").strip():
+            continue
+        if int(raw.get("automatic_remediation_attempt_count") or 0) >= AUTO_REMEDIATION_MAX_ATTEMPTS:
+            continue
+        shortlist.append(run_id)
+    return shortlist
+
+
+def sweep_auto_remediation(
+    *,
+    now: Optional[Any] = None,
+    scan_limit: int = AUTO_REMEDIATION_SWEEP_SCAN_LIMIT,
+    max_per_run: int = AUTO_REMEDIATION_SWEEP_MAX_PER_RUN,
+    runners: Optional[Dict[Tuple[str, str], Callable[..., Dict[str, Any]]]] = None,
+    report_fn: Optional[Callable[..., bool]] = None,
+    list_fn: Optional[Callable[..., List[Dict[str, Any]]]] = None,
+) -> Dict[str, Any]:
+    """Remediate at most ``max_per_run`` recent reviewable natural runs."""
+    if not _auto_remediation_enabled():
+        return {
+            "ok": True,
+            "auto_remediation_enabled": False,
+            "scanned": 0,
+            "candidates": [],
+            "remediated": [],
+        }
+
+    lister = list_fn
+    if lister is None:
+        from admin_store import list_run_artifacts
+
+        lister = list_run_artifacts
+    try:
+        summaries = lister(limit=scan_limit)
+    except Exception:  # noqa: BLE001
+        logger.exception("auto_remediation: sweep listing failed")
+        return {"ok": False, "error": "artifact_listing_failed", "remediated": []}
+
+    prefixes = _sweep_date_prefixes(now)
+    shortlist = _sweep_shortlist(summaries, prefixes)
+
+    remediated: List[Dict[str, Any]] = []
+    considered: List[Dict[str, Any]] = []
+    for run_id in shortlist:
+        if len(remediated) >= max_per_run:
+            break
+        meta = load_run_artifact(run_id)
+        plan = plan_auto_remediation(meta)
+        if not plan.eligible:
+            considered.append({"run_id": run_id, "stop_reason": plan.stop_reason})
+            continue
+        summary = run_auto_remediation(
+            run_id, meta=meta, runners=runners, report_fn=report_fn
+        )
+        remediated.append(
+            {
+                "run_id": run_id,
+                "scope": summary.get("automatic_remediation_scope"),
+                "child_run_id": summary.get("automatic_remediation_child_run_id"),
+                "result": summary.get("automatic_remediation_result"),
+            }
+        )
+
+    logger.info(
+        "auto_remediation sweep: scanned=%s shortlisted=%s remediated=%s",
+        len(summaries),
+        len(shortlist),
+        len(remediated),
+    )
+    return {
+        "ok": True,
+        "auto_remediation_enabled": True,
+        "scanned": len(summaries),
+        "shortlisted": len(shortlist),
+        "candidates": considered,
+        "remediated": remediated,
+    }

@@ -153,6 +153,15 @@ _RUN_LIST_SUMMARY_KEYS = (
     "first_failed_stage",
     "final_selected_count",
     "data_collected",
+    # Automatic remediation bookkeeping: the sweep shortlists from this summary,
+    # so the attempt counter has to survive the projection.
+    "automatic_remediation_triggered",
+    "automatic_remediation_scope",
+    "automatic_remediation_attempt_count",
+    "automatic_remediation_parent_run_id",
+    "automatic_remediation_child_run_id",
+    "automatic_remediation_result",
+    "automatic_remediation_stop_reason",
 )
 
 OWNER_REVIEW_STATUSES = frozenset(

@@ -119,6 +119,11 @@ class KeysuriOwnerReviewJobRequest(BaseModel):
     trigger_source: str = DEFAULT_TRIGGER_SOURCE
 
 
+class AutoRemediationSweepRequest(BaseModel):
+    # One remediation per invocation keeps the sweep inside its request budget.
+    max_per_run: int = 1
+
+
 class NaturalRunPreflightRequest(BaseModel):
     program_id: str
     scheduled_service_date: Optional[str] = None
@@ -532,38 +537,56 @@ def create_keysuri_owner_review_job(
     return payload
 
 
-def _maybe_auto_remediate_natural_run(run_id: str, payload: Dict[str, Any]) -> None:
-    """One bounded self-repair attempt for a reviewable natural scheduled run.
+@router.post("/internal/jobs/auto-remediate-reviewable")
+def auto_remediate_reviewable_endpoint(
+    request: Request,
+    body: AutoRemediationSweepRequest = AutoRemediationSweepRequest(),
+    x_genie_internal_job_token: Optional[str] = Header(None, alias="X-Genie-Internal-Job-Token"),
+):
+    """Scheduler entry: one bounded self-repair attempt for a reviewable natural run.
 
-    Called only from the two natural owner-review entry points. Everything the
-    mechanism refuses to touch (PASS runs, preflight, QA/manual, hard fails,
-    missing evidence, an already-remediated parent) is decided by
-    ``auto_remediation.plan_auto_remediation``; this wrapper only carries the
-    outcome back into the job payload, and never lets a self-repair failure fail
-    the natural run that already succeeded.
+    Deliberately NOT inline in the natural owner-review request. A natural run
+    already takes 61-152s against a 300s Cloud Run timeout and a 300s scheduler
+    deadline, so a second full generation on that request would exceed it on the
+    tail — cutting remediation mid-flight and reporting a natural run that
+    actually succeeded as a scheduler failure.
+
+    Everything the mechanism refuses to touch (PASS runs, preflight, QA/manual,
+    hard fails, missing evidence, an already-remediated parent, any child) is
+    decided by ``auto_remediation.plan_auto_remediation``. Customer send is never
+    performed.
     """
-    rid = str(run_id or "").strip()
-    if not rid:
-        return
-    try:
-        from auto_remediation import run_auto_remediation
+    auth_fail = _verify_internal_job_token(request, x_genie_internal_job_token)
+    if auth_fail is not None:
+        return auth_fail
 
-        summary = run_auto_remediation(rid)
-    except Exception:  # noqa: BLE001
-        logger.exception("auto_remediation: dispatch failed run_id=%s", rid)
-        return
-    payload.update(
-        {
-            key: summary.get(key)
-            for key in (
-                "automatic_remediation_triggered",
-                "automatic_remediation_scope",
-                "automatic_remediation_attempt_count",
-                "automatic_remediation_child_run_id",
-                "automatic_remediation_result",
-            )
-        }
+    store_err, _desc = check_artifact_store_ready()
+    if store_err:
+        return _artifact_store_not_ready_response()
+
+    from auto_remediation import sweep_auto_remediation
+
+    try:
+        summary = sweep_auto_remediation(max_per_run=body.max_per_run)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "auto_remediate_reviewable: sweep failed error_type=%s", type(exc).__name__
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error": "auto_remediation_sweep_failed",
+                "error_type": type(exc).__name__,
+            },
+        )
+    logger.info(
+        "auto_remediate_reviewable: scanned=%s shortlisted=%s remediated=%s",
+        summary.get("scanned"),
+        summary.get("shortlisted"),
+        len(summary.get("remediated") or []),
     )
+    return JSONResponse(status_code=200, content=summary)
 
 
 @router.post("/internal/jobs/create-owner-review")
@@ -713,7 +736,8 @@ def create_owner_review_endpoint(
     summary.update(
         {k: v for k, v in identity_fields_for_artifact(identity).items() if v is not None}
     )
-    _maybe_auto_remediate_natural_run(run_id, summary)
+    # Automatic remediation runs on /internal/jobs/auto-remediate-reviewable, not
+    # here: a second generation on this request would exceed the 300s deadline.
     logger.info(
         "create_owner_review: run_id=%s email_sent=%s response_status=%s execution_class=%s scheduled_slot=%s",
         run_id,
@@ -1033,8 +1057,6 @@ def create_keysuri_owner_review_endpoint(
         )
 
     status_code = 200 if payload.get("ok", True) else 500
-    if status_code == 200 and is_natural_execution:
-        _maybe_auto_remediate_natural_run(str(payload.get("run_id") or ""), payload)
     if status_code == 200:
         _log_keysuri_owner_review_job_event(
             event="keysuri_owner_review_success",
