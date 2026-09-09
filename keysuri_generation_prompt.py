@@ -1899,6 +1899,35 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
                 "- FORBIDDEN in all visible fields: 총점, 점수, 스코어, score, scoring — never expose internal evaluation numbers in reader-facing copy.",
                 "- Do NOT invent facts beyond provided source_pack and TOP_5_SELECTED metadata.",
                 "",
+                "TEMPORAL FRAMING (mandatory — a document's date is not the event's date)",
+                # 2026-09-09 Global: two NVIDIA items published Sept 3-4 led a
+                # Sept 9 briefing as that day's news. The model had no dates in
+                # the prompt at all, so it could not have known. Each item now
+                # carries published_at and event_novelty.framing_role.
+                "- Each TOP_5_SELECTED item carries published_at (when the DOCUMENT was published) and "
+                "event_novelty.framing_role. published_at is a proxy for when the development happened, "
+                "not proof of it.",
+                "- framing_role='new_development': may be written as a current development.",
+                "- framing_role='historical_followup': the item is OLDER than this briefing's current "
+                "window, or its own text attributes the development to an earlier period. Write it as "
+                "continuing context or follow-up analysis — state when it was announced. Never write it "
+                "as today's, this morning's, or a newly occurring announcement, and never put it in the "
+                "lead as the day's new event.",
+                "- Never state or imply an event date the evidence does not give. If only the document "
+                "date is known, attribute it to the report, not to the event.",
+                "- Do not manufacture a follow-up development to make an older item feel current.",
+                "",
+                "CLAIM MODALITY (mandatory — do not upgrade what the source says)",
+                # Same run: 'NVIDIA to Acquire Hugging Face' (an agreement) was
+                # written as 인수를 확정 / 커뮤니티를 소유하게 되었습니다.
+                "- Preserve the source's modality exactly. An agreement, intent, plan, proposal, or "
+                "pending deal ('to acquire', 'agreed to acquire', 'plans to', 'will') must stay "
+                "conditional in Korean: 인수하기로 합의, 인수 예정, 추진 중.",
+                "- Never assert completion, ownership transfer, or regulatory clearance unless the source "
+                "states it: no 인수를 확정, 인수 완료, 소유하게 되었습니다, 자회사가 되었습니다 for a pending deal.",
+                "- The same rule applies to launches (예정 vs 출시됨), funding (합의 vs 납입 완료) and "
+                "policy (발의 vs 시행).",
+                "",
                 "GLOBAL TECH SIGNAL QUALITY (mandatory — TOP5 is a fresh-signal ranking, not a reading list)",
                 "- Select only fresh tech/industry/regulation/security/infra signals: AI model or agent releases, "
                 "security incidents with clear actor/tool/impact, cloud/datacenter/GPU/semiconductor/supply-chain "

@@ -981,6 +981,13 @@ GLOBAL_PRESENT_TIME_ANCHORS: Tuple[str, ...] = (
     "부터 적용",
 )
 
+# A development still reads as "current" inside the same window `_score_recency`
+# already treats as recent (its <=48h bucket). Reused deliberately rather than
+# invented: this is a FRAMING boundary, not an admission cutoff. Nothing is
+# rejected for age — an older item stays selectable, it just may not be
+# presented as a new development.
+GLOBAL_CURRENT_DEVELOPMENT_WINDOW_HOURS = 48
+
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。])\s+|\n+")
 
 
@@ -989,8 +996,11 @@ class EventNoveltyVerdict:
     """How a candidate's news development relates in time to its document.
 
     ``event_date_basis`` values:
-      * ``document_published`` — no backward attribution found; the development
-        is taken to belong to the document's own publication.
+      * ``document_published_proxy`` — no backward attribution found. The
+        publication timestamp is a DISCLOSED PROXY for the event time, never
+        verified event evidence: a document published today may be reporting
+        something that happened long ago. Absence of backward wording is not
+        positive evidence that anything is new.
       * ``backward_relative_unresolved`` — the text attributes the development
         to an earlier period. ``event_not_later_than`` carries the only bound
         that cannot be falsified (the event predates its own document), and
@@ -1003,10 +1013,13 @@ class EventNoveltyVerdict:
     is_roundup: bool = False
     backward_reference: str = ""
     event_age_hint_days: int = 0
-    event_date_basis: str = "document_published"
+    event_date_basis: str = "document_published_proxy"
     event_not_later_than: str = ""
     has_independent_development: bool = False
     eligible_as_new_development: bool = True
+    presentable_as_new_development: bool = True
+    framing_role: str = "new_development"
+    document_age_hours: Optional[float] = None
     reason: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1018,6 +1031,9 @@ class EventNoveltyVerdict:
             "event_not_later_than": self.event_not_later_than,
             "has_independent_development": self.has_independent_development,
             "eligible_as_new_development": self.eligible_as_new_development,
+            "presentable_as_new_development": self.presentable_as_new_development,
+            "framing_role": self.framing_role,
+            "document_age_hours": self.document_age_hours,
             "novelty_reason": self.reason,
         }
 
@@ -1040,6 +1056,20 @@ def _parse_event_dt(value: str) -> Optional[datetime]:
     return None
 
 
+def _document_age_hours(pub_dt: datetime, as_of: str) -> Optional[float]:
+    """Hours between a document's publication and the briefing's own clock.
+
+    Returns None when no evaluation time was supplied — the age is then unknown
+    and is never guessed from wall time.
+    """
+    ref = _parse_event_dt(as_of)
+    if ref is None:
+        return None
+    if pub_dt.tzinfo is None or ref.tzinfo is None:
+        return None
+    return (ref - pub_dt).total_seconds() / 3600.0
+
+
 def _backward_marker_in(text: str) -> Tuple[str, int]:
     """Return the strongest backward attribution present in ``text``."""
     best = ("", 0)
@@ -1049,11 +1079,32 @@ def _backward_marker_in(text: str) -> Tuple[str, int]:
     return best
 
 
+def _independent_development_evidence(body: str) -> bool:
+    """True only on positive evidence that the text reports something new itself.
+
+    Requires a sentence that carries no backward attribution, asserts a
+    development, AND anchors it to the document's own present. Silence is never
+    treated as evidence.
+    """
+    for sentence in _SENTENCE_SPLIT_RE.split(body.lower()):
+        chunk = sentence.strip()
+        if not chunk:
+            continue
+        if _backward_marker_in(chunk)[0]:
+            continue
+        if not any(anchor in chunk for anchor in GLOBAL_DEVELOPMENT_ANCHORS):
+            continue
+        if any(anchor in chunk for anchor in GLOBAL_PRESENT_TIME_ANCHORS):
+            return True
+    return False
+
+
 def classify_global_event_novelty(
     headline: str,
     summary: str = "",
     *,
     published_at: str = "",
+    as_of: str = "",
 ) -> EventNoveltyVerdict:
     """Decide whether a candidate asserts a development that is new *now*.
 
@@ -1085,6 +1136,8 @@ def classify_global_event_novelty(
             event_not_later_than="",
             has_independent_development=False,
             eligible_as_new_development=not (is_roundup and bool(backward_marker)),
+            presentable_as_new_development=False,
+            framing_role="historical_followup",
             reason=(
                 "global_recap_backward_referenced_event"
                 if (is_roundup and backward_marker)
@@ -1093,13 +1146,31 @@ def classify_global_event_novelty(
         )
 
     if not backward_marker:
+        # No backward wording. That is the ABSENCE of counter-evidence, not the
+        # presence of evidence that something is new, so newness is decided by
+        # what the item positively shows: either it reports a development
+        # anchored to its own present, or its document is still inside the
+        # window the product already treats as current. Otherwise it stays
+        # selectable but must be framed as historical follow-up, never as a new
+        # launch.
+        independent = _independent_development_evidence(body)
+        age_h = _document_age_hours(pub_dt, as_of)
+        within_window = (
+            age_h is not None and age_h <= GLOBAL_CURRENT_DEVELOPMENT_WINDOW_HOURS
+        )
+        presentable = bool(independent or within_window or age_h is None)
         return EventNoveltyVerdict(
             is_roundup=is_roundup,
-            event_date_basis="document_published",
+            event_date_basis="document_published_proxy",
             event_not_later_than=pub_dt.isoformat(),
-            has_independent_development=True,
+            has_independent_development=independent,
             eligible_as_new_development=True,
-            reason="",
+            presentable_as_new_development=presentable,
+            framing_role=(
+                "new_development" if presentable else "historical_followup"
+            ),
+            document_age_hours=age_h,
+            reason="" if presentable else "global_past_announcement_no_new_development",
         )
 
     # The text attributes a development to an earlier period. The only bound
@@ -1110,28 +1181,19 @@ def classify_global_event_novelty(
     # the offset is kept as an approximate hint instead.
     bound = pub_dt.isoformat()
 
-    # Does the item report anything new on its own? Independent evidence is a
-    # sentence that (a) carries no backward attribution, (b) asserts a
-    # development, and (c) anchors that development to the document's own
-    # present. All three are required: novelty vocabulary by itself is exactly
-    # what a recap of an old launch is full of, and a roundup headline is a
-    # table of contents, so it never counts on its own.
-    independent = False
-    for sentence in _SENTENCE_SPLIT_RE.split(body.lower()):
-        chunk = sentence.strip()
-        if not chunk:
-            continue
-        if _backward_marker_in(chunk)[0]:
-            continue
-        if not any(anchor in chunk for anchor in GLOBAL_DEVELOPMENT_ANCHORS):
-            continue
-        if any(anchor in chunk for anchor in GLOBAL_PRESENT_TIME_ANCHORS):
-            independent = True
-            break
+    # Does the item report anything new on its own? Positive evidence only --
+    # novelty vocabulary by itself is exactly what a recap of an old launch is
+    # full of, and a roundup headline is a table of contents.
+    independent = _independent_development_evidence(body)
+    age_h = _document_age_hours(pub_dt, as_of)
 
     if not is_roundup:
         # A normal article that mentions an earlier announcement in passing is
         # still a current story. Only record the provenance.
+        within_window = (
+            age_h is not None and age_h <= GLOBAL_CURRENT_DEVELOPMENT_WINDOW_HOURS
+        )
+        presentable = bool(independent or within_window or age_h is None)
         return EventNoveltyVerdict(
             is_roundup=False,
             backward_reference=backward_marker,
@@ -1140,7 +1202,12 @@ def classify_global_event_novelty(
             event_not_later_than=bound,
             has_independent_development=independent,
             eligible_as_new_development=True,
-            reason="",
+            presentable_as_new_development=presentable,
+            framing_role=(
+                "new_development" if presentable else "historical_followup"
+            ),
+            document_age_hours=age_h,
+            reason="" if presentable else "global_past_announcement_no_new_development",
         )
 
     eligible = independent
@@ -1152,6 +1219,9 @@ def classify_global_event_novelty(
         event_not_later_than=bound,
         has_independent_development=independent,
         eligible_as_new_development=eligible,
+        presentable_as_new_development=eligible,
+        framing_role="new_development" if eligible else "historical_followup",
+        document_age_hours=age_h,
         reason="" if eligible else "global_recap_backward_referenced_event",
     )
 
@@ -1230,7 +1300,7 @@ def _claim_published_at(
     return ""
 
 
-def _news_item_is_current_development(item: Dict[str, Any]) -> bool:
+def _news_item_is_current_development(item: Dict[str, Any], as_of: str = "") -> bool:
     """Item-level mirror of the claim-level event-novelty rule.
 
     Used where an already-materialised news item (not a claim) re-enters the
@@ -1245,6 +1315,7 @@ def _news_item_is_current_development(item: Dict[str, Any]) -> bool:
         headline,
         summary,
         published_at=str(item.get("published_at") or "").strip(),
+        as_of=as_of,
     )
     return verdict.eligible_as_new_development
 
@@ -1270,6 +1341,7 @@ def _claim_is_qualified(
     claim: Dict[str, Any],
     smap: Dict[str, Dict[str, Any]],
     program_id: str = "",
+    as_of: str = "",
 ) -> Tuple[bool, str]:
     if not isinstance(claim, dict):
         return False, "invalid_claim"
@@ -1304,6 +1376,7 @@ def _claim_is_qualified(
             headline,
             summary,
             published_at=_claim_published_at(claim, smap),
+            as_of=as_of,
         )
         if not verdict.eligible_as_new_development:
             return False, verdict.reason or "global_recap_backward_referenced_event"
@@ -1352,6 +1425,7 @@ def _claim_to_news_item(
     rank: int,
     smap: Optional[Dict[str, Dict[str, Any]]] = None,
     program_id: str = "",
+    as_of: str = "",
 ) -> Dict[str, Any]:
     primary = str(claim.get("primary_category") or "").strip()
     category = primary or claim_to_news_category(claim) or "market_signal"
@@ -1388,6 +1462,7 @@ def _claim_to_news_item(
             item.get("headline") or statement,
             summary,
             published_at=published_at,
+            as_of=as_of,
         ).to_dict()
     risk = claim.get("risk_note")
     if _is_non_empty_str(risk):
@@ -1576,6 +1651,11 @@ def select_top_5_news(
     if program_id not in KEYSURI_PROGRAM_IDS:
         raise ValueError(f"Unsupported source_pack.program_id: {program_id!r}")
 
+    # The briefing's own clock. Document age is measured against when THIS
+    # briefing collected its sources, never against wall time, so a replay of
+    # frozen evidence reaches the same framing verdict.
+    pack_as_of = str(source_pack.get("generated_at") or "").strip()
+
     sources = source_pack.get("sources") if isinstance(source_pack.get("sources"), list) else []
     smap: Dict[str, Dict[str, Any]] = {}
     for src in sources:
@@ -1591,7 +1671,7 @@ def select_top_5_news(
     for claim in claims:
         if not isinstance(claim, dict):
             continue
-        ok, _reason = _claim_is_qualified(claim, smap, program_id)
+        ok, _reason = _claim_is_qualified(claim, smap, program_id, pack_as_of)
         if not ok:
             continue
         tier_rank = _best_tier_rank(_source_tiers_for_claim(claim, smap))
@@ -1687,7 +1767,9 @@ def select_top_5_news(
     # capped duplicate is replaced by the next distinct candidate instead of
     # only shrinking the final five.
     hydrated = [
-        _claim_to_news_item(claim, rank=i + 1, smap=smap, program_id=program_id)
+        _claim_to_news_item(
+            claim, rank=i + 1, smap=smap, program_id=program_id, as_of=pack_as_of
+        )
         for i, (_t, claim) in enumerate(qualified)
     ]
 
@@ -1765,7 +1847,7 @@ def select_top_5_news(
                 break
             if not isinstance(claim, dict):
                 continue
-            ok, _reason = _claim_is_qualified(claim, bsmap, program_id)
+            ok, _reason = _claim_is_qualified(claim, bsmap, program_id, pack_as_of)
             if not ok or not _is_non_empty_str(claim.get("business_implication")):
                 continue
             item = _claim_to_news_item(
@@ -1773,6 +1855,7 @@ def select_top_5_news(
                 rank=candidate_count_before_dedup + j + 1,
                 smap=bsmap,
                 program_id=program_id,
+                as_of=pack_as_of,
             )
             if str(item.get("news_id") or "") in seen_ids:
                 continue
@@ -1800,7 +1883,7 @@ def select_top_5_news(
             # Last-resort re-injection is still an admission path. An item that
             # the event-novelty rule refuses may not re-enter here just because
             # it was exposed in an earlier owner-review email.
-            if program_id == "keysuri_global_tech" and not _news_item_is_current_development(item):
+            if program_id == "keysuri_global_tech" and not _news_item_is_current_development(item, pack_as_of):
                 continue
             deduped_pool.append(item)
             exposure_backfill_used_count += 1

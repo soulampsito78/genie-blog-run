@@ -216,7 +216,8 @@ class TestD_GenuineNewDevelopmentStaysEligible(unittest.TestCase):
             published_at="2026-09-09T02:00:00+09:00",
         )
         self.assertTrue(verdict.eligible_as_new_development)
-        self.assertEqual(verdict.event_date_basis, "document_published")
+        self.assertTrue(verdict.presentable_as_new_development)
+        self.assertEqual(verdict.event_date_basis, "document_published_proxy")
 
     def test_regional_rollout_is_a_distinct_development(self):
         verdict = classify_global_event_novelty(
@@ -419,3 +420,250 @@ class TestH_ExistingPolicyPreserved(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ===========================================================================
+# Owner acceptance round 2 — GLOBAL_EVENT_NOVELTY_RECOVERY_20260909
+#
+# The first fix caught the recap case but left a hole: with no backward
+# wording, classify_global_event_novelty asserted has_independent_development
+# =True and eligible=True unconditionally. Absence of backward wording is not
+# positive evidence of a new development.
+#
+# Consequence in production (run 20260909_171733_keysuri_global_tech_b607aee3,
+# customer-sent to 12 recipients at 17:35:22 KST): two NVIDIA documents
+# published Sept 3-4 led a Sept 9 briefing as that day's news.
+#
+# REAL evidence below is copied from that run's frozen artifact.
+# ===========================================================================
+
+from keysuri_news_contract import GLOBAL_CURRENT_DEVELOPMENT_WINDOW_HOURS
+
+# --- REAL: the Sept 9 correction run's own clock and two aged documents ----
+B607_AS_OF = "2026-09-09T17:17:39+09:00"
+NVIDIA_IFA_TITLE = "Sparks Fly: NVIDIA Accelerates Local AI at IFA 2026"
+NVIDIA_IFA_PUBLISHED_AT = "2026-09-04T01:00:59+09:00"
+NVIDIA_HF_TITLE = "NVIDIA to Acquire Hugging Face"
+NVIDIA_HF_PUBLISHED_AT = "2026-09-03T20:56:49+09:00"
+
+# --- REAL: canonical URLs of both runs' final selections -------------------
+ORIGINAL_URLS = {
+    "https://aws.amazon.com/blogs/aws/aws-weekly-roundup-claude-fable-5-1-on-aws-amazon-linux-2027-preview-aws-certified-ai-business-strategist-and-more-september-7-2026",
+    "https://techcrunch.com/2026/09/08/meta-debuts-its-muse-ai-agent-will-consumers-trust-it",
+    "https://openai.com/index/teen-development-research-grants",
+    "https://www.microsoft.com/en-us/microsoft-cloud/blog/us-government/2026/09/08/codename-mdash-brings-agentic-ai-security-scanning-to-us-government",
+    "https://techcrunch.com/2026/09/08/google-cloud-races-to-catch-up-in-the-ai-deployment-wars-with-accenture-deal",
+}
+CORRECTION_URLS = {
+    "https://blogs.nvidia.com/blog/local-ai-ifa-next-gen-agents-nv-pair-rtx-spark",
+    "https://openai.com/index/1password",
+    "https://techcrunch.com/2026/09/08/meta-debuts-its-muse-ai-agent-will-consumers-trust-it",
+    "https://blogs.nvidia.com/blog/nvidia-to-acquire-hugging-face",
+    "https://openai.com/index/teen-development-research-grants",
+}
+
+
+class TestJ_PastAnnouncementWithoutBackwardWording(unittest.TestCase):
+    """Old primary announcement carrying no 'last week' wording. REAL evidence."""
+
+    def test_aged_document_is_not_presentable_as_new(self):
+        for title, pub in (
+            (NVIDIA_IFA_TITLE, NVIDIA_IFA_PUBLISHED_AT),
+            (NVIDIA_HF_TITLE, NVIDIA_HF_PUBLISHED_AT),
+        ):
+            with self.subTest(title=title):
+                v = classify_global_event_novelty(
+                    title, "", published_at=pub, as_of=B607_AS_OF
+                )
+                self.assertEqual(v.backward_reference, "")
+                self.assertFalse(v.has_independent_development)
+                self.assertFalse(v.presentable_as_new_development)
+                self.assertEqual(v.framing_role, "historical_followup")
+
+    def test_aged_document_stays_selectable_not_suppressed(self):
+        """No blanket age cutoff: eligibility is unchanged, only framing moves."""
+        v = classify_global_event_novelty(
+            NVIDIA_HF_TITLE, "", published_at=NVIDIA_HF_PUBLISHED_AT, as_of=B607_AS_OF
+        )
+        self.assertTrue(v.eligible_as_new_development)
+
+    def test_absence_of_backward_wording_is_not_evidence_of_newness(self):
+        """The exact branch that failed acceptance."""
+        v = classify_global_event_novelty(
+            "Some vendor announcement", "", published_at="2026-08-01T00:00:00+09:00",
+            as_of=B607_AS_OF,
+        )
+        self.assertFalse(v.has_independent_development)
+        self.assertFalse(v.presentable_as_new_development)
+
+
+class TestK_GenuineLaterDevelopmentAboutOldProduct(unittest.TestCase):
+    """A real new development about an old product stays presentable. SYNTHETIC."""
+
+    def test_recent_document_about_old_product_is_new_development(self):
+        v = classify_global_event_novelty(
+            "Hugging Face deal clears EU antitrust review",
+            "The European Commission today cleared the transaction.",
+            published_at="2026-09-09T09:00:00+09:00",
+            as_of=B607_AS_OF,
+        )
+        self.assertTrue(v.presentable_as_new_development)
+        self.assertEqual(v.framing_role, "new_development")
+
+    def test_aged_document_with_its_own_present_development_stays_new(self):
+        """Positive evidence beats age — this is why there is no age cutoff."""
+        v = classify_global_event_novelty(
+            "Vendor status update",
+            "The company is announcing a price reduction effective immediately.",
+            published_at="2026-09-01T00:00:00+09:00",
+            as_of=B607_AS_OF,
+        )
+        self.assertTrue(v.has_independent_development)
+        self.assertTrue(v.presentable_as_new_development)
+
+
+class TestL_DocumentDateIsProxyNotVerifiedEvent(unittest.TestCase):
+    """Publication timestamp must stay a disclosed proxy."""
+
+    def test_basis_names_itself_a_proxy(self):
+        v = classify_global_event_novelty(
+            "Vendor ships feature",
+            "The company announced a feature today.",
+            published_at="2026-09-09T09:00:00+09:00",
+            as_of=B607_AS_OF,
+        )
+        self.assertEqual(v.event_date_basis, "document_published_proxy")
+
+    def test_age_is_measured_against_the_briefing_not_wall_time(self):
+        v = classify_global_event_novelty(
+            NVIDIA_HF_TITLE, "", published_at=NVIDIA_HF_PUBLISHED_AT, as_of=B607_AS_OF
+        )
+        self.assertAlmostEqual(v.document_age_hours, 140.3, delta=0.5)
+
+    def test_without_as_of_age_is_unknown_not_guessed(self):
+        v = classify_global_event_novelty(
+            NVIDIA_HF_TITLE, "", published_at=NVIDIA_HF_PUBLISHED_AT
+        )
+        self.assertIsNone(v.document_age_hours)
+
+    def test_window_boundary_is_the_existing_recency_bucket(self):
+        self.assertEqual(GLOBAL_CURRENT_DEVELOPMENT_WINDOW_HOURS, 48)
+
+
+class TestM_SelectionDiffReconciliation(unittest.TestCase):
+    """Reconcile selections by source identity, never by assertion.
+
+    The first acceptance report claimed 'the other four current items
+    retained'. Computed from canonical URLs the real answer is 2 retained,
+    3 removed, 3 added.
+    """
+
+    @staticmethod
+    def _diff(before, after):
+        return {
+            "retained": sorted(before & after),
+            "removed": sorted(before - after),
+            "added": sorted(after - before),
+        }
+
+    def test_reconciliation_matches_the_artifacts(self):
+        d = self._diff(ORIGINAL_URLS, CORRECTION_URLS)
+        self.assertEqual(len(d["retained"]), 2)
+        self.assertEqual(len(d["removed"]), 3)
+        self.assertEqual(len(d["added"]), 3)
+
+    def test_retained_set_is_exactly_meta_and_openai_grants(self):
+        d = self._diff(ORIGINAL_URLS, CORRECTION_URLS)
+        self.assertEqual(
+            d["retained"],
+            [
+                "https://openai.com/index/teen-development-research-grants",
+                "https://techcrunch.com/2026/09/08/meta-debuts-its-muse-ai-agent-will-consumers-trust-it",
+            ],
+        )
+
+    def test_aws_roundup_was_removed(self):
+        d = self._diff(ORIGINAL_URLS, CORRECTION_URLS)
+        self.assertTrue(any("aws-weekly-roundup" in u for u in d["removed"]))
+
+
+class TestN_ClaimModalityPromptRules(unittest.TestCase):
+    """Agreement must not be written as completion."""
+
+    def _global_prompt_text(self):
+        from keysuri_generation_prompt import build_keysuri_generation_prompt
+        from keysuri_news_contract import _claim_to_news_item
+
+        snippet = "NVIDIA has agreed to acquire Hugging Face."
+        srcs = [
+            _source("m1", NVIDIA_HF_TITLE, snippet, NVIDIA_HF_PUBLISHED_AT,
+                    "https://blogs.nvidia.com/blog/nvidia-to-acquire-hugging-face")
+        ]
+        claims = [_claim("m1", NVIDIA_HF_TITLE, snippet)]
+        pack = {
+            "program_id": "keysuri_global_tech",
+            "generated_at": B607_AS_OF,
+            "sources": srcs,
+            "claims": claims,
+        }
+        smap = {s["source_id"]: s for s in srcs}
+        item = _claim_to_news_item(
+            claims[0], rank=1, smap=smap,
+            program_id="keysuri_global_tech", as_of=B607_AS_OF,
+        )
+        prompt_input = {
+            "program_id": "keysuri_global_tech",
+            "news_scope": "global",
+            "source_pack": pack,
+            "top_5_news": {"section_heading": "글로벌 테크 TOP 5", "items": [item]},
+        }
+        return build_keysuri_generation_prompt(prompt_input)
+
+    def test_item_carries_historical_followup_role_into_the_prompt(self):
+        text = self._global_prompt_text()
+        self.assertIn("historical_followup", text)
+        self.assertIn(NVIDIA_HF_PUBLISHED_AT, text)
+
+    def test_prompt_forbids_asserting_completion(self):
+        text = self._global_prompt_text()
+        self.assertIn("CLAIM MODALITY", text)
+        self.assertIn("인수를 확정", text)
+        self.assertIn("소유하게 되었습니다", text)
+
+    def test_prompt_carries_temporal_framing_rules(self):
+        text = self._global_prompt_text()
+        self.assertIn("TEMPORAL FRAMING", text)
+        self.assertIn("historical_followup", text)
+        self.assertIn("new_development", text)
+
+
+class TestO_OwnerAddressFragments(unittest.TestCase):
+    """The two fragments observed in the customer-sent briefing."""
+
+    def test_possessive_owner_address_leaves_no_orphan_particle(self):
+        from keysuri_briefing_body_ux_normalizer import _strip_owner_address
+        cases = {
+            "주인님의 서비스가 이러한 에이전트 생태계 내에서 어떻게 발견될지 전략을 세워야 합니다.":
+                "서비스가 이러한 에이전트 생태계 내에서 어떻게 발견될지 전략을 세워야 합니다.",
+            "주인님의 기술 스택이 특정 벤더에 종속되지 않도록 점검하십시오.":
+                "기술 스택이 특정 벤더에 종속되지 않도록 점검하십시오.",
+        }
+        for src, want in cases.items():
+            with self.subTest(src=src):
+                self.assertEqual(_strip_owner_address(src), want)
+
+    def test_no_sentence_starts_with_an_orphan_particle(self):
+        from keysuri_briefing_body_ux_normalizer import _strip_owner_address
+        for src in (
+            "주인님의 서비스가 흔들립니다.",
+            "주인님께서는 확인하십시오.",
+            "주인님, 오늘 신호입니다.",
+            "주인님은 검토하십시오.",
+            "주인님과 함께 봅니다.",
+        ):
+            with self.subTest(src=src):
+                out = _strip_owner_address(src)
+                self.assertFalse(
+                    out.startswith(("의 ", "은 ", "는 ", "이 ", "가 ", "을 ", "를 ", "과 ", "와 ", ", ")),
+                    f"orphan particle in {out!r}",
+                )

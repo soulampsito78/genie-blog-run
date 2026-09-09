@@ -129,6 +129,23 @@ def remove_internal_validation_markers(text: str) -> str:
     return "\n\n".join(cleaned_blocks)
 
 
+# 주인님 carries a particle. Dropping the noun but leaving the particle behind
+# produces a headless fragment — "주인님의 서비스가" became "의 서비스가" in the
+# 2026-09-09 Global briefing, twice. Remove the address together with whatever
+# particle is attached to it.
+_OWNER_ADDRESS_WITH_PARTICLE_RE = re.compile(
+    r"주인님(?:께서는|께서|께|에게|의|은|는|이|가|을|를|과|와|도|만|처럼|보다)?\s*,?\s*"
+)
+
+
+def _strip_owner_address(sent: str) -> str:
+    """Remove a 주인님 address without orphaning its particle."""
+    out = _OWNER_ADDRESS_WITH_PARTICLE_RE.sub("", sent)
+    out = re.sub(r"^\s*[,·]\s*", "", out)
+    out = re.sub(r"\s+", " ", out).strip()
+    return out
+
+
 def limit_owner_salutation_repetition(text: str, *, max_count: int = MAX_OWNER_SALUTATION) -> str:
     if not text:
         return ""
@@ -146,9 +163,7 @@ def limit_owner_salutation_repetition(text: str, *, max_count: int = MAX_OWNER_S
                 continue
             if "주인님" in sent:
                 if count >= max_count:
-                    sent = sent.replace("주인님,", "").replace("주인님께서는", "").replace("주인님", "")
-                    sent = re.sub(r"^\s*,\s*", "", sent)
-                    sent = re.sub(r"\s+", " ", sent).strip()
+                    sent = _strip_owner_address(sent)
                 else:
                     count += 1
             if sent.strip():
