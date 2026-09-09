@@ -1477,18 +1477,26 @@ def _apply_frozen_today_news_selection(
     out["top_market_news"] = frozen_news
     out["today_news_selection_frozen"] = True
     out["today_news_selection_frozen_parent_run_id"] = parent_run_id or None
+    # Same shape metadata_from_gate_result returns, so the artifact keeps its
+    # selection evidence: a child with no selected_items cannot itself be
+    # body_only-remediated, which would break the chain one run later.
     out["sent_news_dedup"] = {
-        "briefing_type": "today_genie",
-        "required_count": TODAY_GENIE_REQUIRED_NEWS_COUNT,
-        "candidate_count": len(frozen_news),
-        "selected_count": len(frozen_news),
-        "rejected_count": 0,
-        "rejected_by_reason": {},
-        "filled_required_count": len(frozen_news) >= TODAY_GENIE_REQUIRED_NEWS_COUNT,
-        "shortfall": max(0, TODAY_GENIE_REQUIRED_NEWS_COUNT - len(frozen_news)),
-        "reason": "frozen_parent_selection",
+        "used_dedup_gate": True,
         "selected_items": [dict(item) for item in frozen_news],
         "rejected_items": [],
+        "required_count": TODAY_GENIE_REQUIRED_NEWS_COUNT,
+        "selected_count": len(frozen_news),
+        "dedup_summary": {
+            "briefing_type": "today_genie",
+            "required_count": TODAY_GENIE_REQUIRED_NEWS_COUNT,
+            "candidate_count": len(frozen_news),
+            "selected_count": len(frozen_news),
+            "rejected_count": 0,
+            "rejected_by_reason": {},
+            "filled_required_count": len(frozen_news) >= TODAY_GENIE_REQUIRED_NEWS_COUNT,
+            "shortfall": max(0, TODAY_GENIE_REQUIRED_NEWS_COUNT - len(frozen_news)),
+            "reason": "frozen_parent_selection",
+        },
     }
     return out
 

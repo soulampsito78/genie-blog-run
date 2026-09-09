@@ -250,9 +250,32 @@ class FrozenParentBodyOnlyTests(unittest.TestCase):
             [i["headline"] for i in out["top_market_news"]], INCIDENT_HEADLINES
         )
         self.assertTrue(out["today_news_selection_frozen"])
-        self.assertEqual(out["sent_news_dedup"]["reason"], "frozen_parent_selection")
-        self.assertEqual(out["sent_news_dedup"]["selected_count"], 3)
-        self.assertEqual(out["sent_news_dedup"]["rejected_items"], [])
+        dedup = out["sent_news_dedup"]
+        self.assertEqual(dedup["dedup_summary"]["reason"], "frozen_parent_selection")
+        self.assertEqual(dedup["selected_count"], 3)
+        self.assertEqual(dedup["rejected_items"], [])
+
+    def test_frozen_child_keeps_its_own_selection_evidence(self) -> None:
+        """A child with no selected_items could not itself be remediated."""
+        from main import _apply_frozen_today_news_selection
+        from orchestrator import _dedup_fields_from_api_payload
+        from today_genie_reissue import frozen_parent_news_selection
+
+        frozen = [
+            {"headline": h, "source": "CNBC", "date": "2026-09-08"}
+            for h in INCIDENT_HEADLINES
+        ]
+        runtime_input = _apply_frozen_today_news_selection({}, frozen)
+        fields = _dedup_fields_from_api_payload({"runtime_input": runtime_input})
+        self.assertEqual(
+            [i["headline"] for i in fields["selected_items"]], INCIDENT_HEADLINES
+        )
+        self.assertEqual(fields["selected_count"], 3)
+        # And that persisted child can seed the next body_only in turn.
+        self.assertEqual(
+            [i["headline"] for i in frozen_parent_news_selection(fields)],
+            INCIDENT_HEADLINES,
+        )
 
     def test_frozen_request_field_reaches_the_api_contract(self) -> None:
         from main import JobRequest, _frozen_today_news_selection
