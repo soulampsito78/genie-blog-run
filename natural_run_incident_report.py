@@ -122,6 +122,9 @@ def _admin_cta_block(incident: Mapping[str, Any]) -> str:
     if smoke:
         label = "검증 incident 보기"
         question = ""
+    elif incident.get("automatic_recovery_eligible"):
+        label = "자동 복구 진행 확인"
+        question = "<p>일시적 모델 장애가 확인되어 동일 슬롯 복구를 최대 한 번 수행합니다. 고객에게는 발송하지 않습니다.</p>"
     elif incident_retry_review_allowed(incident):
         label = "재실행 검토하기"
         question = '<p style="font-size:18px;"><strong>이 실행을 다시 시도할까요?</strong></p>'
@@ -199,7 +202,10 @@ def build_failure_report_html(incident: Mapping[str, Any]) -> str:
     else:
         contributing = "(해당 없음 또는 미확정)"
 
-    if retry_review_allowed:
+    if incident.get("automatic_recovery_eligible"):
+        approval_governance = "일시적 모델 장애의 재시도가 소진되어, 슬롯별 lease 획득 후 한 번 자동 복구합니다."
+        final_governance = "복구는 운영자 검수 메일만 전달하며, 고객 발송은 하지 않습니다. 추가 자동 복구는 없습니다."
+    elif retry_review_allowed:
         approval_governance = (
             "시스템이 실제 재실행을 수행하지 않습니다. "
             "Admin에서 검토 후 명시적으로 승인해야 합니다."

@@ -1,6 +1,6 @@
-"""Natural-run SLA watchdog: diagnose → Korean report → wait.
+"""Natural-slot watchdog: diagnose, report, recover one proven transient failure.
 
-NEVER auto-retries, NEVER posts production recovery, NEVER customer-sends.
+No Scheduler reruns, no unclassified recovery, no customer sends.
 """
 from __future__ import annotations
 
@@ -1443,7 +1443,7 @@ def run_watchdog_poll(
     programs: Optional[Sequence[str]] = None,
     activated_at: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """Periodic SLA poll. Reports only; auto_retry always 0."""
+    """Periodic SLA poll; one leased recovery only for a proven transient fault."""
     if now is None:
         now = datetime.now(KST)
     watermark = activated_at
@@ -1496,12 +1496,33 @@ def run_watchdog_poll(
                 }
             )
             continue
+        from admin_store import load_run_artifact
+        from transient_infrastructure import automatic_recovery_candidate
+        from natural_run_recovery import execute_approved_recovery
+
+        # Summary lists deliberately omit provider payloads. Hydrate only the
+        # exact failed run, and verify the durable incident again at execution.
+        original_id = str(incident.get("original_run_id") or "")
+        original = load_run_artifact(original_id, normalize=False) if original_id else None
+        current = load_incident(str(incident["incident_id"])) or incident
+        eligible = automatic_recovery_candidate(current, original, now=now)
+        incident["automatic_recovery_eligible"] = eligible
         report = report_incident_once(incident, send_fn=send_fn)
+        if eligible:
+            recovery = execute_approved_recovery(
+                str(incident["incident_id"]), automatic=True, now=now, send_fn=send_fn,
+            )
+            report["automatic_recovery"] = recovery
         results.append({"program_id": program_id, **report})
+    recovery_attempts = sum(
+        int((item.get("automatic_recovery") or {}).get("automatic_recovery_attempt_count") or 0)
+        for item in results
+    )
     return {
         "ok": True,
-        "auto_retry": 0,
+        "auto_retry": recovery_attempts,
         "customer_send": 0,
+        "automatic_recovery_attempt_count": recovery_attempts,
         "activated_at": watermark.isoformat() if watermark else None,
         "results": results,
     }

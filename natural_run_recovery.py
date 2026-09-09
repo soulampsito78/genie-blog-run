@@ -1,4 +1,4 @@
-"""Human-approved natural-run recovery (exactly once). Never customer-sends."""
+"""Shared leased natural-run recovery: Admin or proven transient watchdog fault."""
 from __future__ import annotations
 
 import logging
@@ -20,6 +20,7 @@ from today_genie_execution_identity import EXECUTION_CLASS_RECOVERY
 logger = logging.getLogger(__name__)
 
 RECOVERY_TRIGGER = "admin_recovery_approved"
+AUTOMATIC_RECOVERY_TRIGGER = "watchdog_transient_recovery"
 
 
 def execute_approved_recovery(
@@ -28,6 +29,8 @@ def execute_approved_recovery(
     today_runner: Optional[Callable[..., Any]] = None,
     keysuri_runner: Optional[Callable[..., Any]] = None,
     send_fn: Optional[Callable[..., bool]] = None,
+    automatic: bool = False,
+    now=None,
 ) -> Dict[str, Any]:
     """Acquire lease and run exactly one recovery. No auto second attempt."""
     from natural_run_incident_store import is_verification_incident_id
@@ -60,7 +63,18 @@ def execute_approved_recovery(
             "recovery_count": 0,
         }
 
-    lease = acquire_recovery_lease(incident_id)
+    if automatic:
+        from datetime import datetime
+        from natural_run_incident_store import KST
+        from admin_store import load_run_artifact
+        from transient_infrastructure import automatic_recovery_candidate
+
+        original = load_run_artifact(str(incident.get("original_run_id") or ""), normalize=False)
+        if not automatic_recovery_candidate(incident, original, now=now or datetime.now(KST)):
+            return {"ok": False, "error": "automatic_recovery_ineligible", "customer_send": 0, "auto_retry": 0}
+        lease = acquire_recovery_lease(incident_id, automatic=True)
+    else:
+        lease = acquire_recovery_lease(incident_id)
     if not lease:
         return {
             "ok": False,
@@ -94,10 +108,11 @@ def execute_approved_recovery(
 
             run_id, result, email_sent = runner(
                 "today_genie",
-                trigger_source=RECOVERY_TRIGGER,
+                trigger_source=AUTOMATIC_RECOVERY_TRIGGER if automatic else RECOVERY_TRIGGER,
                 send_owner_email=True,
                 execution_class=EXECUTION_CLASS_RECOVERY,
                 scheduled_slot=slot,
+                original_incident_id=incident_id,
             )
             recovery_run_id = run_id
             success = bool(run_id) and bool(email_sent)
@@ -107,6 +122,16 @@ def execute_approved_recovery(
                     runner_payload = dict(payload)
                     validation_result = str(payload.get("validation_result") or "")
             artifact_status = "emailed" if email_sent else "stored"
+            if recovery_run_id:
+                from admin_store import update_run_artifact
+                def _stamp_today(meta):
+                    meta.update(execution_class=EXECUTION_CLASS_RECOVERY,
+                                original_incident_id=incident_id,
+                                parent_run_id=incident.get("original_run_id"),
+                                customer_delivery_status="not_sent",
+                                approve_customer_final_send=False,
+                                owner_review_status="pending_review")
+                update_run_artifact(recovery_run_id, _stamp_today)
         elif program_id in {"keysuri_global_tech", "keysuri_korea_tech"}:
             runner = keysuri_runner
             if runner is None:
@@ -115,7 +140,7 @@ def execute_approved_recovery(
                 runner = run_keysuri_service_full_run
             payload = runner(
                 program_id,
-                trigger_source=RECOVERY_TRIGGER,
+                trigger_source=AUTOMATIC_RECOVERY_TRIGGER if automatic else RECOVERY_TRIGGER,
                 send_owner_email=True,
                 dry_run=False,
             )
@@ -221,7 +246,9 @@ def execute_approved_recovery(
         "recovery_run_id": recovery_run_id,
         "email_sent": email_sent,
         "customer_send": 0,
-        "auto_retry": 0,
+        "auto_retry": 1 if automatic else 0,
+        "automatic_recovery": bool(automatic),
+        "automatic_recovery_attempt_count": 1 if automatic else 0,
         "recovery_report_sent": send_ok,
         "recovery_report_subject": subject,
         "status": str(

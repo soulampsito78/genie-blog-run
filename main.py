@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import random
+import math
+from contextvars import ContextVar
 import re
 import hashlib
 import time
@@ -1643,17 +1645,21 @@ _VERTEX_TRANSIENT_EXCEPTIONS: tuple = tuple(
 )
 
 
+_vertex_call_evidence: ContextVar = ContextVar("vertex_call_evidence", default=None)
+
+
 def _vertex_retry_attempts() -> int:
     """Total attempts per model call, including the first one."""
     try:
-        return max(1, int(os.getenv("GENIE_VERTEX_RETRY_ATTEMPTS", "3")))
+        return min(3, max(1, int(os.getenv("GENIE_VERTEX_RETRY_ATTEMPTS", "3"))))
     except (TypeError, ValueError):
         return 3
 
 
 def _vertex_retry_base_delay_sec() -> float:
     try:
-        return max(0.0, float(os.getenv("GENIE_VERTEX_RETRY_BASE_DELAY_SEC", "4.0")))
+        value = float(os.getenv("GENIE_VERTEX_RETRY_BASE_DELAY_SEC", "4.0"))
+        return min(15.0, max(0.0, value)) if math.isfinite(value) else 4.0
     except (TypeError, ValueError):
         return 4.0
 
@@ -1668,9 +1674,8 @@ def _vertex_retry_max_total_delay_sec() -> float:
     to the watchdog, not silently overrun its deadline.
     """
     try:
-        return max(
-            0.0, float(os.getenv("GENIE_VERTEX_RETRY_MAX_TOTAL_DELAY_SEC", "45.0"))
-        )
+        value = float(os.getenv("GENIE_VERTEX_RETRY_MAX_TOTAL_DELAY_SEC", "45.0"))
+        return min(45.0, max(0.0, value)) if math.isfinite(value) else 45.0
     except (TypeError, ValueError):
         return 45.0
 
@@ -1688,15 +1693,34 @@ def _generate_content_with_transient_retry(
     budget = _vertex_retry_max_total_delay_sec()
     slept = 0.0
     attempt = 0
+    call = {"attempt_count": 0, "internal_retry_count": 0, "slept_seconds": 0.0}
+    evidence = _vertex_call_evidence.get()
+    if evidence is not None:
+        evidence.append(call)
+
+    def exhausted(exc):
+        # Typed provider evidence only; no exception message, prompt or secrets.
+        from transient_infrastructure import vertex_failure_evidence
+        exc.genie_infrastructure_failure = vertex_failure_evidence(
+            exc, attempt_count=attempt, slept_seconds=slept,
+            max_attempts=attempts,
+        )
+        call["outcome"] = "transient_exhausted"
+
     while True:
         attempt += 1
+        call.update(attempt_count=attempt, internal_retry_count=attempt - 1,
+                    slept_seconds=slept)
         try:
-            return model.generate_content(
+            response = model.generate_content(
                 prompt,
                 generation_config=generation_config,
             )
+            call["outcome"] = "succeeded"
+            return response
         except _VERTEX_TRANSIENT_EXCEPTIONS as exc:
             if attempt >= attempts:
+                exhausted(exc)
                 logger.error(
                     "genie_api vertex_transient_exhausted mode=%s exc_type=%s "
                     "attempts=%s slept_sec=%.1f",
@@ -1712,6 +1736,7 @@ def _generate_content_with_transient_retry(
             if delay > remaining:
                 delay = remaining
             if delay <= 0:
+                exhausted(exc)
                 logger.error(
                     "genie_api vertex_transient_budget_spent mode=%s exc_type=%s "
                     "attempts=%s slept_sec=%.1f",
@@ -2783,11 +2808,29 @@ def generate(job: JobRequest) -> Dict[str, Any]:
     """Bounded memory evidence around the model API request itself."""
     with memory_evidence_scope() as recorder:
         recorder.record("request_start")
+        calls = []
+        token = _vertex_call_evidence.set(calls)
         try:
             result = _generate_impl(job)
+        except _VERTEX_TRANSIENT_EXCEPTIONS as exc:
+            recorder.record("request_end")
+            failure = getattr(exc, "genie_infrastructure_failure", None)
+            if failure is None:
+                raise
+            # Keep a visible HTTP 500 for the model API; the Scheduler-facing
+            # create-owner-review contract remains unchanged. Persist the exact
+            # exhausted provider class for the watchdog, never parse log prose.
+            raise HTTPException(status_code=500, detail={
+                "status": "failed", "reason": "vertex_transient_exhausted",
+                "infrastructure_failure": failure, "artifact_usable": False,
+                "model_call_evidence": calls,
+            }) from exc
         except Exception:
             recorder.record("request_end")
             raise
+        finally:
+            _vertex_call_evidence.reset(token)
         recorder.record("request_end")
         result["memory_stage_evidence"] = recorder.evidence()
+        result["model_call_evidence"] = calls
         return result

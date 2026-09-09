@@ -158,6 +158,7 @@ def run_genie_job(
     *,
     frozen_top_market_news: list[dict] | None = None,
     frozen_parent_run_id: str | None = None,
+    transport_retries: int | None = None,
 ) -> OrchestrationResult:
     """
     Call the Genie API for the given mode, then apply publishing policy.
@@ -194,7 +195,8 @@ def run_genie_job(
     )
 
     last_exc = None
-    for attempt in range(GENIE_API_RETRIES + 1):
+    retries = GENIE_API_RETRIES if transport_retries is None else max(0, transport_retries)
+    for attempt in range(retries + 1):
         try:
             with urllib.request.urlopen(req, timeout=GENIE_REQUEST_TIMEOUT) as resp:
                 status = resp.getcode()
@@ -206,7 +208,7 @@ def run_genie_job(
             break
         except (urllib.error.URLError, OSError, TimeoutError) as e:
             last_exc = e
-            if attempt < GENIE_API_RETRIES:
+            if attempt < retries:
                 time.sleep(GENIE_API_RETRY_DELAY_SEC)
                 continue
             logger.warning("Genie API request failed after %d attempts: %s", attempt + 1, type(e).__name__)
@@ -360,6 +362,7 @@ def build_run_artifact_metadata(
     reissue_scope: str | None = None,
     execution_class: str | None = None,
     scheduled_slot: str | None = None,
+    original_incident_id: str | None = None,
 ) -> Dict[str, Any]:
     payload = result.response_data if isinstance(result.response_data, dict) else {}
     runtime_check = _runtime_check_from_api_payload(payload, reason_summary=result.reason_summary)
@@ -395,6 +398,16 @@ def build_run_artifact_metadata(
         "customer_delivery_status": "not_sent",
         "admin_reissue": bool(parent_run_id),
     }
+    detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else payload
+    from transient_infrastructure import verified_vertex_failure
+    failure = verified_vertex_failure(detail.get("infrastructure_failure"))
+    if failure and result.response_status == 500 and not payload.get("data"):
+        meta.update(infrastructure_failure=failure, artifact_usable=False,
+                    first_failed_stage="model_generation", error_code="vertex_transient_exhausted")
+    if isinstance(detail.get("model_call_evidence"), list):
+        meta["model_call_evidence"] = detail["model_call_evidence"]
+    if original_incident_id:
+        meta["original_incident_id"] = original_incident_id
     if resolved_class:
         meta["execution_class"] = resolved_class
     slot = str(scheduled_slot or "").strip()
@@ -481,6 +494,7 @@ def persist_orchestrator_run_artifact(
     reissue_scope: str | None = None,
     execution_class: str | None = None,
     scheduled_slot: str | None = None,
+    original_incident_id: str | None = None,
     owner_email_notice_html: str | None = None,
 ) -> str:
     from admin_store import generate_run_id, save_run_artifact
@@ -501,6 +515,7 @@ def persist_orchestrator_run_artifact(
         reissue_scope=reissue_scope,
         execution_class=execution_class,
         scheduled_slot=scheduled_slot,
+        original_incident_id=original_incident_id,
     )
     meta["created_at"] = datetime.now(ZoneInfo("Asia/Seoul")).isoformat()
     if mode == "today_genie" and today_image_result is not None:
@@ -755,6 +770,7 @@ def execute_orchestrator_run(
     today_image_result_override: Any = None,
     execution_class: str | None = None,
     scheduled_slot: str | None = None,
+    original_incident_id: str | None = None,
     owner_email_notice_html: str | None = None,
     frozen_top_market_news: list[dict] | None = None,
 ) -> tuple[str, OrchestrationResult, bool]:
@@ -790,6 +806,9 @@ def execute_orchestrator_run(
                 frozen_top_market_news=frozen_top_market_news,
                 frozen_parent_run_id=parent_run_id,
             )
+        elif execution_class == "recovery":
+            # A lost response cannot authorize a second paid generation.
+            result = run_genie_job(mode, transport_retries=0)
         else:
             result = run_genie_job(mode)
         run_id: str | None = None
@@ -848,6 +867,7 @@ def execute_orchestrator_run(
             reissue_scope=reissue_scope,
             execution_class=resolved_class,
             scheduled_slot=scheduled_slot,
+            original_incident_id=original_incident_id,
             owner_email_notice_html=owner_email_notice_html,
         )
         logger.info(

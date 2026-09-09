@@ -1140,6 +1140,7 @@ def upsert_incident(incident: Dict[str, Any]) -> Dict[str, Any]:
         "recovery_report_sent_at",
         "recovery_customer_send_count",
         "watchdog_auto_retry_count",
+        "automatic_recovery_attempt_count",
         # Repeat-recovery guard state is owned by the recovery-failure flow.
         # A diagnostic upsert must never reset the signature, its count, or
         # the history, or a blocked incident could be silently reopened.
@@ -1215,13 +1216,89 @@ def dismiss_incident(incident_id: str) -> Optional[Dict[str, Any]]:
     return meta
 
 
-def acquire_recovery_lease(incident_id: str) -> Optional[str]:
+def _change_recovery_claim(incident_id: str, mutate) -> bool:
+    """CAS the existing recovery lease independently of diagnostic upserts.
+
+    A GCS generation precondition is the cross-instance authority. Local tests
+    and installations use an OS file lock, also shared across processes. The
+    claim is never deleted: an automatic attempt remains spent after crashes,
+    failed children, stale diagnostic writes and later watchdog invocations.
+    """
+    key = f"{INCIDENT_PREFIX}/{incident_id}.recovery-lease.json"
+    if _uses_gcs():
+        from google.api_core.exceptions import NotFound, PreconditionFailed
+
+        blob = _gcs_storage_client().bucket(_bucket_name()).blob(key)
+        try:
+            # Download supplies generation for this exact read; CAS rejects a
+            # concurrent writer or a create that raced our NotFound response.
+            old = json.loads(blob.download_as_text(encoding="utf-8"))
+            generation = int(blob.generation)
+        except NotFound:
+            old, generation = None, 0
+        new = mutate(old)
+        if new is None:
+            return False
+        try:
+            blob.upload_from_string(json.dumps(new), content_type="application/json",
+                                    if_generation_match=generation)
+        except PreconditionFailed:
+            return False
+        return True
+
+    import fcntl
+
+    path = incidents_local_dir() / key.split("/", 1)[1]
+    with path.with_suffix(".lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        old = json.loads(path.read_text()) if path.exists() else None
+        new = mutate(old)
+        if new is None:
+            return False
+        temp = path.with_suffix(".tmp")
+        temp.write_text(json.dumps(new))
+        os.replace(temp, path)
+        return True
+
+
+def _claim_recovery_attempt(incident_id: str, token: str, *, automatic: bool) -> bool:
+    def claim(old):
+        if old:
+            # Automatic recovery never follows ANY earlier recovery. Explicit
+            # Admin retry after a failed manual attempt retains its old policy.
+            if (automatic or old.get("automatic_attempt_count")
+                    or old.get("status") != STATUS_RECOVERY_FAILED):
+                return None
+        return {
+            **(old or {}), "lease_token": token, "status": STATUS_RECOVERY_APPROVED,
+            "attempt_count": int((old or {}).get("attempt_count") or 0) + 1,
+            "automatic_attempt_count": max(int((old or {}).get("automatic_attempt_count") or 0), int(automatic)),
+            "acquired_at": now_kst_iso(), "customer_send": False,
+        }
+    return _change_recovery_claim(incident_id, claim)
+
+
+def _complete_recovery_claim(incident_id: str, token: str, success: bool) -> None:
+    def finish(old):
+        if not old or old.get("lease_token") != token:
+            return None
+        return {**old, "status": STATUS_RECOVERY_SUCCEEDED if success else STATUS_RECOVERY_FAILED,
+                "completed_at": now_kst_iso()}
+    _change_recovery_claim(incident_id, finish)
+
+
+def acquire_recovery_lease(incident_id: str, *, automatic: bool = False) -> Optional[str]:
     """Return lease token on success; None if not acquirable."""
     with _LOCK:
         meta = load_incident(incident_id)
         if not meta:
             return None
+        if automatic and (meta.get("recovery_approved_at") or meta.get("recovery_run_id")
+                          or meta.get("automatic_recovery_attempt_count")):
+            return None
         status = str(meta.get("status") or "")
+        if automatic and status not in {STATUS_REPORTED, STATUS_OPEN}:
+            return None
         if status == STATUS_RETRY_BLOCKED_PENDING_PATCH:
             if recovery_guard_is_blocked(meta):
                 return None
@@ -1241,6 +1318,11 @@ def acquire_recovery_lease(incident_id: str) -> Optional[str]:
         if meta.get("recovery_lease_token") and status == STATUS_RECOVERY_APPROVED:
             return None
         token = secrets.token_hex(16)
+        if not _claim_recovery_attempt(incident_id, token, automatic=automatic):
+            return None
+        if automatic:
+            meta["automatic_recovery_attempt_count"] = 1
+            meta["watchdog_auto_retry_count"] = 1
         meta["recovery_lease_token"] = token
         meta["recovery_approved_at"] = now_kst_iso()
         meta["status"] = STATUS_RECOVERY_APPROVED
@@ -1261,6 +1343,7 @@ def complete_recovery(
         return None
     if str(meta.get("recovery_lease_token") or "") != str(lease_token or ""):
         return None
+    _complete_recovery_claim(incident_id, lease_token, success)
     meta["recovery_run_id"] = recovery_run_id
     meta["status"] = STATUS_RECOVERY_SUCCEEDED if success else STATUS_RECOVERY_FAILED
     meta["recovery_completed_at"] = now_kst_iso()

@@ -799,7 +799,8 @@ def natural_run_watchdog_endpoint(
 ):
     """SLA poll: diagnose missed natural runs and email Korean reports.
 
-    Never auto-retries, never customer-sends, never Scheduler-reruns.
+    Proven transient hard failures permit one leased incident recovery.
+    Never customer-sends or Scheduler-reruns.
     Optional smoke_failure=true sends one [GENIE SMOKE 장애보고] (non-slot).
     Optional verification_only=true sends one [GENIE WATCHDOG TEST] report.
     """

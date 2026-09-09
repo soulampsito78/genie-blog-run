@@ -1,3 +1,9 @@
+> 2026-09-10 update: proven exhausted transient Vertex failures now permit one
+> automatic recovery through the existing lease. See
+> [the scoped recovery contract](TODAY_TRANSIENT_SELF_HEALING_20260910.md).
+> The report-only / Admin-only statements below describe the earlier contract
+> and continue to apply to every failure without the new typed evidence.
+
 # Owner-review failure alerting + Korean natural-run failure report
 
 Status: **applied** — structured failure events still emit to Cloud Logging, and
