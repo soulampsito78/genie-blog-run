@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 import hashlib
 import time
@@ -121,6 +122,7 @@ configure_application_logging()
 # 설치 필요:
 # pip install google-cloud-aiplatform vertexai fastapi uvicorn
 import vertexai
+from google.api_core import exceptions as google_api_exceptions
 from vertexai.generative_models import GenerationConfig, GenerativeModel
 import urllib.error
 import urllib.parse
@@ -1613,6 +1615,125 @@ def parse_model_json(raw_text: str, mode: str) -> Dict[str, Any]:
     )
 
 
+# --- transient Vertex fault retry ------------------------------------------
+#
+# A model call can fail on a transient infrastructure fault that says nothing
+# about the request: Vertex shared-quota contention (429) or a momentary
+# backend/gateway fault (500/502/503/504).  Waiting clears those.  On
+# 2026-09-10 an unretried 429 on the Today main-brief call destroyed the whole
+# 06:30 natural run 27s after it started, and the owner got no briefing.
+#
+# Retrying a transient transport fault is not a validation bypass: whatever the
+# model finally returns still passes every downstream grounding, validation and
+# customer-surface gate unchanged.  A permanent fault (InvalidArgument,
+# PermissionDenied, NotFound, a real quota misconfiguration) is deliberately not
+# retried — it must fail fast and loudly rather than burn the slot's budget.
+_VERTEX_TRANSIENT_EXCEPTIONS: tuple = tuple(
+    exc
+    for exc in (
+        getattr(google_api_exceptions, "TooManyRequests", None),      # HTTP 429
+        getattr(google_api_exceptions, "ResourceExhausted", None),    # gRPC 429
+        getattr(google_api_exceptions, "ServiceUnavailable", None),   # 503
+        getattr(google_api_exceptions, "InternalServerError", None),  # 500
+        getattr(google_api_exceptions, "BadGateway", None),           # 502
+        getattr(google_api_exceptions, "GatewayTimeout", None),       # 504
+        getattr(google_api_exceptions, "DeadlineExceeded", None),     # deadline
+    )
+    if isinstance(exc, type) and issubclass(exc, Exception)
+)
+
+
+def _vertex_retry_attempts() -> int:
+    """Total attempts per model call, including the first one."""
+    try:
+        return max(1, int(os.getenv("GENIE_VERTEX_RETRY_ATTEMPTS", "3")))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _vertex_retry_base_delay_sec() -> float:
+    try:
+        return max(0.0, float(os.getenv("GENIE_VERTEX_RETRY_BASE_DELAY_SEC", "4.0")))
+    except (TypeError, ValueError):
+        return 4.0
+
+
+def _vertex_retry_max_total_delay_sec() -> float:
+    """Ceiling on cumulative sleep for one model call.
+
+    /internal/jobs/create-owner-review runs under a 300s Scheduler attempt
+    deadline and the Today pipeline spends ~40s in inference across two calls,
+    so retry sleep must stay well inside that budget.  Exceeding the ceiling
+    re-raises instead of sleeping: a slot that cannot finish in time must fail
+    to the watchdog, not silently overrun its deadline.
+    """
+    try:
+        return max(
+            0.0, float(os.getenv("GENIE_VERTEX_RETRY_MAX_TOTAL_DELAY_SEC", "45.0"))
+        )
+    except (TypeError, ValueError):
+        return 45.0
+
+
+def _generate_content_with_transient_retry(
+    model,
+    prompt: str,
+    *,
+    generation_config,
+    mode: str,
+):
+    """Call Vertex, retrying only the faults that waiting can actually clear."""
+    attempts = _vertex_retry_attempts()
+    base = _vertex_retry_base_delay_sec()
+    budget = _vertex_retry_max_total_delay_sec()
+    slept = 0.0
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return model.generate_content(
+                prompt,
+                generation_config=generation_config,
+            )
+        except _VERTEX_TRANSIENT_EXCEPTIONS as exc:
+            if attempt >= attempts:
+                logger.error(
+                    "genie_api vertex_transient_exhausted mode=%s exc_type=%s "
+                    "attempts=%s slept_sec=%.1f",
+                    mode,
+                    type(exc).__name__,
+                    attempt,
+                    slept,
+                )
+                raise
+            delay = base * (3 ** (attempt - 1))
+            delay += random.uniform(0.0, min(1.0, delay * 0.25))
+            remaining = budget - slept
+            if delay > remaining:
+                delay = remaining
+            if delay <= 0:
+                logger.error(
+                    "genie_api vertex_transient_budget_spent mode=%s exc_type=%s "
+                    "attempts=%s slept_sec=%.1f",
+                    mode,
+                    type(exc).__name__,
+                    attempt,
+                    slept,
+                )
+                raise
+            logger.warning(
+                "genie_api vertex_transient_retry mode=%s exc_type=%s "
+                "attempt=%s/%s sleep_sec=%.1f",
+                mode,
+                type(exc).__name__,
+                attempt,
+                attempts,
+                delay,
+            )
+            time.sleep(delay)
+            slept += delay
+
+
 def call_gemini(
     prompt: str,
     mode: str,
@@ -1640,9 +1761,11 @@ def call_gemini(
             response_mime_type="application/json",
         )
 
-        response = model.generate_content(
+        response = _generate_content_with_transient_retry(
+            model,
             prompt,
             generation_config=generation_config,
+            mode=mode,
         )
     except HTTPException:
         raise
