@@ -532,6 +532,40 @@ def create_keysuri_owner_review_job(
     return payload
 
 
+def _maybe_auto_remediate_natural_run(run_id: str, payload: Dict[str, Any]) -> None:
+    """One bounded self-repair attempt for a reviewable natural scheduled run.
+
+    Called only from the two natural owner-review entry points. Everything the
+    mechanism refuses to touch (PASS runs, preflight, QA/manual, hard fails,
+    missing evidence, an already-remediated parent) is decided by
+    ``auto_remediation.plan_auto_remediation``; this wrapper only carries the
+    outcome back into the job payload, and never lets a self-repair failure fail
+    the natural run that already succeeded.
+    """
+    rid = str(run_id or "").strip()
+    if not rid:
+        return
+    try:
+        from auto_remediation import run_auto_remediation
+
+        summary = run_auto_remediation(rid)
+    except Exception:  # noqa: BLE001
+        logger.exception("auto_remediation: dispatch failed run_id=%s", rid)
+        return
+    payload.update(
+        {
+            key: summary.get(key)
+            for key in (
+                "automatic_remediation_triggered",
+                "automatic_remediation_scope",
+                "automatic_remediation_attempt_count",
+                "automatic_remediation_child_run_id",
+                "automatic_remediation_result",
+            )
+        }
+    )
+
+
 @router.post("/internal/jobs/create-owner-review")
 def create_owner_review_endpoint(
     request: Request,
@@ -679,6 +713,7 @@ def create_owner_review_endpoint(
     summary.update(
         {k: v for k, v in identity_fields_for_artifact(identity).items() if v is not None}
     )
+    _maybe_auto_remediate_natural_run(run_id, summary)
     logger.info(
         "create_owner_review: run_id=%s email_sent=%s response_status=%s execution_class=%s scheduled_slot=%s",
         run_id,
@@ -998,6 +1033,8 @@ def create_keysuri_owner_review_endpoint(
         )
 
     status_code = 200 if payload.get("ok", True) else 500
+    if status_code == 200 and is_natural_execution:
+        _maybe_auto_remediate_natural_run(str(payload.get("run_id") or ""), payload)
     if status_code == 200:
         _log_keysuri_owner_review_job_event(
             event="keysuri_owner_review_success",

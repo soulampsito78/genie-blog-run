@@ -700,6 +700,75 @@ SMTP 접수는 메일 서버가 발송 요청을 받은 상태입니다. 실제 
 """
 
 
+_REISSUE_SCOPE_LABELS_KO = {
+    "body_only": "본문만 재생성",
+    "image_only": "이미지만 재생성",
+    "body_and_image": "본문·이미지 재생성",
+}
+
+_AUTO_REMEDIATION_RESULT_LABELS_KO = {
+    "succeeded": "자동 교정본이 검증을 통과했습니다.",
+    "child_still_reviewable": "자동 교정본을 만들었지만 아직 검수가 필요합니다. 자동 재시도는 하지 않습니다.",
+    "in_progress": "자동 교정을 실행하는 중입니다.",
+}
+
+
+def _render_auto_remediation_panel(meta: dict) -> str:
+    """What the system already did about this run, before asking the owner to act.
+
+    A run the system remediated by itself must not greet the owner with
+    "재발행하세요" — it says what was done and links straight to the corrected
+    child. Manual reissue stays available below as a fallback.
+    """
+    if not isinstance(meta, dict):
+        return ""
+    triggered = bool(meta.get("automatic_remediation_triggered"))
+    result = str(meta.get("automatic_remediation_result") or "").strip()
+    stop_reason = str(meta.get("automatic_remediation_stop_reason") or "").strip()
+    child_run_id = str(meta.get("automatic_remediation_child_run_id") or "").strip()
+    scope = str(meta.get("automatic_remediation_scope") or "").strip()
+    if not triggered and not stop_reason:
+        return ""
+
+    scope_label = _REISSUE_SCOPE_LABELS_KO.get(scope, scope or "미정")
+    codes = meta.get("automatic_remediation_original_issue_codes")
+    codes_text = ", ".join(str(c) for c in codes) if isinstance(codes, list) and codes else "없음"
+    detail = (
+        f'<p style="margin:8px 0 0 0;font-size:12px;color:#475569;">'
+        f"교정 범위: {_esc(scope_label)} · 원본 이슈: {_esc(codes_text)}</p>"
+    )
+
+    if triggered and result in ("succeeded", "child_still_reviewable", "in_progress"):
+        body = (
+            f'<p style="margin:0;font-weight:700;">자동 교정을 수행했습니다.</p>'
+            f'<p style="margin:8px 0 0 0;">'
+            f"{_esc(_AUTO_REMEDIATION_RESULT_LABELS_KO.get(result, result))}</p>"
+            f"{detail}"
+        )
+        if child_run_id:
+            body += (
+                f'<div class="form-actions" style="margin-top:12px;">'
+                f'<a class="btn btn--block" href="/admin/runs/{_esc(child_run_id)}">'
+                f"새 교정본 열기 →</a></div>"
+            )
+        return f'<div class="notice">{body}</div>'
+
+    reason = stop_reason or result or "unknown"
+    return (
+        f'<div class="warn"><p style="margin:0;font-weight:700;">자동 교정 실패</p>'
+        f'<p style="margin:8px 0 0 0;">사유: {_esc(reason)}</p>'
+        + (
+            f'<p style="margin:8px 0 0 0;font-size:12px;">교정본: '
+            f'<a href="/admin/runs/{_esc(child_run_id)}">{_esc(child_run_id)}</a></p>'
+            if child_run_id
+            else ""
+        )
+        + f"{detail}"
+        '<p style="margin:8px 0 0 0;font-size:12px;">자동 재시도는 하지 않습니다. '
+        "아래에서 수동 재발행을 사용할 수 있습니다.</p></div>"
+    )
+
+
 def _render_delivery_report_sections(meta: dict) -> str:
     owner_label = owner_review_email_label_ko(meta)
     customer_panel = _render_customer_delivery_status_panel(meta)
@@ -2314,6 +2383,7 @@ def admin_run_detail(request: Request, run_id: str):
             f"장애 보고 / 재실행 승인 ({_esc(linked_incident_id)})</a></p>"
         )
     scope_field = _render_reissue_scope_field(mode, meta)
+    auto_remediation_panel = _render_auto_remediation_panel(meta)
     # The remediation instruction on the blocked-send panel promises a reissue.
     # Ask the same authority the reissue POST will ask, so this page can never
     # tell the owner to reissue a run it would then refuse (2026-09-09 deadlock).
@@ -2429,6 +2499,7 @@ def admin_run_detail(request: Request, run_id: str):
 </section>
 <section class="surface" style="margin-top:14px;">
   <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">REISSUE</p><h2>{'수정 요청' if str(meta.get('editorial_verdict') or '') in {'REVIEW', 'POOR'} else '다시 만들기'}</h2></div></div>
+{auto_remediation_panel}
 {reissue_body}
 </section>
 <details class="technical-details"><summary>비용 추정 보기</summary><div class="technical-details__body">{cost_section}</div></details>

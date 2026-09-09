@@ -466,6 +466,7 @@ def persist_orchestrator_run_artifact(
     reissue_scope: str | None = None,
     execution_class: str | None = None,
     scheduled_slot: str | None = None,
+    owner_email_notice_html: str | None = None,
 ) -> str:
     from admin_store import generate_run_id, save_run_artifact
     from datetime import datetime
@@ -492,7 +493,27 @@ def persist_orchestrator_run_artifact(
 
         meta.update(persist_today_genie_customer_images(rid, today_image_result))
     email_html = extract_email_html_for_artifact(result, run_id=rid)
+    email_html = _inject_owner_email_notice(email_html, owner_email_notice_html)
     return save_run_artifact(meta, email_html=email_html)
+
+
+def _inject_owner_email_notice(html_body: str, notice_html: str) -> str:
+    """Prepend an owner-only notice block to an owner-review email body.
+
+    The notice carries its own comment sentinels so customer delivery strips it;
+    see auto_remediation.strip_auto_remediation_notice.
+    """
+    notice = str(notice_html or "").strip()
+    body = str(html_body or "")
+    if not notice or not body.strip():
+        return body
+    lowered = body.lower()
+    idx = lowered.find("<body")
+    if idx != -1:
+        close = body.find(">", idx)
+        if close != -1:
+            return body[: close + 1] + notice + body[close + 1 :]
+    return notice + body
 
 
 def send_email_if_allowed(
@@ -502,6 +523,7 @@ def send_email_if_allowed(
     today_image_result: Any = None,
     send_owner_email: bool = True,
     subject_prefix: str = "",
+    owner_email_notice_html: str | None = None,
 ) -> bool:
     """
     If policy allows sending email and we have payload, send via email_sender.
@@ -616,6 +638,7 @@ def send_email_if_allowed(
             validation_result=validation_result,
             run_id=rid or None,
         )
+        html_body = _inject_owner_email_notice(html_body, owner_email_notice_html)
         if validation_result == "pass" and allow_send and "운영자 검수 화면 열기" not in html_body:
             logger.warning("send_email_if_allowed: skipped (admin_review_link_missing_in_html)")
             return False
@@ -717,6 +740,7 @@ def execute_orchestrator_run(
     today_image_result_override: Any = None,
     execution_class: str | None = None,
     scheduled_slot: str | None = None,
+    owner_email_notice_html: str | None = None,
 ) -> tuple[str, OrchestrationResult, bool]:
     """
     Run Genie job, attempt owner-review email, persist admin artifact.
@@ -776,6 +800,7 @@ def execute_orchestrator_run(
             subject_prefix=_REISSUE_SCOPE_SUBJECT_PREFIXES.get(
                 str(reissue_scope or "").strip(), ""
             ),
+            owner_email_notice_html=owner_email_notice_html,
         )
         resolved_trigger = trigger_source
         if not resolved_trigger:
@@ -798,6 +823,7 @@ def execute_orchestrator_run(
             reissue_scope=reissue_scope,
             execution_class=resolved_class,
             scheduled_slot=scheduled_slot,
+            owner_email_notice_html=owner_email_notice_html,
         )
         logger.info(
             "execute_orchestrator_run: mode=%s run_id=%s email_sent=%s parent_run_id=%s execution_class=%s",

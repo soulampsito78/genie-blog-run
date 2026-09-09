@@ -57,6 +57,8 @@ _RUN_ID_ADMIN_LINE_RE = re.compile(
     r'<p[^>]*>\s*run_id:\s*[^<]+</p>',
     re.IGNORECASE,
 )
+from auto_remediation import strip_auto_remediation_notice
+
 _ADMIN_RUN_URL_RE = re.compile(r"/admin/runs/[^\s\"'<>]+", re.IGNORECASE)
 _REVIEW_BOX_RE = re.compile(
     r'<section[^>]*\bid=["\']review-confirmation-box["\'][^>]*>.*?</section>',
@@ -190,6 +192,8 @@ def strip_keysuri_owner_review_controls(html_body: str) -> str:
     out = html_body
     out = _OWNER_ADMIN_ENTRY_RE.sub("", out)
     out = _IMAGE_ONLY_REISSUE_MARKER_RE.sub("", out)
+    # Owner-only 자동 교정본 header: never part of a customer surface.
+    out = strip_auto_remediation_notice(out)
     out = _RUN_ID_ADMIN_LINE_RE.sub("", out)
     out = _ADMIN_RUN_URL_RE.sub("", out)
     out = _OWNER_REVIEW_BADGE_RE.sub("", out)

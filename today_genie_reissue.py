@@ -167,6 +167,7 @@ def run_today_body_only_reissue(
     reissue_reason_code: str = "",
     reissue_reason_note: str = "",
     send_owner_email: bool = True,
+    owner_email_notice_html: Optional[str] = None,
     orchestrator_runner: Optional[Callable[..., Any]] = None,
     download_fn: Optional[Callable[[str, str, Path], None]] = None,
 ) -> Dict[str, Any]:
@@ -207,6 +208,7 @@ def run_today_body_only_reissue(
             send_owner_email=send_owner_email,
             reissue_scope="body_only",
             today_image_result_override=image_result,
+            owner_email_notice_html=owner_email_notice_html,
         )
     except Exception:  # noqa: BLE001 - caller renders a safe failure page
         logger.exception("today body_only reissue pipeline failed parent_run_id=%s", parent_run_id)
@@ -311,6 +313,7 @@ def run_today_image_only_reissue(
     reissue_reason_code: str = "",
     reissue_reason_note: str = "",
     send_owner_email: bool = True,
+    owner_email_notice_html: Optional[str] = None,
     image_generate_fn: Optional[Callable[..., Path]] = None,
     send_fn: Optional[Callable[..., bool]] = None,
     upload_fn: Optional[Callable[[str, str, Path], None]] = None,
@@ -371,6 +374,10 @@ def run_today_image_only_reissue(
         preserved_email_html, parent_run_id, child_run_id
     )
     email_html, admin_link_present = _ensure_child_admin_link(email_html, child_run_id)
+    if owner_email_notice_html:
+        from orchestrator import _inject_owner_email_notice
+
+        email_html = _inject_owner_email_notice(email_html, owner_email_notice_html)
     base_subject, subject = _image_only_subject(parent, preserved_email_html)
 
     issue_codes: List[str] = list(image_result.issue_codes or [])

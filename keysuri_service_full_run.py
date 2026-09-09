@@ -1649,6 +1649,134 @@ def _regenerate_keysuri_text_from_snapshot(
     return prompt_input, generated_briefing, None
 
 
+def _canonical_persisted_category(raw: Any, program_id: str) -> str:
+    """Resolve a category read back from a persisted artifact to a current slug.
+
+    A parent written before a taxonomy change carries a retired slug. Grafting
+    its TOP5 forward verbatim fails contract validation with
+    ``top_5_news_item_category_unknown`` — which is what made every Korea run
+    from before the 2026-09-07 internal-concept-leak fix unreissuable.
+    """
+    value = str(raw or "").strip()
+    if not value or program_id != PROGRAM_KOREA:
+        return value
+    from keysuri_korea_signal_scoring import canonical_korea_category
+
+    return canonical_korea_category(value)
+
+
+def _canonicalize_persisted_top5_categories(
+    items: Any, program_id: str
+) -> Optional[List[Dict[str, Any]]]:
+    """Copy persisted TOP5 items with retired category slugs resolved."""
+    if not isinstance(items, list):
+        return None
+    out: List[Dict[str, Any]] = []
+    for raw in items:
+        if not isinstance(raw, dict):
+            return None
+        item = copy.deepcopy(raw)
+        for key in ("category", "primary_category"):
+            if item.get(key):
+                item[key] = _canonical_persisted_category(item.get(key), program_id)
+        out.append(item)
+    return out
+
+
+def _frozen_parent_source_identities(prompt_input: Optional[Dict[str, Any]]) -> List[str]:
+    """The news_id / canonical_url identity of each selected item, in rank order."""
+    if not isinstance(prompt_input, dict):
+        return []
+    top5 = prompt_input.get("top_5_news")
+    items = top5.get("items") if isinstance(top5, dict) else None
+    if not isinstance(items, list):
+        return []
+    identities: List[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        identity = str(
+            item.get("news_id") or item.get("canonical_url") or item.get("source_id") or ""
+        ).strip()
+        if identity:
+            identities.append(identity)
+    return identities
+
+
+def _regenerate_keysuri_text_from_frozen_parent(
+    program_id: str,
+    parent: Dict[str, Any],
+    *,
+    text_caller: Optional[Callable[..., str]] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any], Optional[str]]:
+    """Regenerate briefing prose from the parent's own frozen source snapshot.
+
+    The frozen-parent contract for body_only: nothing is recollected and nothing
+    is reselected. The parent's preserved ``regen_source_pack_snapshot`` builds
+    the prompt, Gemini rewrites only the prose, and the parent's authoritative
+    TOP5 is grafted back on — so the child carries the same source identities.
+    Used when the defect is wording/tone/internal-label and the selection was
+    never at fault.
+    """
+    fields: Dict[str, Any] = {
+        "reissue_source_contract": "frozen_parent",
+        "reissue_source_recollected": False,
+        "reissue_news_reselected": False,
+    }
+    prompt_input, err = _regen_prompt_input_from_parent(parent, program_id)
+    if err is not None or not isinstance(prompt_input, dict):
+        # Critical source evidence is missing: fail closed rather than silently
+        # falling back to a live collection the caller did not ask for.
+        return None, None, fields, "text_only_reissue_missing_parent_source_snapshot"
+
+    generated_briefing: Dict[str, Any] = {}
+    try:
+        _snapshot_prompt_input, snapshot_briefing, snapshot_err = (
+            _regenerate_keysuri_text_from_snapshot(
+                parent, program_id, text_caller=text_caller
+            )
+        )
+    except Exception:  # noqa: BLE001 - the parent snapshot fallback still applies
+        logger.exception(
+            "keysuri frozen_parent body_only: text regeneration raised program_id=%s", program_id
+        )
+        snapshot_prompt_input, snapshot_briefing, snapshot_err = None, None, "regen_exception"
+    else:
+        snapshot_prompt_input = _snapshot_prompt_input
+    if snapshot_err is None and isinstance(snapshot_briefing, dict):
+        generated_briefing = snapshot_briefing
+        if isinstance(snapshot_prompt_input, dict):
+            prompt_input = snapshot_prompt_input
+        fields["reissue_frozen_parent_prose_regenerated"] = True
+    else:
+        # No usable fresh prose: the repair below falls back to the parent's own
+        # validated briefing snapshot, which is self-consistent by construction.
+        fields["reissue_frozen_parent_prose_regenerated"] = False
+        fields["reissue_frozen_parent_prose_error"] = snapshot_err or "regen_failed"
+
+    repaired_prompt_input, repaired_briefing, repair_fields, repair_err = (
+        _repair_reissue_top5_from_parent_selection(
+            generated_briefing=generated_briefing,
+            prompt_input=prompt_input,
+            parent=parent,
+            program_id=program_id,
+        )
+    )
+    fields.update(dict(repair_fields or {}))
+    if repair_err is not None or repaired_prompt_input is None or repaired_briefing is None:
+        return None, None, fields, repair_err or "text_regeneration_failed"
+
+    parent_identities = _frozen_parent_source_identities(
+        {"top_5_news": {"items": _parent_selected_items_for_reissue(parent, program_id) or []}}
+    )
+    child_identities = _frozen_parent_source_identities(repaired_prompt_input)
+    fields["reissue_frozen_parent_source_identities"] = child_identities
+    fields["reissue_frozen_parent_source_identities_match"] = bool(
+        parent_identities and parent_identities == child_identities
+    )
+    return repaired_prompt_input, repaired_briefing, fields, None
+
+
 def _parent_selected_items_for_reissue(
     parent: Dict[str, Any],
     program_id: str,
@@ -1703,7 +1831,9 @@ def _parent_selected_items_for_reissue(
         if not isinstance(source_ids, list) or not source_ids:
             source_id = str(item.get("news_id") or item.get("source_id") or "").strip()
             source_ids = [source_id] if source_id else []
-        category = str(item.get("category") or item.get("primary_category") or "").strip()
+        category = _canonical_persisted_category(
+            item.get("category") or item.get("primary_category"), program_id
+        )
         if category not in categories:
             category = fallback_category
         confidence = str(item.get("confidence_label") or "").strip()
@@ -1825,9 +1955,13 @@ def _repair_reissue_top5_from_parent_selection(
         snap_items = snap_top5.get("items") if isinstance(snap_top5, dict) else None
         # Prefer the snapshot's own (field-complete) TOP5 items; they already match
         # the parent selection by rank/news_id and render with full display fields.
+        canonical_snap_items = _canonicalize_persisted_top5_categories(
+            snap_items, program_id
+        )
         base_items = (
-            snap_items
-            if isinstance(snap_items, list) and len(snap_items) == KEYSURI_TOP_NEWS_COUNT
+            canonical_snap_items
+            if canonical_snap_items is not None
+            and len(canonical_snap_items) == KEYSURI_TOP_NEWS_COUNT
             else parent_items
         )
         attempts.append(("parent_generated_briefing_snapshot", parent_base, base_items))
@@ -3586,6 +3720,14 @@ def _owner_subject_for_regen(parent: Dict[str, Any], regenerated_subject: str, r
     return new_subject if new_subject.startswith(prefix) else f"{prefix}{new_subject}"
 
 
+def _inject_owner_email_notice_if_present(html_text: str, notice_html: Optional[str]) -> str:
+    if not notice_html:
+        return html_text
+    from orchestrator import _inject_owner_email_notice
+
+    return _inject_owner_email_notice(html_text, notice_html)
+
+
 def _adjudicate_and_send_owner_surface(
     *,
     program_id: str,
@@ -3600,6 +3742,7 @@ def _adjudicate_and_send_owner_surface(
     extra_findings: Optional[List[Mapping[str, Any]]] = None,
     structured_briefing: Optional[Mapping[str, Any]] = None,
     observe_smtp_memory: bool = False,
+    owner_notice_html: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Adjudicate the final immutable surface once, then execute its policy.
 
@@ -3618,7 +3761,9 @@ def _adjudicate_and_send_owner_surface(
         owner_review_url=owner_review_url,
     )
     behavior = str(result.get("owner_delivery_behavior") or "")
-    delivery_html = str(result.get("owner_email_html") or "")
+    delivery_html = _inject_owner_email_notice_if_present(
+        str(result.get("owner_email_html") or ""), owner_notice_html
+    )
     delivery_subject = str(result.get("owner_email_subject") or "")
     smtp_attempted = False
     email_sent = False
@@ -3660,7 +3805,7 @@ def _adjudicate_and_send_owner_surface(
     result["persisted_email_html"] = (
         delivery_html
         if behavior not in (OWNER_SEND_POOR_NOTICE, OWNER_HOLD_INCIDENT)
-        else str(email_html or "")
+        else _inject_owner_email_notice_if_present(str(email_html or ""), owner_notice_html)
     )
     result["validation_result"] = (
         "pass" if result.get("safety_verdict") == SAFETY_SAFE else "block"
@@ -3677,6 +3822,7 @@ def run_keysuri_image_only_reissue(
     reissue_reason_code: str = "",
     reissue_reason_note: str = "",
     send_owner_email: bool = True,
+    owner_email_notice_html: Optional[str] = None,
     image_canary_runner=None,
     bottom_generate_fn: Optional[Callable[..., Path]] = None,
     bottom_watermark_fn: Optional[Callable[[Path, Path], Path]] = None,
@@ -3858,6 +4004,7 @@ def run_keysuri_image_only_reissue(
         send_owner_email=send_owner_email,
         inline_parts=inline_parts,
         send_fn=send_fn,
+        owner_notice_html=owner_email_notice_html,
     )
     smtp_attempted = bool(adjudication.get("smtp_attempted"))
     email_sent = bool(adjudication.get("email_sent"))
@@ -3988,49 +4135,72 @@ def run_keysuri_text_only_reissue(
     reissue_reason_code: str = "",
     reissue_reason_note: str = "",
     send_owner_email: bool = True,
+    owner_email_notice_html: Optional[str] = None,
+    frozen_parent: bool = False,
     text_caller: Optional[Callable[..., str]] = None,
     send_fn: Optional[Callable[..., bool]] = None,
     smoke_runner=None,
 ) -> Dict[str, Any]:
+    """Regenerate the Kee-Suri briefing body, reusing the parent's top image.
+
+    Two source contracts:
+
+    * default — collect a FRESH live candidate pool and exclude the parent's own
+      selection, for a duplicate/selection defect where new news is the point.
+    * ``frozen_parent=True`` — reuse the parent's own preserved source snapshot
+      and force its authoritative TOP5, for a prose/tone/internal-label defect
+      where the selection was never at fault. Nothing is recollected or
+      reselected, so the child carries the same source identities.
+    """
     parent = dict(parent_meta or load_run_artifact(parent_run_id, normalize=False) or {})
     pid = str(parent.get("program_id") or parent.get("mode") or "").strip()
     if pid not in _KEYSURI_PROGRAMS:
         return {"ok": False, "error": "text_only_reissue_unsupported_mode", "program_id": pid}
 
-    # body_only reissue: collect a FRESH live candidate pool (not the parent
-    # snapshot) and exclude the parent's own selected_items plus recent
-    # sent/exposure logs, so the regenerated TOP5 is fresh, deduped news. The
-    # existing top image is reused (body_only keeps the parent image).
     exclude_source_ids, exclude_urls, exclude_fps = _build_text_only_exclude_identifiers(parent)
     selected_count_before = len(exclude_source_ids)
     excluded_ids = list(exclude_source_ids)
     excluded_fps_applied = list(exclude_fps)
 
-    _smoke_runner = smoke_runner or run_keysuri_live_source_smoke
-    smoke = _smoke_runner(
-        program_id=pid,
-        use_gemini=False,
-        contract_preview=False,
-        send=False,
-    )
-    try:
-        fresh_source_pack = json.loads(Path(smoke.source_pack_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError) as exc:
-        return {
-            "ok": False,
-            "error": "text_only_reissue_source_collection_failed",
-            "program_id": pid,
-            "error_code_detail": type(exc).__name__,
-        }
+    if frozen_parent:
+        prompt_input, generated_briefing, repair_fields, regen_error = (
+            _regenerate_keysuri_text_from_frozen_parent(
+                pid, parent, text_caller=text_caller
+            )
+        )
+        excluded_ids = []
+        excluded_fps_applied = []
+        exclusion_rows: List[Dict[str, Any]] = []
+    else:
+        # body_only reissue: collect a FRESH live candidate pool (not the parent
+        # snapshot) and exclude the parent's own selected_items plus recent
+        # sent/exposure logs, so the regenerated TOP5 is fresh, deduped news. The
+        # existing top image is reused (body_only keeps the parent image).
+        _smoke_runner = smoke_runner or run_keysuri_live_source_smoke
+        smoke = _smoke_runner(
+            program_id=pid,
+            use_gemini=False,
+            contract_preview=False,
+            send=False,
+        )
+        try:
+            fresh_source_pack = json.loads(Path(smoke.source_pack_path).read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as exc:
+            return {
+                "ok": False,
+                "error": "text_only_reissue_source_collection_failed",
+                "program_id": pid,
+                "error_code_detail": type(exc).__name__,
+            }
 
-    exclusion_rows = _keysuri_reissue_exclusion_rows(parent)
-    prompt_input, generated_briefing, repair_fields, regen_error = _regenerate_keysuri_text_from_source_pack(
-        pid,
-        fresh_source_pack,
-        parent=parent,
-        text_caller=text_caller,
-        extra_recent_log=exclusion_rows,
-    )
+        exclusion_rows = _keysuri_reissue_exclusion_rows(parent)
+        prompt_input, generated_briefing, repair_fields, regen_error = _regenerate_keysuri_text_from_source_pack(
+            pid,
+            fresh_source_pack,
+            parent=parent,
+            text_caller=text_caller,
+            extra_recent_log=exclusion_rows,
+        )
     if regen_error or prompt_input is None or generated_briefing is None:
         failure = {
             "ok": False,
@@ -4168,6 +4338,7 @@ def run_keysuri_text_only_reissue(
         send_owner_email=send_owner_email,
         inline_parts=inline_parts,
         send_fn=send_fn,
+        owner_notice_html=owner_email_notice_html,
     )
     smtp_attempted = bool(adjudication.get("smtp_attempted"))
     email_sent = bool(adjudication.get("email_sent"))
@@ -4279,6 +4450,7 @@ def run_keysuri_text_and_image_reissue(
     reissue_reason_code: str = "",
     reissue_reason_note: str = "",
     send_owner_email: bool = True,
+    owner_email_notice_html: Optional[str] = None,
     smoke_runner=None,
     image_canary_runner=None,
     bottom_generate_fn: Optional[Callable[..., Path]] = None,
@@ -4522,6 +4694,7 @@ def run_keysuri_text_and_image_reissue(
         send_owner_email=send_owner_email,
         inline_parts=inline_parts,
         send_fn=send_fn,
+        owner_notice_html=owner_email_notice_html,
     )
     smtp_attempted = bool(adjudication.get("smtp_attempted"))
     email_sent = bool(adjudication.get("email_sent"))

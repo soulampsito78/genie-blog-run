@@ -269,7 +269,10 @@ def prepare_customer_final_html(
     *,
     review_confirmation_state: str | None = None,
 ) -> str:
-    html_body = strip_owner_operational_handoff(saved_html)
+    from auto_remediation import strip_auto_remediation_notice
+
+    # Owner-only 자동 교정본 header: never part of a customer surface.
+    html_body = strip_auto_remediation_notice(strip_owner_operational_handoff(saved_html))
     if customer_html_contains_naver_markers(html_body):
         raise ValueError("customer final HTML contains forbidden Naver markers")
     if not html_body.strip():
