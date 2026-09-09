@@ -223,6 +223,18 @@ class JobRequest(BaseModel):
         None,
         description="YYYY-MM-DD target date for controlled tests only.",
     )
+    # body_only remediation replays a parent's settled article selection. The
+    # reader-facing defect is prose, so re-running news collection would swap the
+    # articles underneath the repair (2026-09-09: the body_only child briefed
+    # three entirely different stories from a different day than its parent).
+    frozen_top_market_news: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="Parent's settled TOP news selection; suppresses fresh reselection.",
+    )
+    frozen_parent_run_id: Optional[str] = Field(
+        None,
+        description="Run whose article selection is being replayed.",
+    )
 
 
 def init_vertex() -> None:
@@ -1440,6 +1452,47 @@ def build_runtime_input(mode: str, controlled_test_target_date: Optional[str] = 
     raise ValueError(f"Unsupported mode: {mode}")
 
 
+def _frozen_today_news_selection(job: Any) -> Optional[List[Dict[str, Any]]]:
+    """The parent article selection a body_only replay must reuse verbatim."""
+    raw = getattr(job, "frozen_top_market_news", None)
+    if not isinstance(raw, list):
+        return None
+    items = [dict(item) for item in raw if isinstance(item, dict)]
+    return items or None
+
+
+def _apply_frozen_today_news_selection(
+    runtime_input: Dict[str, Any],
+    frozen_news: List[Dict[str, Any]],
+    *,
+    parent_run_id: str = "",
+) -> Dict[str, Any]:
+    """Replay a settled selection: no fresh collection, no reselection, same order.
+
+    The dedup gate is deliberately skipped. Its job is to choose today's articles
+    and record that choice; here the choice is already made and re-running it
+    would drop the parent's articles as "already sent" and substitute new ones.
+    """
+    out = dict(runtime_input)
+    out["top_market_news"] = frozen_news
+    out["today_news_selection_frozen"] = True
+    out["today_news_selection_frozen_parent_run_id"] = parent_run_id or None
+    out["sent_news_dedup"] = {
+        "briefing_type": "today_genie",
+        "required_count": TODAY_GENIE_REQUIRED_NEWS_COUNT,
+        "candidate_count": len(frozen_news),
+        "selected_count": len(frozen_news),
+        "rejected_count": 0,
+        "rejected_by_reason": {},
+        "filled_required_count": len(frozen_news) >= TODAY_GENIE_REQUIRED_NEWS_COUNT,
+        "shortfall": max(0, TODAY_GENIE_REQUIRED_NEWS_COUNT - len(frozen_news)),
+        "reason": "frozen_parent_selection",
+        "selected_items": [dict(item) for item in frozen_news],
+        "rejected_items": [],
+    }
+    return out
+
+
 def apply_today_genie_sent_news_dedup(runtime_input: Dict[str, Any]) -> Dict[str, Any]:
     """Filter today_genie news candidates before text generation and retain metadata."""
     raw = runtime_input.get("top_market_news")
@@ -2435,7 +2488,15 @@ def _generate_impl(job: JobRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=422, detail=detail)
 
     if mode == "today_genie":
-        runtime_input = apply_today_genie_sent_news_dedup(runtime_input)
+        frozen_news = _frozen_today_news_selection(job)
+        if frozen_news is not None:
+            runtime_input = _apply_frozen_today_news_selection(
+                runtime_input,
+                frozen_news,
+                parent_run_id=str(getattr(job, "frozen_parent_run_id", "") or ""),
+            )
+        else:
+            runtime_input = apply_today_genie_sent_news_dedup(runtime_input)
         runtime_input = ensure_canonical_news_identity(runtime_input)
 
     if mode == "today_genie":

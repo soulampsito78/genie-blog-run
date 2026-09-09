@@ -857,10 +857,43 @@ def _validate_image_prompts_news_anchoring(
     return issues
 
 
+def _input_article_is_card_bound(item: Dict[str, Any], data: Optional[Dict[str, Any]]) -> bool:
+    """True when a TOP3 reader card is bound to this exact input article by id.
+
+    Canonical ``news_id`` is the primary article binding across this pipeline —
+    ``_validate_top_three_news_briefing`` has treated it that way since
+    2026-09-07, precisely so Korean reader copy never has to splice raw English
+    headline tokens in to satisfy a text check. This body-level check was left
+    reading the older evidence, and the mismatch is what rejected
+    20260909_063102_today_genie_bc5aae92: all three cards were id-bound to their
+    articles and faithfully translated, yet the only English token surviving into
+    the Korean prose was "ford".
+    """
+    if not isinstance(data, dict):
+        return False
+    article_id = str(item.get("news_id") or "").strip() or canonical_news_id(item)
+    if not article_id:
+        return False
+    for watchpoint in data.get("key_watchpoints") or []:
+        if not isinstance(watchpoint, dict):
+            continue
+        if str(watchpoint.get("news_id") or "").strip() == article_id:
+            return True
+    return False
+
+
 def _body_underuses_news_when_feeds_full(
-    runtime_input: Dict[str, Any], all_text: str
+    runtime_input: Dict[str, Any],
+    all_text: str,
+    data: Optional[Dict[str, Any]] = None,
 ) -> bool:
-    """Full feeds: briefing should visibly carry input headlines, not generic filler."""
+    """Full feeds: briefing should visibly carry input news, not generic filler.
+
+    An article counts as carried when a reader card is bound to it by canonical
+    id, or when its entities/tokens/topic still surface in the prose. The
+    textual paths are unchanged and remain the only evidence for an article no
+    card claims, so an unbound, untethered headline still fails.
+    """
     if runtime_input.get("input_feed_status") != "full":
         return False
     news = runtime_input.get("top_market_news")
@@ -873,6 +906,9 @@ def _body_underuses_news_when_feeds_full(
             continue
         h = item.get("headline", "")
         if not isinstance(h, str) or not h.strip():
+            continue
+        if _input_article_is_card_bound(item, data):
+            anchored += 1
             continue
         if text_covers_headline_entities(all_text, h):
             anchored += 1
@@ -2471,7 +2507,7 @@ def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) ->
                 "error",
             )
         )
-    if _body_underuses_news_when_feeds_full(runtime_input, all_text):
+    if _body_underuses_news_when_feeds_full(runtime_input, all_text, data):
         issues.append(
             ValidationIssue(
                 "unanchored_briefing_vs_input_news",

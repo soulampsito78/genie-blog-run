@@ -159,6 +159,24 @@ def build_reused_today_image_result(
     return image_result, fields
 
 
+ERROR_BODY_ONLY_PARENT_SELECTION_UNAVAILABLE = "today_body_only_parent_selection_unavailable"
+
+
+def frozen_parent_news_selection(parent: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    """The parent's settled TOP news selection, in its original order.
+
+    body_only repairs prose. The articles the reader is being briefed on are not
+    in question, so they are replayed verbatim rather than re-collected: on
+    2026-09-09 a body_only child briefed three entirely different stories, from a
+    different day, than the parent it was correcting.
+    """
+    raw = parent.get("selected_items")
+    if not isinstance(raw, list):
+        return None
+    items = [dict(item) for item in raw if isinstance(item, dict) and item.get("headline")]
+    return items or None
+
+
 def run_today_body_only_reissue(
     parent_run_id: str,
     *,
@@ -188,6 +206,17 @@ def run_today_body_only_reissue(
             **reuse_fields,
         }
 
+    # Critical source evidence: without the parent's settled selection this would
+    # silently become a fresh briefing about different articles, so fail closed.
+    frozen_news = frozen_parent_news_selection(parent)
+    if not frozen_news:
+        return {
+            "ok": False,
+            "error": ERROR_BODY_ONLY_PARENT_SELECTION_UNAVAILABLE,
+            "mode": mode,
+            **reuse_fields,
+        }
+
     reason = reissue_reason_code
     if reissue_reason_note:
         reason = f"{reason} — {reissue_reason_note}" if reason else reissue_reason_note
@@ -209,6 +238,7 @@ def run_today_body_only_reissue(
             reissue_scope="body_only",
             today_image_result_override=image_result,
             owner_email_notice_html=owner_email_notice_html,
+            frozen_top_market_news=frozen_news,
         )
     except Exception:  # noqa: BLE001 - caller renders a safe failure page
         logger.exception("today body_only reissue pipeline failed parent_run_id=%s", parent_run_id)
@@ -229,6 +259,9 @@ def run_today_body_only_reissue(
             "text_generation_called": True,
             "regen_preserved_text": False,
             "regen_regenerated_images": False,
+            "today_news_selection_frozen": True,
+            "today_news_selection_frozen_parent_run_id": parent_run_id,
+            "today_news_selection_frozen_count": len(frozen_news),
             "owner_email_subject_prefix": BODY_ONLY_SUBJECT_PREFIX,
         }
     )

@@ -153,10 +153,17 @@ def _dedup_fields_from_api_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def run_genie_job(mode: str) -> OrchestrationResult:
+def run_genie_job(
+    mode: str,
+    *,
+    frozen_top_market_news: list[dict] | None = None,
+    frozen_parent_run_id: str | None = None,
+) -> OrchestrationResult:
     """
     Call the Genie API for the given mode, then apply publishing policy.
     Retries transient failures (timeout, connection error) up to GENIE_API_RETRIES.
+    Pass frozen_top_market_news to replay a parent's settled article selection
+    (body_only remediation) instead of collecting and reselecting news.
     """
     import time
     import urllib.error
@@ -170,6 +177,14 @@ def run_genie_job(mode: str) -> OrchestrationResult:
         payload["controlled_test_mode"] = True
         payload["controlled_test_target_date"] = controlled_target
         logger.info("controlled_test_mode active target_date=%s", controlled_target)
+    if mode == "today_genie" and frozen_top_market_news:
+        payload["frozen_top_market_news"] = list(frozen_top_market_news)
+        payload["frozen_parent_run_id"] = frozen_parent_run_id or None
+        logger.info(
+            "today_genie frozen article selection: parent=%s count=%s",
+            frozen_parent_run_id,
+            len(frozen_top_market_news),
+        )
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -741,6 +756,7 @@ def execute_orchestrator_run(
     execution_class: str | None = None,
     scheduled_slot: str | None = None,
     owner_email_notice_html: str | None = None,
+    frozen_top_market_news: list[dict] | None = None,
 ) -> tuple[str, OrchestrationResult, bool]:
     """
     Run Genie job, attempt owner-review email, persist admin artifact.
@@ -766,7 +782,16 @@ def execute_orchestrator_run(
     try:
         from admin_store import generate_run_id
 
-        result = run_genie_job(mode)
+        # Natural runs keep the plain call; the frozen-selection kwargs appear
+        # only for a body_only replay that actually has a parent selection.
+        if frozen_top_market_news:
+            result = run_genie_job(
+                mode,
+                frozen_top_market_news=frozen_top_market_news,
+                frozen_parent_run_id=parent_run_id,
+            )
+        else:
+            result = run_genie_job(mode)
         run_id: str | None = None
         today_image_result = None
 

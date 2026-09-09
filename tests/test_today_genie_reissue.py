@@ -154,6 +154,27 @@ class _TodayReissueTestBase(unittest.TestCase):
             "customer_delivery_status": "not_sent",
             "target_date": "2026-06-11",
             "email_subject": "오늘의 지니 장전 브리핑",
+            # Every real Today artifact persists its settled selection; body_only
+            # replays it rather than briefing different articles.
+            "selected_count": 3,
+            "required_count": 3,
+            "selected_items": [
+                {
+                    "headline": "U.S. downplays Iran's seizure of unmanned sub in Hormuz Strait",
+                    "source": "CNBC",
+                    "date": "2026-06-10",
+                },
+                {
+                    "headline": "Bombardier points out U.S. footprint after Trump remarks",
+                    "source": "CNBC",
+                    "date": "2026-06-10",
+                },
+                {
+                    "headline": "Trump administration expresses concern over Ford's ties to China",
+                    "source": "CNBC",
+                    "date": "2026-06-10",
+                },
+            ],
         }
         if generated_paths is not None:
             meta.update(
@@ -244,7 +265,15 @@ class TodayBodyOnlyReissueTests(_TodayReissueTestBase):
         # body_only must never call the image API
         mock_generate.assert_not_called()
         # text regeneration runs through the normal today pipeline exactly once
-        mock_job.assert_called_once_with("today_genie")
+        # body_only replays the parent's settled selection instead of
+        # re-collecting news, so the child briefs the same articles.
+        mock_job.assert_called_once()
+        job_kwargs = mock_job.call_args.kwargs
+        self.assertEqual(mock_job.call_args.args, ("today_genie",))
+        self.assertEqual(
+            [item["headline"] for item in job_kwargs["frozen_top_market_news"]],
+            [item["headline"] for item in parent["selected_items"]],
+        )
 
         mock_send.assert_called_once()
         subject = mock_send.call_args.args[1]
