@@ -47,8 +47,15 @@ full; the accepted HTML is byte-identical to the start of the received HTML.
 Naver appended its own hidden receipt pixel. Accepted HTML SHA-256:
 `88f2b877b5ae9bf7e8b50a795a765405a871432b10a1ad203fcdcbe941972872`.
 Two generated CID images were present in the received message. The incident was
-resolved and a success report followed. Owner approval remains pending; customer
-status remains `not_sent`, and approval was not inherited.
+resolved and a success report followed. At the recovery handoff, owner approval was pending, customer status was
+`not_sent`, and approval was not inherited. A later audit found a separate
+iPhone Admin confirmation and POST `/admin/runs/20260910_080444_today_genie_22a3d46a/approve`
+at 08:10:44.986 KST. That Admin flow recorded `owner_admin` approval and SMTP
+acceptance for 12 customer recipients at 08:10:47.403. The recovery scripts did
+not invoke this route. Current production status is therefore `approved` /
+`ACCEPTED_ALL`; it must not be represented as globally `CUSTOMER_SENT=NO`.
+The recovery and automatic recovery paths themselves sent zero customer mail.
+The customer records were preserved, not reset to pending/not_sent.
 
 Cost evidence: original natural run = one logical run, two text attempts
 (TOP3 success + main 429), no internal retries or image calls. Recovery = one
