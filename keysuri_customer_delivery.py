@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from admin_store import _get_gcs_client, resolve_customer_recipients
+from customer_review_confirmation import (
+    HUMAN_OWNER,
+    PRE_SEND_REVIEWED,
+    customer_review_confirmation,
+)
 from email_sender import parse_customer_to_addrs, send_genie_email
 from keysuri_email_identity import build_keysuri_customer_subject, sanitize_preheader_text
 from keysuri_contract_preview_renderer import (
@@ -131,9 +136,20 @@ def keysuri_service_email_cid_token(program_id: str, run_id: str) -> str:
     return keysuri_korea_service_email_cid_token(run_id)
 
 
-def render_keysuri_customer_review_confirmation_box(*, gmail_safe: bool = False) -> str:
-    text = REVIEW_CONFIRMATION_TEXT[REVIEW_STATE_SENT_ARCHIVED]
-    state = REVIEW_STATE_SENT_ARCHIVED
+def render_keysuri_customer_review_confirmation_box(
+    *,
+    gmail_safe: bool = False,
+    approval_source: str = HUMAN_OWNER,
+) -> str:
+    """Render source-specific pre-submit copy for a customer payload.
+
+    The archival state is retained for historical owner surfaces, but an email
+    being prepared for provider handoff must not state that it was sent already.
+    """
+    state, text = customer_review_confirmation(
+        approval_source=approval_source,
+        display_state=PRE_SEND_REVIEWED,
+    )
     if gmail_safe:
         return (
             '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
@@ -144,7 +160,7 @@ def render_keysuri_customer_review_confirmation_box(*, gmail_safe: bool = False)
         )
     return (
         f'<section id="review-confirmation-box" class="review-box" '
-        f'data-review-state="{state}">'
+        f'data-review-state="{state}" data-review-source="{approval_source}">'
         f'<p class="review-confirmation-text">{html.escape(text)}</p>'
         "</section>"
     )
@@ -160,15 +176,32 @@ def _is_gmail_safe_keysuri_html(html_body: str) -> bool:
     return 'role="presentation"' in lowered and "cid:keysuri_topshot_global_" in lowered
 
 
-def _finalize_gmail_global_customer_review_state(html_body: str) -> str:
+def _finalize_gmail_global_customer_review_state(
+    html_body: str,
+    *,
+    approval_source: str = HUMAN_OWNER,
+) -> str:
     out = html_body
-    sent_text = REVIEW_CONFIRMATION_TEXT[REVIEW_STATE_SENT_ARCHIVED]
-    for state in (REVIEW_STATE_PREVIEW_PENDING, REVIEW_STATE_REVIEW_PASSED):
-        pending_text = REVIEW_CONFIRMATION_TEXT[state]
-        if pending_text in out:
-            out = out.replace(pending_text, sent_text)
-    if sent_text not in out:
-        box = render_keysuri_customer_review_confirmation_box(gmail_safe=True)
+    _, confirmation_text = customer_review_confirmation(
+        approval_source=approval_source,
+        display_state=PRE_SEND_REVIEWED,
+    )
+    # Existing owner-preview artifacts can contain any historical review state.
+    # A newly prepared payload is pre-submit and is rebuilt with the selected
+    # source rather than inheriting a human or "already sent" attestation.
+    for state in (
+        REVIEW_STATE_PREVIEW_PENDING,
+        REVIEW_STATE_REVIEW_PASSED,
+        REVIEW_STATE_SENT_ARCHIVED,
+    ):
+        old_text = REVIEW_CONFIRMATION_TEXT[state]
+        if old_text in out:
+            out = out.replace(old_text, confirmation_text)
+    if confirmation_text not in out:
+        box = render_keysuri_customer_review_confirmation_box(
+            gmail_safe=True,
+            approval_source=approval_source,
+        )
         marker = "Copyright Ⓒ MirAI:ON"
         if marker in out:
             out = out.replace(marker, f"{box}\n{marker}", 1)
@@ -177,12 +210,16 @@ def _finalize_gmail_global_customer_review_state(html_body: str) -> str:
     return out
 
 
-def prepare_gmail_global_customer_final_html(saved_html: str) -> str:
+def prepare_gmail_global_customer_final_html(
+    saved_html: str,
+    *,
+    approval_source: str = HUMAN_OWNER,
+) -> str:
     out = strip_keysuri_owner_review_controls(saved_html)
     out = _RUN_ID_ADMIN_LINE_RE.sub("", out)
     out = _ADMIN_RUN_URL_RE.sub("", out)
     out = out.replace("[운영자 검토]", "")
-    out = _finalize_gmail_global_customer_review_state(out)
+    out = _finalize_gmail_global_customer_review_state(out, approval_source=approval_source)
     return out.strip()
 
 
@@ -214,15 +251,21 @@ def prepare_keysuri_customer_final_html(
     saved_html: str,
     *,
     meta: Dict[str, Any],
+    approval_source: str = HUMAN_OWNER,
 ) -> str:
     mode = str(meta.get("mode") or meta.get("program_id") or "")
     if mode == PROGRAM_GLOBAL and _is_gmail_safe_keysuri_html(saved_html):
-        html_body = prepare_gmail_global_customer_final_html(saved_html)
+        html_body = prepare_gmail_global_customer_final_html(
+            saved_html,
+            approval_source=approval_source,
+        )
     else:
         html_body = strip_keysuri_owner_review_controls(saved_html)
         if not html_body.strip():
             raise ValueError("Kee-Suri customer final HTML is empty after stripping owner controls")
-        review_box = render_keysuri_customer_review_confirmation_box()
+        review_box = render_keysuri_customer_review_confirmation_box(
+            approval_source=approval_source,
+        )
         html_body = f"{html_body}\n{review_box}"
     if not html_body.strip():
         raise ValueError("Kee-Suri customer final HTML is empty after stripping owner controls")
@@ -515,8 +558,13 @@ def prepare_keysuri_customer_delivery(
     meta: Dict[str, Any],
     *,
     recipients_override: Optional[List[str]] = None,
+    approval_source: str = HUMAN_OWNER,
 ) -> Dict[str, Any]:
-    """Prepare the exact KeeSuri payload without submitting it to SMTP."""
+    """Prepare the exact KeeSuri payload without submitting it to SMTP.
+
+    ``approval_source`` selects display copy only.  Delivery authority remains
+    with the guarded human/delegated caller and is never created here.
+    """
     mode = str(meta.get("mode") or meta.get("program_id") or "")
     subject = build_keysuri_customer_final_subject(meta, saved_html)
     preheader = build_keysuri_customer_final_preheader(meta, saved_html)
@@ -542,7 +590,11 @@ def prepare_keysuri_customer_delivery(
     if mode not in _KEYSURI_MODES:
         return {"ok": False, "error": "unsupported_mode", "subject": subject, "preheader": preheader}
     try:
-        html_body = prepare_keysuri_customer_final_html(saved_html, meta=meta)
+        html_body = prepare_keysuri_customer_final_html(
+            saved_html,
+            meta=meta,
+            approval_source=approval_source,
+        )
     except ValueError as exc:
         return {"ok": False, "error": str(exc), "subject": subject, "preheader": preheader}
     html_body = _insert_hidden_preheader(html_body, preheader)

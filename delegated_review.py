@@ -21,6 +21,8 @@ EXPECTED_IMAGE_ROLES = {
 }
 REQUIRED_CHECKS = frozenset({"content", "sources", "images", "render", "operations"})
 VERDICTS = frozenset({"PASS", "HOLD", "REVIEW_UNAVAILABLE", "REVIEW_INCOMPLETE", "WORK_REVIEW_ERROR"})
+SHADOW_EVIDENCE_NAMESPACE = "delegated_shadow_reviews"
+SHADOW_RECEIPT_BINDING_NAMESPACE = SHADOW_EVIDENCE_NAMESPACE
 _HASH = re.compile(r"^[a-f0-9]{64}$")
 _BINDINGS = ("run_id", "mode", "publication_date", "subject_sha256", "body_sha256", "image_sha256")
 _RUN_ID = re.compile(r"^(\d{8})_\d{6}_(today_genie|keysuri_global_tech|keysuri_korea_tech)_[a-f0-9]{8}$")
@@ -175,7 +177,11 @@ limits here are shadow-evaluation parameters, not live schedule promises.
 
 
 def record_shadow_review(candidate: Mapping[str, Any], review: Mapping[str, Any] | None, *, now: datetime) -> dict[str, Any]:
-    """Append immutable shadow evidence via the existing durable safety backend."""
+    """Append immutable shadow evidence in its namespace only.
+
+    A receipt nested in this record is shadow observation evidence.  It is not
+    an operational receipt binding and the authenticated worker never reads it.
+    """
     from admin_safety_store import _create_json_once
 
     outcome = evaluate_shadow_review(candidate, review, now=now)
@@ -185,10 +191,16 @@ def record_shadow_review(candidate: Mapping[str, Any], review: Mapping[str, Any]
         evidence = {"candidate": dict(candidate) if isinstance(candidate, Mapping) else None, "review": dict(review) if isinstance(review, Mapping) else None}
         canonical = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         evidence_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        record = {**outcome, "evidence_sha256": evidence_hash, "evidence": evidence}
+        record = {
+            **outcome,
+            "evidence_namespace": SHADOW_EVIDENCE_NAMESPACE,
+            "receipt_binding_namespace": SHADOW_RECEIPT_BINDING_NAMESPACE,
+            "evidence_sha256": evidence_hash,
+            "evidence": evidence,
+        }
         record_hash = hashlib.sha256(json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         record["shadow_record_id"] = record_hash
-        created = _create_json_once(f"delegated_shadow_reviews/{record_hash}.json", record)
+        created = _create_json_once(f"{SHADOW_EVIDENCE_NAMESPACE}/{record_hash}.json", record)
         return {**record, "record_created": created}
     except Exception:
         # No successful review-record assertion survives failed durable storage.

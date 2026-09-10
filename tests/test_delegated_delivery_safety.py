@@ -219,6 +219,35 @@ def test_unsubscribe_between_review_and_final_handoff_stops_sender():
     assert reserve(frozen)["allowed"] is False
 
 
+def test_pre_submit_final_guard_block_is_preserved_and_has_no_automatic_recovery():
+    """A reserved but provably unsubmitted attempt still requires reconciliation."""
+    frozen = plan()
+    reconcile()
+    checks = []
+
+    def revalidate(*args):
+        checks.append(True)
+        if len(checks) == 2:
+            raise safety.DeliverySafetyError("DELIVERY_SUPPRESSED")
+        return True
+
+    with pytest.raises(safety.DeliverySafetyError, match="DELIVERY_SUPPRESSED"):
+        safety.guarded_submit(
+            authority=Row(revalidate=revalidate),
+            plan=frozen,
+            run_id=RUN,
+            candidate_sha256="c" * 64,
+            review_id="review",
+            now=NOW,
+            submit=lambda _: pytest.fail("provider submission must not run"),
+        )
+
+    attempt_id = "publication_" + safety._digest([frozen["product_code"], DAY.isoformat()])
+    outcome = store._read_json("publication_outcomes/" + attempt_id + ".json")
+    assert outcome["outcome"] == "NOT_SUBMITTED_FINAL_GUARD_BLOCKED"
+    assert reserve(frozen, run_id="20260910_091500_today_genie_12345678")["allowed"] is False
+
+
 def test_frozen_plan_tampering_fails_closed():
     frozen = plan()
     key = "delegated_recipient_plans/" + frozen["plan_id"] + ".json"

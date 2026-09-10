@@ -20,7 +20,7 @@ The Work internal local heartbeat `genie-keesuri-15` is registered and read back
 4. Independently evaluate CONTENT, SOURCE, IMAGE, EMAIL_RENDER, RUN_IDENTITY and DELIVERY_READINESS. Original source-link queries must be retained in the trusted source set. Privacy-redacted HTML must not become evidence that an original source link is broken. Cosmetic-only issues do not automatically justify an Owner interruption.
 5. Bind the verdict and all evidence to the exact immutable candidate and policy version. Use PASS, HOLD_ANOMALY, HOLD_INCOMPLETE, REVIEW_UNAVAILABLE or STATE_CONFLICT. Any unknown required class prevents PASS. A later material change requires fresh review.
 6. Persist one immutable observation per attempt, including actual time, slot/run/message/candidate identity, class outcomes, limitations and evidence hashes. Aggregate by publication slot; do not count retries twice. Historical already-sent status is a delivery conflict, not a content false positive.
-7. **Do not invoke the delegated send adapter, approve a live run, reserve live send claims, modify production state or Scheduler, reissue, or change customer/billing/IAM/secret state.** Every shadow record has `approval_authority=NONE` and `customer_send_authorized=false`.
+7. **Do not invoke the delegated send adapter, approve a live run, reserve live send claims, modify production state or Scheduler, reissue, or change customer/billing/IAM/secret state.** Every shadow record has `approval_authority=NONE` and `customer_send_authorized=false`. Shadow receipt evidence is stored only under `delegated_shadow_reviews`; it is not an operational `delegated_received_bindings` record and cannot replay a production PASS.
 
 ## Notification and adjudication
 

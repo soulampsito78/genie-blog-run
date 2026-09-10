@@ -58,7 +58,16 @@ An exception packet contains PRODUCT, RUN_ID, PUBLICATION_DATE, ANOMALY_TYPE, EX
 
 Retain existing immutable approval snapshots and application delivery commands. Per-run atomic claims prevent competing snapshots from each submitting the same run. Publication/product/date/recipient protection must also cover distinct child IDs, retries and process restarts. Customer identity should come from the trusted recipient resolver; caller-provided recipient lists or safety booleans cannot establish entitlement.
 
-A crash after reservation or provider submission must leave a durable stop. Do not automatically delete claims for unknown, partial, refused or not-submitted outcomes. Investigate and reconcile before an explicitly authorized recovery. A held unsent publication can enter manual recovery with a new candidate identity; previously accepted recipients remain protected across reissue. SMTP acceptance is not inbox receipt, and provider-side exactly-once is not claimed.
+The current recovery boundary is deliberately narrow:
+
+| Observation point | Durable state | Current behavior |
+|---|---|---|
+| A. Content anomaly before any publication reservation | No publication claim | Existing bounded pre-freeze correction may make a new candidate. It must repeat affected first-pass validation and receive a new second pass. |
+| B. Reservation exists, final eligibility/handoff is blocked before provider submit | `NOT_SUBMITTED_FINAL_GUARD_BLOCKED`, preserved reservation and recipient claims | The code records that no provider callback was invoked, then stops. It has **no automatic release or reissue path**. A future recovery requires proof of no submit, cancellation of any competing worker, race control, a new candidate/review and fresh suppression checks. |
+| C. Provider submission may have occurred or outcome is unknown | `SUBMITTED` / `OUTCOME_UNKNOWN` or equivalent reconciliation state | Never retry automatically. Preserve records and reconcile. |
+| D. Any recipient was accepted, partially refused or delivery is otherwise terminal | Accepted/partial/refused durable outcome | Never resend automatically; reconcile recipient-level facts first. |
+
+Do not delete a reservation or change run IDs to escape this boundary. A held unsent publication may enter manual recovery only when it never reached the reservation boundary. SMTP acceptance is not inbox receipt, and provider-side exactly-once is not claimed.
 
 ## Rollout and manual-mode fallback
 
@@ -69,6 +78,8 @@ A crash after reservation or provider submission must leave a durable stop. Do n
 5. Close the approved Option B repository integration through a tested feature branch and review PR. After sufficient real Mac-independent shadow evidence, present the exact merge/deployment/activation decision for the reviewed version. Merge, deploy, production configuration/scheduler/data/secret/IAM mutation and live send remain unauthorized. Repository integration does not turn a shadow PASS into production authority.
 
 The target kill switch is an independent delegated-send OFF/manual mode evaluated at the final send boundary. OFF prevents delegated PASS from authorizing delivery while retaining the safe authenticated human flow and every snapshot/claim/receipt record. It must not require deleting evidence or reverting to claim-unaware code. On rollback, drain writers and retain/reconcile ledgers; never blindly resend. Current deployed human mode remains the live baseline until authorized activation. Document whether the final local kill switch was actually tested rather than treating this policy text as evidence.
+
+Manual fallback still depends on four independent healthy boundaries: (1) if the Work reviewer fails, a human may review only after the existing candidate/first-pass/receipt safeguards hold; (2) if the customer authority database is unavailable, manual delivery is blocked because eligibility cannot be revalidated; (3) if unsubscribe, complaint or bounce ingestion is stale or unavailable, manual delivery is blocked; (4) if the duplicate ledger, publication reservation or transition journal is unavailable or ambiguous, manual delivery is blocked and requires reconciliation. OFF never converts any of these failures into an unguarded SMTP path.
 
 Five-day shadow is a finite evidence requirement, not a claim that fifteen slots have completed. Require zero known abnormal candidates silently passed and explain all missing/incomplete/conflicting states. Report NORMAL_PASS, NORMAL_FALSE_HOLD, KNOWN_ANOMALY_CAUGHT, KNOWN_ANOMALY_MISSED and REVIEW_UNAVAILABLE with actual denominators. The initial suggested “at most one false hold” is an engineering checkpoint, not a new Owner policy or statistical guarantee; analyze causes instead of hiding them in an aggregate.
 
@@ -82,6 +93,6 @@ The received-mail broker checks actual raw MIME, run identity and original image
 
 `admin_approval.py` and `admin_store.py` connect the existing human confirmation path to the same recipient and durable publication guard after cutover. `DELEGATED_SEND_MODE=OFF` disables delegated authority but never disables the persistent cutover guard. Existing evidence/claims stay in place. A configured and healthy recipient authority is also required in manual fallback; reverting to an older claim-unaware revision is not a safe rollback.
 
-`auto_remediation.py` now checks durable received-candidate bindings and delegated-review state before proposing automatic repair. Frozen/reviewed/Work-held candidates require manual recovery; unavailable boundary evidence holds. Existing unfrozen generation repair remains allowed under its prior validation/attempt restrictions. Cross-process tests verify the persistent boundary.
+`auto_remediation.py` checks only the operational `delegated_received_bindings` namespace and delegated-review state before proposing automatic repair. Shadow observations persist separately under `delegated_shadow_reviews`; they cannot block an otherwise eligible pre-reservation correction, load as an operational receipt or replay an operational PASS. Frozen/reviewed/Work-held candidates require manual recovery; unavailable operational boundary evidence holds. Existing unfrozen generation repair remains allowed under its prior validation/attempt restrictions.
 
 Controlled integration sequence: keep mode OFF; install prepared dependencies/configuration in an isolated environment; connect and verify the protected Gmail/final-render/reviewer/signing/suppression/notification chain; demonstrate Mac-independent scheduled execution; complete the finite shadow cohort and adjudicate anomalies/false holds; drain every old manual/delegated writer; reconcile prior accepted/unknown publications and seed the once-only cutover; verify manual fallback; only then seek the authorized production deployment/activation gate. No key, IAM, DB, scheduler or customer-delivery production change is made by this prepared patch.

@@ -72,7 +72,8 @@ def setup_case(tmp_path, monkeypatch):
             path.write_bytes(b"fixture image bytes " + role.encode())
             parts.append((str(path), role, f"{role}.jpg"))
         def prepared(*args, **kwargs):
-            return {"ok": True, "subject": "Reviewed briefing", "html_body": f'<p>{gate._HUMAN_COPY}</p><a href="{source}">Source</a>',
+            copy = gate._DELEGATED_COPY if kwargs.get("approval_source") == "DELEGATED_WORK_REVIEW" else gate._HUMAN_COPY
+            return {"ok": True, "subject": "Reviewed briefing", "html_body": f'<p>{copy}</p><a href="{source}">Source</a>',
                     "inline_jpeg_parts": parts, "recipients": kwargs["recipients_override"]}
         if mode == "today_genie":
             monkeypatch.setattr("today_geenee_customer_delivery.prepare_today_geenee_customer_delivery", prepared)

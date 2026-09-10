@@ -419,8 +419,8 @@ class KeysuriCustomerDeliveryHtmlTests(unittest.TestCase):
             html,
         )
 
-    def test_keysuri_gmail_customer_delivery_sent_archived_box(self) -> None:
-        from keysuri_contract_preview_renderer import REVIEW_CONFIRMATION_TEXT, REVIEW_STATE_SENT_ARCHIVED
+    def test_keysuri_gmail_customer_delivery_pre_submit_human_review_box(self) -> None:
+        from customer_review_confirmation import HUMAN_DIRECT_REVIEW_TEXT
         from keysuri_customer_delivery import prepare_keysuri_customer_final_html
 
         run_id = "20260612_120000_keysuri_global_tech_aabbccdd"
@@ -428,7 +428,8 @@ class KeysuriCustomerDeliveryHtmlTests(unittest.TestCase):
             _keysuri_global_gmail_owner_review_email_html(run_id),
             meta=_keysuri_global_artifact_meta(run_id),
         )
-        self.assertIn(REVIEW_CONFIRMATION_TEXT[REVIEW_STATE_SENT_ARCHIVED], html)
+        self.assertIn(HUMAN_DIRECT_REVIEW_TEXT, html)
+        self.assertNotIn("발송되었습니다", html)
         self.assertNotIn("preview_pending", html)
         self.assertNotIn("검수 대기", html)
 
@@ -455,8 +456,8 @@ class KeysuriCustomerDeliveryHtmlTests(unittest.TestCase):
         self.assertIn("https://example.com/source-1", html)
         self.assertIn(keysuri_global_service_email_cid_src(run_id), html)
 
-    def test_keysuri_legacy_customer_delivery_sent_archived_box(self) -> None:
-        from keysuri_contract_preview_renderer import REVIEW_CONFIRMATION_TEXT, REVIEW_STATE_SENT_ARCHIVED
+    def test_keysuri_legacy_customer_delivery_pre_submit_human_review_box(self) -> None:
+        from customer_review_confirmation import HUMAN_DIRECT_REVIEW_TEXT
         from keysuri_customer_delivery import prepare_keysuri_customer_final_html
 
         run_id = "20260612_120000_keysuri_global_tech_aabbccdd"
@@ -465,8 +466,9 @@ class KeysuriCustomerDeliveryHtmlTests(unittest.TestCase):
             meta=_keysuri_global_artifact_meta(run_id),
         )
         self.assertIn('id="review-confirmation-box"', html)
-        self.assertIn(f'data-review-state="{REVIEW_STATE_SENT_ARCHIVED}"', html)
-        self.assertIn(REVIEW_CONFIRMATION_TEXT[REVIEW_STATE_SENT_ARCHIVED], html)
+        self.assertIn('data-review-state="review_passed"', html)
+        self.assertIn(HUMAN_DIRECT_REVIEW_TEXT, html)
+        self.assertNotIn("발송되었습니다", html)
         self.assertNotIn("preview_pending", html)
         self.assertNotIn("검수 대기", html)
 

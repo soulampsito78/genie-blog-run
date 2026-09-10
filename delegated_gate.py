@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from delegated_review import evaluate_shadow_review, POLICY_VERSION as SHADOW_POLICY
+from customer_review_confirmation import DELEGATED_REVIEW_TEXT, DELEGATED_WORK_REVIEW
 
 POLICY_VERSION = "genie-keesuri-second-pass-v2"
 REQUIRED_CHECKS = frozenset({"content", "sources", "images", "render", "customer_render", "run_identity", "delivery_readiness"})
@@ -29,7 +30,7 @@ VERDICTS = frozenset({"PASS", "HOLD_ANOMALY", "HOLD_INCOMPLETE", "REVIEW_UNAVAIL
 _HEX = re.compile(r"^[a-f0-9]{64}$")
 _EVENT = re.compile(r"^[A-Za-z0-9_-]{16,100}$")
 _HUMAN_COPY = "본 브리핑은 운영책임자의 직접 검수를 통과했습니다."
-_DELEGATED_COPY = "본 브리핑은 운영책임자가 정한 정책에 따른 독립적인 AI 검토를 통과했습니다."
+_DELEGATED_COPY = DELEGATED_REVIEW_TEXT
 _NAVER_RECEIPT_SUFFIX = re.compile(
     r"<table style='display:none'><tr><td><img src=\"https://mail\.naver\.com/readReceipt/notify/\?img="
     r"(?:[A-Za-z0-9._~-]|%[a-fA-F0-9]{2}){1,8192}\" border=\"0\"/></td></tr></table>\s*\Z"
@@ -224,13 +225,24 @@ lineage, final content or recipient snapshot requires a new review.
         from keysuri_customer_delivery import prepare_keysuri_customer_delivery as prepare
     else:
         raise GateError("UNSUPPORTED_PRODUCT", "STATE_CONFLICT")
-    prepared = prepare(saved_html, meta, recipients_override=recipients)
+    # The delegated candidate is rendered once with an explicit display source
+    # before its hash is frozen.  This presentation argument cannot grant any
+    # approval or delivery right; later authenticated review and final boundary
+    # checks remain mandatory.
+    prepared = prepare(
+        saved_html,
+        meta,
+        recipients_override=recipients,
+        approval_source=DELEGATED_WORK_REVIEW,
+    )
     if not prepared.get("ok"):
         raise GateError(str(prepared.get("error") or "CANDIDATE_PREPARATION_FAILED"))
-    customer_html = str(prepared["html_body"]).replace(_HUMAN_COPY, _DELEGATED_COPY)
+    customer_html = str(prepared["html_body"])
     # Never let a future renderer's explicit human-attestation copy slip through.
     if "운영책임자의 직접 검수" in customer_html:
         raise GateError("UNSUPPORTED_HUMAN_APPROVAL_COPY", "STATE_CONFLICT")
+    if _DELEGATED_COPY not in customer_html:
+        raise GateError("DELEGATED_APPROVAL_COPY_MISSING", "STATE_CONFLICT")
     images = tuple(FrozenImage("top" if index == 0 else "bottom" if index == 1 else f"image_{index+1}", str(cid), Path(filename).name, Path(path).read_bytes())
                    for index, (path, cid, filename) in enumerate(prepared["inline_jpeg_parts"]))
     if any(not image.content for image in images):

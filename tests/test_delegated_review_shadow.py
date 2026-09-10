@@ -9,6 +9,7 @@ import pytest
 
 from delegated_review import (
     ACTIVE_MODES, POLICY_VERSION, REQUIRED_CHECKS,
+    SHADOW_EVIDENCE_NAMESPACE, SHADOW_RECEIPT_BINDING_NAMESPACE,
     delegated_send_gate, evaluate_shadow_review, record_shadow_review,
 )
 
@@ -146,6 +147,39 @@ def test_immutable_evidence_is_shadow_only_and_does_not_mutate_candidate(tmp_pat
     saved = json.loads(next((tmp_path/"delegated_shadow_reviews").glob("*.json")).read_text())
     assert saved["evidence"]["review"]["received_message"]["message_id"] == "gmail-message-1"
     assert saved["approval_authority"] == "NONE"
+    assert saved["evidence_namespace"] == SHADOW_EVIDENCE_NAMESPACE
+    assert saved["receipt_binding_namespace"] == SHADOW_RECEIPT_BINDING_NAMESPACE
+
+
+def test_shadow_receipt_persistence_cannot_mix_with_operational_binding_or_repair(tmp_path, monkeypatch):
+    """A shadow receipt neither blocks normal correction nor replays a live PASS."""
+    import admin_store
+    import auto_remediation
+    import delegated_gate as gate
+
+    monkeypatch.setenv("GENIE_ADMIN_SAFETY_LOCAL_DIR", str(tmp_path))
+    monkeypatch.setattr("admin_safety_store._uses_gcs_backend", lambda: False)
+    candidate, review = case()
+    saved = record_shadow_review(candidate, review, now=NOW)
+
+    assert saved["record_created"] is True
+    assert (tmp_path / SHADOW_EVIDENCE_NAMESPACE).is_dir()
+    assert not (tmp_path / "delegated_received_bindings").exists()
+    assert not (tmp_path / "publication_attempts").exists()
+    assert not (tmp_path / "run_delivery_transitions").exists()
+
+    # Automatic correction consults only the operational binding namespace.  A
+    # same-run shadow observation therefore leaves this pre-reservation path
+    # eligible for its existing correction policy.
+    meta = {"run_id": candidate["run_id"]}
+    assert auto_remediation._delegated_review_repair_boundary(meta) is None
+
+    # The authenticated operational loader likewise rejects a shadow-only
+    # receipt even when its run identity happens to match.
+    monkeypatch.setattr(admin_store, "load_run_artifact", lambda _: {"run_id": candidate["run_id"]})
+    monkeypatch.setattr(admin_store, "load_run_email_html", lambda _: "<p>fixture</p>")
+    with pytest.raises(gate.GateError, match="AUTHORITATIVE_ARTIFACT_OR_RECEIPT_UNAVAILABLE"):
+        gate.RunArtifactCandidateLoader(object()).load(candidate["run_id"], now=NOW)
 
 
 @pytest.mark.parametrize("field", ["mailbox_id", "internet_message_id", "received_at", "raw_mime_sha256", "render_capture_sha256"])
