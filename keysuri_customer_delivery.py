@@ -535,9 +535,10 @@ def prepare_keysuri_customer_delivery(
                 "subject": subject,
                 "preheader": preheader,
             }
-    ready, err = customer_delivery_config_ready()
-    if not ready and recipients_override is None:
-        return {"ok": False, "error": err, "subject": subject, "preheader": preheader}
+    if recipients_override is None:
+        ready, err = customer_delivery_config_ready()
+        if not ready:
+            return {"ok": False, "error": err, "subject": subject, "preheader": preheader}
     if mode not in _KEYSURI_MODES:
         return {"ok": False, "error": "unsupported_mode", "subject": subject, "preheader": preheader}
     try:

@@ -1,3 +1,5 @@
+> **Owner-approved target (2026-09-10 final directive; activation pending):** [Delegated second-pass policy](../ops/DELEGATED_SECOND_PASS_STAGED_POLICY.md) supersedes per-publication human approval for verified normal delegated sends after authorized activation. The deployed baseline remains human-confirmed. Existing pre-freeze repairs may remain with validation/audit; material post-review changes invalidate PASS; Work-detected anomalies require HOLD and manual recovery. Shadow evidence alone grants no send authority.
+
 # GENIE × KeeSuri — Document Map and Authority
 
 **Status:** APPROVED
@@ -6,6 +8,8 @@
 **Domain:** Customer web / product documentation meta-authority
 
 ---
+
+The 2026-09-10 final Owner direction and `docs/ops/DELEGATED_SECOND_PASS_STAGED_POLICY.md` govern the prepared approval-policy diff: normal authenticated Work PASS may authorize the exact candidate; Work anomaly recovery is manual; pre-freeze validated repairs remain permitted. Earlier blanket automatic-remediation shutdown language is superseded. Runtime activation status is established from fresh service/configuration evidence, never from a document label.
 
 ## 1. Purpose
 

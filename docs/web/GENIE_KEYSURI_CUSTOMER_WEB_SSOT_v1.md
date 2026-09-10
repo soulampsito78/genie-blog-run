@@ -1,3 +1,5 @@
+> **Owner-approved target (2026-09-10 final directive; activation pending):** [Delegated second-pass policy](../ops/DELEGATED_SECOND_PASS_STAGED_POLICY.md) supersedes per-publication human approval for verified normal delegated sends after authorized activation. The deployed baseline remains human-confirmed. Existing pre-freeze repairs may remain with validation/audit; material post-review changes invalidate PASS; Work-detected anomalies require HOLD and manual recovery. Shadow evidence alone grants no send authority.
+
 # GENIE × KeeSuri — Customer Web SSOT v1
 
 **Status:** APPROVED
@@ -192,8 +194,8 @@ Pipeline invariant (MUST preserve):
 ```
 generation
 → validation
-→ owner-review
-→ approval
+→ actual review email / independent second-pass review
+→ truthful human or authenticated delegated authorization
 → customer delivery
 → receipt evidence
 ≠ publishing
@@ -205,7 +207,7 @@ generation
 |---------|---------|
 | generated | Model/output artifact exists |
 | validated | Passed validation gates |
-| owner-review | Operator review path |
+| owner-review | Private review channel; human baseline and independent Work second-pass target |
 | approved | Explicit approve for customer final send |
 | customer delivery attempted | Send pipeline ran |
 | provider accepted (`smtp_accepted` or equivalent) | Provider accepted message — **not** customer receipt |
@@ -262,7 +264,7 @@ subscription / payment state
 → customer delivery
 ```
 
-Backend generation/owner-review/approve modules remain authoritative for briefing safety. Customer-web APIs consume entitlements; they do not bypass approve.
+Backend generation/review/delivery-authorization modules remain authoritative for briefing safety. Customer-web APIs consume entitlements; they cannot create human or delegated approval. Normal delegated authority is recorded separately from HUMAN_OWNER_APPROVAL and applies only to the exact candidate reviewed; Work anomalies hold for manual recovery. See the staged operations policy for activation prerequisites.
 
 ---
 

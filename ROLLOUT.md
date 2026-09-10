@@ -1,4 +1,8 @@
+> **Owner-approved target (2026-09-10 final directive; activation pending):** [Delegated second-pass policy](docs/ops/DELEGATED_SECOND_PASS_STAGED_POLICY.md) supersedes per-publication human approval for verified normal delegated sends after authorized activation. The deployed baseline remains human-confirmed. Existing pre-freeze repairs may remain with validation/audit; material post-review changes invalidate PASS; Work-detected anomalies require HOLD and manual recovery. Shadow evidence alone grants no send authority.
+
 # Genie Project – production rollout preparation
+
+Final delegated-transition rollout is governed by `docs/ops/DELEGATED_SECOND_PASS_STAGED_POLICY.md`: preserve permitted pre-freeze repair, prove exact-candidate review and recipient/publication gates, complete the approved Option B feature-branch/review-PR integration, verify real cloud shadow execution, then seek separate merge/deploy/activation authority. Do not disable all correction merely because it is automatic. OFF/manual mode must deny delegated send without deleting evidence or reverting to writers that bypass persistent claims. No rollout command in this historical document is authorized by the current task.
 
 > **⚠️ HISTORICAL DOCUMENT — Read this notice first**
 >

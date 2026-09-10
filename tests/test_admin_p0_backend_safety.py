@@ -203,6 +203,117 @@ class AdminP0SafetyTests(unittest.TestCase):
         self.assertEqual(existing["status"], "SUBMITTED")
         self.assertFalse(existing["provider_exactly_once"])
 
+    def test_different_snapshots_same_run_race_submits_once(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+
+        run_id = self._run("bbbba001")
+        snapshots = [self._snapshot(run_id)[0] for _ in range(2)]
+        barrier = Barrier(2)
+        original_verify = verify_approval_snapshot
+
+        def synchronize_verification(**kwargs):
+            result = original_verify(**kwargs)
+            barrier.wait(timeout=10)
+            return result
+
+        with mock.patch("admin_approval.verify_approval_snapshot", side_effect=synchronize_verification), mock.patch(
+            "today_geenee_customer_delivery.send_today_geenee_customer_final_email", return_value=True
+        ) as sender:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(lambda snapshot: approve_run(
+                    run_id, approval_snapshot_id=snapshot["approval_snapshot_id"], operator_id="operator:test"
+                ), snapshots))
+        self.assertEqual(sorted(status for _, status in results), ["DUPLICATE_DELIVERY_COMMAND", "ok"])
+        sender.assert_called_once()
+        self.assertEqual(load_run_artifact(run_id)["approval_authority"], "HUMAN_OWNER_APPROVAL")
+
+    def test_claim_survives_crash_before_command_creation(self) -> None:
+        run_id = self._run("bbbba002")
+        snapshot, _ = self._snapshot(run_id)
+        original_create = admin_safety_store._create_json_once
+
+        def crash_on_command(key, payload):
+            if key.startswith("delivery_commands/"):
+                raise RuntimeError("simulated process crash")
+            return original_create(key, payload)
+
+        with mock.patch("admin_safety_store._create_json_once", side_effect=crash_on_command):
+            with self.assertRaises(RuntimeError):
+                reserve_delivery_command(command_id=delivery_command_id_for_snapshot(snapshot["approval_snapshot_id"]),
+                    snapshot_id=snapshot["approval_snapshot_id"], run_id=run_id, operator_id="operator:test")
+        retry, _ = self._snapshot(run_id)
+        created, existing = reserve_delivery_command(command_id=delivery_command_id_for_snapshot(retry["approval_snapshot_id"]),
+            snapshot_id=retry["approval_snapshot_id"], run_id=run_id, operator_id="operator:test")
+        self.assertFalse(created)
+        self.assertEqual(existing["status"], "SUBMITTED")
+
+    def test_different_runs_have_independent_claims_and_results_never_release_claim(self) -> None:
+        for index, result_code in enumerate(("ACCEPTED_ALL", "OUTCOME_UNKNOWN", "NOT_SENT")):
+            run_id = self._run(f"bbbba10{index}")
+            first, _ = self._snapshot(run_id)
+            command = delivery_command_id_for_snapshot(first["approval_snapshot_id"])
+            created, _ = reserve_delivery_command(command_id=command, snapshot_id=first["approval_snapshot_id"],
+                run_id=run_id, operator_id="operator:test")
+            self.assertTrue(created)
+            admin_safety_store.complete_delivery_command(command, result_code=result_code)
+            second, _ = self._snapshot(run_id)
+            created, existing = reserve_delivery_command(command_id=delivery_command_id_for_snapshot(second["approval_snapshot_id"]),
+                snapshot_id=second["approval_snapshot_id"], run_id=run_id, operator_id="operator:test")
+            self.assertFalse(created)
+            self.assertEqual(existing["status"], result_code)
+
+    def test_run_claim_survives_fresh_process(self) -> None:
+        import subprocess
+        import sys
+
+        run_id = self._run("bbbba200")
+        snapshot, _ = self._snapshot(run_id)
+        command = delivery_command_id_for_snapshot(snapshot["approval_snapshot_id"])
+        created, _ = reserve_delivery_command(command_id=command, snapshot_id=snapshot["approval_snapshot_id"],
+            run_id=run_id, operator_id="operator:test")
+        self.assertTrue(created)
+        child_code = '''import json, sys
+import admin_safety_store as store
+store._uses_gcs_backend = lambda: False
+created, record = store.reserve_delivery_command(command_id=store.delivery_command_id_for_snapshot("other_snapshot"), snapshot_id="other_snapshot", run_id=sys.argv[1], operator_id="other_worker")
+print(json.dumps({"created": created, "status": record["status"]}))
+'''
+        completed = subprocess.run([sys.executable, "-c", child_code, run_id], text=True, capture_output=True, check=True, timeout=15)
+        result = json.loads(completed.stdout)
+        self.assertFalse(result["created"])
+        self.assertEqual(result["status"], "SUBMITTED")
+
+    def test_gcs_run_claim_and_command_use_create_only_preconditions(self) -> None:
+        class PreconditionFailed(Exception):
+            pass
+
+        objects = {}
+        writes = []
+
+        class Blob:
+            def __init__(self, key):
+                self.key = key
+
+            def upload_from_string(self, value, *, content_type, if_generation_match):
+                writes.append((self.key, if_generation_match))
+                if self.key in objects:
+                    raise PreconditionFailed()
+                objects[self.key] = value
+
+        bucket = mock.Mock()
+        bucket.blob.side_effect = Blob
+        run_id = self._run("bbbba201")
+        with mock.patch("admin_safety_store._uses_gcs_backend", return_value=True), mock.patch(
+            "admin_safety_store._get_gcs_bucket", return_value=bucket
+        ), mock.patch("admin_safety_store._gcs_download_text", side_effect=lambda key: objects.get(key)):
+            first, _ = reserve_delivery_command(command_id=delivery_command_id_for_snapshot("first"), snapshot_id="first", run_id=run_id, operator_id="worker-1")
+            second, _ = reserve_delivery_command(command_id=delivery_command_id_for_snapshot("second"), snapshot_id="second", run_id=run_id, operator_id="worker-2")
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(len(writes), 3)
+        self.assertTrue(all(precondition == 0 for _, precondition in writes))
+
     def test_unchanged_snapshot_submits_once_and_repeat_post_is_blocked(self) -> None:
         run_id = self._run("aaaab008")
         snapshot, _ = self._snapshot(run_id)

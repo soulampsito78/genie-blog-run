@@ -82,6 +82,16 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertEqual(runs.status_code, 200)
 
     def test_run_list_reads_json_artifacts(self) -> None:
+        # An unrelated earlier test run must not push this fixture past the
+        # first history page. Use its own artifact store, as production does.
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        artifacts = TemporaryDirectory()
+        self.addCleanup(artifacts.cleanup)
+        isolated_runs = patch("admin_store.admin_runs_dir", return_value=Path(artifacts.name))
+        isolated_runs.start()
+        self.addCleanup(isolated_runs.stop)
         self.client.post("/admin/login", data={"password": "test-admin-secret"})
         run_id = save_run_artifact(
             {
@@ -96,7 +106,7 @@ class AdminRoutesTests(unittest.TestCase):
             },
             email_html="<p>test email</p>",
         )
-        path = admin_runs_dir() / f"{run_id}.json"
+        path = Path(artifacts.name) / f"{run_id}.json"
         self.assertTrue(path.is_file())
         resp = self.client.get("/admin/runs")
         self.assertEqual(resp.status_code, 200)

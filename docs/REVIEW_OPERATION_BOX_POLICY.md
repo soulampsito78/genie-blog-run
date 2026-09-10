@@ -1,3 +1,5 @@
+> **Owner-approved target (2026-09-10 final directive; activation pending):** [Delegated second-pass policy](ops/DELEGATED_SECOND_PASS_STAGED_POLICY.md) supersedes per-publication human approval for verified normal delegated sends after authorized activation. The deployed baseline remains human-confirmed. Existing pre-freeze repairs may remain with validation/audit; material post-review changes invalidate PASS; Work-detected anomalies require HOLD and manual recovery. Shadow evidence alone grants no send authority.
+
 # Shared Review / Operation Box Policy
 
 ## 1) Purpose
@@ -92,6 +94,12 @@ Also:
 
 본 브리핑은 운영책임자의 직접 검수를 통과했습니다.
 
+#### `delegated_review_passed` (activation pending)
+
+본 브리핑은 위임된 자동 검수 절차를 통과했습니다.
+
+Use only for authenticated complete Work PASS under the Owner-approved delegation policy. A changed candidate invalidates the state; inaccessible image/render evidence or any incomplete review cannot select it. For a delegated sent/archive record, use automated-review wording and an independently recorded send result, never the human-direct-review sentence below.
+
 #### `sent_archived`
 
 본 브리핑은 운영책임자의 직접 검수를 통과하여 발송되었습니다.
@@ -106,7 +114,7 @@ Also:
 - No validation details unless separately internal.
 - Do not use `발송되었습니다` before actual send completion.
 - `sent_archived` requires a real send-completion record.
-- `review_passed` requires explicit owner approval.
+- Human `review_passed` wording requires explicit personal Owner approval. The approved delegated target uses a distinct `delegated_review_passed` state/text backed by authenticated Work review of the exact candidate; it must never reuse wording that claims personal Owner inspection. Shadow PASS cannot select either customer approval state.
 - `preview_pending` is allowed only in preview/pre-approval context.
 
 ---

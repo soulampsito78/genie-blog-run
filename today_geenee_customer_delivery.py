@@ -322,9 +322,10 @@ def prepare_today_geenee_customer_delivery(
     recipients_override: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Prepare the exact customer payload without submitting it to SMTP."""
-    ready, err = customer_delivery_config_ready()
-    if not ready and recipients_override is None:
-        return {"ok": False, "error": err}
+    if recipients_override is None:
+        ready, err = customer_delivery_config_ready()
+        if not ready:
+            return {"ok": False, "error": err}
     try:
         html_body = prepare_customer_final_html(
             saved_html,

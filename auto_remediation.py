@@ -9,8 +9,8 @@ creates a child artifact, and sends a corrected owner-review email.
 Three invariants hold no matter what happens here:
 
 * **Customer send is never performed.** Remediation produces owner-review
-  output only; ``can_approve_customer_send`` still gates every customer email,
-  and the child needs its own fresh owner approval.
+  output only; applicable manual/delegated safety gates cover customer email,
+  and the child needs its own fresh applicable review authority.
 * **At most one automatic attempt per natural parent.** The attempt counter
   lives on the parent artifact and is stamped *before* the runner is invoked,
   so a crash mid-attempt cannot yield a second one. Children are never
@@ -22,6 +22,7 @@ Three invariants hold no matter what happens here:
 from __future__ import annotations
 
 import html
+import hashlib
 import logging
 import os
 import re
@@ -269,6 +270,30 @@ class AutoRemediationPlan:
     unclassified_codes: List[str] = field(default_factory=list)
 
 
+def _delegated_review_repair_boundary(meta: Dict[str, Any]) -> Optional[str]:
+    """Only unfrozen candidates may use automatic generation repair.
+
+    The trusted received-mail binding survives a later verdict and a process
+    restart. A Work-held or already-reviewed candidate must enter manual
+    recovery; content changes can never inherit its old review.
+    """
+    if meta.get("delegated_review_status") or meta.get("delegated_review_id"):
+        return "delegated_review_requires_manual_recovery"
+    run_id = str(meta.get("run_id") or "")
+    if not run_id:
+        return None  # Existing structural eligibility checks handle this case.
+    try:
+        import admin_safety_store as store
+        key = "delegated_received_bindings/" + hashlib.sha256(run_id.encode()).hexdigest() + ".json"
+        exists = (store._get_gcs_bucket().blob(store.SAFETY_PREFIX + "/" + key).exists()
+                  if store._uses_gcs_backend() else store._local_path(key).exists())
+        if exists:
+            return "delegated_candidate_frozen_manual_recovery_required"
+    except Exception:
+        return "delegated_review_boundary_unavailable"
+    return None
+
+
 def plan_auto_remediation(meta: Optional[Dict[str, Any]]) -> AutoRemediationPlan:
     """Decide whether this artifact earns exactly one automatic remediation."""
     if not isinstance(meta, dict):
@@ -279,6 +304,10 @@ def plan_auto_remediation(meta: Optional[Dict[str, Any]]) -> AutoRemediationPlan
     mode = str(meta.get("mode") or meta.get("program_id") or "").strip()
     if mode != TODAY_MODE and mode not in KEYSURI_MODES:
         return AutoRemediationPlan(False, stop_reason="unsupported_mode")
+
+    boundary = _delegated_review_repair_boundary(meta)
+    if boundary:
+        return AutoRemediationPlan(False, stop_reason=boundary)
 
     # Only natural scheduled owner-review production runs are in scope (§9).
     if str(meta.get("execution_class") or "").strip() != "natural_scheduled":
