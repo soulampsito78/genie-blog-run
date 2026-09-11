@@ -425,11 +425,11 @@ def _outcome(verdict: str, reason: str, **extra: Any) -> dict:
 
 
 def run_configured_review_event(raw: bytes, headers: Mapping[str, str], *, now: datetime | None = None) -> dict:
-    """Composition entry point for a future authenticated cloud transport.
+    """Composition entry point for the authenticated internal review route.
 
 Only body bytes and signature headers are transport inputs. All dependencies,
 keys, activation policy, suppression health and artifacts are service-owned.
-No network route or live scheduler is registered automatically.
+The route does not schedule reviews or create reviewer evidence by itself.
 """
     settings = GateSettings.from_environment()
     if settings.mode not in {"SHADOW", "ON"}:
@@ -513,7 +513,15 @@ payload bytes. All durable claims survive failures and process restarts.
                                               candidate_sha256=current.candidate_sha256)
             if not handoff.get("allowed"):
                 raise GateError(handoff["reason"], "STATE_CONFLICT")
-            submission = (sender or submit_frozen_candidate)(current, plan, audit={**audit, "attempt_id": attempt_id})
+            if sender is None:
+                submission = submit_frozen_candidate(
+                    current,
+                    plan,
+                    audit={**audit, "attempt_id": attempt_id},
+                    recipient_authority=recipient_authority,
+                )
+            else:
+                submission = sender(current, plan, audit={**audit, "attempt_id": attempt_id})
             status = str(submission.get("outcome") or "OUTCOME_UNKNOWN")
             provider_status = ("PROVIDER_ACCEPTED" if status == "ACCEPTED_ALL" else
                                "PROVIDER_REJECTED" if status in {"REFUSED_ALL", "NOT_SENT"} else
@@ -521,7 +529,8 @@ payload bytes. All durable claims survive failures and process restarts.
             complete_publication_attempt(attempt_id, outcome=provider_status, evidence=submission)
             result = _outcome("PASS", "DELEGATED_SUBMISSION_RECORDED", **audit,
                               customer_send_authorized=True, approval_source="DELEGATED_WORK_REVIEW",
-                              approval_authority="DELEGATED_WORK_REVIEW", attempt_id=attempt_id,
+                              approval_authority=str(plan.get("authority") or "DELEGATED_WORK_REVIEW"),
+                              authority_grant_id=plan.get("authority_grant_id"), attempt_id=attempt_id,
                               submission_outcome=status, inbox_receipt_confirmed=False,
                               owner_notification_required=status != "ACCEPTED_ALL")
         if not _create_json_once(f"delegated_review_results/{event_key}.json", result):
@@ -550,7 +559,13 @@ payload bytes. All durable claims survive failures and process restarts.
         return result
 
 
-def submit_frozen_candidate(candidate: FrozenCandidate, recipient_plan: dict, *, audit: dict) -> dict:
+def submit_frozen_candidate(
+    candidate: FrozenCandidate,
+    recipient_plan: dict,
+    *,
+    audit: dict,
+    recipient_authority=None,
+) -> dict:
     """Only caller is the authenticated runner after durable recipient gates.
 
 The provider sees the exact reviewed HTML and owned image bytes. Source paths
@@ -570,7 +585,9 @@ cannot mutate the candidate after review. SMTP acceptance is never receipt.
         raise GateError("DELEGATED_HANDOFF_CLAIM_MISSING", "STATE_CONFLICT")
     attempted_at = now_kst_iso()
     authority_fields = {
-        "approval_source": "DELEGATED_WORK_REVIEW", "approval_authority": "DELEGATED_WORK_REVIEW",
+        "approval_source": "DELEGATED_WORK_REVIEW",
+        "approval_authority": str(recipient_plan.get("authority") or "DELEGATED_WORK_REVIEW"),
+        "delegated_authority_grant_id": recipient_plan.get("authority_grant_id"),
         "delegated_review_id": audit["review_id"], "delegated_review_policy_version": POLICY_VERSION,
         "delegated_candidate_sha256": candidate.candidate_sha256, "delegated_reviewed_at": audit["reviewed_at"],
         "delegated_reviewer_principal": audit["reviewer_principal"],
@@ -596,6 +613,13 @@ cannot mutate the candidate after review. SMTP acceptance is never receipt.
             parts.append((str(path), image.cid, image.filename))
         prepared = {"ok": True, "html_body": candidate.customer_html, "subject": candidate.subject,
                     "inline_jpeg_parts": parts, "recipients": recipients, "preheader": ""}
+        # Re-read the revocation/config generation at the last application
+        # boundary. A revoked or changed beta grant can never reuse a stale plan.
+        if recipient_authority is None:
+            from delegated_delivery_safety import recipient_authority as authority_factory
+
+            recipient_authority = authority_factory()
+        recipient_authority.revalidate(recipient_plan, datetime.now(timezone.utc))
         if mode == "today_genie":
             from today_geenee_customer_delivery import send_today_geenee_customer_final_email as send
         else:

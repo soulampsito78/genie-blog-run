@@ -328,7 +328,14 @@ def publication_guard_required():
 
 
 def recipient_authority():
-    """Configured factory: fresh signed bridge evidence, never a health boolean."""
+    """Configured authority factory; unknown selectors fail closed."""
+    selector = os.getenv("GENIE_RECIPIENT_AUTHORITY", "CUSTOMER_DATABASE").strip().upper()
+    if selector == "ADMIN_BETA_DELEGATION":
+        from admin_beta_delegation import AdminBetaRecipientAuthority
+
+        return AdminBetaRecipientAuthority()
+    if selector != "CUSTOMER_DATABASE":
+        raise DeliverySafetyError("RECIPIENT_AUTHORITY_CONFIG_INVALID")
     return SqlAlchemyRecipientAuthority(suppression_health=suppression_ingestion_healthy)
 
 

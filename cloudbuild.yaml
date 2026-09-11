@@ -25,9 +25,26 @@ steps:
       - scripts/run_product_regression_gate.py
 
   - name: gcr.io/cloud-builders/docker
-    id: Push
+    id: DelegatedAuthorityGate
     waitFor:
       - ProductRegressionGate
+    args:
+      - run
+      - --rm
+      - --network=none
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+      - python
+      - -m
+      - unittest
+      - -v
+      - tests.test_admin_beta_delegation
+      - tests.test_delegated_internal_route
+      - tests.test_delegated_grant_release_path
+
+  - name: gcr.io/cloud-builders/docker
+    id: Push
+    waitFor:
+      - DelegatedAuthorityGate
     args:
       - push
       - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA

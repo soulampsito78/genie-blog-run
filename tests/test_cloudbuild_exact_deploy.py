@@ -19,6 +19,7 @@ class CloudBuildExactDeployTests(unittest.TestCase):
             [
                 "Build",
                 "ProductRegressionGate",
+                "DelegatedAuthorityGate",
                 "Push",
                 "ResolveDigest",
                 "DeployExact",
@@ -30,11 +31,16 @@ class CloudBuildExactDeployTests(unittest.TestCase):
         self.assertEqual(gate["waitFor"], ["Build"])
         self.assertIn("--network=none", gate["args"])
         self.assertIn("scripts/run_product_regression_gate.py", gate["args"])
-        self.assertEqual(steps[2]["waitFor"], ["ProductRegressionGate"])
+        delegated_gate = steps[2]
+        self.assertEqual(delegated_gate["waitFor"], ["ProductRegressionGate"])
+        self.assertIn("tests.test_admin_beta_delegation", delegated_gate["args"])
+        self.assertIn("tests.test_delegated_internal_route", delegated_gate["args"])
+        self.assertIn("tests.test_delegated_grant_release_path", delegated_gate["args"])
+        self.assertEqual(steps[3]["waitFor"], ["DelegatedAuthorityGate"])
 
-        resolve_script = steps[3]["args"][-1]
-        deploy_script = steps[4]["args"][-1]
-        promote_script = steps[5]["args"][-1]
+        resolve_script = steps[4]["args"][-1]
+        deploy_script = steps[5]["args"][-1]
+        promote_script = steps[6]["args"][-1]
         self.assertIn("image_summary.fully_qualified_digest", resolve_script)
         self.assertIn('--image="$$immutable_image"', deploy_script)
         self.assertIn("--no-traffic", deploy_script)
