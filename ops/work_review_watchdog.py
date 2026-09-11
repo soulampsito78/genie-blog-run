@@ -31,15 +31,15 @@ VERDICTS = {
 
 PROVISIONAL_WAITING_VERDICT = "HOLD_INCOMPLETE"
 WAITING_SEND_STATES = {"WAITING", "WINDOW_WAITING_INCOMPLETE"}
-REQUIRED_CHECKS = {
-    "content",
-    "sources",
-    "images",
-    "render",
-    "customer_render",
-    "run_identity",
-    "delivery_readiness",
-}
+REQUIRED_CHECK_GROUPS = (
+    ("content",),
+    ("sources",),
+    ("images",),
+    ("email_render", "render"),
+    ("customer_render",),
+    ("run_identity",),
+    ("delivery_readiness",),
+)
 
 
 class WatchdogError(RuntimeError):
@@ -113,8 +113,12 @@ def _pass_is_complete(row: Mapping[str, Any]) -> bool:
     checks = row.get("checks") or row.get("class_verdicts")
     if not isinstance(checks, Mapping):
         return False
-    if any(checks.get(name) != "PASS" for name in REQUIRED_CHECKS):
-        return False
+    for aliases in REQUIRED_CHECK_GROUPS:
+        value = next((checks[name] for name in aliases if name in checks), None)
+        if isinstance(value, Mapping):
+            value = value.get("verdict") or value.get("status")
+        if str(value or "").strip().upper() != "PASS":
+            return False
     if row.get("approval_authority") not in {None, "NONE"}:
         return False
     if row.get("customer_send_authorized") not in {None, False}:
@@ -139,6 +143,28 @@ def _is_provisional_waiting(row: Mapping[str, Any]) -> bool:
             str(code).upper() for code in reason_codes
         }
     return False
+
+
+def _is_observation(row: Mapping[str, Any]) -> bool:
+    record_type = str(row.get("record_type") or "").strip().lower()
+    if record_type == "observation":
+        return True
+    observation_status = str(row.get("observation_status") or "").strip().upper()
+    if observation_status == "WAITING":
+        return True
+    # Compatibility for the malformed pre-contract files already written by
+    # the reviewer. Explicit final records are never reclassified by legacy
+    # state/reason heuristics.
+    if record_type == "final":
+        return False
+    return _is_provisional_waiting(row)
+
+
+def _is_final(row: Mapping[str, Any]) -> bool:
+    record_type = str(row.get("record_type") or "").strip().lower()
+    if record_type not in {"", "final"}:
+        return False
+    return _verdict(row) in VERDICTS and not _is_observation(row)
 
 
 def _packet(slot: Mapping[str, Any], *, verdict: str, problem_code: str,
@@ -191,8 +217,8 @@ def inspect_slots(*, manifest: Mapping[str, Any], evidence_dir: Path,
             raise WatchdogError("manifest_windows_missing:" + slot_id)
         deadline = max(_instant(value) for value in windows)
         rows = _evidence_for_slot(evidence_dir, slot_id)
-        final_rows = [row for row in rows if _verdict(row) in VERDICTS and not _is_provisional_waiting(row)]
-        wait_rows = [row for row in rows if _is_provisional_waiting(row)]
+        final_rows = [row for row in rows if _is_final(row)]
+        wait_rows = [row for row in rows if _is_observation(row)]
         evidence = max(final_rows, key=_evidence_time) if final_rows else None
         if evidence is not None:
             verdict = _verdict(evidence)
