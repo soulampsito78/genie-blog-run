@@ -55,14 +55,20 @@ NAVER_INDEX_DAY = {
 # KRX regular session end, plus a margin for the closing auction to settle.
 KRX_SESSION_SETTLED_AFTER = (15, 40)
 
-# Naver's world-index daily table. Same provider and fetch path as the domestic
-# tables, so this adds no new third-party dependency — and unlike a quote page
-# it publishes one dated row per completed session, which is the only thing a
-# pre-open briefing can honestly quote. CNBC's .N225 quote resets its change at
-# the Tokyo pre-open while its timestamp still lags, which is how "니케이
-# 66131.98 0%" shipped on 2026-08-28.
+# Naver's world-index daily sessions. Same provider and fetch path as the
+# domestic tables, so this adds no new third-party dependency — and unlike a
+# quote page it publishes one dated row per completed session, which is the
+# only thing a pre-open briefing can honestly quote. CNBC's .N225 quote resets
+# its change at the Tokyo pre-open while its timestamp still lags, which is how
+# "니케이 66131.98 0%" shipped on 2026-08-28.
+#
+# This reads the JSON the page itself reads. Naver retired the server-rendered
+# world 일별시세 table in September 2026 and left a client-rendered shell whose
+# HTML carries no rows, so the scraper silently returned zero sessions and the
+# Nikkei observation stopped refreshing after 2026-09-09 — a required row that
+# went missing without any fetch ever failing.
 NAVER_WORLD_INDEX = {
-    "NIKKEI": "https://finance.naver.com/world/sise.nhn?symbol=NII@NI225",
+    "NIKKEI": "https://api.stock.naver.com/index/.N225/price?pageSize=10&page=1",
 }
 # Tokyo regular session end (JST), plus a margin for the close to publish.
 JPX_SESSION_SETTLED_AFTER = (15, 10)
@@ -573,15 +579,14 @@ def select_settled_naver_day_row(
     }
 
 
-_NAVER_WORLD_ROW_RE = re.compile(
-    r'<tr class="(point_up|point_dn|point_st)?[^"]*"[^>]*>\s*'
-    r'<td class="tb_td">\s*([0-9]{4})\.([0-9]{2})\.([0-9]{2})\s*</td>\s*'
-    r'<td class="tb_td2">\s*<span[^>]*>\s*([0-9,]+\.?[0-9]*)\s*</span>\s*</td>\s*'
-    r'<td class="tb_td3">\s*<span[^>]*>\s*([0-9,]+\.?[0-9]*)\s*</span>\s*</td>',
-    re.S,
-)
-
-_NAVER_WORLD_DIRECTION = {"point_up": 1, "point_dn": -1, "point_st": 0}
+# Direction tokens the world price API publishes alongside each session.
+_NAVER_WORLD_DIRECTION = {
+    "RISING": 1,
+    "UPPER_LIMIT": 1,
+    "FALLING": -1,
+    "LOWER_LIMIT": -1,
+    "STEADY": 0,
+}
 
 
 def _jst_now() -> datetime:
@@ -598,31 +603,47 @@ def _jpx_session_settled(session_day: date, now_jst: datetime) -> bool:
     return (now_jst.hour, now_jst.minute) >= (hour, minute)
 
 
-def parse_naver_world_day_rows(html: str, code: str) -> List[Dict[str, Any]]:
-    """Dated rows of Naver's world 일별시세 table, newest first.
+def parse_naver_world_price_rows(payload: str, code: str) -> List[Dict[str, Any]]:
+    """Dated sessions of Naver's world index price API, newest first.
 
-    The table publishes each session's close and its magnitude-only change, with
-    direction in the row class. Direction is not taken on trust: consecutive
-    rows give the previous session's close, so the change is re-derived
-    arithmetically and the row class only has to agree.
+    Each entry carries its own session date and close. Direction and magnitude
+    are published too, but neither is taken on trust: consecutive entries give
+    the previous session's close, so the change is re-derived arithmetically
+    and the published figures only have to agree.
+
+    An unparseable payload raises rather than returning an empty list. Silence
+    is what made the September 2026 breakage invisible — the retired HTML table
+    parsed to zero rows through a perfectly successful fetch, and the Nikkei
+    row simply stopped appearing.
     """
+    try:
+        parsed = json.loads(payload)
+    except (TypeError, ValueError) as exc:
+        raise FeedProbeError(
+            f"Naver world {code}: price payload is not JSON ({exc})"
+        ) from exc
+    if not isinstance(parsed, list):
+        raise FeedProbeError(
+            f"Naver world {code}: price payload is not a list of sessions"
+        )
+
     rows: List[Dict[str, Any]] = []
-    for match in _NAVER_WORLD_ROW_RE.finditer(html):
-        css, year, month, day, close_raw, change_raw = match.groups()
-        try:
-            market_date = date(int(year), int(month), int(day))
-        except ValueError:
+    for item in parsed:
+        if not isinstance(item, dict):
             continue
-        close = _parse_float(close_raw)
-        magnitude = _parse_float(change_raw)
-        if close is None or close <= 0 or magnitude is None:
+        market_date = _parse_iso_date(item.get("localTradedAt"))
+        close = _parse_float(item.get("closePrice"))
+        magnitude = _parse_float(item.get("compareToPreviousClosePrice"))
+        if market_date is None or close is None or close <= 0 or magnitude is None:
             continue
+        direction = item.get("compareToPreviousPrice")
+        token = direction.get("name") if isinstance(direction, dict) else None
         rows.append(
             {
                 "market_date": market_date,
                 "close": round(close, 2),
                 "change_magnitude": abs(magnitude),
-                "class_sign": _NAVER_WORLD_DIRECTION.get((css or "").strip()),
+                "class_sign": _NAVER_WORLD_DIRECTION.get(str(token or "").strip().upper()),
             }
         )
     rows.sort(key=lambda r: r["market_date"], reverse=True)
@@ -630,7 +651,7 @@ def parse_naver_world_day_rows(html: str, code: str) -> List[Dict[str, Any]]:
 
 
 def select_settled_naver_world_row(
-    html: str,
+    payload: str,
     code: str,
     *,
     target_date: str,
@@ -642,7 +663,7 @@ def select_settled_naver_world_row(
     if target is None:
         raise FeedProbeError(f"Naver world {code}: invalid target date {target_date!r}")
 
-    rows = parse_naver_world_day_rows(html, code)
+    rows = parse_naver_world_price_rows(payload, code)
     candidates = [
         (index, row)
         for index, row in enumerate(rows)
@@ -692,13 +713,13 @@ def select_settled_naver_world_row(
         "market_date": market_date,
         "as_of": market_date,
         "session_state": "closed",
-        "settlement_evidence": f"naver_world_daily_close_table:{market_date}",
+        "settlement_evidence": f"naver_world_daily_close_api:{market_date}",
         "source_name": "Naver Finance (world)",
         "source_url": NAVER_WORLD_INDEX[code],
         "cross_check_url": CNBC_QUOTES[code],
         "confidence": "high",
         "accuracy_status": "verified",
-        "notes": f"Settled session close from Naver Finance world daily table for {code}.",
+        "notes": f"Settled session close from the Naver Finance world daily session API for {code}.",
     }
 
 
@@ -847,7 +868,7 @@ def probe_korea_japan_indices(
             as_of_dates.append(str(row["as_of"]))
         indices[code] = _index_row(code, row)
 
-    # Nikkei comes from the same settled daily-table contract as KOSPI/KOSDAQ.
+    # Nikkei comes from the same settled per-session contract as KOSPI/KOSDAQ.
     # The CNBC quote stays as the row's cross_check_url but is no longer the
     # source of the number: it resets its change at the Tokyo pre-open while its
     # timestamp still lags the prior session.

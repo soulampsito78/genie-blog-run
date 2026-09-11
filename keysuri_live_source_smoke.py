@@ -66,6 +66,8 @@ from keysuri_news_contract import (
     _claim_to_news_item,
     validate_top_5_news_block,
 )
+from keysuri_generated_briefing import validate_keysuri_generated_briefing
+from keysuri_reader_surface import reader_surface_run_fields
 from keysuri_renderer import render_keysuri_owner_review_html
 from keysuri_source_text_normalization import (
     normalize_feed_source_text,
@@ -1182,6 +1184,8 @@ _SEMANTIC_RECOVERY_CODES = frozenset(
 # keys, scaffold applied, recovery recorded as "not_needed", owner received a
 # template-only POOR notice).
 GLOBAL_SCAFFOLD_FABRICATED_TOP5_CODE = "global_contract_scaffold_fabricated_top5"
+KEYSURI_READER_SURFACE_BLOCKED_CODE = "keysuri_reader_surface_blocked"
+GLOBAL_READER_SURFACE_FAILURE = "GLOBAL_READER_SURFACE_FAILURE"
 
 _GLOBAL_CONTRACT_REPAIR_CODES = frozenset(
     {
@@ -1197,6 +1201,7 @@ _GLOBAL_CONTRACT_REPAIR_CODES = frozenset(
         "deep_dive_heading_invalid",
         "deep_dive_key_implications_invalid",
         GLOBAL_SCAFFOLD_FABRICATED_TOP5_CODE,
+        KEYSURI_READER_SURFACE_BLOCKED_CODE,
     }
 )
 # Ceiling of two total model attempts per Global run: the initial call plus at
@@ -2099,6 +2104,100 @@ def _global_scaffold_fabricated_top5(parse_result: Mapping[str, Any]) -> bool:
     return "top_5_news" in {str(field) for field in repaired}
 
 
+def _post_parse_reader_surface_gate(
+    parse_result: Mapping[str, Any],
+    *,
+    program_id: str,
+    prompt_input: dict,
+    enriched_briefing: Optional[dict] = None,
+) -> Tuple[Dict[str, Any], Optional[dict], Dict[str, Any]]:
+    """Validate the candidate *after* the canonical reader boundary.
+
+    Parse-time schema validation cannot see that ``enforce_reader_surface`` may
+    later withhold prose which merely echoes the evidence pack.  Sending that
+    candidate to a renderer makes the renderer discover five empty headlines
+    by raising ``ValueError``.  This gate turns the same condition into normal,
+    structured generation issues while the caller still owns the bounded
+    recovery budget.
+
+    ``enriched_briefing`` lets the smoke path defensively re-check the exact
+    object it is about to render without running enrichment twice.
+    """
+    current = dict(parse_result)
+    if str(current.get("parse_status") or "") != "parsed_valid":
+        return current, None, {}
+    generated = current.get("generated_briefing")
+    if not isinstance(generated, dict):
+        return current, None, {}
+
+    enriched = (
+        enriched_briefing
+        if isinstance(enriched_briefing, dict)
+        else enrich_generated_briefing_content(generated, program_id, prompt_input)
+    )
+    reader_fields = reader_surface_run_fields(enriched)
+    if reader_fields.get("reader_surface_complete") is True:
+        return current, enriched, reader_fields
+
+    # Preserve the renderer/contract's precise field failures.  In the
+    # 2026-09-11 incident this is five separate headline paths, which is much
+    # more useful evidence than an exception class at the service boundary.
+    contract_issues = validate_keysuri_generated_briefing(
+        program_id, enriched, prompt_input
+    )
+    field_issues = [
+        dict(issue)
+        for issue in contract_issues
+        if isinstance(issue, dict)
+        and str(issue.get("code") or "").startswith("top_5_news_item_")
+        and str(issue.get("code") or "").endswith("_missing")
+    ]
+    issues: List[Dict[str, str]] = [
+        {
+            "code": KEYSURI_READER_SURFACE_BLOCKED_CODE,
+            "message": "Reader-surface boundary withheld required TOP5 prose",
+            "path": "top_5_news.items",
+        }
+    ]
+    issues.extend(field_issues)
+    parse_meta = (
+        dict(current.get("parse_meta"))
+        if isinstance(current.get("parse_meta"), dict)
+        else {}
+    )
+    parse_meta.update(
+        {
+            "parse_failure_stage": "post_enrichment_reader_surface",
+            "reader_surface_ready_item_count": int(
+                reader_fields.get("reader_surface_ready_item_count") or 0
+            ),
+            "reader_surface_complete": False,
+            "reader_surface_issue_codes": list(
+                reader_fields.get("reader_surface_issue_codes") or []
+            ),
+            "reader_surface_unavailable_fields": list(
+                reader_fields.get("reader_surface_unavailable_fields") or []
+            ),
+            "schema_issue_codes": [
+                str(issue.get("code")) for issue in issues if issue.get("code")
+            ],
+        }
+    )
+    blocked: Dict[str, Any] = {
+        "parse_status": "parsed_invalid",
+        "program_id": current.get("program_id") or program_id,
+        "issues": issues,
+        # A reader-incomplete candidate is evidence, not a renderable fallback.
+        "generated_briefing": None,
+        "parse_meta": parse_meta,
+    }
+    if isinstance(current.get("generation_contract"), dict):
+        blocked["generation_contract"] = copy.deepcopy(
+            current["generation_contract"]
+        )
+    return blocked, enriched, reader_fields
+
+
 def _run_global_bounded_contract_repair(
     *,
     prompt_input: dict,
@@ -2114,6 +2213,8 @@ def _run_global_bounded_contract_repair(
     usage_sink: Optional[MutableMapping[str, Any]],
     call_state: MutableMapping[str, Any],
     fallback_parse_result: Optional[dict] = None,
+    validate_reader_surface: bool = False,
+    initial_reader_surface_fields: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Bounded Global full-contract repair — never Korea item reconciliation.
 
@@ -2125,6 +2226,11 @@ def _run_global_bounded_contract_repair(
     """
     recovery_usage: Dict[str, Any] = {}
     repair_codes = _global_contract_repair_codes(initial_codes)
+    recovery_family = (
+        GLOBAL_READER_SURFACE_FAILURE
+        if KEYSURI_READER_SURFACE_BLOCKED_CODE in repair_codes
+        else "GLOBAL_MALFORMED_CONTRACT"
+    )
     diagnostics: Dict[str, Any] = {
         **initial_generation,
         "generation_attempt_count": 1,
@@ -2149,6 +2255,27 @@ def _run_global_bounded_contract_repair(
             }
         ],
     }
+    if isinstance(initial_reader_surface_fields, Mapping):
+        diagnostics.update(
+            {
+                "initial_reader_surface_ready_item_count": int(
+                    initial_reader_surface_fields.get(
+                        "reader_surface_ready_item_count"
+                    )
+                    or 0
+                ),
+                "initial_reader_surface_issue_codes": list(
+                    initial_reader_surface_fields.get("reader_surface_issue_codes")
+                    or []
+                ),
+                "initial_reader_surface_unavailable_fields": list(
+                    initial_reader_surface_fields.get(
+                        "reader_surface_unavailable_fields"
+                    )
+                    or []
+                ),
+            }
+        )
     if not repair_codes:
         diagnostics.update(
             _default_global_recovery_diagnostics(
@@ -2171,6 +2298,7 @@ def _run_global_bounded_contract_repair(
             "generation_diagnostics": diagnostics,
         }
 
+    diagnostics["generation_recovery_family"] = recovery_family
     remaining = int(call_state.get("budget") or GLOBAL_GENERATION_CALL_BUDGET) - int(
         call_state.get("count") or 0
     )
@@ -2211,7 +2339,7 @@ def _run_global_bounded_contract_repair(
             not in set(_preservable_fields_from_parse(parse_result))
         ]
     corrective_context = {
-        "failure_family": "GLOBAL_MALFORMED_CONTRACT",
+        "failure_family": recovery_family,
         "initial_issue_codes": list(initial_codes),
         "missing_required_fields": missing_fields,
         "preservable_fields": _preservable_fields_from_parse(parse_result),
@@ -2224,7 +2352,7 @@ def _run_global_bounded_contract_repair(
         "approved_deep_dive_source_ids": list(fixed_source_ids),
     }
     diagnostics["generation_recovery_attempted"] = True
-    diagnostics["generation_recovery_family"] = "GLOBAL_MALFORMED_CONTRACT"
+    diagnostics["generation_recovery_family"] = recovery_family
     diagnostics["generation_attempt_count"] = 2
     diagnostics["global_recovery_attempted"] = True
     diagnostics["global_recovery_reason"] = ",".join(repair_codes)
@@ -2232,7 +2360,7 @@ def _run_global_bounded_contract_repair(
     _safe_generation_event(
         "keysuri_global_contract_repair_attempted",
         program_id=program_id,
-        failure_family="GLOBAL_MALFORMED_CONTRACT",
+        failure_family=recovery_family,
         generation_attempt_count=int(call_state.get("count") or 0) + 1,
         issue_codes=repair_codes,
     )
@@ -2297,10 +2425,59 @@ def _run_global_bounded_contract_repair(
         parse_result.get("parse_status") == "parsed_valid"
         and not recovery_scaffold_fabricated
     )
+    reader_surface_briefing: Optional[dict] = None
+    if success and validate_reader_surface:
+        parse_result, reader_surface_briefing, recovery_reader_fields = (
+            _post_parse_reader_surface_gate(
+                parse_result,
+                program_id=program_id,
+                prompt_input=prompt_input,
+            )
+        )
+        diagnostics.update(
+            {
+                "recovery_reader_surface_ready_item_count": int(
+                    recovery_reader_fields.get("reader_surface_ready_item_count")
+                    or 0
+                ),
+                "recovery_reader_surface_issue_codes": list(
+                    recovery_reader_fields.get("reader_surface_issue_codes") or []
+                ),
+                "recovery_reader_surface_unavailable_fields": list(
+                    recovery_reader_fields.get("reader_surface_unavailable_fields")
+                    or []
+                ),
+            }
+        )
+        if str(parse_result.get("parse_status") or "") != "parsed_valid":
+            diagnostics["recovery_generation_issue_codes"] = _issue_codes(
+                parse_result
+            )
+            success = False
     diagnostics["global_recovery_scaffold_fabricated_top5"] = bool(
         recovery_scaffold_fabricated
     )
-    if not success and isinstance(fallback_parse_result, dict):
+    fallback_reader_complete = True
+    if (
+        not success
+        and validate_reader_surface
+        and isinstance(fallback_parse_result, dict)
+    ):
+        gated_fallback, _fallback_enriched, _fallback_fields = (
+            _post_parse_reader_surface_gate(
+                fallback_parse_result,
+                program_id=program_id,
+                prompt_input=prompt_input,
+            )
+        )
+        fallback_reader_complete = (
+            str(gated_fallback.get("parse_status") or "") == "parsed_valid"
+        )
+    if (
+        not success
+        and isinstance(fallback_parse_result, dict)
+        and fallback_reader_complete
+    ):
         # The corrective call did not beat the contract-valid output we already
         # held. Keep that one so the graded adjudicator still rates a real
         # candidate rather than the run collapsing to a generation block.
@@ -2342,17 +2519,20 @@ def _run_global_bounded_contract_repair(
         if success
         else "keysuri_global_contract_repair_failed",
         program_id=program_id,
-        failure_family="GLOBAL_MALFORMED_CONTRACT",
+        failure_family=recovery_family,
         generation_attempt_count=int(call_state.get("count") or 0),
         issue_codes=diagnostics["recovery_generation_issue_codes"],
         result=diagnostics["global_recovery_result"],
     )
-    return {
+    result = {
         "raw_text": raw_text,
         "parse_result": parse_result,
         "prompt_input": prompt_input,
         "generation_diagnostics": diagnostics,
     }
+    if success and isinstance(reader_surface_briefing, dict):
+        result["reader_surface_briefing"] = reader_surface_briefing
+    return result
 
 
 def _enrich_parse_generation_contract(
@@ -2418,6 +2598,7 @@ def generate_keysuri_with_bounded_recovery(
     project_id: Optional[str] = None,
     model: Optional[str] = None,
     usage_sink: Optional[MutableMapping[str, Any]] = None,
+    validate_reader_surface: bool = False,
 ) -> Dict[str, Any]:
     """Run Kee-Suri generation with bounded recovery.
 
@@ -2483,6 +2664,34 @@ def generate_keysuri_with_bounded_recovery(
 
     scaffold_fabricated = is_global and _global_scaffold_fabricated_top5(parse_result)
     if parse_result.get("parse_status") == "parsed_valid" and not scaffold_fabricated:
+        reader_surface_briefing: Optional[dict] = None
+        if is_global and validate_reader_surface:
+            gated_parse, reader_surface_briefing, reader_fields = (
+                _post_parse_reader_surface_gate(
+                    parse_result,
+                    program_id=program_id,
+                    prompt_input=prompt_input,
+                )
+            )
+            if str(gated_parse.get("parse_status") or "") != "parsed_valid":
+                return _run_global_bounded_contract_repair(
+                    prompt_input=prompt_input,
+                    program_id=program_id,
+                    raw_text=raw_text,
+                    parse_result=gated_parse,
+                    initial_codes=_issue_codes(gated_parse),
+                    initial_generation=initial_generation,
+                    initial_usage=initial_usage,
+                    gemini_caller=gemini_caller,
+                    project_id=project_id,
+                    model=model,
+                    usage_sink=usage_sink,
+                    call_state=call_state,
+                    # Never restore the source-echo candidate if repair fails.
+                    fallback_parse_result=None,
+                    validate_reader_surface=True,
+                    initial_reader_surface_fields=reader_fields,
+                )
         _merge_into_diagnostics(
             diagnostics,
             _merge_generation_usage(usage_sink, initial_usage, recovery_usage),
@@ -2494,12 +2703,15 @@ def generate_keysuri_with_bounded_recovery(
             diagnostics=diagnostics,
             model=model,
         )
-        return {
+        result = {
             "raw_text": raw_text,
             "parse_result": parse_result,
             "prompt_input": prompt_input,
             "generation_diagnostics": diagnostics,
         }
+        if isinstance(reader_surface_briefing, dict):
+            result["reader_surface_briefing"] = reader_surface_briefing
+        return result
 
     if is_global:
         repair_codes = list(initial_codes)
@@ -2524,6 +2736,7 @@ def generate_keysuri_with_bounded_recovery(
             usage_sink=usage_sink,
             call_state=call_state,
             fallback_parse_result=fallback_parse_result,
+            validate_reader_surface=validate_reader_surface,
         )
 
     if program_id != PROGRAM_KOREA:
@@ -3144,6 +3357,7 @@ def run_keysuri_live_source_smoke(
                 project_id=project_id,
                 model=model,
                 usage_sink=usage_sink,
+                validate_reader_surface=True,
             )
             raw_text = str(generation_result["raw_text"])
             parse_result = generation_result["parse_result"]
@@ -3308,13 +3522,135 @@ def run_keysuri_live_source_smoke(
                 error=f"Gemini parse failed ({parse_status}): {issue_text}",
             )
 
-        generated_briefing = parse_result.get("generated_briefing")
-        if isinstance(generated_briefing, dict):
+        reader_validated_briefing = generation_result.get(
+            "reader_surface_briefing"
+        )
+        generated_briefing = (
+            reader_validated_briefing
+            if isinstance(reader_validated_briefing, dict)
+            else parse_result.get("generated_briefing")
+        )
+        if isinstance(generated_briefing, dict) and not isinstance(
+            reader_validated_briefing, dict
+        ):
             generated_briefing = enrich_generated_briefing_content(
                 generated_briefing,
                 program_id,
                 prompt_input,
             )
+        if isinstance(generated_briefing, dict):
+            # Last read-through defense on the exact object handed to the
+            # renderer.  This covers Korea and unforeseen post-generation
+            # mutations too; a withheld field becomes a normal smoke failure,
+            # never a renderer ValueError/HTTP 500 with no run artifact.
+            defensive_parse, generated_briefing, defensive_reader_fields = (
+                _post_parse_reader_surface_gate(
+                    {
+                        **parse_result,
+                        "parse_status": "parsed_valid",
+                        "generated_briefing": generated_briefing,
+                    },
+                    program_id=program_id,
+                    prompt_input=prompt_input,
+                    enriched_briefing=generated_briefing,
+                )
+            )
+            if str(defensive_parse.get("parse_status") or "") != "parsed_valid":
+                defensive_issues = list(defensive_parse.get("issues") or [])
+                defensive_codes = [
+                    str(issue.get("code"))
+                    for issue in defensive_issues
+                    if isinstance(issue, dict) and issue.get("code")
+                ]
+                generation_diagnostics.update(
+                    {
+                        "post_enrichment_reader_surface_blocked": True,
+                        "recovery_reader_surface_ready_item_count": int(
+                            defensive_reader_fields.get(
+                                "reader_surface_ready_item_count"
+                            )
+                            or 0
+                        ),
+                        "recovery_reader_surface_issue_codes": list(
+                            defensive_reader_fields.get(
+                                "reader_surface_issue_codes"
+                            )
+                            or []
+                        ),
+                        "recovery_reader_surface_unavailable_fields": list(
+                            defensive_reader_fields.get(
+                                "reader_surface_unavailable_fields"
+                            )
+                            or []
+                        ),
+                    }
+                )
+                defensive_meta = (
+                    defensive_parse.get("parse_meta")
+                    if isinstance(defensive_parse.get("parse_meta"), dict)
+                    else {}
+                )
+                return LiveSourceSmokeResult(
+                    ok=False,
+                    program_id=program_id,
+                    source_pack_path=str(pack_path.resolve()),
+                    html_path=str(html_path.resolve()),
+                    fetched_item_count=len(fetched),
+                    feed_urls_used=feed_urls,
+                    sample_marker_pass=False,
+                    placeholder_gate_pass=False,
+                    fetched_live_news=True,
+                    use_gemini=True,
+                    called_gemini=True,
+                    parse_status="parsed_invalid",
+                    parse_meta=defensive_meta,
+                    parse_diagnostics=_parse_failure_diagnostics(
+                        defensive_parse, prompt_input
+                    ),
+                    generation_diagnostics=generation_diagnostics,
+                    generation_contract=generation_contract,
+                    validation_issues=defensive_codes,
+                    raw_response_path=raw_response_path,
+                    side_effects=side_effects,
+                    candidate_funnel_summary=(
+                        prompt_input.get("candidate_funnel_summary")
+                        if isinstance(
+                            prompt_input.get("candidate_funnel_summary"), dict
+                        )
+                        else None
+                    ),
+                    hold_reason=prompt_input.get("hold_reason"),
+                    exposure_dedup_backfill_used=bool(
+                        prompt_input.get("exposure_dedup_backfill_used")
+                    ),
+                    internal_issue_codes=parse_internal_codes,
+                    generation_attempt_count=int(
+                        generation_diagnostics.get("generation_attempt_count") or 0
+                    ),
+                    generation_recovery_attempted=bool(
+                        generation_diagnostics.get("generation_recovery_attempted")
+                    ),
+                    generation_recovery_family=generation_diagnostics.get(
+                        "generation_recovery_family"
+                    ),
+                    generation_recovery_result=str(
+                        generation_diagnostics.get("generation_recovery_result")
+                        or "failed"
+                    ),
+                    initial_generation_issue_codes=list(
+                        generation_diagnostics.get(
+                            "initial_generation_issue_codes"
+                        )
+                        or []
+                    ),
+                    recovery_generation_issue_codes=list(
+                        generation_diagnostics.get(
+                            "recovery_generation_issue_codes"
+                        )
+                        or defensive_codes
+                    ),
+                    error=KEYSURI_READER_SURFACE_BLOCKED_CODE,
+                )
             deep_block = (
                 generated_briefing.get("deep_dive")
                 if isinstance(generated_briefing, dict)

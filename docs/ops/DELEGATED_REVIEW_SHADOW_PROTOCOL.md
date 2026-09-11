@@ -1,6 +1,6 @@
 # Delegated review: finite operational shadow
 
-**LIVE DELEGATED SEND REMAINS OFF. MERGE / DEPLOY / ACTIVATION REQUIRE SEPARATE OWNER AUTHORITY.**
+**LIVE DELEGATED SEND REMAINS OFF UNTIL ALL CONDITIONAL ACTIVATION GATES PASS.**
 
 Task `GENIE_KEESURI_DELEGATED_REVIEW_GATE_001`. The Owner approved repository integration separately from read-only operational evidence. Neither a reviewed PR nor any shadow PASS authorizes production customer delivery.
 
@@ -10,7 +10,7 @@ Dates: **2026-09-11, 2026-09-14, 2026-09-15, 2026-09-16, 2026-09-17** in **Asia/
 
 Check each expected slot at +3, +8, +13 and +18 minutes. These are at most 60 relevant wakeups, not 60 publications. Exact times derive from 18 historical Received-header observations: selected ordinary arrivals at Today +69–107 seconds, Global +61–81 and Korea +82–95; a Today recovery arrived +6017 seconds after the nominal slot. This selected sample is not a latency percentile or an approved reliability guarantee.
 
-The Work internal local heartbeat `genie-keesuri-15` is registered and read back. It only processes dates in the finite manifest and expires after the final window. Its successful registration is **not** a successful scheduled wake, persistent cloud authentication, or Mac-independent execution. At integration preparation, prospective completion is **0/15**. Future results belong in dated operational evidence, not invented updates to this document.
+The first Work heartbeat `genie-keesuri-15` was registered but its recurrence was interpreted in UTC, not Asia/Seoul, so it did not prove the intended natural-slot wake. That schedule is superseded by the project-local Spark automation defined in [Mac mini Work operations](WORK_REVIEW_MAC_MINI_OPERATIONS.md). Successful registration is not a successful scheduled wake or persistent authentication. Missed slots remain missed; recovery/manual runs do not inflate the natural-slot denominator.
 
 ## Read-only execution contract
 
@@ -30,6 +30,6 @@ Report KNOWN_ANOMALY_CAUGHT, KNOWN_ANOMALY_MISSED, NORMAL_PASS, NORMAL_FALSE_HOL
 
 ## Live-transition evidence still required
 
-A genuinely Mac-independent authenticated cloud runner must exercise the integrated Gmail receipt, private-image access, received-email and final-customer renders, signed reviewer transport, current recipient/suppression authority, durable evidence and independently running missed-deadline/failure notification. Test credential expiry/restart and a missing/crashed review. Actual unsubscribe/complaint/hard-bounce ingress and lifecycle follow-up must be validated without customer sends. A local worker cannot prove it will report failure while the Mac is off.
+The always-on Mac mini runner must exercise the integrated Gmail receipt, private-image access, received-email and final-customer renders, signed reviewer transport, current recipient/suppression authority, durable evidence and an independently running missed-deadline/failure watchdog. Test credential expiry/restart and a missing/crashed review. Actual unsubscribe/complaint/hard-bounce ingress and lifecycle follow-up must be validated without customer sends. Mac power-off independence is no longer a requirement; reviewer and watchdog independence still is.
 
-After sufficient real evidence, the Owner may AUTHORIZE or REJECT merge → deploy → delegated live-send activation. Keep delegation OFF until that separate decision. The guarded human fallback, permanent duplicate evidence and ambiguous-send reconciliation remain mandatory; see [policy, rollout and manual mode](DELEGATED_SECOND_PASS_STAGED_POLICY.md).
+After sufficient real evidence, apply the Owner's conditional sequence: merge → OFF-mode deploy → health/manual-fallback proof → delegated activation. Keep delegation OFF if any condition is absent. The guarded human fallback, permanent duplicate evidence and ambiguous-send reconciliation remain mandatory; see [policy, rollout and manual mode](DELEGATED_SECOND_PASS_STAGED_POLICY.md).

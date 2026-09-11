@@ -77,6 +77,9 @@ _GRADED_READY_FIELDS = {
     "editorial_verdict": "READY",
     "terminal_issue_codes": [],
     "review_issue_codes": [],
+    "reader_surface_enforced": True,
+    "reader_surface_complete": True,
+    "reader_surface_ready_item_count": 5,
 }
 
 

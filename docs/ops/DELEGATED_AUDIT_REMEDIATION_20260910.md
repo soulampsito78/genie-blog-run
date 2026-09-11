@@ -2,8 +2,10 @@
 
 Task `GENIE_KEESURI_DELEGATED_REVIEW_GATE_001`, 2026-09-10 KST. This record
 separates source changes and local regression evidence from external operating
-evidence. It does not authorize a customer send, merge, deployment, activation,
-customer-right creation, or a scheduler change.
+evidence. The later 2026-09-11 authority correction conditionally authorizes the
+merge → OFF-mode deploy → activation sequence only after every documented gate
+passes. This record does not create customer rights or make missing evidence
+true.
 
 ## F01 — renderer and gate wording conflict
 
@@ -25,9 +27,9 @@ customer-right creation, or a scheduler change.
 - **AFTER_RESULT:** All three paths create source-specific pre-submit copy
   before freeze. The gate no longer edits a prepared body, rejects residual
   human wording and rejects a missing delegated attestation.
-- **STATUS:** `FIXED_AND_VERIFIED`; the current isolated full suite completed
-  `3,889 passed, 404 skipped, 0 failed`, and the product regression gate
-  completed `362 passed, 1 skipped`.
+- **STATUS:** `FIXED_AND_VERIFIED`; after integrating current `main`, the
+  isolated full suite completed `3,912 passed, 33 skipped, 0 failed`, and the
+  product regression gate completed `374 passed, 1 skipped`.
 
 ## F02 — review evidence versus delivery eligibility
 
@@ -56,22 +58,27 @@ customer-right creation, or a scheduler change.
 - **BEFORE_RESULT:** No separate source of customer rights is available.
 - **AFTER_RESULT:** No rights have been inferred or created. Content review is
   independent; `DELIVERY_ELIGIBILITY` remains incomplete.
-- **STATUS:** `BLOCKED_BY_OWNER_POLICY` for any delivery activation because
-  recipient evidence does not exist.
+- **STATUS:** `DELIVERY_ELIGIBILITY_BLOCKED`; content/visual review can proceed,
+  but live delivery activation cannot use these addresses until a separate
+  minimal beta authority records real consent, verification, product scope,
+  start date and suppression state.
 
 ## F04 — current authority wording
 
 - **ROOT_CAUSE:** Repository operational documents retain earlier wording that
   conflicts with the later conditional-authority directive supplied to this
   task.
-- **CHANGED_FILES:** None for that authority wording.
+- **CHANGED_FILES:** `OPERATIONS.md`, `ROLLOUT.md`,
+  `docs/REVIEW_OPERATION_BOX_POLICY.md`,
+  `docs/ops/DELEGATED_SECOND_PASS_STAGED_POLICY.md`, and
+  `docs/ops/WORK_REVIEW_MAC_MINI_OPERATIONS.md`.
 - **REGRESSION_TEST:** Not applicable; this is a governance-document conflict.
 - **BEFORE_RESULT:** Earlier wording remains in the repository documents.
-- **AFTER_RESULT:** An attempted documentation alignment was rejected by the
-  automated approval review as conflicting with the explicit prohibition text.
-  No alternate edit was used.
-- **STATUS:** `BLOCKED_BY_CAPABILITY` (automated governance review). The
-  supporting directive must be cleared for a safe repository-document update.
+- **AFTER_RESULT:** The SSOT now states the current conditional authority and
+  removes Mac-independent cloud review as a blocker, while retaining every
+  evidence and delivery-safety condition.
+- **STATUS:** `FIXED_AND_VERIFIED`; repository text search and the full
+  regression suite passed after the correction.
 
 ## F05 — reservation recovery boundaries
 
@@ -124,18 +131,19 @@ customer-right creation, or a scheduler change.
 - **ROOT_CAUSE:** `Dockerfile` and `Dockerfile.worker` install only
   `requirements.txt`, while the PostgreSQL customer authority dependencies are
   declared separately in `requirements-customer.txt`.
-- **CHANGED_FILES:** None. Adding `SQLAlchemy` and `psycopg[binary]` to the
-  production image requirements was rejected by automated approval review as
-  a production dependency/configuration change.
-- **REGRESSION_TEST:** Local OFF-mode application and customer-driver imports
-  succeeded in the isolated test environment without a database connection.
-  Docker is not installed in this execution environment, so no actual
-  `python:3.11` image build or startup was possible.
+- **CHANGED_FILES:** `Dockerfile`, `Dockerfile.worker`,
+  `requirements-customer.txt`, and deployment dependency tests. The customer
+  dependency file stays separate but both co-located runtime images install it.
+- **REGRESSION_TEST:** Static image-contract tests require both Dockerfiles to
+  install `requirements-customer.txt`; local OFF-mode application and
+  customer-driver imports run without a database connection. A real Cloud
+  Build remains the image/startup proof before OFF-mode deployment.
 - **BEFORE_RESULT:** Deployment-image compatibility was not proven.
-- **AFTER_RESULT:** The gap is preserved as a fail-closed activation blocker;
-  local imports are not presented as an image-build result.
-- **STATUS:** `BLOCKED_BY_CAPABILITY` (dependency change rejected; Docker
-  unavailable).
+- **AFTER_RESULT:** The deployment spec now contains the required ORM/driver.
+  Local tests are not presented as an image-build result.
+- **STATUS:** `FIXED_AND_VERIFIED_LOCAL`; the static deployment contract and
+  full regression suite pass. The first Cloud Build of this exact commit is
+  still the container/image proof required before OFF-mode deployment.
 
 ## External evidence and live state
 

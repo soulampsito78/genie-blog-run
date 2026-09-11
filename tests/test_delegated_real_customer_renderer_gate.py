@@ -80,6 +80,11 @@ def _case(tmp_path, mode: str) -> tuple[dict, str, dict]:
         })
         saved_html = "<article><h1>Today fixture</h1><a href=\"https://example.test/source\">source</a></article>"
     elif mode == "keysuri_global_tech":
+        meta.update({
+            "reader_surface_enforced": True,
+            "reader_surface_complete": True,
+            "reader_surface_ready_count": 5,
+        })
         saved_html = (
             '<table role="presentation"><tr><td><h1>Global fixture</h1>'
             '<img src="cid:keysuri_topshot_global_20260910"></td></tr></table>'
@@ -87,7 +92,12 @@ def _case(tmp_path, mode: str) -> tuple[dict, str, dict]:
             "<p>Copyright Ⓒ MirAI:ON</p>"
         )
     else:
-        meta["korea_bottom_shot_path"] = str(bottom)
+        meta.update({
+            "korea_bottom_shot_path": str(bottom),
+            "reader_surface_enforced": True,
+            "reader_surface_complete": True,
+            "reader_surface_ready_count": 5,
+        })
         saved_html = "<article><h1>Korea fixture</h1><a href=\"https://example.test/source\">source</a></article>"
     return meta, saved_html, _recipient_plan(mode)
 

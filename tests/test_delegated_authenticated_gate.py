@@ -66,6 +66,12 @@ def setup_case(tmp_path, monkeypatch):
             "customer_surface_status": "CUSTOMER_SURFACE_PASS", "customer_delivery_status": "not_sent",
             "safety_verdict": "SAFE", "editorial_verdict": "READY", "parent_run_id": parent,
             "selected_items": [{"url": source}], "repair_trace": [{"stage": "pre_review", "validation_reran": True}]}
+        if mode in {"keysuri_global_tech", "keysuri_korea_tech"}:
+            meta.update({
+                "reader_surface_enforced": True,
+                "reader_surface_complete": True,
+                "reader_surface_ready_count": 5,
+            })
         parts = []
         for role in (["top"] if mode == "keysuri_global_tech" else ["top", "bottom"]):
             path = tmp_path / f"{mode}_{role}.jpg"

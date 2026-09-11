@@ -1,6 +1,9 @@
 # Delegated review candidate: integration closeout
 
-**LIVE DELEGATED SEND REMAINS OFF. MERGE / DEPLOY / ACTIVATION REQUIRE SEPARATE OWNER AUTHORITY.**
+**HISTORICAL PREPARATION EVIDENCE.** The 2026-09-11 authority correction and
+[Mac mini Work SSOT](WORK_REVIEW_MAC_MINI_OPERATIONS.md) supersede this file's
+Mac-independent and separate-reapproval language. Live delegated send still
+remains OFF until every conditional gate passes.
 
 Task `GENIE_KEESURI_DELEGATED_REVIEW_GATE_001`, 2026-09-10 KST. This is the production candidate for changing normal GENIE × KEESURI publications from per-publication human approval to exception-based independent Work review. It prepares that transition; it does not enable automatic publishing. The Owner's Option B authorizes clean branch → validation → bounded fixes → commit → feature-branch push → review PR only.
 
@@ -64,6 +67,15 @@ Manual fallback is `DELEGATED_SEND_MODE=OFF` with guarded code and all cutover/r
 
 The current code records a final guard failure before provider submission as `NOT_SUBMITTED_FINAL_GUARD_BLOCKED`, retains its publication and recipient claims, and deliberately has no automatic recovery/reissue release. Manual fallback also blocks when recipient authority, suppression ingestion, duplicate claims or transition evidence is unhealthy. These are safety requirements, not reasons to grant a customer right from the legacy beta address list.
 
-The next phase is operational evidence. The registered **local** Sep11/14/15/16/17 × three-product shadow remains read-only, with **0/15 completed at closeout preparation**. It does not prove Mac-independent cloud execution. Actual cloud Gmail/authentication, both render captures, protected review transport, recipient/suppression ingress and lifecycle follow-up, durable evidence and independently observed failure notifications still require integrated qualification. An all-HOLD cohort or a synthetic normal PASS does not establish normal unattended operation; measure real normal/false-hold/anomaly/missing outcomes without inventing confidence from 15 slots.
+The next phase is operational evidence. The Sep11/14/15/16/17 × three-product
+shadow remains read-only. Actual Gmail authentication, both render captures,
+protected review transport, recipient/suppression ingress and lifecycle
+follow-up, durable evidence and an independently observed watchdog still
+require integrated qualification on the always-on Mac mini. An all-HOLD cohort
+or a synthetic normal PASS does not establish normal unattended operation;
+measure real normal/false-hold/anomaly/missing outcomes without inventing
+confidence from 15 slots.
 
-After sufficient real Mac-independent shadow evidence, the next Owner decision is **AUTHORIZE or REJECT merge → deploy → delegated live-send activation**. Until then the PR remains review-only, auto-merge is not enabled, and no further normal development or production activation follows from this closeout.
+After sufficient real always-on Mac mini evidence and delivery-safety proof,
+apply the conditional sequence: merge → OFF-mode deploy → health/manual
+fallback proof → delegated activation. Any missing gate keeps the mode OFF.

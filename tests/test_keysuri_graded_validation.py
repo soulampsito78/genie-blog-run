@@ -352,6 +352,9 @@ class KeysuriGradedValidationTests(unittest.TestCase):
             "customer_delivery_status": "not_sent",
             "artifact_status": "emailed",
             "safety_verdict": "SAFE",
+            "reader_surface_enforced": True,
+            "reader_surface_complete": True,
+            "reader_surface_ready_item_count": 5,
         }
         with mock.patch("keysuri_customer_delivery.customer_delivery_config_ready", return_value=(True, "ok")):
             ready = {**base, "editorial_verdict": "READY"}

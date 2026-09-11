@@ -1,4 +1,4 @@
-> **Owner-approved target (2026-09-10 final directive; activation pending):** [Delegated second-pass policy](ops/DELEGATED_SECOND_PASS_STAGED_POLICY.md) supersedes per-publication human approval for verified normal delegated sends after authorized activation. The deployed baseline remains human-confirmed. Existing pre-freeze repairs may remain with validation/audit; material post-review changes invalidate PASS; Work-detected anomalies require HOLD and manual recovery. Shadow evidence alone grants no send authority.
+> **Owner-approved target (2026-09-11 authority correction):** [Delegated second-pass policy](ops/DELEGATED_SECOND_PASS_STAGED_POLICY.md) supersedes per-publication human approval only for a complete authenticated normal PASS on the exact candidate. The Work execution host is the Owner's always-on Mac mini. Conditional merge, OFF-mode deployment and activation authority applies only after all documented evidence and delivery-eligibility gates are satisfied. Shadow evidence and missing customer rights grant no send authority.
 
 # Shared Review / Operation Box Policy
 

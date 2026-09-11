@@ -157,6 +157,13 @@ _GENERATION_RECOVERY_DIAGNOSTIC_KEYS = (
     "global_generation_call_budget",
     "global_generation_budget_exhausted",
     "global_usage_by_attempt",
+    "initial_reader_surface_ready_item_count",
+    "initial_reader_surface_issue_codes",
+    "initial_reader_surface_unavailable_fields",
+    "recovery_reader_surface_ready_item_count",
+    "recovery_reader_surface_issue_codes",
+    "recovery_reader_surface_unavailable_fields",
+    "post_enrichment_reader_surface_blocked",
 )
 
 _SAFE_GENERATION_DIAGNOSTIC_KEYS = (

@@ -1824,6 +1824,10 @@ def can_approve_customer_send(meta: Dict[str, Any], *, has_email_html: bool) -> 
     if mode == "today_genie" and vr != "pass":
         return False, "review_required_remediation_needed"
     if mode in {"keysuri_global_tech", "keysuri_korea_tech"}:
+        if meta.get("reader_surface_enforced") is not True:
+            return False, "keysuri_reader_surface_unverified"
+        if meta.get("reader_surface_complete") is not True:
+            return False, "keysuri_reader_surface_incomplete"
         if str(meta.get("safety_verdict") or "") != "SAFE":
             return False, "keysuri_safety_not_safe"
         editorial_verdict = str(meta.get("editorial_verdict") or "")
