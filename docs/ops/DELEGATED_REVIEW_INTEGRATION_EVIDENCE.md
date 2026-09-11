@@ -19,7 +19,7 @@ The inspected Cloud Build trigger listens only to pushes matching `^main$`, with
 
 | Check | Final result | Scope |
 |---|---|---|
-| Entire repository `pytest` suite | **4,262 passed, 0 failed/errors, 19 skipped** | 4,281 collected; includes real PostgreSQL customer tests and all gate regressions. |
+| Entire repository `pytest` suite | **3,912 passed, 0 failed/errors, 33 skipped** | 3,945 collected; includes real PostgreSQL customer tests and all gate regressions. |
 | Existing offline product release script | **362 passed, 1 skipped, 0 failed** | 363 run; overlaps the full suite and is not added again. |
 | Separate historical-mail precheck harness | **16 passed, 0 failed** | Local historical-evidence checks outside the repository suite; no live approval authority. |
 | Authenticated gate | 91 passed | Included in full suite; 14 added during adversarial remediation. |
@@ -27,7 +27,7 @@ The inspected Cloud Build trigger listens only to pushes matching `^main$`, with
 | Repair boundary / no-send shadow | 8 / 91 passed | Included; persistent boundaries and incomplete outcomes. |
 | Patch/diff/secret-evidence review | Passed | Only intended source, tests and sanitized review documentation; no private mail/image bytes or credentials. |
 
-Unique passed checks including the separate mail harness: **4,278**. The full run produced 24 existing dependency compatibility warnings under Python 3.9.6. The isolated database was PostgreSQL 16.14 with real migrations and transaction rollback. The 19 skips require absent production-proof bodies, approved image assets or preview fixtures; their exact names/reasons are preserved in the [sanitized validation record](evidence/delegated-review-integration-20260910.json). They are not claimed as passing or supplied by copying the Owner's untracked files.
+Unique passed checks including the separate mail harness: **3,928**. The full run produced 24 existing dependency compatibility warnings under Python 3.9.6. The isolated database was PostgreSQL 16.14 with real migrations and transaction rollback. The 33 skips require absent production-proof bodies, approved image assets or preview fixtures, plus currently unavailable customer DB collection modules; their exact names/reasons are preserved in the [sanitized validation record](evidence/delegated-review-integration-20260910.json). They are not claimed as passing or supplied by copying the Owner's untracked files.
 
 Production credentials and mutation settings were not inherited. A validation-only Python audit guard was loaded before pytest and inherited by Python subprocesses; it rejected external socket/DNS calls and provider CLIs while allowing the dedicated local PostgreSQL Unix socket. Fifteen DNS attempts were blocked during the full suite. Provider dispatch tests used injected/mocked SMTP paths. No real customer mail or production database write occurred. The sandbox exception used for database tests was required for the local Unix socket, not provider access.
 

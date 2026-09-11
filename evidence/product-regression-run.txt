@@ -1,0 +1,44 @@
+/Users/parkyoungseok/Library/Python/3.9/lib/python/site-packages/google/api_core/_python_version_support.py:242: FutureWarning: You are using a non-supported Python version (3.9.6). Google will not post any further updates to google.api_core supporting this Python version. Please upgrade to the latest Python version, or at least Python 3.10, and then update google.api_core.
+  warnings.warn(message, FutureWarning)
+/Users/parkyoungseok/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+/Users/parkyoungseok/Library/Python/3.9/lib/python/site-packages/google/auth/__init__.py:54: FutureWarning: You are using a Python version 3.9 past its end of life. Google will update google-auth with critical bug fixes on a best-effort basis, but not with any other fixes or features. Please upgrade your Python version, and then update google-auth.
+  warnings.warn(eol_message.format("3.9"), FutureWarning)
+/Users/parkyoungseok/Library/Python/3.9/lib/python/site-packages/google/oauth2/__init__.py:40: FutureWarning: You are using a Python version 3.9 past its end of life. Google will update google-auth with critical bug fixes on a best-effort basis, but not with any other fixes or features. Please upgrade your Python version, and then update google-auth.
+  warnings.warn(eol_message.format("3.9"), FutureWarning)
+/Users/parkyoungseok/Library/Python/3.9/lib/python/site-packages/google/api_core/_python_version_support.py:242: FutureWarning: You are using a non-supported Python version (3.9.6). Google will not post any further updates to google.cloud.aiplatform_v1 supporting this Python version. Please upgrade to the latest Python version, or at least Python 3.10, and then update google.cloud.aiplatform_v1.
+  warnings.warn(message, FutureWarning)
+/Users/parkyoungseok/Library/Python/3.9/lib/python/site-packages/google/api_core/_python_version_support.py:242: FutureWarning: You are using a non-supported Python version (3.9.6). Google will not post any further updates to google.cloud.aiplatform_v1beta1 supporting this Python version. Please upgrade to the latest Python version, or at least Python 3.10, and then update google.cloud.aiplatform_v1beta1.
+  warnings.warn(message, FutureWarning)
+/Users/parkyoungseok/Library/Python/3.9/lib/python/site-packages/google/api_core/_python_version_support.py:242: FutureWarning: You are using a non-supported Python version (3.9.6). Google will not post any further updates to google.cloud.resourcemanager_v3 supporting this Python version. Please upgrade to the latest Python version, or at least Python 3.10, and then update google.cloud.resourcemanager_v3.
+  warnings.warn(message, FutureWarning)
+/Users/parkyoungseok/Library/Python/3.9/lib/python/site-packages/google/api_core/_python_version_support.py:242: FutureWarning: You are using a non-supported Python version (3.9.6). Google will not post any further updates to google.cloud.aiplatform.v1.schema.predict.instance_v1 supporting this Python version. Please upgrade to the latest Python version, or at least Python 3.10, and then update google.cloud.aiplatform.v1.schema.predict.instance_v1.
+  warnings.warn(message, FutureWarning)
+/Users/parkyoungseok/Library/Python/3.9/lib/python/site-packages/google/api_core/_python_version_support.py:242: FutureWarning: You are using a non-supported Python version (3.9.6). Google will not post any further updates to google.cloud.aiplatform.v1.schema.predict.params_v1 supporting this Python version. Please upgrade to the latest Python version, or at least Python 3.10, and then update google.cloud.aiplatform.v1.schema.predict.params_v1.
+  warnings.warn(message, FutureWarning)
+/Users/parkyoungseok/Library/Python/3.9/lib/python/site-packages/google/api_core/_python_version_support.py:242: FutureWarning: You are using a non-supported Python version (3.9.6). Google will not post any further updates to google.cloud.aiplatform.v1.schema.predict.prediction_v1 supporting this Python version. Please upgrade to the latest Python version, or at least Python 3.10, and then update google.cloud.aiplatform.v1.schema.predict.prediction_v1.
+  warnings.warn(message, FutureWarning)
+/Users/parkyoungseok/Library/Python/3.9/lib/python/site-packages/google/api_core/_python_version_support.py:242: FutureWarning: You are using a non-supported Python version (3.9.6). Google will not post any further updates to google.cloud.aiplatform.v1.schema.trainingjob.definition_v1 supporting this Python version. Please upgrade to the latest Python version, or at least Python 3.10, and then update google.cloud.aiplatform.v1.schema.trainingjob.definition_v1.
+  warnings.warn(message, FutureWarning)
+/Users/parkyoungseok/Library/Python/3.9/lib/python/site-packages/google/api_core/_python_version_support.py:242: FutureWarning: You are using a non-supported Python version (3.9.6). Google will not post any further updates to google.cloud.aiplatform.v1beta1.schema.predict.instance_v1beta1 supporting this Python version. Please upgrade to the latest Python version, or at least Python 3.10, and then update google.cloud.aiplatform.v1beta1.schema.predict.instance_v1beta1.
+  warnings.warn(message, FutureWarning)
+/Users/parkyoungseok/Library/Python/3.9/lib/python/site-packages/google/api_core/_python_version_support.py:242: FutureWarning: You are using a non-supported Python version (3.9.6). Google will not post any further updates to google.cloud.aiplatform.v1beta1.schema.predict.params_v1beta1 supporting this Python version. Please upgrade to the latest Python version, or at least Python 3.10, and then update google.cloud.aiplatform.v1beta1.schema.predict.params_v1beta1.
+  warnings.warn(message, FutureWarning)
+/Users/parkyoungseok/Library/Python/3.9/lib/python/site-packages/google/api_core/_python_version_support.py:242: FutureWarning: You are using a non-supported Python version (3.9.6). Google will not post any further updates to google.cloud.aiplatform.v1beta1.schema.predict.prediction_v1beta1 supporting this Python version. Please upgrade to the latest Python version, or at least Python 3.10, and then update google.cloud.aiplatform.v1beta1.schema.predict.prediction_v1beta1.
+  warnings.warn(message, FutureWarning)
+/Users/parkyoungseok/Library/Python/3.9/lib/python/site-packages/google/api_core/_python_version_support.py:242: FutureWarning: You are using a non-supported Python version (3.9.6). Google will not post any further updates to google.cloud.aiplatform.v1beta1.schema.trainingjob.definition_v1beta1 supporting this Python version. Please upgrade to the latest Python version, or at least Python 3.10, and then update google.cloud.aiplatform.v1beta1.schema.trainingjob.definition_v1beta1.
+  warnings.warn(message, FutureWarning)
+.......................................................................................................................................................................................................................s........................................................................................................................................2026-09-11 15:55:14,166 INFO keysuri_live_source_smoke {"event": "keysuri_global_contract_repair_attempted", "failure_family": "GLOBAL_READER_SURFACE_FAILURE", "generation_attempt_count": 2, "issue_codes": ["keysuri_reader_surface_blocked"], "program_id": "keysuri_global_tech"}
+2026-09-11 15:55:14,207 INFO keysuri_live_source_smoke {"event": "keysuri_global_contract_repair_succeeded", "failure_family": "GLOBAL_READER_SURFACE_FAILURE", "generation_attempt_count": 2, "program_id": "keysuri_global_tech", "result": "succeeded"}
+..2026-09-11 15:55:14,225 INFO keysuri_live_source_smoke {"event": "keysuri_global_contract_repair_attempted", "failure_family": "GLOBAL_READER_SURFACE_FAILURE", "generation_attempt_count": 2, "issue_codes": ["keysuri_reader_surface_blocked"], "program_id": "keysuri_global_tech"}
+2026-09-11 15:55:14,246 INFO keysuri_live_source_smoke {"event": "keysuri_global_contract_repair_failed", "failure_family": "GLOBAL_READER_SURFACE_FAILURE", "generation_attempt_count": 2, "issue_codes": ["keysuri_reader_surface_blocked", "top_5_news_item_headline_missing", "top_5_news_item_summary_missing"], "program_id": "keysuri_global_tech", "result": "failed"}
+....................
+----------------------------------------------------------------------
+Ran 374 tests in 0.765s
+
+OK (skipped=1)
+TECHNICAL_TEST_PASS=PASS
+RUNTIME_SAFETY_CONTRACT=PASS
+CUSTOMER_SURFACE_CONTRACT=PASS
+RELEASE_REGRESSION_PASS
+GENIE_PRODUCT_REGRESSION_GATE=PASS
