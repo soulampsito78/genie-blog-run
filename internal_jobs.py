@@ -1102,3 +1102,28 @@ def keysuri_graded_validation_proof_endpoint(
         os.getenv("COMMIT_SHA") or os.getenv("SOURCE_COMMIT") or ""
     )
     return JSONResponse(status_code=200 if result.get("ok") else 500, content=result)
+
+
+@router.post("/internal/jobs/delegated-review")
+async def delegated_review_endpoint(
+    request: Request,
+    x_genie_internal_job_token: Optional[str] = Header(
+        None, alias="X-Genie-Internal-Job-Token"
+    ),
+):
+    """Protected handoff for a signed independent-review verdict.
+
+    The internal token protects the transport and the independent HMAC binds the
+    exact body to the configured reviewer principal.  The request cannot supply
+    recipients, activation flags, or a send-mode override.
+    """
+    auth_fail = _verify_internal_job_token(request, x_genie_internal_job_token)
+    if auth_fail is not None:
+        return auth_fail
+    raw = await request.body()
+    from delegated_gate import run_configured_review_event
+
+    result = run_configured_review_event(raw, request.headers)
+    # Review/HOLD outcomes are acknowledged to prevent transport retries from
+    # becoming a second publication attempt. The body remains the audit result.
+    return JSONResponse(status_code=200, content=result)

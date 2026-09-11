@@ -3227,6 +3227,30 @@ def _render_customer_recipients_page(
     invalid = resolved["invalid_entries"]
     source_summary = resolved["source_summary"]
     updated_at = cfg.get("updated_at") or "—"
+    try:
+        from admin_beta_delegation import load_active_admin_beta_delegation
+        from delegated_gate import GateSettings, POLICY_VERSION
+
+        active_delegation = load_active_admin_beta_delegation()
+        runtime = GateSettings.from_environment()
+        runtime_ready = (
+            runtime.mode == "ON"
+            and runtime.authorized_policy == POLICY_VERSION
+            and bool(runtime.reviewer_keys)
+            and os.getenv("GENIE_RECIPIENT_AUTHORITY", "").strip().upper()
+            == "ADMIN_BETA_DELEGATION"
+        )
+        delegation_status = "ACTIVE" if runtime_ready else "GRANT_ACTIVE_RUNTIME_STOPPED"
+        runtime_label = "runtime ON" if runtime_ready else "runtime not active"
+        delegation_detail = (
+            f"{active_delegation['recipient_count']}명 · "
+            f"{len(active_delegation['products'])}개 상품 · "
+            f"{active_delegation['recipient_configuration_version']} · {runtime_label}"
+        )
+    except Exception as exc:
+        active_delegation = None
+        delegation_status = "STOPPED"
+        delegation_detail = str(exc)[:120]
 
     # env recipients table (read-only)
     env_rows = "".join(
@@ -3279,6 +3303,23 @@ def _render_customer_recipients_page(
 </p>
 </div>
 
+<div class="card">
+<h2 style="font-size:16px;margin:0 0 8px">지속 자동발송 권한</h2>
+<p style="font-size:14px;margin:0 0 10px"><strong>{_esc(delegation_status)}</strong> — {_esc(delegation_detail)}</p>
+<p style="font-size:13px;color:#64748b;margin:0 0 12px">
+  한 번 활성화하면 정상 PASS 발행은 추가 승인 없이 현재의 정확한 12명에게만 발송됩니다.
+  명단·버전·제외 상태가 바뀌면 전체 자동발송이 즉시 중지됩니다.
+</p>
+{f'''<form method="post" action="/admin/customer-recipients/delegation/revoke">
+{_csrf_field(request, 'admin_beta_delegation_revoke')}
+<input type="hidden" name="reason" value="admin_operator_revoked">
+<button type="submit" class="btn" style="background:#dc2626">자동발송 권한 중지</button>
+</form>''' if active_delegation else f'''<form method="post" action="/admin/customer-recipients/delegation/activate">
+{_csrf_field(request, 'admin_beta_delegation_activate')}
+<button type="submit" class="btn">12명 · 3개 상품 자동발송 권한 활성화</button>
+</form>'''}
+</div>
+
 {error_html}{success_html}
 
 <div class="card">
@@ -3325,6 +3366,78 @@ def admin_customer_recipients(request: Request) -> HTMLResponse:
     if gate is not None:
         return gate  # type: ignore[return-value]
     return _render_customer_recipients_page(request)
+
+
+@router.post("/admin/customer-recipients/delegation/activate")
+def admin_customer_recipients_delegation_activate(
+    request: Request, csrf_token: str = Form("")
+) -> Response:
+    gate = _require_login(request)
+    if gate is not None:
+        return gate  # type: ignore[return-value]
+    if not _verify_csrf(request, "admin_beta_delegation_activate", csrf_token):
+        return _csrf_rejected()
+    from admin_beta_delegation import ALLOWED_MODES, activate_admin_beta_delegation
+    from delegated_delivery_safety import DeliverySafetyError
+
+    operator_id = _operator_id(request)
+    try:
+        grant = activate_admin_beta_delegation(
+            products=ALLOWED_MODES, operator_id=operator_id, expected_count=12
+        )
+    except DeliverySafetyError as exc:
+        append_operator_audit(
+            "admin_beta_delegation_blocked",
+            operator_id=operator_id,
+            result="blocked",
+            reason_code=str(exc),
+        )
+        return _render_customer_recipients_page(request, error=str(exc))
+    append_operator_audit(
+        "admin_beta_delegation_activated",
+        operator_id=operator_id,
+        result="activated",
+        related_id=grant["grant_id"],
+        metadata={
+            "recipient_count": grant["recipient_count"],
+            "products": grant["products"],
+            "recipient_configuration_version": grant[
+                "recipient_configuration_version"
+            ],
+        },
+    )
+    return RedirectResponse(
+        url="/admin/customer-recipients?delegation=activated", status_code=303
+    )
+
+
+@router.post("/admin/customer-recipients/delegation/revoke")
+def admin_customer_recipients_delegation_revoke(
+    request: Request,
+    reason: str = Form("admin_operator_revoked"),
+    csrf_token: str = Form(""),
+) -> Response:
+    gate = _require_login(request)
+    if gate is not None:
+        return gate  # type: ignore[return-value]
+    if not _verify_csrf(request, "admin_beta_delegation_revoke", csrf_token):
+        return _csrf_rejected()
+    from admin_beta_delegation import revoke_admin_beta_delegation
+
+    operator_id = _operator_id(request)
+    record = revoke_admin_beta_delegation(
+        operator_id=operator_id, reason=reason or "admin_operator_revoked"
+    )
+    append_operator_audit(
+        "admin_beta_delegation_revoked",
+        operator_id=operator_id,
+        result="revoked",
+        related_id=record.get("grant_id"),
+        metadata={"reason": record["reason"]},
+    )
+    return RedirectResponse(
+        url="/admin/customer-recipients?delegation=revoked", status_code=303
+    )
 
 
 @router.post("/admin/customer-recipients/add")
