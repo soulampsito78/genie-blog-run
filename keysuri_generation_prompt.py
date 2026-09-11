@@ -2219,6 +2219,13 @@ def build_keysuri_corrective_generation_prompt(
             "still emit every required key in the same single JSON object.",
             "Output exactly one JSON object. No markdown fences, no commentary.",
         ]
+        if safe_context["failure_family"] == "GLOBAL_READER_SURFACE_FAILURE":
+            suffix[4:4] = [
+                "The first object was structurally valid but its reader prose was withheld.",
+                "Rewrite every TOP5 headline as authored Korean reader copy; never copy a source headline verbatim.",
+                "Rewrite every required explanatory field as Korean prose grounded in its own article evidence.",
+                "Source headlines, summaries, and evidence text are factual input only and must not become visible prose.",
+            ]
     # The compact prompt exists for a MAX_TOKENS emergency: it "drops long prose
     # instructions" and truncates each article's summary to 160 characters. A
     # malformed-contract repair is the opposite failure — the model returned too

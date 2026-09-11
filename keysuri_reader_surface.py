@@ -294,6 +294,22 @@ def _bind_prose(
             and not _HANGUL_RE.search(form)
         ):
             return "", READER_PROSE_WAS_SOURCE_TEXT
+        # The deterministic enricher may wrap a complete foreign evidence
+        # headline in Korean attribution prose — e.g. ``공개 요약에 따르면
+        # 「<full English headline>」 ...``.  Hangul around the quote makes it
+        # look authored, and the source fragment is no longer a prefix, but the
+        # customer still sees the evidence headline verbatim.  A full foreign
+        # evidence string embedded anywhere in a reader field is the same
+        # leakage as a leading graft; short product names remain allowed because
+        # only complete evidence forms of meaningful length are considered.
+        if (
+            form
+            and normalized
+            and len(form) >= 12
+            and form in normalized
+            and not _HANGUL_RE.search(form)
+        ):
+            return "", READER_PROSE_WAS_SOURCE_TEXT
 
     if _looks_like_raw_source_prose(value):
         return "", READER_PROSE_NOT_KOREAN

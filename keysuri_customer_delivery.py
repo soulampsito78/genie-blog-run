@@ -521,6 +521,20 @@ def prepare_keysuri_customer_delivery(
     subject = build_keysuri_customer_final_subject(meta, saved_html)
     preheader = build_keysuri_customer_final_preheader(meta, saved_html)
     if mode in _KEYSURI_MODES:
+        if meta.get("reader_surface_enforced") is not True:
+            return {
+                "ok": False,
+                "error": "KEYSURI_READER_SURFACE_UNVERIFIED",
+                "subject": subject,
+                "preheader": preheader,
+            }
+        if meta.get("reader_surface_complete") is not True:
+            return {
+                "ok": False,
+                "error": "KEYSURI_READER_SURFACE_INCOMPLETE",
+                "subject": subject,
+                "preheader": preheader,
+            }
         if str(meta.get("safety_verdict") or "") != "SAFE":
             return {
                 "ok": False,

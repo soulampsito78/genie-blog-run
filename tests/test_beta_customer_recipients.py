@@ -498,6 +498,9 @@ class KeysuriDeliveryMergedRecipientsTests(unittest.TestCase):
             "keysuri_global_top_image_source": "static_latest",
             "safety_verdict": "SAFE",
             "editorial_verdict": "READY",
+            "reader_surface_enforced": True,
+            "reader_surface_complete": True,
+            "reader_surface_ready_item_count": 5,
         }
         # Signature: send_keysuri_customer_final_email(saved_html, meta)
         send_keysuri_customer_final_email(
@@ -533,6 +536,9 @@ class KeysuriDeliveryMergedRecipientsTests(unittest.TestCase):
             "korea_bottom_shot_cid": "cid_bottom",
             "safety_verdict": "SAFE",
             "editorial_verdict": "READY",
+            "reader_surface_enforced": True,
+            "reader_surface_complete": True,
+            "reader_surface_ready_item_count": 5,
         }
         send_keysuri_customer_final_email(
             "<html><body>korea brief</body></html>",
