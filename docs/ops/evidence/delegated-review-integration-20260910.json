@@ -8,7 +8,7 @@
   },
   "bounded_baseline_fixture_fix": "D3 fixed historical test clock now aligns initial catalog availability inside the rollback transaction; runtime/migration/prices/billing unchanged",
   "branch": "ops/delegated-review-gate-001",
-  "branch_base": "b35d2fb30c1985b1a2dc015f968b13831d7d170d",
+  "branch_base": "50de6786c3f6ed103e0e73de7bf4a3bfed5c7a83",
   "date_kst": "2026-09-10",
   "focused_modules_in_full_suite": {
     "test_customer_d3_conversion_api": {

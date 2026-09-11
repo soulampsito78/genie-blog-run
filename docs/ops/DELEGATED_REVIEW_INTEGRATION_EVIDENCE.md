@@ -9,7 +9,7 @@ Task `GENIE_KEESURI_DELEGATED_REVIEW_GATE_001`, 2026-09-10 KST. This is the prod
 
 ## Source and production boundary
 
-Fresh remote/main and branch base: `b35d2fb30c1985b1a2dc015f968b13831d7d170d`. Integration branch: `ops/delegated-review-gate-001`. The final 25-file prepared patch applied without conflict to a separate clean clone. The Owner's distinct checkout at `ef6c7bdec9f5d6b059810c1e2c1356517192b886` and its 33 existing dirty entries were not used as input or edited.
+Fresh remote/main and branch base: `50de6786c3f6ed103e0e73de7bf4a3bfed5c7a83`. Integration branch: `ops/delegated-review-gate-001`. The final 25-file prepared patch applied without conflict to a separate clean clone. The Owner's distinct checkout at `ef6c7bdec9f5d6b059810c1e2c1356517192b886` and its 33 existing dirty entries were not used as input or edited.
 
 Fresh read-only runtime inspection still found revision `genie-blog-run-gcb-3a7196eb-50e3-46d0-85aa-8259ded77280`, matching the base commit and serving 100% traffic. Today 06:30, Global 12:30 and Korea 18:30 KST weekday schedules remain unchanged; Tomorrow remains paused. The serving baseline has no delegated modules or delegated-mode setting and retains the authenticated human approval path. This branch defaults `DELEGATED_SEND_MODE` to OFF and installs no live route, cloud runner, key, scheduler or production configuration.
 
