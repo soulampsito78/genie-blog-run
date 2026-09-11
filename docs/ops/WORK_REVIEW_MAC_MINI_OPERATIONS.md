@@ -39,6 +39,31 @@ For the exact product, publication date and run ID:
 6. Persist one create-exclusive JSON verdict with evidence for every required
    class. Missing or inaccessible evidence cannot be marked PASS.
 
+## Mac mini execution procedure (evidence-first)
+
+1. Start Chrome through Playwright and open the approved reviewer message URL
+   directly.
+2. Verify in the message DOM:
+   - product/publication date
+   - exact run ID
+   - sender identity and received timestamp
+   - expected recipient and image/render links.
+3. Run `pageAssets.list()` in the same browser context and record all candidate
+   assets with `assetId`, `filename`, `cid`, and source URL.
+4. Select required image candidates only and call `pageAssets.bundle()` for each
+   image asset to materialize local files.
+5. Run `view_image` for each bundled file and perform pixel-level visual checks
+   (text overlays, watermark consistency, graph/table integrity, body/face
+   legibility, cross-cut contamination).
+6. Validate final-customer render URL in browser and capture the render evidence
+   independently from Gmail previews.
+7. Persist results as create-exclusive local JSON evidence entries. If any step
+   is blocked (auth/session/access), capture the exact blocker and stop without
+   attempting credential or route bypass.
+
+No local URL rewrites or `file://` substitutes are allowed to replace the actual
+Gmail/private-image/render access path.
+
 Normal PASS stays silent. An exception is deduplicated and reported in this
 shape: PRODUCT, RUN, WHAT HAPPENED, WHY IT MATTERS, WHAT WAS ALREADY DONE,
 CURRENT SEND STATE, RECOMMENDED ACTION and OWNER DECISION REQUIRED.

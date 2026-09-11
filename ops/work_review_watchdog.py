@@ -28,6 +28,9 @@ VERDICTS = {
     "REVIEW_UNAVAILABLE",
     "STATE_CONFLICT",
 }
+
+PROVISIONAL_WAITING_VERDICT = "HOLD_INCOMPLETE"
+WAITING_SEND_STATES = {"WAITING", "WINDOW_WAITING_INCOMPLETE"}
 REQUIRED_CHECKS = {
     "content",
     "sources",
@@ -119,6 +122,25 @@ def _pass_is_complete(row: Mapping[str, Any]) -> bool:
     return True
 
 
+def _is_provisional_waiting(row: Mapping[str, Any]) -> bool:
+    if _verdict(row) != PROVISIONAL_WAITING_VERDICT:
+        return False
+    send_state = str(
+        row.get("customer_send_state")
+        or row.get("customer_delivery_status")
+        or row.get("state")
+        or ""
+    ).upper()
+    if send_state in WAITING_SEND_STATES:
+        return True
+    reason_codes = row.get("reason_codes")
+    if isinstance(reason_codes, list):
+        return "NO_MATCHING_OWNER_REVIEW_MAIL" in {
+            str(code).upper() for code in reason_codes
+        }
+    return False
+
+
 def _packet(slot: Mapping[str, Any], *, verdict: str, problem_code: str,
             now: datetime, evidence: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     run_id = str((evidence or {}).get("run_id") or "")
@@ -169,7 +191,8 @@ def inspect_slots(*, manifest: Mapping[str, Any], evidence_dir: Path,
             raise WatchdogError("manifest_windows_missing:" + slot_id)
         deadline = max(_instant(value) for value in windows)
         rows = _evidence_for_slot(evidence_dir, slot_id)
-        final_rows = [row for row in rows if _verdict(row) in VERDICTS]
+        final_rows = [row for row in rows if _verdict(row) in VERDICTS and not _is_provisional_waiting(row)]
+        wait_rows = [row for row in rows if _is_provisional_waiting(row)]
         evidence = max(final_rows, key=_evidence_time) if final_rows else None
         if evidence is not None:
             verdict = _verdict(evidence)
@@ -185,6 +208,21 @@ def inspect_slots(*, manifest: Mapping[str, Any], evidence_dir: Path,
                 problem = str(reasons[0]) if isinstance(reasons, list) and reasons else verdict
                 exceptions.append(_packet(slot, verdict=verdict,
                     problem_code=problem, now=current, evidence=evidence))
+            continue
+        pending_wait = max(wait_rows, key=_evidence_time) if wait_rows else None
+        if pending_wait is not None:
+            if current > deadline:
+                reasons = pending_wait.get("reason_codes") or []
+                problem = (
+                    str(reasons[0])
+                    if isinstance(reasons, list) and reasons else
+                    "NO_MATCHING_OWNER_REVIEW_MAIL"
+                )
+                exceptions.append(_packet(slot, verdict="REVIEW_UNAVAILABLE",
+                    problem_code=problem, now=current,
+                    evidence=pending_wait))
+            else:
+                pending.append(slot_id)
             continue
         if current > deadline:
             exceptions.append(_packet(slot, verdict="REVIEW_UNAVAILABLE",

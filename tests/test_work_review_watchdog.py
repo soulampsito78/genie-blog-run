@@ -46,6 +46,50 @@ def test_before_deadline_is_pending(tmp_path):
     assert result["exceptions"] == []
 
 
+def _waiting_hold_incomplete():
+    return {
+        "slot_id": "2026-09-11_keysuri_korea_tech",
+        "run_id": "20260911_183300_keysuri_korea_tech_waiting",
+        "observed_at": "2026-09-11T09:38:00+09:00",
+        "overall_verdict": "HOLD_INCOMPLETE",
+        "reason_codes": ["NO_MATCHING_OWNER_REVIEW_MAIL"],
+        "customer_send_state": "WAITING",
+        "checks": {name: "PASS" for name in {
+            "content", "sources", "images", "render", "customer_render",
+            "run_identity", "delivery_readiness",
+        }},
+    }
+
+
+def test_waiting_hold_incomplete_before_deadline_is_pending(tmp_path):
+    _write(tmp_path / "review.json", _waiting_hold_incomplete())
+    result = inspect_slots(manifest=_manifest(), evidence_dir=tmp_path,
+        now=datetime(2026, 9, 11, 9, 40, tzinfo=timezone.utc))
+    assert result["pending_slots"] == ["2026-09-11_keysuri_korea_tech"]
+    assert result["exceptions"] == []
+
+
+def test_waiting_hold_incomplete_after_deadline_becomes_review_unavailable(tmp_path):
+    _write(tmp_path / "review.json", _waiting_hold_incomplete())
+    result = inspect_slots(manifest=_manifest(), evidence_dir=tmp_path,
+        now=datetime(2026, 9, 11, 10, 0, tzinfo=timezone.utc))
+    assert result["exceptions"][0]["verdict"] == "REVIEW_UNAVAILABLE"
+    assert result["exceptions"][0]["problem_code"] == "NO_MATCHING_OWNER_REVIEW_MAIL"
+
+
+def test_final_verdict_overrides_waiting_observation(tmp_path):
+    _write(tmp_path / "waiting.json", _waiting_hold_incomplete())
+    final = _pass()
+    final.update(run_id="20260911_183700_keysuri_korea_tech_final")
+    final.update(overall_verdict="HOLD_ANOMALY", reason_codes=["CUSTOMER_RENDER_MISSING"],
+                 observed_at="2026-09-11T09:38:00+09:00")
+    _write(tmp_path / "final.json", final)
+    result = inspect_slots(manifest=_manifest(), evidence_dir=tmp_path,
+        now=datetime(2026, 9, 11, 9, 40, tzinfo=timezone.utc))
+    assert result["exceptions"][0]["verdict"] == "HOLD_ANOMALY"
+    assert result["exceptions"][0]["problem_code"] == "CUSTOMER_RENDER_MISSING"
+
+
 def test_complete_shadow_pass_is_silent(tmp_path):
     _write(tmp_path / "review.json", _pass())
     result = inspect_slots(manifest=_manifest(), evidence_dir=tmp_path,
