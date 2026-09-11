@@ -5,22 +5,22 @@
 Mac-independent and separate-reapproval language. Live delegated send still
 remains OFF until every conditional gate passes.
 
-Task `GENIE_KEESURI_DELEGATED_REVIEW_GATE_001`, 2026-09-10 KST. This is the production candidate for changing normal GENIE × KEESURI publications from per-publication human approval to exception-based independent Work review. It prepares that transition; it does not enable automatic publishing. The Owner's Option B authorizes clean branch → validation → bounded fixes → commit → feature-branch push → review PR only.
+Task `GENIE_KEESURI_DELEGATED_REVIEW_GATE_001`, 2026-09-10 KST. This is the production candidate for changing normal GENIE × KEESURI publications from per-publication human approval to exception-based independent Work review. It prepares that transition; it does not enable automatic publishing. The 2026-09-11 authority permits merge → OFF-mode deploy → health/manual-fallback proof → activation without repetitive approval only after every factual review, delivery, suppression, duplicate and transition gate passes.
 
 ## Source and production boundary
 
 Fresh remote/main and branch base: `50de6786c3f6ed103e0e73de7bf4a3bfed5c7a83`. Integration branch: `ops/delegated-review-gate-001`. The final 25-file prepared patch applied without conflict to a separate clean clone. The Owner's distinct checkout at `ef6c7bdec9f5d6b059810c1e2c1356517192b886` and its 33 existing dirty entries were not used as input or edited.
 
-Fresh read-only runtime inspection still found revision `genie-blog-run-gcb-3a7196eb-50e3-46d0-85aa-8259ded77280`, matching the base commit and serving 100% traffic. Today 06:30, Global 12:30 and Korea 18:30 KST weekday schedules remain unchanged; Tomorrow remains paused. The serving baseline has no delegated modules or delegated-mode setting and retains the authenticated human approval path. This branch defaults `DELEGATED_SEND_MODE` to OFF and installs no live route, cloud runner, key, scheduler or production configuration.
+Fresh read-only runtime inspection on 2026-09-11 found revision `genie-blog-run-gcb-6fd81b02-0a5f-4ed6-9b4c-9dcd85445349`, commit `50de6786c3f6ed103e0e73de7bf4a3bfed5c7a83`, healthy and serving 100% traffic. Today 06:30, Global 12:30 and Korea 18:30 KST weekday schedules remain unchanged; Tomorrow remains paused. The serving baseline has no delegated modules or delegated-mode setting and retains the authenticated human approval path. This branch defaults `DELEGATED_SEND_MODE` to OFF and installs no live route, key, scheduler or production configuration.
 
-The inspected Cloud Build trigger listens only to pushes matching `^main$`, with no PR event. The repository has no GitHub Actions workflows or repository webhooks. The feature branch therefore does not match the observed deployment trigger. **The main trigger does deploy and promote traffic: never merge or push main as part of this closeout.** Build files and trigger configuration are unchanged.
+The inspected Cloud Build trigger listens only to pushes matching `^main$`, with no PR event. The repository has no GitHub Actions workflows or repository webhooks. The feature branch therefore does not match the observed deployment trigger. The normal main trigger deploys and promotes traffic, so the proof build used an isolated no-push/no-deploy configuration. Build `2488d2af-031d-40a1-9393-92faf693a582` succeeded for exact code commit `dff5c94a7a15bf24e758676699b039da151cd3f0`: API and worker images built, both imported the customer-authority dependencies offline, and the API image passed the product gate. It published no image and changed no Cloud Run revision or traffic.
 
 ## Final clean-base validation
 
 | Check | Final result | Scope |
 |---|---|---|
 | Entire repository `pytest` suite | **3,912 passed, 0 failed/errors, 33 skipped** | 3,945 collected; includes real PostgreSQL customer tests and all gate regressions. |
-| Existing offline product release script | **362 passed, 1 skipped, 0 failed** | 363 run; overlaps the full suite and is not added again. |
+| Existing offline product release script | **374 run, 1 skipped, 0 failed** | 373 passed; overlaps the full suite and is not added again. |
 | Separate historical-mail precheck harness | **16 passed, 0 failed** | Local historical-evidence checks outside the repository suite; no live approval authority. |
 | Authenticated gate | 91 passed | Included in full suite; 14 added during adversarial remediation. |
 | Delivery safety / actual PostgreSQL gate adapter | 64 / 28 passed | Included; PostgreSQL includes 8 new suppression-precedence cases. |
@@ -52,7 +52,7 @@ python -m pytest -q --junitxml=integration-full.xml
 python scripts/run_product_regression_gate.py
 ```
 
-The environment variable above must be exported or supplied to the test process. Existing customer fixtures migrate the disposable database and roll back individual test data. Do not run simultaneous suites against its scratch migration databases. The release gate's production container definition also specifies network isolation, but neither a Cloud Build nor a deployment was run here.
+The environment variable above must be exported or supplied to the test process. Existing customer fixtures migrate the disposable database and roll back individual test data. Do not run simultaneous suites against its scratch migration databases. The proof-only Cloud Build described above was run without registry publication, deployment or traffic change. No production deployment was run here.
 
 The [machine-readable validation record](evidence/delegated-review-integration-20260910.json) contains per-suite counts, all missing-fixture skips, exact tested Python-file hashes and raw evidence digests. Raw logs, the validation-only network guard and private image/mail evidence stay in the Owner's local task evidence; they are not published in this repository. The earlier 595-pass report is historical context and does not replace this clean-base run.
 

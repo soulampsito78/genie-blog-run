@@ -43,7 +43,7 @@
     "passed": 3912,
     "skipped": 33
   },
-  "live_delegated_send": "OFF; no merge/deploy/activation authority",
+  "live_delegated_send": "OFF; conditional merge/deploy/activation authority applies only after every factual gate passes",
   "missing_fixture_skips": [
     {
       "reason": "collection skipped",
@@ -205,13 +205,27 @@
   "release_gate": {
     "failed": 0,
     "overlaps_full_suite": true,
-    "passed": 362,
-    "run": 363,
+    "passed": 373,
+    "run": 374,
     "skipped": 1
+  },
+  "isolated_cloud_build": {
+    "api_dependency_import": "PASS",
+    "api_image_build": "PASS",
+    "api_product_gate": "PASS",
+    "build_id": "2488d2af-031d-40a1-9393-92faf693a582",
+    "cloud_run_deploy": false,
+    "code_commit": "dff5c94a7a15bf24e758676699b039da151cd3f0",
+    "registry_push": false,
+    "status": "SUCCESS",
+    "traffic_change": false,
+    "worker_dependency_import": "PASS",
+    "worker_image_build": "PASS"
   },
   "shadow": {
     "completed": 0,
-    "mac_independent_execution_verified": false,
+    "execution_host": "OWNER_ALWAYS_ON_MAC_MINI",
+    "natural_execution_verified": false,
     "planned": 15
   },
   "task_id": "GENIE_KEESURI_DELEGATED_REVIEW_GATE_001",
