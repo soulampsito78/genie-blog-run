@@ -30,6 +30,7 @@ from customer.persistence.models import (  # noqa: E402
     ConversionSnapshot,
     ConversionSnapshotProduct,
     Entitlement,
+    PlanCatalog,
     SubscriptionProduct,
 )
 from customer.services.cookies import session_cookie_settings  # noqa: E402
@@ -59,6 +60,13 @@ def clock():
 
 @pytest.fixture()
 def conversion_api(session, clock):
+    # A fresh migration seeds availability with wall-clock now(), while this
+    # scenario runs at a fixed historical date. Align only initial test catalog
+    # availability inside the fixture's rollback transaction; prices are intact.
+    session.execute(sa.update(PlanCatalog).where(
+        PlanCatalog.price_version == 1,
+        PlanCatalog.plan_code.in_(PLAN_PRICES_KRW),
+    ).values(effective_from=NOW - dt.timedelta(days=1)))
     account = make_account(session, email="conversion-owner@example.com")
     method = make_payment_method(session, account)
     subscription = make_subscription(session, account, state="trialing")

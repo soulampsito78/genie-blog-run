@@ -1,3 +1,5 @@
+> **Owner-approved target (2026-09-10 final directive; activation pending):** [Delegated second-pass policy](../ops/DELEGATED_SECOND_PASS_STAGED_POLICY.md) supersedes per-publication human approval for verified normal delegated sends after authorized activation. The deployed baseline remains human-confirmed. Existing pre-freeze repairs may remain with validation/audit; material post-review changes invalidate PASS; Work-detected anomalies require HOLD and manual recovery. Shadow evidence alone grants no send authority.
+
 # GENIE × KeeSuri — 아키텍처 문서
 
 > **시스템**: GENIE × KeeSuri 자동화 브리핑 파이프라인  
@@ -5,6 +7,10 @@
 > **형식**: Mermaid 원본 + SVG + PNG (+ PDF 번들)
 
 ---
+
+## Prepared target versus baseline diagrams
+
+The Mermaid source and rendered SVG/PNG/PDF diagrams below describe the deployed human-confirmation baseline unless explicitly labeled as the prepared target. The final delegated policy adds actual received-email Work review, exact-candidate binding, truthful delegated authority, delivery eligibility/suppression and durable publication duplicate gates. It permits validated repairs before freeze, invalidates PASS after material change, and holds Work anomalies for manual recovery. Existing rendered diagram exports have not been regenerated and must not be presented as final target diagrams.
 
 ## 📁 파일 목록
 

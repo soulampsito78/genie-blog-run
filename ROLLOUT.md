@@ -1,4 +1,8 @@
+> **Owner-approved target (2026-09-11 authority correction):** the Owner's always-on Mac mini is the approved Work execution host. Mac-independent cloud review is not an activation requirement. After every evidence gate in the delegated policy is factually satisfied, merge, OFF-mode deployment and delegated activation may proceed without another repetitive approval. No condition may be manufactured or bypassed. See [Mac mini Work operations](docs/ops/WORK_REVIEW_MAC_MINI_OPERATIONS.md).
+
 # Genie Project – production rollout preparation
+
+Final delegated-transition rollout is governed by `docs/ops/DELEGATED_SECOND_PASS_STAGED_POLICY.md`: preserve permitted pre-freeze repair, prove exact-candidate review and recipient/publication gates, complete the feature-branch/review-PR integration, and verify real always-on Mac mini Work execution. The 2026-09-11 conditional authority permits merge, OFF-mode deployment and activation only after those gates pass; it is not permission to infer missing customer rights or weaken a guard. Do not disable all correction merely because it is automatic. OFF/manual mode must deny delegated send without deleting evidence or reverting to writers that bypass persistent claims.
 
 > **⚠️ HISTORICAL DOCUMENT — Read this notice first**
 >

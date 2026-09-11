@@ -176,6 +176,11 @@ def reserve_delivery_command(
 ) -> tuple[bool, Optional[Dict[str, Any]]]:
     if not _COMMAND_ID_RE.fullmatch(str(command_id or "")):
         raise ValueError("invalid delivery command id")
+    from admin_store import validate_run_id
+    import hashlib
+
+    if not validate_run_id(run_id):
+        raise ValueError("invalid delivery run id")
     record = {
         "schema_version": SCHEMA_VERSION,
         "delivery_command_id": command_id,
@@ -189,6 +194,17 @@ def reserve_delivery_command(
         "completed_at": None,
         "result_code": None,
     }
+    # Different immutable approval snapshots may refer to the same publication.
+    # Reserve the run before the command, atomically across participating workers.
+    # Deployment must first drain older writers that do not use this claim.
+    # Never release this claim automatically, even after errors or process death:
+    # uncertain SMTP outcomes require reconciliation, not a new blind submission.
+    run_key = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
+    claim_key = f"delivery_run_claims/{run_key}.json"
+    if not _create_json_once(claim_key, record):
+        claim = _read_json(claim_key) or {}
+        existing = load_delivery_command(str(claim.get("delivery_command_id") or ""))
+        return False, existing or claim
     created = _create_json_once(f"delivery_commands/{command_id}.json", record)
     return created, record if created else load_delivery_command(command_id)
 

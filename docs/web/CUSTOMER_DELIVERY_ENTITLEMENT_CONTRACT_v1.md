@@ -1,3 +1,5 @@
+> **Owner-approved target (2026-09-10 final directive; activation pending):** [Delegated second-pass policy](../ops/DELEGATED_SECOND_PASS_STAGED_POLICY.md) supersedes per-publication human approval for verified normal delegated sends after authorized activation. The deployed baseline remains human-confirmed. Existing pre-freeze repairs may remain with validation/audit; material post-review changes invalidate PASS; Work-detected anomalies require HOLD and manual recovery. Shadow evidence alone grants no send authority.
+
 # GENIE × KeeSuri — Customer Delivery & Entitlement Contract v1
 
 **Status:** APPROVED
@@ -29,7 +31,7 @@ subscription / payment state
 → customer delivery
 ```
 
-Owner-review approval remains a prerequisite for customer final send of a given run/publication. Entitlement answers **who** may receive; approve answers **whether this briefing may be sent**.
+Delivery authorization remains a prerequisite for customer final send of a given run/publication. The deployed baseline uses explicit human Owner approval. Under the approved delegated target, an authenticated complete Work PASS for the exact frozen candidate may supply normal-send authority after authorized activation, recorded distinctly from human approval. Entitlement answers **who** may receive; human or delegated authorization answers **whether this exact briefing may be sent**. Both routes preserve current entitlement, verified-email, delivery-start, product-eligibility, complaint, unsubscribe, bounce, recipient-snapshot and duplicate/reconciliation gates. Work anomaly, incomplete review or candidate mutation never supplies delegated authority.
 
 ---
 

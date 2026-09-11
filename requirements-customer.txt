@@ -1,9 +1,10 @@
 # Customer backend (customer/) dependencies.
 #
-# Kept SEPARATE from requirements.txt on purpose: requirements.txt drives the
-# production Dockerfile for the operational GENIE / KeeSuri briefing runtime,
-# and Phase 1 must not change that image. Merge these into requirements.txt
-# only when the customer API is actually deployed.
+# Kept as a separate lock surface so customer/database changes stay auditable.
+# The co-located API and worker images install this file explicitly because the
+# delegated delivery adapter imports the PostgreSQL customer authority at the
+# final eligibility boundary.  Keeping separate files must not mean omitting
+# required runtime dependencies from those images.
 #
 # Install:  pip install -r requirements-customer.txt
 

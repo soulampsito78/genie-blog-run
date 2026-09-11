@@ -57,16 +57,18 @@ def _canonical_json_hash(value: Any) -> str:
 
 
 def _prepare_content_and_images(
-    mode: str, saved_html: str, meta: Dict[str, Any]
+    mode: str, saved_html: str, meta: Dict[str, Any], recipients_override=None
 ) -> tuple[str, str, List[Tuple[str, str, str]]]:
     if mode == "today_genie":
         from today_geenee_customer_delivery import prepare_today_geenee_customer_delivery
 
-        prepared = prepare_today_geenee_customer_delivery(saved_html, meta)
+        prepared = (prepare_today_geenee_customer_delivery(saved_html, meta) if recipients_override is None else
+                    prepare_today_geenee_customer_delivery(saved_html, meta, recipients_override=recipients_override))
     elif mode in {"keysuri_global_tech", "keysuri_korea_tech"}:
         from keysuri_customer_delivery import prepare_keysuri_customer_delivery
 
-        prepared = prepare_keysuri_customer_delivery(saved_html, meta)
+        prepared = (prepare_keysuri_customer_delivery(saved_html, meta) if recipients_override is None else
+                    prepare_keysuri_customer_delivery(saved_html, meta, recipients_override=recipients_override))
     else:
         raise ApprovalTargetError("unsupported_mode")
     if not prepared.get("ok"):
@@ -81,8 +83,26 @@ def build_current_approval_target(
     *, run_id: str, meta: Dict[str, Any], saved_html: str
 ) -> PreparedApprovalTarget:
     mode = str(meta.get("mode") or meta.get("program_id") or "")
-    subject, customer_html, inline_parts = _prepare_content_and_images(mode, saved_html, meta)
-    resolved = resolve_customer_recipients()
+    from delegated_delivery_safety import (publication_guard_required, manual_recipient_plan,
+                                           DeliverySafetyError)
+    recipient_plan = None
+    try:
+        if publication_guard_required():
+            recipient_plan = manual_recipient_plan(run_id=run_id, mode=mode,
+                now=datetime.now(ZoneInfo("Asia/Seoul")))
+            resolved = {"admin_config_ok": True,
+                "final_recipients": [row["delivery_email"] for row in recipient_plan["recipients"]],
+                "recipient_configuration_version": "authoritative-customer-db-v1",
+                "recipient_configuration_hash": recipient_plan["sha256"]}
+        else:
+            resolved = resolve_customer_recipients()
+    except DeliverySafetyError as exc:
+        raise ApprovalTargetError(str(exc)) from exc
+    if recipient_plan is None:
+        subject, customer_html, inline_parts = _prepare_content_and_images(mode, saved_html, meta)
+    else:
+        subject, customer_html, inline_parts = _prepare_content_and_images(
+            mode, saved_html, meta, [row["delivery_email"] for row in recipient_plan["recipients"]])
     if not resolved.get("admin_config_ok", True):
         raise ApprovalTargetError("RECIPIENT_CONFIG_UNAVAILABLE")
     recipients = [str(item).strip().lower() for item in resolved.get("final_recipients") or []]
@@ -120,6 +140,9 @@ def build_current_approval_target(
             and str(meta.get("editorial_verdict") or "") == "REVIEW"
         ),
     }
+    if recipient_plan is not None:
+        fields["recipient_plan_id"] = recipient_plan["plan_id"]
+        fields["recipient_plan_sha256"] = recipient_plan["sha256"]
     fields["approval_target_sha256"] = _canonical_json_hash(fields)
     return PreparedApprovalTarget(
         run_id=run_id,

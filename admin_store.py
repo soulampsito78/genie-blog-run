@@ -1684,6 +1684,64 @@ def update_run_artifact(
     return meta
 
 
+def run_delivery_transition(run_id: str, *, action: str = "READ", authority: str = "",
+                            manual_recovery_required: bool = False, candidate_sha256: str = "") -> Dict[str, Any]:
+    """Linearize HOLD/REOPEN/provider-handoff using immutable storage claims.
+
+    A contiguous, bounded per-run journal uses the existing GCS create-if-absent
+    or local O_EXCL primitive. Competing processes can win only one next version.
+    SUBMITTED is terminal: a later HOLD cannot claim to retract provider handoff.
+    Human HOLD can reopen; a meaningful Work anomaly requires a fresh run.
+    """
+    from admin_safety_store import _read_json, _create_json_once
+    if not validate_run_id(run_id) or action not in {"READ", "HOLD", "REOPEN", "SUBMIT"}:
+        raise ValueError("INVALID_DELIVERY_TRANSITION")
+    if action == "SUBMIT" and not re.fullmatch(r"[a-f0-9]{64}", candidate_sha256):
+        raise ValueError("INVALID_DELIVERY_CANDIDATE")
+    prefix = "run_delivery_transitions/" + hashlib.sha256(run_id.encode()).hexdigest()
+    current = {"state": "READY", "manual_recovery_required": False, "version": -1}
+    cursor, collisions = 0, 0
+    while cursor < 64 and collisions < 128:
+        key = f"{prefix}/{cursor:03d}.json"
+        record = _read_json(key)
+        if record is not None:
+            if (record.get("run_id") != run_id or record.get("version") != cursor
+                    or record.get("previous_state") != current["state"]
+                    or record.get("state") not in {"READY", "HELD", "SUBMITTED"}):
+                raise RuntimeError("DELIVERY_TRANSITION_CORRUPT")
+            current = record
+            cursor += 1
+            continue
+        # Distinguish an actual gap from an unreadable occupied journal object.
+        # A create collision below re-reads the same version and never skips it.
+        if action == "READ":
+            import admin_safety_store as store
+            exists = (store._get_gcs_bucket().blob(store.SAFETY_PREFIX + "/" + key).exists()
+                      if store._uses_gcs_backend() else store._local_path(key).exists())
+            if exists:
+                raise RuntimeError("DELIVERY_TRANSITION_CORRUPT")
+            return dict(current, allowed=current["state"] == "READY")
+        if current["state"] == "SUBMITTED":
+            return dict(current, allowed=False, reason="DELIVERY_HANDOFF_ALREADY_CLAIMED")
+        if action == "SUBMIT" and current["state"] == "HELD":
+            return dict(current, allowed=False, reason="RUN_HELD_MANUAL_RECOVERY_REQUIRED" if current.get("manual_recovery_required") else "RUN_EXPLICITLY_HELD")
+        if action == "REOPEN" and current.get("manual_recovery_required"):
+            return dict(current, allowed=False, reason="RUN_HELD_MANUAL_RECOVERY_REQUIRED")
+        if action == "REOPEN" and current["state"] != "HELD":
+            return dict(current, allowed=True, reason="ALREADY_READY")
+        state = {"HOLD": "HELD", "REOPEN": "READY", "SUBMIT": "SUBMITTED"}[action]
+        proposed = {"run_id": run_id, "version": cursor, "previous_state": current["state"],
+                    "state": state, "authority": authority, "action": action, "at": now_kst_iso(),
+                    "candidate_sha256": candidate_sha256,
+                    "manual_recovery_required": bool(current.get("manual_recovery_required") or manual_recovery_required)}
+        if _create_json_once(key, proposed):
+            return dict(proposed, allowed=True, reason="TRANSITION_RECORDED")
+        collisions += 1
+        if _read_json(key) is None:
+            raise RuntimeError("DELIVERY_TRANSITION_CORRUPT")
+    raise RuntimeError("DELIVERY_TRANSITION_LIMIT_RECONCILE")
+
+
 def _is_legacy_timeout_artifact(meta: Dict[str, Any]) -> bool:
     owner = str(meta.get("owner_review_status") or "")
     delivery = str(meta.get("customer_delivery_status") or "")
@@ -1779,6 +1837,20 @@ def can_approve_customer_send(meta: Dict[str, Any], *, has_email_html: bool) -> 
             return False, "keysuri_editorial_unclassified"
     if not has_email_html:
         return False, "missing_email_html"
+    from delegated_delivery_safety import publication_guard_required, DeliverySafetyError
+    try:
+        authoritative_delivery = publication_guard_required()
+    except DeliverySafetyError as exc:
+        return False, str(exc)
+    if authoritative_delivery:
+        from email_sender import smtp_configured
+        if not smtp_configured():
+            return False, "missing_smtp"
+        # The immutable DB plan is verified in snapshot construction and again
+        # at submission. Legacy environment addresses are not a prerequisite.
+        if mode == "keysuri_korea_tech":
+            return _keysuri_korea_bottom_baseline_confirmed(meta)
+        return True, "ok"
     if mode == "keysuri_korea_tech":
         # Korea delivery requires 041559 bottom QA baseline metadata confirmed.
         # Check immutable run state first so an ambiguous/previous submission is
@@ -1963,6 +2035,25 @@ def approve_run(
         )
         return None, "REVIEW_WARNING_CONFIRMATION_REQUIRED"
 
+    # Once the durable delivery cutover exists, both human and delegated writers
+    # share recipient eligibility and publication claims. Turning delegation OFF
+    # must not reopen a legacy duplicate/unsubscribe bypass through this route.
+    from delegated_delivery_safety import (
+        DeliverySafetyError, manual_publication_guard,
+        revalidate_manual_publication, complete_publication_attempt,
+    )
+    try:
+        publication_guard = manual_publication_guard(
+            run_id=run_id, snapshot=snapshot, prepared_recipients=prepared.recipients,
+            now=datetime.now(ZoneInfo("Asia/Seoul")),
+        )
+        if not publication_guard.get("allowed"):
+            raise DeliverySafetyError(str(publication_guard.get("reason") or "PUBLICATION_RECONCILIATION_REQUIRED"))
+    except DeliverySafetyError as exc:
+        append_operator_audit("customer_send_blocked", operator_id=operator_id,
+            run_id=run_id, result="blocked", reason_code=str(exc), related_id=approval_snapshot_id)
+        return None, str(exc)
+
     append_operator_audit(
         "approval_confirmed",
         operator_id=operator_id,
@@ -1988,6 +2079,22 @@ def approve_run(
             related_id=command_id,
         )
         return None, "DUPLICATE_DELIVERY_COMMAND"
+
+    try:
+        revalidate_manual_publication(publication_guard, now=datetime.now(ZoneInfo("Asia/Seoul")))
+        handoff = run_delivery_transition(run_id, action="SUBMIT", authority="HUMAN_OWNER",
+                                          candidate_sha256=snapshot["approval_target_sha256"])
+        if not handoff.get("allowed"):
+            raise DeliverySafetyError(handoff["reason"])
+    except DeliverySafetyError as exc:
+        if publication_guard.get("required"):
+            complete_publication_attempt(publication_guard["attempt_id"],
+                outcome="NOT_SUBMITTED_FINAL_GUARD_BLOCKED", evidence={"reason": str(exc), "approval_source": "HUMAN_OWNER"})
+        complete_delivery_command(command_id, result_code="NOT_SENT",
+                                  safe_metadata={"reason": str(exc)})
+        append_operator_audit("customer_send_blocked", operator_id=operator_id,
+            run_id=run_id, result="blocked", reason_code=str(exc), related_id=command_id)
+        return None, str(exc)
 
     append_operator_audit(
         "customer_send_attempted",
@@ -2079,6 +2186,13 @@ def approve_run(
         repo_root=repo_root(),
     )
     result_code = str(delivery_fields.get("customer_email_delivery_status") or "OUTCOME_UNKNOWN")
+    if publication_guard.get("required"):
+        complete_publication_attempt(publication_guard["attempt_id"],
+            outcome=("PROVIDER_ACCEPTED" if result_code == "ACCEPTED_ALL" else
+                     "PROVIDER_REJECTED" if result_code in {"REFUSED_ALL", "NOT_SENT"} else
+                     "UNKNOWN_AFTER_SUBMIT"),
+            evidence={"approval_source": "HUMAN_OWNER", "delivery_command_id": command_id,
+                      "smtp_result": result_code, "actual_receipt_verified": False})
     complete_delivery_command(
         command_id,
         result_code=result_code,
@@ -2149,6 +2263,12 @@ def approve_run(
         if approval_audit:
             for key, value in approval_audit.items():
                 m[key] = value
+        # This function remains the existing authenticated human confirmation
+        # path. Shadow review never invokes it or impersonates Owner approval.
+        m["approval_authority"] = "HUMAN_OWNER_APPROVAL"
+        m["approval_source"] = "HUMAN_OWNER"
+        if publication_guard.get("required"):
+            m["publication_delivery_attempt_id"] = publication_guard["attempt_id"]
 
     updated = update_run_artifact(run_id, _mut)
     if result_code == "NOT_SENT":
@@ -2701,6 +2821,9 @@ def hold_run(run_id: str, *, note: str = "", operator_id: str = "owner_admin") -
     delivery = str(meta.get("customer_delivery_status") or "not_sent").upper()
     if delivery not in {"NOT_SENT", "FAILED", ""}:
         return None, "customer_already_sent"
+    transition = run_delivery_transition(run_id, action="HOLD", authority="HUMAN_OWNER")
+    if not transition.get("allowed"):
+        return None, transition["reason"]
     ts = now_kst_iso()
 
     def _mut(row: Dict[str, Any]) -> None:
@@ -2719,6 +2842,9 @@ def reopen_held_run(run_id: str, *, operator_id: str = "owner_admin") -> tuple[O
         return None, "not_found"
     if str(meta.get("owner_review_status") or "") != "held":
         return None, "not_held"
+    transition = run_delivery_transition(run_id, action="REOPEN", authority="HUMAN_OWNER")
+    if not transition.get("allowed"):
+        return None, transition["reason"]
     ts = now_kst_iso()
 
     def _mut(row: Dict[str, Any]) -> None:

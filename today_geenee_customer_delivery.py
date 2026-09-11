@@ -9,16 +9,17 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from admin_store import _get_gcs_client, resolve_customer_recipients
+from customer_review_confirmation import (
+    HUMAN_OWNER,
+    PRE_SEND_REVIEWED,
+    customer_review_confirmation,
+)
 from email_sender import parse_customer_to_addrs, send_genie_email
 from renderers import today_genie_email_inline_cid_pair
 
 logger = logging.getLogger(__name__)
 
 REVIEW_CONFIRMATION_STATE_REVIEW_PASSED = "review_passed"
-
-REVIEW_PASSED_CONFIRMATION_TEXT = (
-    "본 브리핑은 운영책임자의 직접 검수를 통과했습니다."
-)
 
 _GENIE_CUSTOMER_OUTBOUND_REVIEW_STATES = frozenset({REVIEW_CONFIRMATION_STATE_REVIEW_PASSED})
 
@@ -246,20 +247,31 @@ def build_customer_final_subject(meta: Dict[str, Any], saved_html: str) -> str:
     return drafts_subj
 
 
-def render_genie_review_confirmation_box(review_state: str) -> str:
+def render_genie_review_confirmation_box(
+    review_state: str,
+    *,
+    approval_source: str = HUMAN_OWNER,
+) -> str:
     """Customer-safe review confirmation box for approved outbound email only."""
     if review_state not in _GENIE_CUSTOMER_OUTBOUND_REVIEW_STATES:
         raise ValueError(
             "unsupported review_confirmation_state for Genie customer outbound email: "
             f"{review_state!r}"
         )
+    selected_state, confirmation_text = customer_review_confirmation(
+        approval_source=approval_source,
+        display_state=PRE_SEND_REVIEWED,
+    )
+    if selected_state != review_state:
+        raise ValueError("customer review display state does not match review_confirmation_state")
     return (
         f'<section id="review-confirmation-box" '
         f'data-review-state="{review_state}" '
+        f'data-review-source="{approval_source}" '
         'style="margin-top:24px;padding:16px 18px;border:1px solid #d9d9d9;'
         'border-radius:8px;background:#fafafa;">'
         f'<p class="review-confirmation-text" style="margin:0;font-size:14px;'
-        f'line-height:1.65;color:#1a1a1a;">{REVIEW_PASSED_CONFIRMATION_TEXT}</p>'
+        f'line-height:1.65;color:#1a1a1a;">{confirmation_text}</p>'
         "</section>"
     )
 
@@ -268,6 +280,7 @@ def prepare_customer_final_html(
     saved_html: str,
     *,
     review_confirmation_state: str | None = None,
+    approval_source: str = HUMAN_OWNER,
 ) -> str:
     from auto_remediation import strip_auto_remediation_notice
 
@@ -284,7 +297,10 @@ def prepare_customer_final_html(
             "unsupported review_confirmation_state for Genie customer outbound email: "
             f"{review_confirmation_state!r}"
         )
-    review_box = render_genie_review_confirmation_box(review_confirmation_state)
+    review_box = render_genie_review_confirmation_box(
+        review_confirmation_state,
+        approval_source=approval_source,
+    )
     return f"{html_body}\n{review_box}"
 
 
@@ -320,15 +336,22 @@ def prepare_today_geenee_customer_delivery(
     meta: Dict[str, Any],
     *,
     recipients_override: Optional[List[str]] = None,
+    approval_source: str = HUMAN_OWNER,
 ) -> Dict[str, Any]:
-    """Prepare the exact customer payload without submitting it to SMTP."""
-    ready, err = customer_delivery_config_ready()
-    if not ready and recipients_override is None:
-        return {"ok": False, "error": err}
+    """Prepare the exact customer payload without submitting it to SMTP.
+
+    ``approval_source`` controls only the displayed attestation.  It cannot
+    grant delivery authority and is explicitly supplied by the delegated gate.
+    """
+    if recipients_override is None:
+        ready, err = customer_delivery_config_ready()
+        if not ready:
+            return {"ok": False, "error": err}
     try:
         html_body = prepare_customer_final_html(
             saved_html,
             review_confirmation_state=REVIEW_CONFIRMATION_STATE_REVIEW_PASSED,
+            approval_source=approval_source,
         )
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}

@@ -1,0 +1,317 @@
+{
+  "baseline_before_test_fixture_fix": {
+    "collected": 3994,
+    "errors": 0,
+    "failed": 12,
+    "passed": 3963,
+    "skipped": 19
+  },
+  "bounded_baseline_fixture_fix": "D3 fixed historical test clock now aligns initial catalog availability inside the rollback transaction; runtime/migration/prices/billing unchanged",
+  "branch": "ops/delegated-review-gate-001",
+  "branch_base": "50de6786c3f6ed103e0e73de7bf4a3bfed5c7a83",
+  "date_kst": "2026-09-10",
+  "focused_modules_in_full_suite": {
+    "test_customer_d3_conversion_api": {
+      "passed": 20,
+      "total": 20
+    },
+    "test_delegated_authenticated_gate": {
+      "passed": 91,
+      "total": 91
+    },
+    "test_delegated_delivery_postgres": {
+      "passed": 28,
+      "total": 28
+    },
+    "test_delegated_delivery_safety": {
+      "passed": 64,
+      "total": 64
+    },
+    "test_delegated_repair_boundary": {
+      "passed": 8,
+      "total": 8
+    },
+    "test_delegated_review_shadow": {
+      "passed": 91,
+      "total": 91
+    }
+  },
+  "full_suite": {
+    "collected": 3945,
+    "errors": 0,
+    "failed": 0,
+    "passed": 3912,
+    "skipped": 33
+  },
+  "live_delegated_send": "OFF; conditional merge/deploy/activation authority applies only after every factual gate passes",
+  "missing_fixture_skips": [
+    {
+      "reason": "collection skipped",
+      "test": "::tests.test_customer_auth_audit"
+    },
+    {
+      "reason": "collection skipped",
+      "test": "::tests.test_customer_auth_session"
+    },
+    {
+      "reason": "collection skipped",
+      "test": "::tests.test_customer_billing_recovery_service"
+    },
+    {
+      "reason": "collection skipped",
+      "test": "::tests.test_customer_charge_reconciliation_service"
+    },
+    {
+      "reason": "collection skipped",
+      "test": "::tests.test_customer_d3_conversion_api"
+    },
+    {
+      "reason": "collection skipped",
+      "test": "::tests.test_customer_first_charge_service"
+    },
+    {
+      "reason": "collection skipped",
+      "test": "::tests.test_customer_migration_integrity"
+    },
+    {
+      "reason": "collection skipped",
+      "test": "::tests.test_customer_migration_preconditions"
+    },
+    {
+      "reason": "collection skipped",
+      "test": "::tests.test_customer_onboarding_api"
+    },
+    {
+      "reason": "collection skipped",
+      "test": "::tests.test_customer_payment_method_api"
+    },
+    {
+      "reason": "collection skipped",
+      "test": "::tests.test_customer_persistence_invariants"
+    },
+    {
+      "reason": "collection skipped",
+      "test": "::tests.test_customer_renewal_billing_service"
+    },
+    {
+      "reason": "collection skipped",
+      "test": "::tests.test_customer_trial_start_api"
+    },
+    {
+      "reason": "collection skipped",
+      "test": "::tests.test_delegated_delivery_postgres"
+    },
+    {
+      "reason": "production-proof fixtures unavailable",
+      "test": "tests.test_content_quality_debt_harness.ContentQualityOrdinalTests::test_01_02_global_korea_five_cards_in_order"
+    },
+    {
+      "reason": "production-proof fixtures unavailable",
+      "test": "tests.test_content_quality_debt_harness.ContentQualityOrdinalTests::test_03_04_no_standalone_numeric_only_above_heading"
+    },
+    {
+      "reason": "production-proof fixtures unavailable",
+      "test": "tests.test_content_quality_debt_harness.ContentQualityOrdinalTests::test_05_numeric_article_facts_intact"
+    },
+    {
+      "reason": "production-proof fixtures unavailable",
+      "test": "tests.test_content_quality_debt_harness.ContentQualityOrdinalTests::test_06_07_plain_text_and_accessibility"
+    },
+    {
+      "reason": "production-proof fixtures unavailable",
+      "test": "tests.test_content_quality_debt_harness.ContentQualityProductionReplayTests::test_56_58_corrected_contract_against_live_renderers"
+    },
+    {
+      "reason": "production-proof fixtures unavailable",
+      "test": "tests.test_content_quality_debt_harness.ContentQualityProductionReplayTests::test_59_64_no_placeholder_title_and_customer_block"
+    },
+    {
+      "reason": "global top manifest missing",
+      "test": "tests.test_keysuri_approved_image_assets.KeysuriApprovedImageAssetRegistryTests::test_global_top_manifest_has_global_top_role"
+    },
+    {
+      "reason": "global top missing",
+      "test": "tests.test_keysuri_approved_image_assets.KeysuriApprovedImageAssetRegistryTests::test_global_top_must_not_resolve_to_105936"
+    },
+    {
+      "reason": "global top watermarked missing",
+      "test": "tests.test_keysuri_approved_image_assets.KeysuriApprovedImageAssetRegistryTests::test_global_top_registry_match_passes_visual_gate_without_watermark_pending"
+    },
+    {
+      "reason": "global top asset missing",
+      "test": "tests.test_keysuri_approved_image_assets.KeysuriApprovedImageAssetRegistryTests::test_global_top_resolves_to_221233_watermarked"
+    },
+    {
+      "reason": "korea bottom asset missing",
+      "test": "tests.test_keysuri_approved_image_assets.KeysuriApprovedImageAssetRegistryTests::test_korea_bottom_resolves_to_105936"
+    },
+    {
+      "reason": "korea top asset missing",
+      "test": "tests.test_keysuri_approved_image_assets.KeysuriApprovedImageAssetRegistryTests::test_korea_top_resolves_to_225207"
+    },
+    {
+      "reason": "global top missing",
+      "test": "tests.test_keysuri_approved_image_assets.KeysuriApprovedImageAssetRegistryTests::test_manifest_bottom_shot_cannot_pass_as_global_top"
+    },
+    {
+      "reason": "001502 smoke HTML fixture not present",
+      "test": "tests.test_keysuri_briefing_content_quality.KeysuriKoreaGateExtractionTests::test_existing_001502_html_gate_false_positives_cleared"
+    },
+    {
+      "reason": "approved global top watermarked asset not present locally",
+      "test": "tests.test_keysuri_live_source_smoke.KeysuriLiveSourceSmokeTests::test_contract_preview_default_uses_approved_registry_asset_when_present"
+    },
+    {
+      "reason": "Kee-Suri preview HTML fixture missing",
+      "test": "tests.test_send_keysuri_owner_review_email_test.SendKeysuriOwnerReviewEmailHarnessTests::test_missing_confirm_blocks_send"
+    },
+    {
+      "reason": "Kee-Suri preview HTML fixture missing",
+      "test": "tests.test_send_keysuri_owner_review_email_test.SendKeysuriOwnerReviewEmailHarnessTests::test_non_allowlisted_recipient_blocks_send"
+    },
+    {
+      "reason": "Kee-Suri preview HTML fixture missing",
+      "test": "tests.test_send_keysuri_owner_review_email_test.SendKeysuriOwnerReviewEmailHarnessTests::test_report_only_does_not_send"
+    },
+    {
+      "reason": "Kee-Suri preview HTML fixture missing",
+      "test": "tests.test_send_keysuri_owner_review_email_test.SendKeysuriOwnerReviewEmailHarnessTests::test_send_gate_passes_with_allowlisted_recipient"
+    }
+  ],
+  "offline_mail_precheck": {
+    "failed": 0,
+    "outside_full_suite": true,
+    "passed": 16,
+    "scope": "local historical evaluation harness, not a source of live authority"
+  },
+  "private_mail_or_image_content_in_this_artifact": false,
+  "raw_evidence_digests": [
+    {
+      "bytes": 636143,
+      "local_evidence_filename": "integration-full.xml",
+      "sha256": "5a456ee0f4bdc67bc3ee62adda443ee38b145e96ff23bf264d9859cda3bd9dd1"
+    },
+    {
+      "bytes": 14539,
+      "local_evidence_filename": "integration-full.txt",
+      "sha256": "d31b961708caa4637c3c11cf2c126c28dea75367626d667fcd42c2022159642b"
+    },
+    {
+      "bytes": 8708,
+      "local_evidence_filename": "product-regression-run.txt",
+      "sha256": "a6d1ab11b739845a27ecd7b94b4e28dc5d62e6f88f1e3228dd2b3124a332fc00"
+    }
+  ],
+  "release_gate": {
+    "failed": 0,
+    "overlaps_full_suite": true,
+    "passed": 373,
+    "run": 374,
+    "skipped": 1
+  },
+  "isolated_cloud_build": {
+    "api_dependency_import": "PASS",
+    "api_image_build": "PASS",
+    "api_product_gate": "PASS",
+    "build_id": "2488d2af-031d-40a1-9393-92faf693a582",
+    "cloud_run_deploy": false,
+    "code_commit": "dff5c94a7a15bf24e758676699b039da151cd3f0",
+    "registry_push": false,
+    "status": "SUCCESS",
+    "traffic_change": false,
+    "worker_dependency_import": "PASS",
+    "worker_image_build": "PASS"
+  },
+  "shadow": {
+    "completed": 0,
+    "execution_host": "OWNER_ALWAYS_ON_MAC_MINI",
+    "natural_execution_verified": false,
+    "planned": 15
+  },
+  "task_id": "GENIE_KEESURI_DELEGATED_REVIEW_GATE_001",
+  "test_environment": {
+    "actual_customer_send": false,
+    "database": "disposable genie_customer_test; Unix socket only",
+    "external_dns_attempts_blocked": 15,
+    "postgresql": "16.14",
+    "production_credentials_inherited": false,
+    "provider_cli_invocation_blocked": true,
+    "python": "3.9.6",
+    "python_process_and_child_external_socket_dns_guard": true
+  },
+  "tested_changed_python_files": [
+    {
+      "path": "admin_approval.py",
+      "sha256": "cf2bf21a31da0d513eb5d9c48bb1c0ec47ca523c635732044aee8b51302166f5"
+    },
+    {
+      "path": "admin_safety_store.py",
+      "sha256": "8f391a82c0b304f0a81cb950376db9a2b38298d7638fc567757bd9bbe1e9712f"
+    },
+    {
+      "path": "admin_store.py",
+      "sha256": "f5939dd5b6ff7fa45c399ca290e8807699403ab0ac6b72ac2d1f901b2b33a540"
+    },
+    {
+      "path": "auto_remediation.py",
+      "sha256": "f00c89cb89c2736ba9b481bbcda86683b87afb99f371c67b9e2357cdccf4514d"
+    },
+    {
+      "path": "delegated_delivery_safety.py",
+      "sha256": "848926599929a2f5f9e19fb2a0b58451db462e0f2d2d2129a66f9b4ff0f21040"
+    },
+    {
+      "path": "delegated_gate.py",
+      "sha256": "27c9d85a7664fd1427dee5c90694683a175411a2576c8bd7ad94f76b68c96da9"
+    },
+    {
+      "path": "delegated_review.py",
+      "sha256": "d28fde61640f9b8ddaa424692c10b9801d140962892559301f2b8379d2007296"
+    },
+    {
+      "path": "keysuri_customer_delivery.py",
+      "sha256": "7adb3b881758bd374ed143bb8fb30ba0f92afcb5a08ea6e8722b1560313145d8"
+    },
+    {
+      "path": "tests/conftest.py",
+      "sha256": "24d048b8fdefff856244e9110a71fd8836a3269c30f21d4635e3f2d32140c9da"
+    },
+    {
+      "path": "tests/test_admin_p0_backend_safety.py",
+      "sha256": "86c64baef5b0a1ecc841eec65143921af87c0f1382e50acaeb4a8a507d875fc7"
+    },
+    {
+      "path": "tests/test_admin_routes.py",
+      "sha256": "f45e1123c65b57bbb1f760742eb0fbf8eca255002783ae36255108211bc37f56"
+    },
+    {
+      "path": "tests/test_customer_d3_conversion_api.py",
+      "sha256": "61891ef2e8a6d3edf909a7ed7083a04ed8ff9f7f7bbfcbe68e899a412b82823f"
+    },
+    {
+      "path": "tests/test_delegated_authenticated_gate.py",
+      "sha256": "0a01fb0e4a496dd003b72066338273247d5a1c3ffbc96dce44833995d85bdde1"
+    },
+    {
+      "path": "tests/test_delegated_delivery_postgres.py",
+      "sha256": "74c1a40f702a906eeb70eb3afe007dbaf309cd2d3cd82af08b519971c76618d3"
+    },
+    {
+      "path": "tests/test_delegated_delivery_safety.py",
+      "sha256": "1a3578036593fb7cc44f2c3a3b0376470f76e20fdb7ab06a0ecf0ad2b9cc0aa1"
+    },
+    {
+      "path": "tests/test_delegated_repair_boundary.py",
+      "sha256": "8596cc0ce8fd405e31d4c96a22312b3d252dd2a93c645813b8712c5357e7d2b1"
+    },
+    {
+      "path": "tests/test_delegated_review_shadow.py",
+      "sha256": "8a30371de77d6933e36d924f322c5b5286646ace6803bb5d046e24cc7e455d34"
+    },
+    {
+      "path": "today_geenee_customer_delivery.py",
+      "sha256": "1d01540cd76e5354d52286543f47b7782d4e052b1a9d23bf49ffa9594b4c761a"
+    }
+  ],
+  "unique_passed_with_offline_mail": 3928
+}

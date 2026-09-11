@@ -2,8 +2,8 @@ FROM python:3.11
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+COPY requirements.txt requirements-customer.txt ./
+RUN pip install -r requirements.txt -r requirements-customer.txt
 
 COPY . .
 

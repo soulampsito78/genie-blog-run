@@ -1,4 +1,8 @@
+> **Owner-approved target (2026-09-11 authority correction):** [Delegated second-pass policy](docs/ops/DELEGATED_SECOND_PASS_STAGED_POLICY.md) supersedes per-publication human approval for verified normal delegated sends after its evidence gates are satisfied. The approved execution host is the Owner's always-on Mac mini, not a Mac-independent cloud reviewer. Once the documented conditions are factually met, merge, OFF-mode deployment and delegated activation may proceed without another repetitive approval. Missing customer authority, suppression, duplicate, transition, exact-candidate, visual or reviewer evidence still fails closed. See [Mac mini Work operations](docs/ops/WORK_REVIEW_MAC_MINI_OPERATIONS.md).
+
 # Genie orchestration – production hardening and operations
+
+Current delegated target operations: freeze the final validated customer candidate and bind the actual received review email to it; complete authenticated Work PASS may proceed unattended after authorized activation. Existing bounded pre-freeze repair is permitted only with validation rerun and audit. Post-PASS material mutation invalidates the review. Work-detected content anomalies HOLD for manual recovery and fresh review. Normal success is logged without Owner decision requests. The historical orchestration sections below do not override these approved semantics or authorize live changes.
 
 This document covers secret handling, runtime split, resilience, logging, and the production execution model for the orchestration layer. The Genie API runtime (`main.py`) is unchanged.
 
