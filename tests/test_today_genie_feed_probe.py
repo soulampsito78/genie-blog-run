@@ -60,24 +60,26 @@ def _naver_day_html(rows: list[tuple[str, str, str, str, str]]) -> str:
     return "<table class=\"type_1\">" + "".join(_naver_day_row(*r) for r in rows) + "</table>"
 
 
-def _naver_world_day_html(rows) -> str:
-    """Naver world 일별시세 markup: dated close + magnitude-only change.
+def _naver_world_day_payload(rows) -> str:
+    """Naver world index price API: one dated session per entry.
 
-    Direction lives in the row class, but the parser re-derives it from
-    consecutive closes and only requires the class to agree.
+    The API publishes each session's close and its signed change, with a
+    direction token alongside. Direction is not taken on trust: the parser
+    re-derives it from consecutive closes and the token only has to agree.
     """
-    cells = "".join(
-        f'<tr class="{css} ">'
-        f'<td class="tb_td">{day}</td>'
-        f'<td class="tb_td2"><span>{close}</span></td>'
-        f'<td class="tb_td3"><span class="point_status">{change}</span></td>'
-        f'<td class="tb_td4"><span>0</span></td>'
-        f'<td class="tb_td5"><span>0</span></td>'
-        f'<td class="tb_td6"><span>0</span></td>'
-        f'</tr>'
-        for day, close, change, css in rows
-    )
-    return f'<table id="dayTable"><tbody>{cells}</tbody></table>'
+    tokens = {"point_up": ("RISING", "+"), "point_dn": ("FALLING", "-"), "point_st": ("STEADY", "")}
+    sessions = []
+    for day, close, change, css in rows:
+        name, sign = tokens.get(css, ("", ""))
+        sessions.append(
+            {
+                "localTradedAt": f"{day.replace('.', '-')}T15:45:02+09:00",
+                "closePrice": close,
+                "compareToPreviousClosePrice": f"{sign}{change}",
+                "compareToPreviousPrice": {"name": name},
+            }
+        )
+    return json.dumps(sessions)
 
 
 def _rss_xml(items: list[tuple[str, str]]) -> str:
@@ -115,7 +117,7 @@ class TodayGenieFeedProbeTests(unittest.TestCase):
             if url == probe.NAVER_WORLD_INDEX["NIKKEI"]:
                 # 06-09 still open; the settled row a 06-09 briefing may quote
                 # is 06-08, whose change is derived from the 06-05 close.
-                return _naver_world_day_html(
+                return _naver_world_day_payload(
                     [
                         ("2026.06.09", "64,100.00", "75.40", "point_up"),
                         ("2026.06.08", "64,024.60", "300.40", "point_dn"),

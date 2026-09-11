@@ -7,6 +7,7 @@ then re-prefixed to '+0%' by the renderer.
 """
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -62,24 +63,26 @@ def _naver_html(
     """
 
 
-def _naver_world_day_html(rows) -> str:
-    """Naver world 일별시세 markup: dated close + magnitude-only change.
+def _naver_world_day_payload(rows) -> str:
+    """Naver world index price API: one dated session per entry.
 
-    Direction lives in the row class, but the parser re-derives it from
-    consecutive closes and only requires the class to agree.
+    The API publishes each session's close and its signed change, with a
+    direction token alongside. Direction is not taken on trust: the parser
+    re-derives it from consecutive closes and the token only has to agree.
     """
-    cells = "".join(
-        f'<tr class="{css} ">'
-        f'<td class="tb_td">{day}</td>'
-        f'<td class="tb_td2"><span>{close}</span></td>'
-        f'<td class="tb_td3"><span class="point_status">{change}</span></td>'
-        f'<td class="tb_td4"><span>0</span></td>'
-        f'<td class="tb_td5"><span>0</span></td>'
-        f'<td class="tb_td6"><span>0</span></td>'
-        f'</tr>'
-        for day, close, change, css in rows
-    )
-    return f'<table id="dayTable"><tbody>{cells}</tbody></table>'
+    tokens = {"point_up": ("RISING", "+"), "point_dn": ("FALLING", "-"), "point_st": ("STEADY", "")}
+    sessions = []
+    for day, close, change, css in rows:
+        name, sign = tokens.get(css, ("", ""))
+        sessions.append(
+            {
+                "localTradedAt": f"{day.replace('.', '-')}T15:45:02+09:00",
+                "closePrice": close,
+                "compareToPreviousClosePrice": f"{sign}{change}",
+                "compareToPreviousPrice": {"name": name},
+            }
+        )
+    return json.dumps(sessions)
 
 
 def _blind(word: str) -> str:
@@ -547,7 +550,7 @@ class IncidentEndToEndTests(unittest.TestCase):
         pages = {
             probe.NAVER_INDEX_DAY["KOSPI"]: _naver_day_html(LIVE_DAY_ROWS["KOSPI"]),
             probe.NAVER_INDEX_DAY["KOSDAQ"]: _naver_day_html(LIVE_DAY_ROWS["KOSDAQ"]),
-            probe.NAVER_WORLD_INDEX["NIKKEI"]: _naver_world_day_html(LIVE_NIKKEI_DAY_ROWS),
+            probe.NAVER_WORLD_INDEX["NIKKEI"]: _naver_world_day_payload(LIVE_NIKKEI_DAY_ROWS),
         }
         for sym, body in PerIndexIsolationTests.LIVE_CNBC.items():
             pages[probe.CNBC_QUOTES[sym]] = body
@@ -624,7 +627,7 @@ class PerIndexIsolationTests(unittest.TestCase):
         pages = {
             probe.NAVER_INDEX_DAY["KOSPI"]: _naver_day_html(LIVE_DAY_ROWS["KOSPI"]),
             probe.NAVER_INDEX_DAY["KOSDAQ"]: _naver_day_html(LIVE_DAY_ROWS["KOSDAQ"]),
-            probe.NAVER_WORLD_INDEX["NIKKEI"]: _naver_world_day_html(LIVE_NIKKEI_DAY_ROWS),
+            probe.NAVER_WORLD_INDEX["NIKKEI"]: _naver_world_day_payload(LIVE_NIKKEI_DAY_ROWS),
         }
         for sym, body in self.LIVE_CNBC.items():
             pages[probe.CNBC_QUOTES[sym]] = body

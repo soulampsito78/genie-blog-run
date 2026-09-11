@@ -14,6 +14,7 @@ false fact rather than repairing its way into one.
 """
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -680,16 +681,26 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def _naver_world_day_html(rows) -> str:
-    cells = "".join(
-        f'<tr class="{css} "><td class="tb_td">{day}</td>'
-        f'<td class="tb_td2"><span>{close}</span></td>'
-        f'<td class="tb_td3"><span class="point_status">{change}</span></td>'
-        f'<td class="tb_td4"><span>0</span></td><td class="tb_td5"><span>0</span></td>'
-        f'<td class="tb_td6"><span>0</span></td></tr>'
-        for day, close, change, css in rows
-    )
-    return f'<table id="dayTable"><tbody>{cells}</tbody></table>'
+def _naver_world_day_payload(rows) -> str:
+    """Naver world index price API: one dated session per entry.
+
+    The API publishes each session's close and its signed change, with a
+    direction token alongside. Direction is not taken on trust: the parser
+    re-derives it from consecutive closes and the token only has to agree.
+    """
+    tokens = {"point_up": ("RISING", "+"), "point_dn": ("FALLING", "-"), "point_st": ("STEADY", "")}
+    sessions = []
+    for day, close, change, css in rows:
+        name, sign = tokens.get(css, ("", ""))
+        sessions.append(
+            {
+                "localTradedAt": f"{day.replace('.', '-')}T15:45:02+09:00",
+                "closePrice": close,
+                "compareToPreviousClosePrice": f"{sign}{change}",
+                "compareToPreviousPrice": {"name": name},
+            }
+        )
+    return json.dumps(sessions)
 
 
 # The real Nikkei tape from Naver's world daily table.
@@ -711,7 +722,7 @@ class SettledNikkeiTests(unittest.TestCase):
 
     def _row(self, target):
         return probe.select_settled_naver_world_row(
-            _naver_world_day_html(NIKKEI_DAY_ROWS), "NIKKEI", target_date=target
+            _naver_world_day_payload(NIKKEI_DAY_ROWS), "NIKKEI", target_date=target
         )
 
     def test_20260828_target_yields_the_settled_0827_session(self) -> None:
@@ -743,7 +754,7 @@ class SettledNikkeiTests(unittest.TestCase):
         ]
         with self.assertRaises(probe.FeedProbeError):
             probe.select_settled_naver_world_row(
-                _naver_world_day_html(rows), "NIKKEI", target_date="2026-08-28"
+                _naver_world_day_payload(rows), "NIKKEI", target_date="2026-08-28"
             )
 
     def test_a_published_magnitude_disagreeing_with_arithmetic_is_refused(self) -> None:
@@ -753,19 +764,19 @@ class SettledNikkeiTests(unittest.TestCase):
         ]
         with self.assertRaises(probe.FeedProbeError):
             probe.select_settled_naver_world_row(
-                _naver_world_day_html(rows), "NIKKEI", target_date="2026-08-28"
+                _naver_world_day_payload(rows), "NIKKEI", target_date="2026-08-28"
             )
 
     def test_no_preceding_session_is_an_error_not_a_guess(self) -> None:
         rows = [("2026.08.27", "66,131.98", "130.18", "point_dn")]
         with self.assertRaises(probe.FeedProbeError):
             probe.select_settled_naver_world_row(
-                _naver_world_day_html(rows), "NIKKEI", target_date="2026-08-28"
+                _naver_world_day_payload(rows), "NIKKEI", target_date="2026-08-28"
             )
 
     def test_settled_row_carries_settlement_evidence(self) -> None:
         row = self._row("2026-08-28")
-        self.assertIn("naver_world_daily_close_table", row["settlement_evidence"])
+        self.assertIn("naver_world_daily_close", row["settlement_evidence"])
         self.assertEqual(row["session_state"], "closed")
 
     def test_the_observation_contract_accepts_it(self) -> None:
