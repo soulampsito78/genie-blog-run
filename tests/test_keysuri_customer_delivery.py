@@ -83,6 +83,12 @@ _GRADED_READY_FIELDS = {
 }
 
 
+def _isolate_process_environment(test_case: unittest.TestCase) -> None:
+    env_patch = patch.dict(os.environ, {}, clear=False)
+    env_patch.start()
+    test_case.addCleanup(env_patch.stop)
+
+
 def _keysuri_global_artifact_meta(run_id: str) -> dict:
     return {
         **_GRADED_READY_FIELDS,
@@ -147,6 +153,7 @@ def _keysuri_korea_artifact_meta_with_generated_bottom(run_id: str) -> dict:
 
 class KeysuriApproveRunGateTests(unittest.TestCase):
     def setUp(self) -> None:
+        _isolate_process_environment(self)
         os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
         os.environ["SMTP_HOST"] = "smtp.example.com"
         os.environ["SMTP_USER"] = "user@example.com"
@@ -255,6 +262,7 @@ class KeysuriCustomerSubjectTests(unittest.TestCase):
 
 class KeysuriGlobalApproveRunTests(unittest.TestCase):
     def setUp(self) -> None:
+        _isolate_process_environment(self)
         os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
         os.environ["SMTP_HOST"] = "smtp.example.com"
         os.environ["SMTP_USER"] = "user@example.com"
@@ -315,6 +323,7 @@ class KeysuriGlobalApproveRunTests(unittest.TestCase):
 
 class KeysuriApproveRunBlockedTests(unittest.TestCase):
     def setUp(self) -> None:
+        _isolate_process_environment(self)
         os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
         os.environ["SMTP_HOST"] = "smtp.example.com"
         os.environ["SMTP_USER"] = "user@example.com"
@@ -478,6 +487,7 @@ class KeysuriCustomerDeliveryHtmlTests(unittest.TestCase):
 
 class KeysuriAdminApproveButtonTests(unittest.TestCase):
     def setUp(self) -> None:
+        _isolate_process_environment(self)
         self._prev_pwd = os.environ.get("GENIE_ADMIN_PASSWORD")
         os.environ["GENIE_ADMIN_PASSWORD"] = "test-admin-secret"
         os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
@@ -535,6 +545,7 @@ class KeysuriAdminApproveButtonTests(unittest.TestCase):
 
 class KeysuriApproveRouteTests(unittest.TestCase):
     def setUp(self) -> None:
+        _isolate_process_environment(self)
         self._prev_pwd = os.environ.get("GENIE_ADMIN_PASSWORD")
         self._prev_customer = os.environ.get("GENIE_CUSTOMER_EMAIL_TO")
         os.environ["GENIE_ADMIN_PASSWORD"] = "test-admin-secret"
@@ -625,6 +636,7 @@ class KeysuriApproveRouteTests(unittest.TestCase):
 
 class TodayServiceFullRunCustomerImageTests(unittest.TestCase):
     def setUp(self) -> None:
+        _isolate_process_environment(self)
         os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
         os.environ["SMTP_HOST"] = "smtp.example.com"
         os.environ["SMTP_USER"] = "user@example.com"
@@ -680,6 +692,7 @@ class TodayServiceFullRunCustomerImageTests(unittest.TestCase):
 
 class ServiceFullRunRegistryApprovalTests(unittest.TestCase):
     def setUp(self) -> None:
+        _isolate_process_environment(self)
         os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
         os.environ["SMTP_HOST"] = "smtp.example.com"
         os.environ["SMTP_USER"] = "user@example.com"
@@ -727,6 +740,7 @@ class KeysuriKoreaCustomerEmailBottomCidTests(unittest.TestCase):
     """Korea customer email must carry both Top and Bottom MIME inline parts."""
 
     def setUp(self) -> None:
+        _isolate_process_environment(self)
         os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
         os.environ["SMTP_HOST"] = "smtp.example.com"
         os.environ["SMTP_USER"] = "user@example.com"
@@ -978,6 +992,7 @@ class KeysuriKoreaGeneratedV6PersistenceTests(unittest.TestCase):
     """GCS restore + generated provenance enforcement for generated_v6_multi_ref artifacts."""
 
     def setUp(self) -> None:
+        _isolate_process_environment(self)
         os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
         os.environ["SMTP_HOST"] = "smtp.example.com"
         os.environ["SMTP_USER"] = "user@example.com"

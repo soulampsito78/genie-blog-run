@@ -321,13 +321,13 @@ def send_today_geenee_customer_final_email(
             prepared.get("error") or "today_delivery_preparation_failed",
         )
         return False
-    os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
     return send_genie_email(
         str(prepared["html_body"]),
         str(prepared["subject"]),
         inline_jpeg_parts=list(prepared["inline_jpeg_parts"]),
         attachment_jpeg_parts=[],
         to_addrs_override=list(prepared["recipients"]),
+        allow_rich_delivery=True,
     )
 
 

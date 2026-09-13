@@ -93,6 +93,83 @@ class EmailSenderTraceTests(unittest.TestCase):
         self.assertEqual(trace.get("smtp_accepted_recipient_count"), 1)
         self.assertEqual(trace.get("subject"), "Subject")
 
+    def test_rich_delivery_stays_blocked_without_env_or_explicit_call_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "inline.jpg"
+            image.write_bytes(b"\xff\xd8\xff" + b"\x00" * 32)
+            env = {
+                "SMTP_HOST": "smtp.example.com",
+                "SMTP_PORT": "587",
+                "SMTP_USER": "sender@example.com",
+                "SMTP_PASSWORD": "secret",
+            }
+            with patch.dict(os.environ, env, clear=True):
+                with patch("email_sender.smtplib.SMTP", _CapturingSMTP):
+                    ok = send_genie_email(
+                        '<p>hello<img src="cid:top"></p>',
+                        "Subject",
+                        inline_jpeg_parts=[(str(image), "top", "inline.jpg")],
+                        attachment_jpeg_parts=[],
+                        to_addrs_override=["customer@example.com"],
+                    )
+
+        self.assertFalse(ok)
+        self.assertEqual(_CapturingSMTP.last_to_addrs, [])
+
+    def test_explicit_rich_delivery_gate_does_not_mutate_process_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "inline.jpg"
+            image.write_bytes(b"\xff\xd8\xff" + b"\x00" * 32)
+            env = {
+                "SMTP_HOST": "smtp.example.com",
+                "SMTP_PORT": "587",
+                "SMTP_USER": "sender@example.com",
+                "SMTP_PASSWORD": "secret",
+            }
+            with patch.dict(os.environ, env, clear=True):
+                before = dict(os.environ)
+                with patch("email_sender.smtplib.SMTP", _CapturingSMTP):
+                    ok = send_genie_email(
+                        '<p>hello<img src="cid:top"></p>',
+                        "Subject",
+                        inline_jpeg_parts=[(str(image), "top", "inline.jpg")],
+                        attachment_jpeg_parts=[],
+                        to_addrs_override=["customer@example.com"],
+                        allow_rich_delivery=True,
+                    )
+                after = dict(os.environ)
+
+        self.assertTrue(ok)
+        self.assertEqual(after, before)
+        self.assertNotIn("GENIE_EMAIL_RICH_MODE", after)
+
+    def test_explicit_false_rich_mode_remains_an_operator_kill_switch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "inline.jpg"
+            image.write_bytes(b"\xff\xd8\xff" + b"\x00" * 32)
+            for configured_value in ("0", "false", ""):
+                with self.subTest(configured_value=configured_value):
+                    env = {
+                        "SMTP_HOST": "smtp.example.com",
+                        "SMTP_PORT": "587",
+                        "SMTP_USER": "sender@example.com",
+                        "SMTP_PASSWORD": "secret",
+                        "GENIE_EMAIL_RICH_MODE": configured_value,
+                    }
+                    with patch.dict(os.environ, env, clear=True):
+                        with patch("email_sender.smtplib.SMTP", _CapturingSMTP):
+                            ok = send_genie_email(
+                                '<p>hello<img src="cid:top"></p>',
+                                "Subject",
+                                inline_jpeg_parts=[(str(image), "top", "inline.jpg")],
+                                attachment_jpeg_parts=[],
+                                to_addrs_override=["customer@example.com"],
+                                allow_rich_delivery=True,
+                            )
+
+                    self.assertFalse(ok)
+                    self.assertEqual(_CapturingSMTP.last_to_addrs, [])
+
     def test_customer_recipients_are_envelope_only_for_plain_mime(self) -> None:
         customer_addrs = ["alpha@example.com", "beta@example.com"]
         env = {

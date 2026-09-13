@@ -708,12 +708,12 @@ def send_email_if_allowed(
                 (str(bottom_latest), cid_bottom, "GENIE_EMAIL_today_genie_bottom.jpg"),
             ]
 
-        os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
         return send_genie_email(
             html_body,
             subject,
             inline_jpeg_parts=inline_parts,
             attachment_jpeg_parts=[],
+            allow_rich_delivery=True,
         )
 
     html_body = channels.get("email_body_html") or ""

@@ -425,7 +425,6 @@ def run_today_image_only_reissue(
             from email_sender import send_genie_email
 
             smtp_attempted = True
-            os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
             sender = send_fn or send_genie_email
             email_sent = bool(
                 sender(
@@ -433,6 +432,7 @@ def run_today_image_only_reissue(
                     subject,
                     inline_jpeg_parts=list(image_result.inline_parts),
                     attachment_jpeg_parts=[],
+                    allow_rich_delivery=True,
                 )
             )
 

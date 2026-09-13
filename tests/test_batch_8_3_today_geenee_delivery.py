@@ -27,6 +27,12 @@ from tests.admin_approval_test_utils import approve_run_with_snapshot
 _FULL_RUNTIME = {"overnight_us_market": {"k": 1}, "macro_indicators": {"k": 2}}
 
 
+def _isolate_process_environment(test_case: unittest.TestCase) -> None:
+    env_patch = patch.dict(os.environ, {}, clear=False)
+    env_patch.start()
+    test_case.addCleanup(env_patch.stop)
+
+
 class Batch83RegistryPolicyTests(unittest.TestCase):
     def test_all_programs_timeout_disabled_approval_required(self) -> None:
         for spec in list_programs():
@@ -95,6 +101,7 @@ class Batch83CustomerRendererTests(unittest.TestCase):
 
 class Batch83TimeoutRemovalTests(unittest.TestCase):
     def setUp(self) -> None:
+        _isolate_process_environment(self)
         os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
         os.environ["SMTP_HOST"] = "smtp.example.com"
         os.environ["SMTP_USER"] = "user@example.com"
@@ -165,6 +172,7 @@ class Batch83TimeoutRemovalTests(unittest.TestCase):
 
 class Batch83ApproveRouteTests(unittest.TestCase):
     def setUp(self) -> None:
+        _isolate_process_environment(self)
         self._prev_pwd = os.environ.get("GENIE_ADMIN_PASSWORD")
         self._prev_customer = os.environ.get("GENIE_CUSTOMER_EMAIL_TO")
         os.environ["GENIE_ADMIN_PASSWORD"] = "test-admin-secret"
@@ -358,6 +366,7 @@ class Batch83ApproveRouteTests(unittest.TestCase):
 
 class Batch83MimeTests(unittest.TestCase):
     def setUp(self) -> None:
+        _isolate_process_environment(self)
         os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
         os.environ["SMTP_HOST"] = "smtp.example.com"
         os.environ["SMTP_USER"] = "user@example.com"

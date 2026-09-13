@@ -61,6 +61,12 @@ def _restore_env(orig):
             os.environ[k] = v
 
 
+def _isolate_process_environment(test_case: unittest.TestCase) -> None:
+    env_patch = patch.dict(os.environ, {}, clear=False)
+    env_patch.start()
+    test_case.addCleanup(env_patch.stop)
+
+
 # ---------------------------------------------------------------------------
 # Email validation
 # ---------------------------------------------------------------------------
@@ -109,6 +115,7 @@ class EmailValidationTests(unittest.TestCase):
 
 class BetaRecipientConfigStoreTests(unittest.TestCase):
     def setUp(self):
+        _isolate_process_environment(self)
         self._tmp = tempfile.TemporaryDirectory()
         # Use local backend (no GCS bucket configured)
         self._prev = os.environ.get("GENIE_ADMIN_ARTIFACT_BUCKET")
@@ -259,6 +266,7 @@ class BetaRecipientConfigStoreTests(unittest.TestCase):
 
 class ResolveCustomerRecipientsTests(unittest.TestCase):
     def setUp(self):
+        _isolate_process_environment(self)
         self._tmp = tempfile.TemporaryDirectory()
         os.environ.pop("GENIE_ADMIN_ARTIFACT_BUCKET", None)
         os.environ.pop("GENIE_ARTIFACT_BUCKET", None)
@@ -374,6 +382,7 @@ class ResolveCustomerRecipientsTests(unittest.TestCase):
 
 class TodayGenieDeliveryMergedRecipientsTests(unittest.TestCase):
     def setUp(self):
+        _isolate_process_environment(self)
         self._tmp = tempfile.TemporaryDirectory()
         os.environ.pop("GENIE_ADMIN_ARTIFACT_BUCKET", None)
         os.environ.pop("GENIE_ARTIFACT_BUCKET", None)
@@ -432,6 +441,7 @@ class TodayGenieDeliveryMergedRecipientsTests(unittest.TestCase):
         to_addrs = call_kwargs.get("to_addrs_override", [])
         self.assertIn("env@example.com", to_addrs)
         self.assertIn("admin@example.com", to_addrs)
+        self.assertIs(call_kwargs.get("allow_rich_delivery"), True)
 
 
 # ---------------------------------------------------------------------------
@@ -440,6 +450,7 @@ class TodayGenieDeliveryMergedRecipientsTests(unittest.TestCase):
 
 class KeysuriDeliveryMergedRecipientsTests(unittest.TestCase):
     def setUp(self):
+        _isolate_process_environment(self)
         self._tmp = tempfile.TemporaryDirectory()
         os.environ.pop("GENIE_ADMIN_ARTIFACT_BUCKET", None)
         os.environ.pop("GENIE_ARTIFACT_BUCKET", None)
@@ -512,6 +523,7 @@ class KeysuriDeliveryMergedRecipientsTests(unittest.TestCase):
         to_addrs = call_kwargs.get("to_addrs_override", [])
         self.assertIn("env@example.com", to_addrs)
         self.assertIn("admin@example.com", to_addrs)
+        self.assertIs(call_kwargs.get("allow_rich_delivery"), True)
 
     @patch("keysuri_customer_delivery.send_genie_email")
     @patch("keysuri_customer_delivery.resolve_keysuri_inline_jpeg_parts")
@@ -557,6 +569,7 @@ class KeysuriDeliveryMergedRecipientsTests(unittest.TestCase):
 
 class AdminCustomerRecipientsRouteTests(unittest.TestCase):
     def setUp(self):
+        _isolate_process_environment(self)
         self._tmp = tempfile.TemporaryDirectory()
         os.environ.pop("GENIE_ADMIN_ARTIFACT_BUCKET", None)
         os.environ.pop("GENIE_ARTIFACT_BUCKET", None)
