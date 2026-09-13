@@ -11,7 +11,9 @@ MIME rich path: multipart/mixed with multipart/related
 
 Modes:
 - test-rich: GENIE_EMAIL_SEND_TEST=1 (+ GENIE_EMAIL_TEST_TO or explicit test_to_addrs)
-- orchestrator-rich: GENIE_EMAIL_RICH_MODE=1 (+ EMAIL_TO)
+- orchestrator-rich: trusted delivery boundary opt-in, or
+  GENIE_EMAIL_RICH_MODE=1 for legacy callers (+ EMAIL_TO); an explicitly
+  configured false/empty value remains a kill switch
 """
 from __future__ import annotations
 
@@ -187,6 +189,16 @@ def _rich_non_test_gate_ok() -> bool:
     return os.getenv("GENIE_EMAIL_RICH_MODE", "").strip() in ("1", "true", "True", "yes", "YES")
 
 
+def _trusted_rich_delivery_gate_ok(allow_rich_delivery: bool) -> bool:
+    """Allow trusted rich delivery only when no operator override is present.
+
+    Legacy orchestrators used ``setdefault(..., "1")``.  An explicitly
+    configured false/empty value therefore remained a kill switch; the
+    call-level replacement must preserve that fail-closed behavior.
+    """
+    return bool(allow_rich_delivery) and "GENIE_EMAIL_RICH_MODE" not in os.environ
+
+
 def _parse_test_recipients() -> list[str]:
     """CSV address list from GENIE_EMAIL_TEST_TO for explicit test sends."""
     raw = os.getenv("GENIE_EMAIL_TEST_TO", "").strip()
@@ -321,6 +333,7 @@ def send_genie_email(
     attachment_jpeg_parts: Optional[List[Tuple[str, str]]] = None,
     test_to_addrs: Optional[List[str]] = None,
     to_addrs_override: Optional[List[str]] = None,
+    allow_rich_delivery: bool = False,
 ) -> bool:
     """
     Send HTML email via SMTP.
@@ -331,7 +344,10 @@ def send_genie_email(
       - Pass inline_jpeg_parts as [(path, content_id, inline_filename), ...]
         and attachment_jpeg_parts as [(path, attachment_filename), ...].
       - test-rich: GENIE_EMAIL_SEND_TEST=1 and GENIE_EMAIL_TEST_TO (or explicit test_to_addrs).
-      - orchestrator-rich: GENIE_EMAIL_RICH_MODE=1 and EMAIL_TO.
+      - orchestrator-rich: GENIE_EMAIL_RICH_MODE=1 or an explicit trusted
+        ``allow_rich_delivery=True`` call from a delivery/orchestrator boundary
+        when the environment key is absent. An explicit false/empty env value
+        remains an operator kill switch.
       - HTML must reference images with cid:<content_id> (no relative URLs).
     """
     global _LAST_SEND_DIAGNOSTIC, _LAST_SEND_TRACE
@@ -368,7 +384,9 @@ def send_genie_email(
                     "send_genie_email: test-rich MIME send requires valid GENIE_EMAIL_TEST_TO addresses"
                 )
                 return False
-        elif _rich_non_test_gate_ok():
+        elif _rich_non_test_gate_ok() or _trusted_rich_delivery_gate_ok(
+            allow_rich_delivery
+        ):
             to_addrs = list(to_addrs_override) if to_addrs_override else _parse_to_addrs()
             if not to_addrs:
                 _LAST_SEND_DIAGNOSTIC = "rich_send_blocked: EMAIL_TO not set or empty"
@@ -379,7 +397,8 @@ def send_genie_email(
         else:
             _LAST_SEND_DIAGNOSTIC = (
                 "rich_send_blocked: set GENIE_EMAIL_SEND_TEST=1 (test-rich) "
-                "or GENIE_EMAIL_RICH_MODE=1 (orchestrator-rich)"
+                "or GENIE_EMAIL_RICH_MODE=1/use the trusted orchestrator-rich "
+                "delivery boundary"
             )
             logger.warning(
                 "send_genie_email: MIME/attachment kwargs require rich send gate"

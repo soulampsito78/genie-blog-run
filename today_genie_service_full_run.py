@@ -459,13 +459,13 @@ def _run_today_genie_service_full_run_impl(
         record_memory_stage("before_owner_smtp")
         smtp_attempted = True
         sender = send_fn or send_genie_email
-        os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
         email_sent = bool(
             sender(
                 email_html,
                 subject,
                 inline_jpeg_parts=inline_parts,
                 attachment_jpeg_parts=[],
+                allow_rich_delivery=True,
             )
         )
     elif send_owner_email:

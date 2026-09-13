@@ -534,13 +534,13 @@ def send_keysuri_customer_final_email(
     inline_parts = list(prepared["inline_jpeg_parts"])
     cid_tokens = [row[1] for row in inline_parts] or _cid_tokens_from_html(saved_html)
     customer_to = list(prepared["recipients"])
-    os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
     sent = send_genie_email(
         html_body,
         subject,
         inline_jpeg_parts=inline_parts,
         attachment_jpeg_parts=[],
         to_addrs_override=customer_to,
+        allow_rich_delivery=True,
     )
     _last_delivery_result = KeysuriCustomerDeliveryResult(
         sent=bool(sent),

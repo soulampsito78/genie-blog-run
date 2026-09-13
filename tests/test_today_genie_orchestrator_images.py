@@ -213,10 +213,14 @@ class TodayGenieOrchestratorImageGenerationTests(unittest.TestCase):
         self.assertEqual(meta.get("generated_image_paths", {}).get("bottom"), bundle.bottom.generated_image_path)
         self.assertFalse(meta.get("fallback_used"))
 
+    @patch.dict(
+        os.environ,
+        {"GENIE_ADMIN_PUBLIC_BASE_URL": "https://example.com"},
+        clear=False,
+    )
     @patch("orchestrator.send_genie_email")
     def test_owner_email_inline_parts_not_static_latest(self, mock_send: MagicMock) -> None:
         mock_send.return_value = True
-        os.environ["GENIE_ADMIN_PUBLIC_BASE_URL"] = "https://example.com"
         run_id = "20260615_090000_today_genie_ddeeff00"
         repo = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp:

@@ -1637,6 +1637,9 @@ class AdminRoutesTests(unittest.TestCase):
 
 class AdminApprovalHardeningTests(unittest.TestCase):
     def setUp(self) -> None:
+        self._env_patch = patch.dict(os.environ, {}, clear=False)
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
         self._prev_pwd = os.environ.get("GENIE_ADMIN_PASSWORD")
         self._prev_customer = os.environ.get("GENIE_CUSTOMER_EMAIL_TO")
         os.environ["GENIE_ADMIN_PASSWORD"] = "test-admin-secret"

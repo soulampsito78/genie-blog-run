@@ -3791,7 +3791,6 @@ def _adjudicate_and_send_owner_surface(
     else:
         smtp_attempted = True
         sender = send_fn or send_genie_email
-        os.environ.setdefault("GENIE_EMAIL_RICH_MODE", "1")
         send_parts = [] if behavior == OWNER_SEND_POOR_NOTICE else list(inline_parts or [])
         if observe_smtp_memory:
             record_memory_stage_reached("before_owner_smtp")
@@ -3801,6 +3800,7 @@ def _adjudicate_and_send_owner_surface(
                 delivery_subject,
                 inline_jpeg_parts=send_parts,
                 attachment_jpeg_parts=[],
+                allow_rich_delivery=True,
             )
         )
 
