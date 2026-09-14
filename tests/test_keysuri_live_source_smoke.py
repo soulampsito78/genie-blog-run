@@ -741,9 +741,9 @@ class KeysuriKoreaTechSmokeFeedConfigTests(unittest.TestCase):
         self.assertIs(feeds, GLOBAL_TECH_SMOKE_FEEDS)
         self.assertGreater(len(feeds), 0)
 
-    def test_global_uses_bounded_depth_eight_candidate_reserve(self) -> None:
-        self.assertEqual(GLOBAL_ITEMS_PER_FEED, 8)
-        self.assertEqual(_items_per_feed_for_program("keysuri_global_tech"), 8)
+    def test_global_uses_bounded_depth_sixteen_candidate_reserve(self) -> None:
+        self.assertEqual(GLOBAL_ITEMS_PER_FEED, 16)
+        self.assertEqual(_items_per_feed_for_program("keysuri_global_tech"), 16)
 
     def test_korea_keeps_existing_per_feed_depth(self) -> None:
         self.assertEqual(DEFAULT_ITEMS_PER_FEED, 3)

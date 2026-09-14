@@ -88,13 +88,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_FETCH_TIMEOUT_SEC = 12
 DEFAULT_ITEMS_PER_FEED = 3
-# Global needs a deeper bounded reserve before scoring/dedup. On 2026-09-03 the
-# first three rows from each feed produced only nine above-floor candidates; five
-# were customer-sent hard duplicates and the single owner-review-only duplicate
-# could backfill the pool only to four. Eight rows per feed was the
-# first bounded depth that restored five fresh, above-floor candidates without
-# relaxing source diversity. Korea keeps the established depth of three.
-GLOBAL_ITEMS_PER_FEED = 8
+# Global needs a deeper bounded reserve before scoring/dedup. Eight rows per
+# feed was sufficient on 2026-09-03, but the 2026-09-14 preflight again produced
+# only nine above-floor candidates and five were correctly removed as recent
+# customer-send duplicates. Sixteen rows restored ten fresh above-floor
+# candidates without relaxing the quality floor or the hard dedup contract.
+# Korea keeps the established depth of three.
+GLOBAL_ITEMS_PER_FEED = 16
 DEFAULT_USER_AGENT = "GenieKeeSuriLiveSmoke/0.1 (+owner-review-smoke)"
 
 # Smoke-only public RSS endpoints — no API keys; conservative fetch limits.
