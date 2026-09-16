@@ -760,6 +760,15 @@ def _index_row(symbol: str, row: Dict[str, Any], *, session: str = "") -> Dict[s
     return payload
 
 
+def _is_timeout_error(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, TimeoutError):
+        return True
+    return "timed out" in str(exc).lower() or "timeout" in type(exc).__name__.lower()
+
+
 def _probe_one_index(
     symbol: str,
     fetch_fn: FetchFn,
@@ -773,12 +782,23 @@ def _probe_one_index(
     Isolation is the point: one unusable symbol must not discard the symbols
     that parsed cleanly. Whether a partial feed may be published is a separate
     decision, made by the required-row validation downstream.
+
+    A timeout gets exactly one bounded retry, because a single slow fetch is the
+    common way a symbol goes missing. Parse failures are not retried, and a
+    retried timeout that fails again is still reported as an error — no value is
+    ever carried over or invented.
     """
-    try:
-        html = fetch_fn(url, timeout_sec)
-        return parse(html, symbol), None
-    except Exception as exc:  # noqa: BLE001 - per-symbol isolation boundary.
-        return None, f"{type(exc).__name__}: {str(exc)[:200]}"
+    last_exc: Optional[BaseException] = None
+    for attempt in range(2):
+        try:
+            html = fetch_fn(url, timeout_sec)
+            return parse(html, symbol), None
+        except Exception as exc:  # noqa: BLE001 - per-symbol isolation boundary.
+            last_exc = exc
+            if attempt == 0 and _is_timeout_error(exc):
+                continue
+            break
+    return None, f"{type(last_exc).__name__}: {str(last_exc)[:200]}"
 
 
 def probe_overnight_us_market(

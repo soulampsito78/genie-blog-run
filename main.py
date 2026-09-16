@@ -182,6 +182,21 @@ TODAY_GENIE_RUNTIME_FEEDS = (
     "risk_factors",
 )
 TODAY_GENIE_MAX_FEED_STALE_DAYS = 7
+# Per-index rows the six-row number table needs, keyed by feed source. Aliases
+# mirror validators._REQUIRED_TODAY_INDEX_ROWS so freshness and validation agree
+# on what "complete" means.
+TODAY_GENIE_REQUIRED_INDEX_ROWS: Dict[str, tuple] = {
+    "overnight_us_market": (
+        ("SPX", "S&P 500", "SP500"),
+        ("NASDAQ", "IXIC"),
+        ("DJI", "DOW", "DOWJONES"),
+    ),
+    "korea_japan_indices": (
+        ("KOSPI",),
+        ("KOSDAQ",),
+        ("NIKKEI", "N225", "NI225"),
+    ),
+}
 TODAY_GENIE_LIVE_REFRESH_TIMEOUT_SEC = 6
 TODAY_GENIE_FEED_CACHE_SCHEMA_VERSION = "today_genie_feed_cache_v1"
 TODAY_GENIE_FEED_DIAGNOSTIC_KEYS = (
@@ -487,6 +502,30 @@ def _today_feed_source_as_of(source_id: str, payload: Any) -> Optional[str]:
     return None
 
 
+def _today_feed_missing_required_indices(source_id: str, payload: Any) -> List[str]:
+    """Required index rows that are absent or lack close/change_pct.
+
+    A feed that parsed only some of its indices is not a usable feed: the
+    downstream six-row number table cannot be built from it. Reporting the gap
+    here keeps the partial payload out of selection and out of the cache.
+    """
+    required = TODAY_GENIE_REQUIRED_INDEX_ROWS.get(source_id)
+    if not required:
+        return []
+    indices = payload.get("indices") if isinstance(payload, dict) else None
+    missing: List[str] = []
+    for aliases in required:
+        rows = [indices.get(key) for key in aliases] if isinstance(indices, dict) else []
+        if not any(
+            isinstance(row, dict)
+            and row.get("close") is not None
+            and row.get("change_pct") is not None
+            for row in rows
+        ):
+            missing.append(aliases[0])
+    return missing
+
+
 def _today_feed_payload_freshness(
     source_id: str,
     payload: Any,
@@ -499,6 +538,16 @@ def _today_feed_payload_freshness(
             "as_of": "",
             "age_days": None,
             "reason": "missing_or_empty",
+        }
+    missing_indices = _today_feed_missing_required_indices(source_id, payload)
+    if missing_indices:
+        return {
+            "fresh": False,
+            "stale": True,
+            "as_of": str(_today_feed_source_as_of(source_id, payload) or ""),
+            "age_days": None,
+            "reason": "missing_required_index_rows",
+            "missing_indices": missing_indices,
         }
     if source_id == "risk_factors":
         return {
@@ -541,7 +590,7 @@ def _today_required_feed_contract(feeds: Dict[str, Any], target_date: str) -> Di
     for source_id in TODAY_GENIE_RUNTIME_FEEDS:
         info = _today_feed_payload_freshness(source_id, feeds.get(source_id), target_date)
         freshness[source_id] = info
-        if info.get("reason") == "missing_or_empty":
+        if info.get("reason") in ("missing_or_empty", "missing_required_index_rows"):
             missing.append(source_id)
         elif info.get("stale"):
             stale.append(source_id)
@@ -1045,7 +1094,9 @@ def _refresh_today_genie_feeds_if_needed(
         source = "env" if env_fallback_count else "unavailable"
         fallback_reason = global_refresh_error
     elif any(name in refreshed for name in TODAY_GENIE_CORE_DATE_FEEDS) and any(
-        info.get("stale") for info in live_staleness.values()
+        info.get("reason") == "as_of_older_than_7_days"
+        for name, info in live_staleness.items()
+        if name in refreshed
     ):
         status = "live_refresh_returned_stale_fallback"
         source = "env" if env_fallback_count else "unavailable"
