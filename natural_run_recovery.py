@@ -70,7 +70,11 @@ def execute_approved_recovery(
         from transient_infrastructure import automatic_recovery_candidate
 
         original = load_run_artifact(str(incident.get("original_run_id") or ""), normalize=False)
-        if not automatic_recovery_candidate(incident, original, now=now or datetime.now(KST)):
+        # Execution gate: always the full slot+grace candidate. A pre-grace
+        # classification persisted by the direct failure hook never qualifies.
+        if not automatic_recovery_candidate(
+            incident, original, now=now or datetime.now(KST), require_grace=True
+        ):
             return {"ok": False, "error": "automatic_recovery_ineligible", "customer_send": 0, "auto_retry": 0}
         lease = acquire_recovery_lease(incident_id, automatic=True)
     else:
@@ -211,7 +215,7 @@ def execute_approved_recovery(
     # not advance the repeat-recovery guard. The error stays visible below.
     execution_began = bool(recovery_run_id) or bool(runner_payload)
     control_plane_failure = bool(error) and not success and not execution_began
-    complete_recovery(
+    completed = complete_recovery(
         incident_id,
         lease_token=lease,
         success=success,
@@ -222,7 +226,13 @@ def execute_approved_recovery(
             else failure_signature_components
         ),
     )
-    updated = load_incident(incident_id) or {}
+    # Prefer the completion result: a concurrent stale document write must not
+    # be re-read over the outcome we just persisted for this lease.
+    updated = completed or load_incident(incident_id) or {}
+    # The CAS claim refused this completion, so neither success nor failure is
+    # proven for this attempt. Never report a recovery as complete, never rerun,
+    # never customer-send: expose the unresolved control-plane state instead.
+    unresolved = bool(updated.get("recovery_completion_unresolved"))
     updated["recovery_outcomes"] = {
         "생성 결과": "성공" if success else f"실패({error or 'unknown'})",
         "validation": validation_result or "확인불가",
@@ -234,16 +244,29 @@ def execute_approved_recovery(
         updated["recovery_control_error"] = error
         updated["recovery_control_error_at"] = now_kst_iso()
         updated["recovery_outcomes"]["생성 결과"] = f"재실행 요청 처리 오류({error})"
+    if unresolved:
+        updated["recovery_outcomes"]["생성 결과"] = (
+            "재실행 결과를 제어면에서 확정하지 못했습니다"
+            "(복구 클레임 CAS 불일치). 추가 재실행 없음, 운영자 확인 필요."
+        )
     save_incident(updated)
 
-    send_ok, subject = send_recovery_report(updated, success=success, send_fn=send_fn)
+    if automatic and success and not unresolved:
+        send_ok, subject = False, "automatic_recovery_success_quiet"
+    else:
+        # An unresolved completion is never announced as 복구완료, and never
+        # stays quiet: the Owner must see the control-plane state.
+        send_ok, subject = send_recovery_report(
+            updated, success=success and not unresolved, send_fn=send_fn
+        )
     if send_ok:
         mark_recovery_report_sent(incident_id)
 
     return {
-        "ok": success,
+        "ok": success and not unresolved,
         "incident_id": incident_id,
         "recovery_run_id": recovery_run_id,
+        "recovery_completion_unresolved": unresolved,
         "email_sent": email_sent,
         "customer_send": 0,
         "auto_retry": 1 if automatic else 0,
@@ -255,5 +278,5 @@ def execute_approved_recovery(
             updated.get("status")
             or (STATUS_RECOVERY_SUCCEEDED if success else STATUS_RECOVERY_FAILED)
         ),
-        "error": error or None,
+        "error": error or ("recovery_completion_unresolved" if unresolved else None),
     }

@@ -24,6 +24,8 @@ from natural_run_incident_store import (
     ROOT_CAUSE_UNKNOWN,
     STATUS_OPEN,
     STATUS_REPORTED,
+    STATUS_RECOVERY_FAILED,
+    STATUS_RECOVERY_SUCCEEDED,
     acquire_report_lease,
     clear_control_plane_recovery_guard,
     classify_retry_actionability,
@@ -43,6 +45,7 @@ from natural_run_incident_store import (
     new_incident,
     normalize_slot,
     now_kst_iso,
+    reconcile_incident_from_recovery_claim,
     release_report_lease,
     remember_smoke_latest,
     save_incident,
@@ -1429,6 +1432,61 @@ def notify_natural_run_incident_from_failure(
 
     incident["original_run_id"] = run_id or incident.get("original_run_id")
     incident["failure_event"] = fe
+    incident_id = str(incident.get("incident_id") or "")
+
+    # Direct failure hooks must not page the Owner for a transient that the
+    # bounded recovery path can still handle. This hook does not run recovery;
+    # it only records the diagnosis quietly so the heartbeat/polling path can
+    # acquire the normal recovery lease and verify the durable incident again.
+    #
+    # The hook fires at slot+minutes, before the slot+grace SLA threshold, so
+    # classification here deliberately drops ONLY the grace requirement
+    # (require_grace=False still demands a weekday and now >= slot). Without
+    # that, every transient failure paged the Owner at slot+5 even though the
+    # bounded one-shot recovery would have handled it quietly at slot+15.
+    # Execution eligibility is never granted here: the poll and
+    # execute_approved_recovery both re-verify the full slot+grace candidate.
+    try:
+        from admin_store import load_run_artifact
+        from transient_infrastructure import automatic_recovery_candidate
+
+        original = None
+        for artifact in artifacts or []:
+            if isinstance(artifact, Mapping) and artifact.get("run_id") == incident.get("original_run_id"):
+                original = artifact
+                break
+        if original is None and incident.get("original_run_id"):
+            original = load_run_artifact(str(incident.get("original_run_id")), normalize=False)
+        local_now = now or datetime.now(KST)
+        if automatic_recovery_candidate(incident, original, now=local_now, require_grace=False):
+            # Only claim automatic recovery in the durable record (and therefore
+            # in any later operator mail) once the execution threshold itself
+            # has elapsed. Before that it is a pending classification.
+            executable_now = automatic_recovery_candidate(
+                incident, original, now=local_now, require_grace=True
+            )
+            incident["recoverable_transient_classified"] = True
+            incident["automatic_recovery_eligible"] = bool(executable_now)
+            incident["automatic_recovery_awaiting_grace"] = not executable_now
+            if incident_id and load_incident(incident_id):
+                latest = upsert_incident(_diagnosis_only(incident))
+            else:
+                save_incident(incident)
+                latest = incident
+            return {
+                "ok": True,
+                "incident_id": incident_id,
+                "report_sent": False,
+                "deduped": False,
+                "auto_retry": 0,
+                "status": latest.get("status"),
+                "automatic_recovery_eligible": bool(executable_now),
+                "automatic_recovery_awaiting_grace": not executable_now,
+                "recovery_executed": False,
+                "notification_suppressed": "recoverable_transient",
+            }
+    except Exception:
+        logger.exception("recoverable transient suppression check failed for %s", incident_id)
     return report_incident_once(incident, send_fn=send_fn)
 
 
@@ -1504,15 +1562,95 @@ def run_watchdog_poll(
         # exact failed run, and verify the durable incident again at execution.
         original_id = str(incident.get("original_run_id") or "")
         original = load_run_artifact(original_id, normalize=False) if original_id else None
-        current = load_incident(str(incident["incident_id"])) or incident
-        eligible = automatic_recovery_candidate(current, original, now=now)
-        incident["automatic_recovery_eligible"] = eligible
-        report = report_incident_once(incident, send_fn=send_fn)
-        if eligible:
-            recovery = execute_approved_recovery(
-                str(incident["incident_id"]), automatic=True, now=now, send_fn=send_fn,
+        incident_id = str(incident["incident_id"])
+        # A stale document write can revert a completed recovery. Rebuild the
+        # document from the authoritative CAS claim before any send decision, so
+        # a recovered slot is never re-opened into a routine failure report.
+        current = reconcile_incident_from_recovery_claim(incident_id) or incident
+        if current.get("recovery_completion_unresolved"):
+            # Control-plane completion was never proven. Never rerun, never mail
+            # again (the recovery report already paged the Owner) — just surface
+            # the unresolved state until an operator resolves it.
+            results.append(
+                {
+                    "program_id": program_id,
+                    "ok": False,
+                    "incident_id": incident_id,
+                    "report_sent": False,
+                    "deduped": True,
+                    "auto_retry": 0,
+                    "status": current.get("status"),
+                    "recovery_completion_unresolved": True,
+                }
             )
+            continue
+        if current.get("status") == STATUS_RECOVERY_SUCCEEDED:
+            results.append(
+                {
+                    "program_id": program_id,
+                    "ok": True,
+                    "incident_id": incident_id,
+                    "report_sent": False,
+                    "deduped": True,
+                    "auto_retry": 0,
+                    "status": current.get("status"),
+                    "automatic_recovery_already_succeeded_quiet": True,
+                }
+            )
+            continue
+        if current.get("status") == STATUS_RECOVERY_FAILED and current.get("recovery_report_sent_at"):
+            results.append(
+                {
+                    "program_id": program_id,
+                    "ok": True,
+                    "incident_id": incident_id,
+                    "report_sent": False,
+                    "deduped": True,
+                    "auto_retry": 0,
+                    "status": current.get("status"),
+                    "automatic_recovery_failed_already_reported_quiet": True,
+                }
+            )
+            continue
+        # Full re-verification, grace included. diagnose_program_sla already
+        # proved slot+grace elapsed, so any pending pre-grace classification
+        # from the direct failure hook is resolved here.
+        eligible = automatic_recovery_candidate(
+            current, original, now=now, require_grace=True
+        )
+        incident["automatic_recovery_eligible"] = eligible
+        incident["automatic_recovery_awaiting_grace"] = False
+        if eligible:
+            if load_incident(incident_id):
+                upsert_incident(_diagnosis_only(incident))
+            else:
+                save_incident(incident)
+            recovery = execute_approved_recovery(
+                incident_id, automatic=True, now=now, send_fn=send_fn,
+            )
+            if recovery.get("ok"):
+                report = {
+                    "ok": True,
+                    "incident_id": incident_id,
+                    "report_sent": False,
+                    "deduped": False,
+                    "auto_retry": int(recovery.get("automatic_recovery_attempt_count") or 0),
+                    "status": recovery.get("status"),
+                    "automatic_recovery_success_quiet": True,
+                }
+            else:
+                report = {
+                    "ok": False,
+                    "incident_id": incident_id,
+                    "report_sent": False,
+                    "deduped": False,
+                    "auto_retry": int(recovery.get("automatic_recovery_attempt_count") or 0),
+                    "status": recovery.get("status"),
+                    "automatic_recovery_unresolved": True,
+                }
             report["automatic_recovery"] = recovery
+        else:
+            report = report_incident_once(incident, send_fn=send_fn)
         results.append({"program_id": program_id, **report})
     recovery_attempts = sum(
         int((item.get("automatic_recovery") or {}).get("automatic_recovery_attempt_count") or 0)
