@@ -236,7 +236,10 @@ def execute_approved_recovery(
         updated["recovery_outcomes"]["생성 결과"] = f"재실행 요청 처리 오류({error})"
     save_incident(updated)
 
-    send_ok, subject = send_recovery_report(updated, success=success, send_fn=send_fn)
+    if automatic and success:
+        send_ok, subject = False, "automatic_recovery_success_quiet"
+    else:
+        send_ok, subject = send_recovery_report(updated, success=success, send_fn=send_fn)
     if send_ok:
         mark_recovery_report_sent(incident_id)
 

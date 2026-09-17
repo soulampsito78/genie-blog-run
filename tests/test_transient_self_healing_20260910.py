@@ -157,9 +157,10 @@ def test_efjk_watchdog_concurrent_one_child_no_recursion_or_customer_send(isolat
         return CHILD, mock.Mock(response_data={'validation_result': None}), False
 
     monkeypatch.setattr(orchestrator, 'execute_orchestrator_run', run)
+    sent = []
     def poll():
         return watchdog.run_watchdog_poll(artifacts=[row], now=NOW, activated_at=ACTIVATION,
-                         programs=['today_genie'], send_fn=lambda **k: True)
+                         programs=['today_genie'], send_fn=lambda *a, **k: sent.append((a, k)) or True)
     with ThreadPoolExecutor(max_workers=2) as pool:
         outputs = list(pool.map(lambda _: poll(), range(2)))
     poll()  # Recovery child failed: still no recursion / later reattempt.
@@ -171,6 +172,7 @@ def test_efjk_watchdog_concurrent_one_child_no_recursion_or_customer_send(isolat
     assert store.load_incident(IID)['automatic_recovery_attempt_count'] == 1
     assert store.acquire_recovery_lease(IID, automatic=True) is None
     assert store.acquire_recovery_lease(IID) is None  # automatic budget cannot be reopened via Admin
+    assert len(sent) == 1
 
 
 @pytest.mark.parametrize('program,slot,hour', [('today_genie','06:30',7), ('keysuri_global_tech','12:30',13), ('keysuri_korea_tech','18:30',19)])
@@ -275,8 +277,9 @@ def test_e_successful_automatic_recovery_delivers_once(isolated, monkeypatch):
     monkeypatch.setattr('admin_store.update_run_artifact', lambda rid, fn: fn({}))
     runner = mock.Mock(return_value=(CHILD, mock.Mock(response_data={'validation_result':'pass'}), True))
     monkeypatch.setattr(orchestrator, 'execute_orchestrator_run', runner)
+    sent = []
     kwargs = dict(artifacts=[row], now=NOW, activated_at=ACTIVATION,
-                  programs=['today_genie'], send_fn=lambda **k: True)
+                  programs=['today_genie'], send_fn=lambda **k: sent.append(k) or True)
     first = watchdog.run_watchdog_poll(**kwargs)
     second = watchdog.run_watchdog_poll(**kwargs)
     assert runner.call_count == 1
@@ -284,4 +287,35 @@ def test_e_successful_automatic_recovery_delivers_once(isolated, monkeypatch):
     assert second['automatic_recovery_attempt_count'] == 0
     child = first['results'][0]['automatic_recovery']
     assert child['ok'] and child['email_sent'] and child['customer_send'] == 0
+    assert first['results'][0]['report_sent'] is False
+    assert first['results'][0]['automatic_recovery_success_quiet'] is True
+    assert child['recovery_report_sent'] is False
+    assert sent == []
     assert store.load_incident(IID)['status'] == 'recovery_succeeded'
+
+
+def test_e2_direct_failure_hook_suppresses_recoverable_transient_report(isolated, monkeypatch):
+    row = failed_artifact()
+    monkeypatch.setattr('admin_store.load_run_artifact', lambda *a, **k: copy.deepcopy(row))
+    sent = []
+
+    out = watchdog.notify_natural_run_incident_from_failure(
+        program_id='today_genie',
+        run_id=RID,
+        trigger_source='scheduled_owner_review',
+        first_failed_stage='model_generation',
+        error_code='TooManyRequests',
+        issue_codes=[],
+        artifacts=[row],
+        now=NOW,
+        send_fn=lambda **k: sent.append(k) or True,
+    )
+
+    assert out and out['ok']
+    assert out['report_sent'] is False
+    assert out['automatic_recovery_eligible'] is True
+    assert out['notification_suppressed'] == 'recoverable_transient'
+    assert sent == []
+    incident = store.load_incident(IID)
+    assert incident and incident['status'] == 'open'
+    assert incident['automatic_recovery_eligible'] is True
