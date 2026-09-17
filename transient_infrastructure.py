@@ -49,10 +49,21 @@ def verified_vertex_failure(value):
     )}
 
 
-def automatic_recovery_candidate(incident, artifact, *, now):
-    """Only a today's exact natural slot with proven unusable provider failure."""
+def automatic_recovery_candidate(incident, artifact, *, now, require_grace=True):
+    """Only a today's exact natural slot with proven unusable provider failure.
+
+    ``require_grace=False`` is a CLASSIFICATION-ONLY relaxation for the direct
+    failure hook, which must persist a recoverable transient quietly at
+    slot+minutes instead of paging the Owner. It still requires a weekday and a
+    now at/after the slot itself; it never authorises execution. Every execution
+    path keeps the default and re-verifies the full slot+grace threshold.
+    """
     from natural_run_incident_store import NATURAL_SLOTS, KST
-    from natural_run_watchdog import _artifact_is_exact_natural_execution, schedule_elapsed
+    from natural_run_watchdog import (
+        SLA_GRACE_MINUTES,
+        _artifact_is_exact_natural_execution,
+        schedule_elapsed,
+    )
 
     if not isinstance(incident, Mapping) or not isinstance(artifact, Mapping):
         return False
@@ -65,7 +76,11 @@ def automatic_recovery_candidate(incident, artifact, *, now):
     local_now = now.replace(tzinfo=KST) if now.tzinfo is None else now.astimezone(KST)
     if date != local_now.date().isoformat() or NATURAL_SLOTS.get(program) != slot:
         return False
-    if not schedule_elapsed(program_id=program, now=local_now):
+    if not schedule_elapsed(
+        program_id=program,
+        now=local_now,
+        grace_minutes=SLA_GRACE_MINUTES if require_grace else 0,
+    ):
         return False
     if artifact.get('run_id') != incident.get('original_run_id'):
         return False

@@ -319,3 +319,160 @@ def test_e2_direct_failure_hook_suppresses_recoverable_transient_report(isolated
     incident = store.load_incident(IID)
     assert incident and incident['status'] == 'open'
     assert incident['automatic_recovery_eligible'] is True
+
+
+def test_e3_direct_hook_at_slot_plus_five_is_quiet_and_never_recovers_before_grace(isolated, monkeypatch):
+    """Hook fires at slot+5: classify quietly, execute nothing until slot+grace."""
+    row = failed_artifact()
+    monkeypatch.setattr('admin_store.load_run_artifact', lambda *a, **k: copy.deepcopy(row))
+    monkeypatch.setattr('admin_store.update_run_artifact', lambda rid, fn: fn({}))
+    runner = mock.Mock(return_value=(CHILD, mock.Mock(response_data={'validation_result': 'pass'}), True))
+    monkeypatch.setattr(orchestrator, 'execute_orchestrator_run', runner)
+    sent = []
+    early = NOW.replace(minute=35)  # 06:35 KST — before the +15min SLA threshold
+
+    out = watchdog.notify_natural_run_incident_from_failure(
+        program_id='today_genie', run_id=RID, trigger_source='scheduled_owner_review',
+        first_failed_stage='model_generation', error_code='TooManyRequests',
+        artifacts=[row], now=early, send_fn=lambda **k: sent.append(k) or True)
+
+    assert out and out['ok'] and out['report_sent'] is False
+    assert out['notification_suppressed'] == 'recoverable_transient'
+    assert out['automatic_recovery_awaiting_grace'] is True
+    assert out['automatic_recovery_eligible'] is False
+    assert out['recovery_executed'] is False
+    assert sent == [] and runner.call_count == 0
+    incident = store.load_incident(IID)
+    assert incident and incident['status'] == 'open'
+    assert incident['recoverable_transient_classified'] is True
+    assert incident['automatic_recovery_eligible'] is False
+    # Classification alone never spends the one-shot claim.
+    assert store.load_recovery_claim(IID) is None
+    assert recovery.execute_approved_recovery(IID, automatic=True, now=early)['error'] == 'automatic_recovery_ineligible'
+    assert store.load_recovery_claim(IID) is None
+    assert runner.call_count == 0
+
+    # At/after grace the normal poll re-verifies full eligibility and recovers once.
+    result = watchdog.run_watchdog_poll(artifacts=[row], now=NOW, activated_at=ACTIVATION,
+                                        programs=['today_genie'], send_fn=lambda **k: sent.append(k) or True)
+    assert runner.call_count == 1
+    assert result['results'][0]['automatic_recovery_success_quiet'] is True
+    assert result['results'][0]['report_sent'] is False
+    assert result['customer_send'] == 0 and sent == []
+    assert store.load_incident(IID)['status'] == 'recovery_succeeded'
+
+
+def test_f2_stale_incident_upsert_cannot_strand_completed_one_shot_recovery(isolated, monkeypatch):
+    """A concurrent stale document write loses the doc lease; the CAS claim rules."""
+    row = failed_artifact()
+    monkeypatch.setattr('admin_store.load_run_artifact', lambda *a, **k: copy.deepcopy(row))
+    monkeypatch.setattr('admin_store.update_run_artifact', lambda rid, fn: fn({}))
+    stale = incident_for(row)  # snapshot another instance read BEFORE the lease
+    sent = []
+
+    def run(mode, **kwargs):
+        # Stale writer flushes its pre-lease snapshot while recovery is in flight.
+        store.save_incident(copy.deepcopy(stale))
+        assert not store.load_incident(IID).get('recovery_lease_token')
+        return CHILD, mock.Mock(response_data={'validation_result': 'pass'}), True
+
+    monkeypatch.setattr(orchestrator, 'execute_orchestrator_run', run)
+    out = watchdog.run_watchdog_poll(artifacts=[row], now=NOW, activated_at=ACTIVATION,
+                                     programs=['today_genie'], send_fn=lambda **k: sent.append(k) or True)
+
+    child = out['results'][0]['automatic_recovery']
+    assert child['ok'] and child['status'] == 'recovery_succeeded'
+    assert child['customer_send'] == 0 and out['customer_send'] == 0
+    incident = store.load_incident(IID)
+    assert incident['status'] == 'recovery_succeeded'
+    assert incident['recovery_run_id'] == CHILD
+    assert incident['automatic_recovery_attempt_count'] == 1
+    claim = store.load_recovery_claim(IID)
+    assert claim['status'] == 'recovery_succeeded'
+    assert claim['attempt_count'] == claim['automatic_attempt_count'] == 1
+    # One-shot survives the lost doc lease: no second automatic or Admin attempt.
+    assert store.acquire_recovery_lease(IID, automatic=True) is None
+    assert store.acquire_recovery_lease(IID) is None
+    again = watchdog.run_watchdog_poll(artifacts=[row], now=NOW, activated_at=ACTIVATION,
+                                       programs=['today_genie'], send_fn=lambda **k: sent.append(k) or True)
+    assert again['results'][0]['automatic_recovery_already_succeeded_quiet'] is True
+    assert again['auto_retry'] == 0 and sent == []
+
+
+def test_f3_claim_cas_refusal_never_marks_the_document_complete(isolated, monkeypatch):
+    """A lost completion CAS must surface as unresolved, not as success/failure."""
+    row = failed_artifact()
+    monkeypatch.setattr('admin_store.load_run_artifact', lambda *a, **k: copy.deepcopy(row))
+    monkeypatch.setattr('admin_store.update_run_artifact', lambda rid, fn: fn({}))
+    sent = []
+
+    def run(mode, **kwargs):
+        # Another writer takes the claim while the child run is still in flight.
+        assert store._change_recovery_claim(IID, lambda old: {**old, 'lease_token': 'other-writer'})
+        return CHILD, mock.Mock(response_data={'validation_result': 'pass'}), True
+
+    monkeypatch.setattr(orchestrator, 'execute_orchestrator_run', run)
+    out = watchdog.run_watchdog_poll(artifacts=[row], now=NOW, activated_at=ACTIVATION,
+                                     programs=['today_genie'],
+                                     send_fn=lambda html, subject: sent.append(subject) or True)
+
+    child = out['results'][0]['automatic_recovery']
+    assert child['ok'] is False and child['recovery_completion_unresolved'] is True
+    assert child['error'] == 'recovery_completion_unresolved'
+    assert child['customer_send'] == 0 and out['customer_send'] == 0
+    incident = store.load_incident(IID)
+    # Neither terminal status nor a claimed recovery_run_id may be written.
+    assert incident['status'] == 'recovery_approved'
+    assert incident.get('recovery_run_id') is None
+    assert incident['recovery_completion_unresolved'] is True
+    assert incident['recovery_completion_observed_run_id'] == CHILD
+    # The repeat-recovery guard never advances on an unproven completion.
+    assert incident.get('recovery_failure_signature') is None
+    assert incident.get('recovery_failure_history') in (None, [])
+    # Exactly one operator mail, and never a 복구완료 claim.
+    assert len(sent) == 1 and '복구완료' not in sent[0]
+    # No rerun from either path while the control plane is unresolved.
+    assert store.acquire_recovery_lease(IID, automatic=True) is None
+    assert store.acquire_recovery_lease(IID) is None
+    again = watchdog.run_watchdog_poll(artifacts=[row], now=NOW, activated_at=ACTIVATION,
+                                       programs=['today_genie'],
+                                       send_fn=lambda html, subject: sent.append(subject) or True)
+    assert again['results'][0]['recovery_completion_unresolved'] is True
+    assert again['results'][0]['report_sent'] is False
+    assert again['auto_retry'] == 0 and again['customer_send'] == 0 and len(sent) == 1
+
+
+def test_f4_late_stale_write_after_completed_cas_reconciles_without_reissue(isolated, monkeypatch):
+    """A stale doc write landing AFTER completion must not reopen or re-mail."""
+    row = failed_artifact()
+    monkeypatch.setattr('admin_store.load_run_artifact', lambda *a, **k: copy.deepcopy(row))
+    monkeypatch.setattr('admin_store.update_run_artifact', lambda rid, fn: fn({}))
+    stale = incident_for(row)  # snapshot another instance read BEFORE the lease
+    runner = mock.Mock(return_value=(CHILD, mock.Mock(response_data={'validation_result': 'pass'}), True))
+    monkeypatch.setattr(orchestrator, 'execute_orchestrator_run', runner)
+    sent = []
+    send_fn = lambda html, subject: sent.append(subject) or True
+
+    out = watchdog.run_watchdog_poll(artifacts=[row], now=NOW, activated_at=ACTIVATION,
+                                     programs=['today_genie'], send_fn=send_fn)
+    assert out['results'][0]['automatic_recovery_success_quiet'] is True
+    assert store.load_incident(IID)['status'] == 'recovery_succeeded'
+
+    # The stale writer finally flushes its pre-lease snapshot.
+    store.save_incident(copy.deepcopy(stale))
+    stranded = store.load_incident(IID)
+    assert stranded['status'] == 'open' and stranded.get('recovery_run_id') is None
+
+    again = watchdog.run_watchdog_poll(artifacts=[row], now=NOW, activated_at=ACTIVATION,
+                                       programs=['today_genie'], send_fn=send_fn)
+    assert again['results'][0]['automatic_recovery_already_succeeded_quiet'] is True
+    assert again['results'][0]['report_sent'] is False
+    assert again['auto_retry'] == 0 and again['customer_send'] == 0
+    assert runner.call_count == 1 and sent == []
+    incident = store.load_incident(IID)
+    assert incident['status'] == 'recovery_succeeded'
+    assert incident['recovery_run_id'] == CHILD  # exact id restored from the claim
+    assert incident['automatic_recovery_attempt_count'] == 1
+    assert incident['recovery_reconciled_from_claim'] is True
+    assert store.acquire_recovery_lease(IID, automatic=True) is None
+    assert store.acquire_recovery_lease(IID) is None

@@ -1216,6 +1216,38 @@ def dismiss_incident(incident_id: str) -> Optional[Dict[str, Any]]:
     return meta
 
 
+def _recovery_claim_key(incident_id: str) -> str:
+    return f"{INCIDENT_PREFIX}/{incident_id}.recovery-lease.json"
+
+
+def load_recovery_claim(incident_id: str) -> Optional[Dict[str, Any]]:
+    """Read-only view of the CAS recovery claim.
+
+    The claim, not the incident document, is the authority on which attempt is
+    in flight: the document can be overwritten by a concurrent stale upsert,
+    the claim cannot.
+    """
+    key = _recovery_claim_key(incident_id)
+    try:
+        if _uses_gcs():
+            from google.api_core.exceptions import NotFound
+
+            blob = _gcs_storage_client().bucket(_bucket_name()).blob(key)
+            try:
+                raw = blob.download_as_text(encoding="utf-8")
+            except NotFound:
+                return None
+        else:
+            path = incidents_local_dir() / key.split("/", 1)[1]
+            if not path.exists():
+                return None
+            raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw) if raw else None
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _change_recovery_claim(incident_id: str, mutate) -> bool:
     """CAS the existing recovery lease independently of diagnostic upserts.
 
@@ -1224,7 +1256,7 @@ def _change_recovery_claim(incident_id: str, mutate) -> bool:
     claim is never deleted: an automatic attempt remains spent after crashes,
     failed children, stale diagnostic writes and later watchdog invocations.
     """
-    key = f"{INCIDENT_PREFIX}/{incident_id}.recovery-lease.json"
+    key = _recovery_claim_key(incident_id)
     if _uses_gcs():
         from google.api_core.exceptions import NotFound, PreconditionFailed
 
@@ -1278,13 +1310,92 @@ def _claim_recovery_attempt(incident_id: str, token: str, *, automatic: bool) ->
     return _change_recovery_claim(incident_id, claim)
 
 
-def _complete_recovery_claim(incident_id: str, token: str, success: bool) -> None:
+def _complete_recovery_claim(
+    incident_id: str,
+    token: str,
+    success: bool,
+    *,
+    recovery_run_id: Optional[str] = None,
+) -> bool:
+    """CAS the claim to terminal. False means the claim is NOT ours any more.
+
+    The exact recovery_run_id is stored with the terminal claim so a later poll
+    can rebuild a document that a stale concurrent write reverted.
+    """
     def finish(old):
         if not old or old.get("lease_token") != token:
             return None
         return {**old, "status": STATUS_RECOVERY_SUCCEEDED if success else STATUS_RECOVERY_FAILED,
-                "completed_at": now_kst_iso()}
-    _change_recovery_claim(incident_id, finish)
+                "completed_at": now_kst_iso(),
+                "recovery_run_id": recovery_run_id or old.get("recovery_run_id")}
+    return _change_recovery_claim(incident_id, finish)
+
+
+_RECOVERY_CLAIM_TERMINAL_STATUSES = frozenset(
+    {STATUS_RECOVERY_SUCCEEDED, STATUS_RECOVERY_FAILED}
+)
+# Only a document that is still behind the claim may be reconciled. A guard
+# block, a dismissal or an already-terminal document is never rewritten here.
+_CLAIM_RECONCILABLE_DOC_STATUSES = frozenset(
+    {STATUS_OPEN, STATUS_REPORTED, STATUS_RECOVERY_APPROVED}
+)
+
+
+def reconcile_incident_from_recovery_claim(incident_id: str) -> Optional[Dict[str, Any]]:
+    """Restore a completed recovery that a stale document write reverted.
+
+    A concurrent writer holding a pre-lease snapshot can flush it *after*
+    ``complete_recovery`` returned, which strands the incident as open and
+    invites a routine failure report for a run that was already recovered. The
+    CAS claim is the authority, so a later poll copies the terminal claim (with
+    its exact recovery_run_id and report-dedupe marker) onto the stale document.
+
+    This never invents a completion: without a terminal claim, or with a
+    document that is not behind it, the document is returned untouched. The
+    repeat-recovery guard is owned by the failure flow and is not rebuilt here.
+    """
+    with _LOCK:
+        meta = load_incident(incident_id)
+        if not meta:
+            return None
+        if meta.get("recovery_completion_unresolved"):
+            # This document never proved a completion of its own; a terminal
+            # claim held by another writer must not resolve it.
+            return meta
+        claim = load_recovery_claim(incident_id)
+        if not claim:
+            return meta
+        claim_status = str(claim.get("status") or "")
+        if claim_status not in _RECOVERY_CLAIM_TERMINAL_STATUSES:
+            return meta
+        if str(meta.get("status") or "") not in _CLAIM_RECONCILABLE_DOC_STATUSES:
+            return meta
+        meta["status"] = claim_status
+        if claim.get("recovery_run_id"):
+            meta["recovery_run_id"] = claim.get("recovery_run_id")
+        meta["recovery_approved_at"] = meta.get("recovery_approved_at") or claim.get(
+            "acquired_at"
+        )
+        meta["recovery_completed_at"] = meta.get("recovery_completed_at") or claim.get(
+            "completed_at"
+        )
+        attempts = int(claim.get("automatic_attempt_count") or 0)
+        if attempts:
+            meta["automatic_recovery_attempt_count"] = max(
+                int(meta.get("automatic_recovery_attempt_count") or 0), attempts
+            )
+            meta["watchdog_auto_retry_count"] = max(
+                int(meta.get("watchdog_auto_retry_count") or 0), attempts
+            )
+        reported_at = claim.get("recovery_report_sent_at")
+        if reported_at and not meta.get("recovery_report_sent_at"):
+            # Preserve failure-report dedupe: the recovery report already went
+            # out for this claim, so no routine mail may be re-sent for it.
+            meta["recovery_report_sent_at"] = reported_at
+        meta["recovery_reconciled_from_claim"] = True
+        meta["recovery_claim_reconciled_at"] = now_kst_iso()
+        save_incident(meta)
+        return meta
 
 
 def acquire_recovery_lease(incident_id: str, *, automatic: bool = False) -> Optional[str]:
@@ -1341,9 +1452,53 @@ def complete_recovery(
     meta = load_incident(incident_id)
     if not meta:
         return None
-    if str(meta.get("recovery_lease_token") or "") != str(lease_token or ""):
+    token = str(lease_token or "")
+    if not token:
         return None
-    _complete_recovery_claim(incident_id, lease_token, success)
+    if str(meta.get("recovery_lease_token") or "") != token:
+        # A concurrent stale incident-document upsert can overwrite the lease
+        # token that acquire_recovery_lease wrote, which used to strand a
+        # finished one-shot recovery as un-completed (status never advanced,
+        # recovery_run_id never recorded). The CAS claim is the authority: if it
+        # still holds THIS token in flight, reconcile the document instead of
+        # dropping the completion. Any other mismatch stays fail-closed.
+        claim = load_recovery_claim(incident_id)
+        if (
+            not claim
+            or str(claim.get("lease_token") or "") != token
+            or str(claim.get("status") or "") != STATUS_RECOVERY_APPROVED
+        ):
+            return None
+        meta["recovery_lease_token"] = token
+        meta["recovery_approved_at"] = (
+            meta.get("recovery_approved_at") or claim.get("acquired_at") or now_kst_iso()
+        )
+        automatic_attempts = int(claim.get("automatic_attempt_count") or 0)
+        if automatic_attempts:
+            # Preserve one-shot semantics: the spent automatic attempt must stay
+            # visible on the document the next poll loads.
+            meta["automatic_recovery_attempt_count"] = max(
+                int(meta.get("automatic_recovery_attempt_count") or 0), automatic_attempts
+            )
+            meta["watchdog_auto_retry_count"] = max(
+                int(meta.get("watchdog_auto_retry_count") or 0), automatic_attempts
+            )
+        meta["recovery_claim_reconciled_at"] = now_kst_iso()
+    if not _complete_recovery_claim(
+        incident_id, token, success, recovery_run_id=recovery_run_id
+    ):
+        # The CAS claim refused our completion: another writer owns it, or it is
+        # gone. We cannot prove this outcome belongs to this attempt, so the
+        # document must NOT record terminal success or failure, and the repeat
+        # guard must not advance. The approved lease stays in place, which keeps
+        # both the automatic one-shot and the Admin re-approve gate shut, and the
+        # caller surfaces a critical unresolved control-plane state instead.
+        meta["recovery_completion_unresolved"] = True
+        meta["recovery_completion_unresolved_at"] = now_kst_iso()
+        meta["recovery_completion_observed_success"] = bool(success)
+        meta["recovery_completion_observed_run_id"] = recovery_run_id
+        save_incident(meta)
+        return meta
     meta["recovery_run_id"] = recovery_run_id
     meta["status"] = STATUS_RECOVERY_SUCCEEDED if success else STATUS_RECOVERY_FAILED
     meta["recovery_completed_at"] = now_kst_iso()
@@ -1389,6 +1544,19 @@ def mark_recovery_report_sent(incident_id: str) -> Optional[Dict[str, Any]]:
     meta = load_incident(incident_id)
     if not meta:
         return None
-    meta["recovery_report_sent_at"] = now_kst_iso()
+    stamped = now_kst_iso()
+    meta["recovery_report_sent_at"] = stamped
     save_incident(meta)
+    if not meta.get("recovery_completion_unresolved"):
+        # Mirror the dedupe marker onto the authoritative claim so a stale
+        # document write cannot provoke a duplicate routine report. Best effort:
+        # the document marker remains authoritative for the normal path, and an
+        # unresolved completion must never stamp a claim it does not own.
+        try:
+            _change_recovery_claim(
+                incident_id,
+                lambda old: {**old, "recovery_report_sent_at": stamped} if old else None,
+            )
+        except Exception:
+            pass
     return meta
