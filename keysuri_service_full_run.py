@@ -1660,9 +1660,12 @@ def _regenerate_keysuri_text_from_snapshot(
     prompt_input, err = _regen_prompt_input_from_parent(parent, program_id)
     if err:
         return None, None, err
-    prompt_text = build_keysuri_generation_prompt(prompt_input)
-    caller = text_caller or call_keysuri_gemini_text
-    raw_text = caller(prompt_text, program_id=program_id)
+    # Use the same bounded Global MAX_TOKENS compact retry as natural runs.
+    # Calling Gemini directly here made a single stochastic truncation fall
+    # through to the stale parent prose and produce another REVIEW child.
+    raw_text, _generation_diagnostics = generate_keysuri_body_raw_text(
+        prompt_input, gemini_caller=text_caller
+    )
     parse_result = parse_keysuri_generated_response(raw_text, program_id, prompt_input)
     if str(parse_result.get("parse_status") or "") != "parsed_valid":
         return None, None, "generated_briefing_regen_parse_failed"
@@ -1777,10 +1780,12 @@ def _regenerate_keysuri_text_from_frozen_parent(
             prompt_input = snapshot_prompt_input
         fields["reissue_frozen_parent_prose_regenerated"] = True
     else:
-        # No usable fresh prose: the repair below falls back to the parent's own
-        # validated briefing snapshot, which is self-consistent by construction.
+        # A prose repair with no fresh prose must not email the same held body
+        # again under a new run_id. Leave the parent untouched and surface a
+        # bounded failure to the operator/automatic remediation record.
         fields["reissue_frozen_parent_prose_regenerated"] = False
         fields["reissue_frozen_parent_prose_error"] = snapshot_err or "regen_failed"
+        return None, None, fields, "text_only_reissue_prose_generation_failed"
 
     repaired_prompt_input, repaired_briefing, repair_fields, repair_err = (
         _repair_reissue_top5_from_parent_selection(

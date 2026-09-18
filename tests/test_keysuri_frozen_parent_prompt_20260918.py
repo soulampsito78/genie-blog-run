@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import keysuri_service_full_run as runner
 
@@ -144,6 +144,51 @@ class FrozenParentPromptTests(unittest.TestCase):
         self.assertEqual(build.call_count, 1)
         self.assertEqual(fields["reissue_top5_repair_source"], "parent_generated_briefing_snapshot")
         self.assertNotEqual(briefing["deep_dive"].get("body"), "unrelated")
+
+    def test_frozen_regeneration_uses_bounded_generation_helper(self) -> None:
+        parent = self._parent()
+        caller = Mock()
+        generated = {"top_5_news": {"items": copy.deepcopy(parent["selected_items"])}}
+        with patch.object(
+            runner,
+            "generate_keysuri_body_raw_text",
+            return_value=("generated-json", {"retry_applied": True}),
+        ) as bounded, patch.object(
+            runner,
+            "parse_keysuri_generated_response",
+            return_value={"parse_status": "parsed_valid", "generated_briefing": generated},
+        ), patch.object(
+            runner, "enrich_generated_briefing_content", side_effect=lambda body, *_a: body
+        ), patch.object(
+            runner, "repair_keysuri_visible_text_fields", side_effect=lambda body, **_kw: (body, {})
+        ):
+            prompt_input, briefing, error = runner._regenerate_keysuri_text_from_snapshot(
+                parent, "keysuri_global_tech", text_caller=caller
+            )
+        self.assertIsNone(error)
+        self.assertIsNotNone(briefing)
+        self.assertEqual(
+            [item["news_id"] for item in prompt_input["top_5_news"]["items"]],
+            [item["news_id"] for item in parent["selected_items"]],
+        )
+        bounded.assert_called_once()
+        self.assertIs(bounded.call_args.kwargs["gemini_caller"], caller)
+
+    def test_failed_prose_generation_does_not_reemail_parent_body(self) -> None:
+        parent = self._parent()
+        with patch.object(
+            runner,
+            "_regenerate_keysuri_text_from_snapshot",
+            return_value=(parent["regen_prompt_input_snapshot"], None, "generated_briefing_regen_parse_failed"),
+        ), patch.object(runner, "_repair_reissue_top5_from_parent_selection") as repair:
+            prompt_input, briefing, fields, error = runner._regenerate_keysuri_text_from_frozen_parent(
+                "keysuri_global_tech", parent
+            )
+        self.assertIsNone(prompt_input)
+        self.assertIsNone(briefing)
+        self.assertFalse(fields["reissue_frozen_parent_prose_regenerated"])
+        self.assertEqual(error, "text_only_reissue_prose_generation_failed")
+        repair.assert_not_called()
 
 
 if __name__ == "__main__":
