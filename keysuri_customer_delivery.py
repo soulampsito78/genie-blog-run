@@ -103,6 +103,12 @@ _IMAGE_ONLY_REISSUE_MARKER_RE = re.compile(
     r'<!--image-only-reissue-marker-start-->.*?<!--image-only-reissue-marker-end-->',
     re.IGNORECASE | re.DOTALL,
 )
+# This REVIEW warning belongs to the owner email and approval UI, never the
+# prepared customer-final payload. The producer emits no nested <div> here.
+_REVIEW_WARNING_PANEL_RE = re.compile(
+    r'<div[^>]*\bdata-keysuri-review-warning=["\']true["\'][^>]*>.*?</div>',
+    re.IGNORECASE | re.DOTALL,
+)
 _CID_SRC_RE = re.compile(r'src=["\']cid:([^"\']+)["\']', re.IGNORECASE)
 
 _last_delivery_result: Optional["KeysuriCustomerDeliveryResult"] = None
@@ -253,6 +259,7 @@ def strip_keysuri_owner_review_controls(html_body: str) -> str:
     out = html_body
     out = _OWNER_ADMIN_ENTRY_RE.sub("", out)
     out = _IMAGE_ONLY_REISSUE_MARKER_RE.sub("", out)
+    out = _REVIEW_WARNING_PANEL_RE.sub("", out)
     # Owner-only 자동 교정본 header: never part of a customer surface.
     out = strip_auto_remediation_notice(out)
     out = _RUN_ID_ADMIN_LINE_RE.sub("", out)

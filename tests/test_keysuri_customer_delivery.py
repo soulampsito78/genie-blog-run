@@ -1419,6 +1419,62 @@ class KeysuriKoreaGeneratedV6PersistenceTests(unittest.TestCase):
         self.assertNotEqual(dr.reason, "korea_bottom_image_missing_for_customer_email")
 
 
+class KeysuriOperatorReviewWarningStripTests(unittest.TestCase):
+    """The owner-only REVIEW warning must not enter a customer-final payload."""
+
+    _RUN_ID = "20260918_123001_keysuri_global_tech_cff48972"
+    _ISSUE_CODE = "global_visible_repeated_low_information_label"
+
+    def _owner_html(self, builder) -> str:
+        from keysuri_quality_adjudication import _insert_after_body_open, _warning_panel
+
+        panel = _warning_panel([{"issue_code": self._ISSUE_CODE,
+                                 "field": "top_5_news.items[1].label", "before": "관련 기사"}])
+        owner = _insert_after_body_open(builder(self._RUN_ID), panel)
+        self.assertIn('data-keysuri-review-warning="true"', owner)
+        self.assertIn("검토 필요 · 고객 발송 전 확인", owner)
+        return owner
+
+    def _review_meta(self) -> dict:
+        meta = _keysuri_global_artifact_meta(self._RUN_ID)
+        meta["editorial_verdict"] = "REVIEW"
+        meta["review_issue_codes"] = [self._ISSUE_CODE]
+        return meta
+
+    def _assert_customer_warning_absent(self, customer_html: str) -> None:
+        from keysuri_quality_adjudication import get_graded_issue_policy
+
+        self.assertNotIn('data-keysuri-review-warning="true"', customer_html)
+        self.assertNotIn("검토 필요 · 고객 발송 전 확인", customer_html)
+        self.assertNotIn(get_graded_issue_policy(self._ISSUE_CODE).label_ko, customer_html)
+
+    def test_gmail_global_final_strips_warning_but_owner_retains_it(self) -> None:
+        from keysuri_customer_delivery import prepare_keysuri_customer_final_html
+
+        owner = self._owner_html(_keysuri_global_gmail_owner_review_email_html)
+        meta = self._review_meta()
+        original_meta = json.loads(json.dumps(meta))
+        gate_before = can_approve_customer_send(meta, has_email_html=True)
+        customer = prepare_keysuri_customer_final_html(owner, meta=meta)
+
+        self._assert_customer_warning_absent(customer)
+        self.assertIn(keysuri_global_service_email_cid_src(self._RUN_ID), customer)
+        self.assertIn('data-keysuri-review-warning="true"', owner)
+        self.assertEqual(meta, original_meta)
+        self.assertEqual(meta["editorial_verdict"], "REVIEW")
+        self.assertEqual(meta["review_issue_codes"], [self._ISSUE_CODE])
+        self.assertEqual(can_approve_customer_send(meta, has_email_html=True), gate_before)
+
+    def test_legacy_global_final_strips_warning(self) -> None:
+        from keysuri_customer_delivery import prepare_keysuri_customer_final_html
+
+        owner = self._owner_html(_keysuri_global_legacy_owner_review_email_html)
+        customer = prepare_keysuri_customer_final_html(owner, meta=self._review_meta())
+
+        self._assert_customer_warning_absent(customer)
+        self.assertIn("키수리 글로벌 테크 브리핑", customer)
+
+
 class KeysuriGlobalTopImageGcsRestoreTests(unittest.TestCase):
     """Global customer-final preparation when the local generated top image is gone.
 
