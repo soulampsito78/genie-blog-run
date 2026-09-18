@@ -21,6 +21,7 @@ TEST_MODULES = (
     "test_keysuri_visible_text_quality",
     "test_keysuri_briefing_content_quality",
     "test_keysuri_briefing_body_ux_normalizer",
+    "test_keysuri_frozen_parent_prompt_20260918",
     "test_auto_remediation_editorial_review_20260918",
     "test_keysuri_renderer_validator_compat",
     "test_keysuri_global_visible_quality_20260814",

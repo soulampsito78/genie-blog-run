@@ -728,7 +728,7 @@ class FrozenParentContractTests(unittest.TestCase):
         self.assertFalse(fields["reissue_source_recollected"])
         self.assertFalse(fields["reissue_news_reselected"])
         # No preserved source pack on this fixture, so it fails closed.
-        self.assertEqual(err, "text_only_reissue_missing_parent_source_snapshot")
+        self.assertEqual(err, "regen_missing_parent_prompt_snapshot")
 
     def test_missing_source_snapshot_fails_closed(self) -> None:
         import keysuri_service_full_run as k
@@ -736,7 +736,7 @@ class FrozenParentContractTests(unittest.TestCase):
         _pi, _b, _f, err = k._regenerate_keysuri_text_from_frozen_parent(
             "keysuri_korea_tech", {"program_id": "keysuri_korea_tech"}
         )
-        self.assertEqual(err, "text_only_reissue_missing_parent_source_snapshot")
+        self.assertEqual(err, "regen_missing_parent_prompt_snapshot")
 
 
 class AdminPanelTests(unittest.TestCase):

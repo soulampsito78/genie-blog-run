@@ -1622,10 +1622,31 @@ def _regen_source_pack_snapshot(parent: Dict[str, Any]) -> Optional[Dict[str, An
 
 
 def _regen_prompt_input_from_parent(parent: Dict[str, Any], program_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    # A frozen-parent prose repair must prompt the model with the exact five
+    # articles it will render. Rebuilding from the full source pack re-runs
+    # selection against *current* exposure/dedup logs; grafting the parent's
+    # TOP5 on that newly generated prose creates an incoherent briefing.
+    snapshot = parent.get("regen_prompt_input_snapshot")
+    if not isinstance(snapshot, dict):
+        return None, "regen_missing_parent_prompt_snapshot"
+    prompt_input = copy.deepcopy(snapshot)
     source_pack = _regen_source_pack_snapshot(parent)
     if not isinstance(source_pack, dict):
         return None, "regen_missing_source_pack_snapshot"
-    prompt_input = build_keysuri_prompt_input(program_id, source_pack)
+    pack_program_id = str(source_pack.get("program_id") or "")
+    if pack_program_id and pack_program_id != program_id:
+        return None, "regen_parent_source_pack_program_mismatch"
+    if str(prompt_input.get("program_id") or "") != program_id:
+        return None, "regen_parent_prompt_program_mismatch"
+    if str(prompt_input.get("prompt_status") or "") != "ready_for_generation":
+        return None, "regen_parent_prompt_not_ready"
+    parent_items = _parent_selected_items_for_reissue(parent, program_id)
+    if parent_items is None:
+        return None, "regen_parent_selected_items_missing"
+    expected = _frozen_parent_source_identities({"top_5_news": {"items": parent_items}})
+    actual = _frozen_parent_source_identities(prompt_input)
+    if len(expected) != KEYSURI_TOP_NEWS_COUNT or actual != expected:
+        return None, "regen_parent_prompt_selection_mismatch"
     prompt_input["source_pack"] = source_pack
     return prompt_input, None
 
@@ -1734,7 +1755,7 @@ def _regenerate_keysuri_text_from_frozen_parent(
     if err is not None or not isinstance(prompt_input, dict):
         # Critical source evidence is missing: fail closed rather than silently
         # falling back to a live collection the caller did not ask for.
-        return None, None, fields, "text_only_reissue_missing_parent_source_snapshot"
+        return None, None, fields, err or "text_only_reissue_missing_parent_source_snapshot"
 
     generated_briefing: Dict[str, Any] = {}
     try:
