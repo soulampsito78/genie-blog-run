@@ -1419,5 +1419,370 @@ class KeysuriKoreaGeneratedV6PersistenceTests(unittest.TestCase):
         self.assertNotEqual(dr.reason, "korea_bottom_image_missing_for_customer_email")
 
 
+class KeysuriGlobalTopImageGcsRestoreTests(unittest.TestCase):
+    """Global customer-final preparation when the local generated top image is gone.
+
+    Incident 20260918_123001_keysuri_global_tech_cff48972: the Cloud Run instance
+    that generated the image no longer exists, so ``generated_image_path`` points
+    at a missing local file while the run's own GCS object is intact. Restore is
+    accepted only from the exact run-bound object with the persisted owner-review
+    SHA256; every other outcome fails closed.
+    """
+
+    _BUCKET = "test-genie-artifacts"
+    _IMAGE_BYTES = b"\xff\xd8\xff" + b"\x5a" * 512
+
+    def setUp(self) -> None:
+        _isolate_process_environment(self)
+        os.environ["GENIE_CUSTOMER_EMAIL_TO"] = "customer@example.com"
+        os.environ["SMTP_HOST"] = "smtp.example.com"
+        os.environ["SMTP_USER"] = "user@example.com"
+        os.environ["SMTP_PASSWORD"] = "secret"
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp_dir = Path(tmp.name)
+        self.assets_dir = self.tmp_dir / "keysuri_service_assets"
+        self.assets_dir.mkdir(parents=True, exist_ok=True)
+        for target, value in (
+            ("admin_artifact_bucket_name", lambda: self._BUCKET),
+            ("_writable_keysuri_service_assets_dir", lambda: self.assets_dir),
+        ):
+            patcher = patch(f"keysuri_customer_delivery.{target}", side_effect=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _expected_object(self, run_id: str) -> str:
+        from keysuri_service_full_run import _global_top_image_gcs_object
+
+        return _global_top_image_gcs_object(run_id)
+
+    def _image_sha256(self, payload: bytes = b"") -> str:
+        import hashlib
+
+        return hashlib.sha256(payload or self._IMAGE_BYTES).hexdigest()
+
+    def _global_meta(
+        self,
+        run_id: str,
+        *,
+        local_top: str = "",
+        bucket: str = "",
+        gcs_object: str | None = None,
+        expected_sha: str | None = None,
+        cid: str | None = None,
+    ) -> dict:
+        from keysuri_service_full_run import keysuri_global_service_email_cid_token
+
+        meta = _keysuri_global_artifact_meta(run_id)
+        # Cloud Run local path that no longer exists unless the test creates it.
+        meta["generated_image_path"] = local_top or str(self.tmp_dir / "missing_global_top.jpg")
+        meta["generated_image_gcs_bucket"] = bucket or self._BUCKET
+        object_name = self._expected_object(run_id) if gcs_object is None else gcs_object
+        if object_name:
+            meta["top_image_gcs_object"] = object_name
+            meta["top_image_gcs_uri"] = f"gs://{meta['generated_image_gcs_bucket']}/{object_name}"
+        meta["top_image_persistence_status"] = "persisted"
+        sha = self._image_sha256() if expected_sha is None else expected_sha
+        if sha:
+            meta["owner_email_inline_image_hashes"] = [
+                {
+                    "path": "output/images/keysuri_global_service_test.jpg",
+                    "cid": keysuri_global_service_email_cid_token(run_id) if cid is None else cid,
+                    "filename": "keysuri_global_service_test.jpg",
+                    "sha256": sha,
+                }
+            ]
+        return meta
+
+    def _patched_resolver(self, download_fn):
+        """Patch the module resolver so preparation uses this test's download_fn.
+
+        The real function is captured before patching; the delivery/approval code
+        under test calls the module-global name.
+        """
+        from keysuri_customer_delivery import resolve_keysuri_inline_jpeg_parts as real
+
+        return patch(
+            "keysuri_customer_delivery.resolve_keysuri_inline_jpeg_parts",
+            side_effect=lambda html, meta, **_: real(html, meta, download_fn=download_fn),
+        )
+
+    def _download_ok(self, payload: bytes = b""):
+        calls: list = []
+
+        def _download(bucket: str, obj: str, dest: Path) -> None:
+            calls.append((bucket, obj, str(dest)))
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(payload or self._IMAGE_BYTES)
+
+        return _download, calls
+
+    # G1: exact run-bound object + matching persisted hash → restored inline part
+    def test_global_top_restored_from_run_bound_gcs_object(self) -> None:
+        from keysuri_customer_delivery import (
+            GLOBAL_TOP_RESTORED_FROM_GCS,
+            last_global_inline_resolve_reason,
+            resolve_keysuri_inline_jpeg_parts,
+        )
+        from keysuri_service_full_run import keysuri_global_service_email_cid_token
+
+        run_id = "20260918_123001_keysuri_global_tech_gtr001"
+        meta = self._global_meta(run_id)
+        html = _keysuri_global_gmail_owner_review_email_html(run_id)
+        download, calls = self._download_ok()
+
+        parts = resolve_keysuri_inline_jpeg_parts(html, meta, download_fn=download)
+
+        self.assertIsNotNone(parts)
+        self.assertEqual(len(parts), 1)
+        self.assertEqual(parts[0][1], keysuri_global_service_email_cid_token(run_id))
+        restored = Path(parts[0][0])
+        self.assertTrue(restored.is_file())
+        self.assertEqual(restored.parent.resolve(), self.assets_dir.resolve())
+        self.assertEqual(restored.read_bytes(), self._IMAGE_BYTES)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:2], (self._BUCKET, self._expected_object(run_id)))
+        self.assertEqual(Path(calls[0][2]).resolve(), restored.resolve())
+        self.assertEqual(last_global_inline_resolve_reason(), GLOBAL_TOP_RESTORED_FROM_GCS)
+
+    # G2: local image still present → unchanged behavior, no GCS access at all
+    def test_local_generated_image_still_preferred(self) -> None:
+        from keysuri_customer_delivery import (
+            last_global_inline_resolve_reason,
+            resolve_keysuri_inline_jpeg_parts,
+        )
+
+        run_id = "20260918_123001_keysuri_global_tech_gtr002"
+        local_top = self.tmp_dir / "local_global_top.jpg"
+        local_top.write_bytes(self._IMAGE_BYTES)
+        meta = self._global_meta(run_id, local_top=str(local_top))
+        html = _keysuri_global_gmail_owner_review_email_html(run_id)
+
+        def _must_not_download(bucket: str, obj: str, dest: Path) -> None:
+            raise AssertionError("GCS restore must not run while the local image exists")
+
+        parts = resolve_keysuri_inline_jpeg_parts(html, meta, download_fn=_must_not_download)
+
+        self.assertIsNotNone(parts)
+        self.assertEqual(Path(parts[0][0]).resolve(), local_top.resolve())
+        self.assertEqual(last_global_inline_resolve_reason(), "")
+
+    # G3: no persisted GCS reference → fail closed, no fixed/alternate image
+    def test_missing_gcs_reference_blocks(self) -> None:
+        from keysuri_customer_delivery import (
+            GLOBAL_TOP_PERSISTENCE_MISSING,
+            last_global_inline_resolve_reason,
+            resolve_keysuri_inline_jpeg_parts,
+        )
+
+        run_id = "20260918_123001_keysuri_global_tech_gtr003"
+        meta = self._global_meta(run_id, gcs_object="")
+        html = _keysuri_global_gmail_owner_review_email_html(run_id)
+
+        parts = resolve_keysuri_inline_jpeg_parts(html, meta, download_fn=self._download_ok()[0])
+
+        self.assertIsNone(parts)
+        self.assertEqual(last_global_inline_resolve_reason(), GLOBAL_TOP_PERSISTENCE_MISSING)
+
+    # G4: object belongs to another run, or a foreign bucket → fail closed
+    def test_non_run_bound_reference_blocks(self) -> None:
+        from keysuri_customer_delivery import (
+            GLOBAL_TOP_REFERENCE_NOT_RUN_BOUND,
+            last_global_inline_resolve_reason,
+            resolve_keysuri_inline_jpeg_parts,
+        )
+
+        run_id = "20260918_123001_keysuri_global_tech_gtr004"
+        other_object = self._expected_object("20260917_123001_keysuri_global_tech_other001")
+        html = _keysuri_global_gmail_owner_review_email_html(run_id)
+        for label, meta in (
+            ("other_run_object", self._global_meta(run_id, gcs_object=other_object)),
+            ("foreign_bucket", self._global_meta(run_id, bucket="foreign-bucket")),
+        ):
+            with self.subTest(label):
+                download, calls = self._download_ok()
+                parts = resolve_keysuri_inline_jpeg_parts(html, meta, download_fn=download)
+                self.assertIsNone(parts)
+                self.assertEqual(calls, [])
+                self.assertEqual(
+                    last_global_inline_resolve_reason(), GLOBAL_TOP_REFERENCE_NOT_RUN_BOUND
+                )
+
+    # G5: no persisted expected hash (or a foreign CID's hash) → fail closed
+    def test_missing_expected_hash_blocks(self) -> None:
+        from keysuri_customer_delivery import (
+            GLOBAL_TOP_EXPECTED_HASH_MISSING,
+            last_global_inline_resolve_reason,
+            resolve_keysuri_inline_jpeg_parts,
+        )
+
+        run_id = "20260918_123001_keysuri_global_tech_gtr005"
+        html = _keysuri_global_gmail_owner_review_email_html(run_id)
+        for label, meta in (
+            ("no_hash_record", self._global_meta(run_id, expected_sha="")),
+            ("foreign_cid", self._global_meta(run_id, cid="keysuri_topshot_global_20200101")),
+            ("malformed_hash", self._global_meta(run_id, expected_sha="not-a-sha256")),
+        ):
+            with self.subTest(label):
+                download, calls = self._download_ok()
+                parts = resolve_keysuri_inline_jpeg_parts(html, meta, download_fn=download)
+                self.assertIsNone(parts)
+                self.assertEqual(calls, [], "must not download without an expected hash")
+                self.assertEqual(
+                    last_global_inline_resolve_reason(), GLOBAL_TOP_EXPECTED_HASH_MISSING
+                )
+
+    # G6: GCS unavailable / download raises → fail closed
+    def test_download_failure_blocks(self) -> None:
+        from keysuri_customer_delivery import (
+            GLOBAL_TOP_RESTORE_FAILED,
+            last_global_inline_resolve_reason,
+            resolve_keysuri_inline_jpeg_parts,
+        )
+
+        run_id = "20260918_123001_keysuri_global_tech_gtr006"
+        meta = self._global_meta(run_id)
+        html = _keysuri_global_gmail_owner_review_email_html(run_id)
+
+        def _failing_download(bucket: str, obj: str, dest: Path) -> None:
+            raise RuntimeError("simulated GCS download failure")
+
+        parts = resolve_keysuri_inline_jpeg_parts(html, meta, download_fn=_failing_download)
+
+        self.assertIsNone(parts)
+        self.assertEqual(last_global_inline_resolve_reason(), GLOBAL_TOP_RESTORE_FAILED)
+        self.assertEqual(list(self.assets_dir.glob("*.jpg")), [])
+
+    # G7: restored bytes are not the reviewed image → fail closed and discard them
+    def test_hash_mismatch_blocks_and_discards_bytes(self) -> None:
+        from keysuri_customer_delivery import (
+            GLOBAL_TOP_RESTORE_HASH_MISMATCH,
+            last_global_inline_resolve_reason,
+            resolve_keysuri_inline_jpeg_parts,
+        )
+
+        run_id = "20260918_123001_keysuri_global_tech_gtr007"
+        meta = self._global_meta(run_id)
+        html = _keysuri_global_gmail_owner_review_email_html(run_id)
+        download, calls = self._download_ok(payload=b"\xff\xd8\xff" + b"\x7b" * 256)
+
+        parts = resolve_keysuri_inline_jpeg_parts(html, meta, download_fn=download)
+
+        self.assertIsNone(parts)
+        self.assertEqual(last_global_inline_resolve_reason(), GLOBAL_TOP_RESTORE_HASH_MISMATCH)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            list(self.assets_dir.glob("*.jpg")), [], "unverified bytes must not be left on disk"
+        )
+
+    # G8: customer-final preparation succeeds on the restored image
+    def test_prepare_customer_delivery_uses_restored_image(self) -> None:
+        from keysuri_customer_delivery import prepare_keysuri_customer_delivery
+
+        run_id = "20260918_123001_keysuri_global_tech_gtr008"
+        meta = self._global_meta(run_id)
+        html = _keysuri_global_gmail_owner_review_email_html(run_id)
+        download, _ = self._download_ok()
+
+        with self._patched_resolver(download):
+            prepared = prepare_keysuri_customer_delivery(html, meta)
+
+        self.assertTrue(prepared.get("ok"), prepared.get("error"))
+        self.assertEqual(len(prepared["inline_jpeg_parts"]), 1)
+        self.assertEqual(
+            Path(prepared["inline_jpeg_parts"][0][0]).read_bytes(), self._IMAGE_BYTES
+        )
+
+    # G9: preparation reports the specific fail-closed cause, not a generic miss
+    def test_prepare_customer_delivery_reports_specific_reason(self) -> None:
+        from keysuri_customer_delivery import (
+            GLOBAL_TOP_PERSISTENCE_MISSING,
+            GLOBAL_TOP_RESTORE_HASH_MISMATCH,
+            prepare_keysuri_customer_delivery,
+        )
+
+        run_id = "20260918_123001_keysuri_global_tech_gtr009"
+        html = _keysuri_global_gmail_owner_review_email_html(run_id)
+        mismatch_download, _ = self._download_ok(payload=b"\xff\xd8\xff" + b"\x01" * 128)
+        cases = (
+            (GLOBAL_TOP_RESTORE_HASH_MISMATCH, self._global_meta(run_id), mismatch_download),
+            (
+                GLOBAL_TOP_PERSISTENCE_MISSING,
+                self._global_meta(run_id, gcs_object=""),
+                self._download_ok()[0],
+            ),
+        )
+        for expected_error, meta, download in cases:
+            with self.subTest(expected_error):
+                with self._patched_resolver(download):
+                    prepared = prepare_keysuri_customer_delivery(html, meta)
+                self.assertFalse(prepared.get("ok"))
+                self.assertEqual(prepared.get("error"), expected_error)
+
+    # G10: no customer send is attempted on any fail-closed outcome
+    def test_no_send_on_restore_failure(self) -> None:
+        from keysuri_customer_delivery import (
+            GLOBAL_TOP_RESTORE_FAILED,
+            last_keysuri_delivery_result,
+            send_keysuri_customer_final_email,
+        )
+
+        run_id = "20260918_123001_keysuri_global_tech_gtr010"
+        meta = self._global_meta(run_id)
+        html = _keysuri_global_gmail_owner_review_email_html(run_id)
+
+        def _failing_download(bucket: str, obj: str, dest: Path) -> None:
+            raise RuntimeError("simulated GCS download failure")
+
+        with self._patched_resolver(_failing_download):
+            with patch("keysuri_customer_delivery.send_genie_email") as mock_send:
+                sent = send_keysuri_customer_final_email(html, meta)
+
+        self.assertFalse(sent)
+        mock_send.assert_not_called()
+        result = last_keysuri_delivery_result()
+        self.assertIsNotNone(result)
+        self.assertEqual(result.reason, GLOBAL_TOP_RESTORE_FAILED)
+
+    # G11: admin approval preparation (the GET approve-confirm target build)
+    def test_admin_approval_target_prepares_on_restored_image(self) -> None:
+        import admin_approval
+        import delegated_delivery_safety
+
+        from admin_approval import ApprovalTargetError, build_current_approval_target
+
+        run_id = "20260918_123001_keysuri_global_tech_gtr011"
+        html = _keysuri_global_gmail_owner_review_email_html(run_id)
+        resolved = {
+            "admin_config_ok": True,
+            "final_recipients": ["customer@example.com"],
+            "recipient_configuration_version": "test-config-v1",
+            "recipient_configuration_hash": "c" * 64,
+        }
+        download, _ = self._download_ok()
+        with patch.object(delegated_delivery_safety, "publication_guard_required", return_value=False), \
+            patch.object(admin_approval, "resolve_customer_recipients", return_value=dict(resolved)), \
+            patch("keysuri_customer_delivery.resolve_customer_recipients", return_value=dict(resolved)), \
+            self._patched_resolver(download):
+            target = build_current_approval_target(
+                run_id=run_id, meta=self._global_meta(run_id), saved_html=html
+            )
+
+            images = target.snapshot_fields["images"]
+            self.assertEqual(len(images), 1)
+            self.assertEqual(images[0]["sha256"], self._image_sha256())
+
+            # Same call with an unverifiable image must block approval preparation.
+            with self.assertRaises(ApprovalTargetError) as blocked:
+                build_current_approval_target(
+                    run_id=run_id,
+                    meta=self._global_meta(run_id, expected_sha=""),
+                    saved_html=html,
+                )
+        from keysuri_customer_delivery import GLOBAL_TOP_EXPECTED_HASH_MISSING
+
+        self.assertEqual(blocked.exception.code, GLOBAL_TOP_EXPECTED_HASH_MISSING)
+
+
 if __name__ == "__main__":
     unittest.main()

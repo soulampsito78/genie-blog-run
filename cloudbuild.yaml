@@ -40,6 +40,7 @@ steps:
       - tests.test_admin_beta_delegation
       - tests.test_delegated_internal_route
       - tests.test_delegated_grant_release_path
+      - tests.test_keysuri_customer_delivery
 
   - name: gcr.io/cloud-builders/docker
     id: Push

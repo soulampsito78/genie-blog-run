@@ -5,6 +5,7 @@ Korea remains blocked in admin_store until Gmail-safe customer rendering is read
 """
 from __future__ import annotations
 
+import hashlib
 import html
 import logging
 import os
@@ -13,7 +14,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from admin_store import _get_gcs_client, resolve_customer_recipients
+from admin_store import (
+    _get_gcs_client,
+    admin_artifact_bucket_name,
+    resolve_customer_recipients,
+)
 from customer_review_confirmation import (
     HUMAN_OWNER,
     PRE_SEND_REVIEWED,
@@ -30,6 +35,8 @@ from keysuri_contract_preview_renderer import (
 )
 from keysuri_live_source_smoke import PROGRAM_GLOBAL, PROGRAM_KOREA
 from keysuri_service_full_run import (
+    _global_top_image_gcs_object,
+    _writable_keysuri_service_assets_dir,
     inline_jpeg_parts_for_global_service_email,
     inline_jpeg_parts_for_korea_service_email,
     keysuri_global_service_email_cid_token,
@@ -52,7 +59,20 @@ KOREA_GENERATED_ARTIFACT_RESTORE_FAILED = "korea_generated_artifact_restore_fail
 KOREA_GENERATED_PERSISTENCE_MISSING = "korea_generated_persistence_missing"
 KOREA_GENERATED_FALLBACK_CONFLICT = "korea_generated_fallback_conflict"
 
+# Reason codes for the Global top image when the local generated file is gone
+# (the Cloud Run instance that generated it no longer exists) and the only
+# remaining source is this run's durably persisted GCS object.
+GLOBAL_TOP_PERSISTENCE_MISSING = "global_top_image_persistence_missing"
+GLOBAL_TOP_REFERENCE_NOT_RUN_BOUND = "global_top_image_reference_not_run_bound"
+GLOBAL_TOP_EXPECTED_HASH_MISSING = "global_top_image_expected_hash_missing"
+GLOBAL_TOP_RESTORE_FAILED = "global_top_image_gcs_restore_failed"
+GLOBAL_TOP_RESTORE_HASH_MISMATCH = "global_top_image_restored_hash_mismatch"
+GLOBAL_TOP_RESTORED_FROM_GCS = "global_top_image_restored_from_gcs"
+
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
 _last_korea_inline_resolve_reason: str = ""
+_last_global_inline_resolve_reason: str = ""
 
 _OWNER_ADMIN_ENTRY_RE = re.compile(
     r'<div[^>]*\bid=["\']owner-review-admin-entry["\'][^>]*>.*?</div>',
@@ -90,6 +110,10 @@ _last_delivery_result: Optional["KeysuriCustomerDeliveryResult"] = None
 
 def last_korea_inline_resolve_reason() -> str:
     return _last_korea_inline_resolve_reason
+
+
+def last_global_inline_resolve_reason() -> str:
+    return _last_global_inline_resolve_reason
 
 
 @dataclass
@@ -446,6 +470,89 @@ def _resolve_korea_generated_inline_parts(
     return parts, ""
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _expected_global_top_sha256(meta: Dict[str, Any], run_id: str) -> str:
+    """The SHA256 the owner-reviewed Global top image had when it was sent.
+
+    Persisted by ``_owner_email_inline_image_hashes``. Global carries exactly one
+    inline image, so an entry is accepted only when its CID is this run's Global
+    top CID (or is absent in an older artifact), and the accepted hashes must
+    agree — an ambiguous set is treated as "no expected hash" and fails closed.
+    """
+    token = keysuri_global_service_email_cid_token(run_id) if run_id else ""
+    hashes: set[str] = set()
+    for row in meta.get("owner_email_inline_image_hashes") or []:
+        if not isinstance(row, dict):
+            continue
+        cid = str(row.get("cid") or "").strip()
+        if cid and cid != token:
+            continue
+        sha = str(row.get("sha256") or "").strip().lower()
+        if _SHA256_HEX_RE.fullmatch(sha):
+            hashes.add(sha)
+    return next(iter(hashes)) if len(hashes) == 1 else ""
+
+
+def _restore_global_top_image_from_gcs(
+    meta: Dict[str, Any],
+    run_id: str,
+    *,
+    download_fn=None,
+) -> Tuple[Optional[Path], str]:
+    """Restore this run's Global top image from its persisted GCS object.
+
+    Used only when the local generated file is missing. Accepts bytes only from
+    the exact run-bound object in the configured artifact bucket and only when
+    they hash to the persisted owner-reviewed SHA256. There is no alternate
+    object, no fixed image, and no unverified fallback: every other outcome
+    returns a reason code and no path.
+    """
+    if not run_id:
+        return None, GLOBAL_TOP_PERSISTENCE_MISSING
+    bucket = str(meta.get("generated_image_gcs_bucket") or "").strip()
+    gcs_object = str(meta.get("top_image_gcs_object") or "").strip()
+    if not bucket or not gcs_object:
+        return None, GLOBAL_TOP_PERSISTENCE_MISSING
+    configured_bucket = str(admin_artifact_bucket_name() or "").strip()
+    if gcs_object != _global_top_image_gcs_object(run_id) or (
+        configured_bucket and bucket != configured_bucket
+    ):
+        return None, GLOBAL_TOP_REFERENCE_NOT_RUN_BOUND
+
+    expected_sha = _expected_global_top_sha256(meta, run_id)
+    if not expected_sha:
+        return None, GLOBAL_TOP_EXPECTED_HASH_MISSING
+
+    token = re.sub(r"[^A-Za-z0-9_]", "", run_id)
+    dest = _writable_keysuri_service_assets_dir() / f"{token}_restored_global_top.jpg"
+    if not _try_restore_keysuri_from_gcs(bucket, gcs_object, dest, download_fn=download_fn):
+        return None, GLOBAL_TOP_RESTORE_FAILED
+    try:
+        actual_sha = _sha256_file(dest)
+    except OSError:
+        logger.exception("keysuri Global top image restore hash read failed: %s", dest.name)
+        return None, GLOBAL_TOP_RESTORE_FAILED
+    if actual_sha != expected_sha:
+        # Restored bytes are not the reviewed image: discard them so no later
+        # caller can pick the file up, and block.
+        try:
+            dest.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("keysuri Global top image mismatch cleanup failed: %s", dest.name)
+        logger.warning(
+            "keysuri Global top image restore hash mismatch: gs://%s/%s", bucket, gcs_object
+        )
+        return None, GLOBAL_TOP_RESTORE_HASH_MISMATCH
+    return dest, ""
+
+
 def _resolve_generated_image_path(meta: Dict[str, Any]) -> Optional[Path]:
     repo = _repo_root()
     rel = str(meta.get("generated_image_path") or "").strip()
@@ -481,10 +588,15 @@ def resolve_keysuri_inline_jpeg_parts(
 
     For Korea generated_v6_multi_ref artifacts, uses strict provenance validation and
     GCS restore fallback. Never silently falls back to fixed_105936 for generated artifacts.
+    For Global, a locally present generated image is used unchanged; only when that
+    file is gone is this run's persisted, hash-verified GCS object restored.
     """
+    global _last_global_inline_resolve_reason
+
     mode = str(meta.get("mode") or meta.get("program_id") or "")
     if mode not in _KEYSURI_MODES:
         return None
+    _last_global_inline_resolve_reason = ""
     if not meta.get("service_full_run"):
         return None
     run_id = str(meta.get("run_id") or "").strip()
@@ -494,10 +606,19 @@ def resolve_keysuri_inline_jpeg_parts(
         return parts
 
     image_path = _resolve_generated_image_path(meta)
+    if mode == PROGRAM_GLOBAL:
+        if image_path is None:
+            restored, reason = _restore_global_top_image_from_gcs(
+                meta, run_id, download_fn=download_fn
+            )
+            if restored is None:
+                _last_global_inline_resolve_reason = reason
+                return None
+            _last_global_inline_resolve_reason = GLOBAL_TOP_RESTORED_FROM_GCS
+            return inline_jpeg_parts_for_global_service_email(restored, run_id)
+        return inline_jpeg_parts_for_global_service_email(image_path, run_id)
     if image_path is None:
         return None
-    if mode == PROGRAM_GLOBAL:
-        return inline_jpeg_parts_for_global_service_email(image_path, run_id)
     # Korea fixed_105936_fallback: both Top and Bottom must be present locally.
     # If Bottom is missing the HTML will have a broken cid:keysuri_bottomshot_korea_*
     # reference, so we block rather than silently omit.
@@ -618,6 +739,10 @@ def prepare_keysuri_customer_delivery(
             reason = _last_korea_inline_resolve_reason or KOREA_GENERATED_FILES_UNAVAILABLE
         elif mode == PROGRAM_KOREA and _resolve_generated_image_path(meta) is not None:
             reason = _KOREA_BOTTOM_MISSING_REASON
+        elif mode == PROGRAM_GLOBAL and _last_global_inline_resolve_reason:
+            # Specific fail-closed cause of the Global top image restore, so the
+            # operator surface does not report a generic "missing image".
+            reason = _last_global_inline_resolve_reason
         else:
             reason = "missing_generated_inline_image"
         return {"ok": False, "error": reason, "subject": subject, "preheader": preheader}
