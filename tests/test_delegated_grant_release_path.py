@@ -23,7 +23,10 @@ class DelegatedGrantReleasePathTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.recipients = [f"beta-{index:02d}@example.test" for index in range(12)]
+        self.recipients = [
+            f"beta-{index:02d}@example.test"
+            for index in range(delegation.DEFAULT_RECIPIENT_COUNT)
+        ]
         config = {
             "recipients": self.recipients,
             "disabled_recipients": [],
@@ -180,7 +183,7 @@ class DelegatedGrantReleasePathTests(unittest.TestCase):
                 "email_sender.last_send_trace",
                 return_value={
                     "smtp_submission_started": True,
-                    "smtp_accepted_recipient_count": 12,
+                    "smtp_accepted_recipient_count": delegation.DEFAULT_RECIPIENT_COUNT,
                 },
             ),
             mock.patch("email_sender.last_send_diagnostic", return_value=""),
@@ -200,7 +203,9 @@ class DelegatedGrantReleasePathTests(unittest.TestCase):
         self.assertEqual(result["approval_source"], "DELEGATED_WORK_REVIEW")
         self.assertEqual(result["approval_authority"], "ADMIN_BETA_DELEGATION")
         self.assertEqual(result["authority_grant_id"], self.grant["grant_id"])
-        self.assertEqual(len(sent[0]["recipients"]), 12)
+        self.assertEqual(
+            len(sent[0]["recipients"]), delegation.DEFAULT_RECIPIENT_COUNT
+        )
         self.assertEqual(sent[0]["html_body"], candidate.customer_html)
         self.assertEqual(rows[-1]["approval_authority"], "ADMIN_BETA_DELEGATION")
         replay = gate.process_review_event(

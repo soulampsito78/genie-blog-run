@@ -3227,6 +3227,8 @@ def _render_customer_recipients_page(
     invalid = resolved["invalid_entries"]
     source_summary = resolved["source_summary"]
     updated_at = cfg.get("updated_at") or "—"
+    from admin_beta_delegation import DEFAULT_RECIPIENT_COUNT
+
     try:
         from admin_beta_delegation import load_active_admin_beta_delegation
         from delegated_gate import GateSettings, POLICY_VERSION
@@ -3307,7 +3309,7 @@ def _render_customer_recipients_page(
 <h2 style="font-size:16px;margin:0 0 8px">지속 자동발송 권한</h2>
 <p style="font-size:14px;margin:0 0 10px"><strong>{_esc(delegation_status)}</strong> — {_esc(delegation_detail)}</p>
 <p style="font-size:13px;color:#64748b;margin:0 0 12px">
-  한 번 활성화하면 정상 PASS 발행은 추가 승인 없이 현재의 정확한 12명에게만 발송됩니다.
+  한 번 활성화하면 정상 PASS 발행은 추가 승인 없이 현재의 정확한 {DEFAULT_RECIPIENT_COUNT}명에게만 발송됩니다.
   명단·버전·제외 상태가 바뀌면 전체 자동발송이 즉시 중지됩니다.
 </p>
 {f'''<form method="post" action="/admin/customer-recipients/delegation/revoke">
@@ -3316,7 +3318,7 @@ def _render_customer_recipients_page(
 <button type="submit" class="btn" style="background:#dc2626">자동발송 권한 중지</button>
 </form>''' if active_delegation else f'''<form method="post" action="/admin/customer-recipients/delegation/activate">
 {_csrf_field(request, 'admin_beta_delegation_activate')}
-<button type="submit" class="btn">12명 · 3개 상품 자동발송 권한 활성화</button>
+<button type="submit" class="btn">{DEFAULT_RECIPIENT_COUNT}명 · 3개 상품 자동발송 권한 활성화</button>
 </form>'''}
 </div>
 
@@ -3377,13 +3379,19 @@ def admin_customer_recipients_delegation_activate(
         return gate  # type: ignore[return-value]
     if not _verify_csrf(request, "admin_beta_delegation_activate", csrf_token):
         return _csrf_rejected()
-    from admin_beta_delegation import ALLOWED_MODES, activate_admin_beta_delegation
+    from admin_beta_delegation import (
+        ALLOWED_MODES,
+        DEFAULT_RECIPIENT_COUNT,
+        activate_admin_beta_delegation,
+    )
     from delegated_delivery_safety import DeliverySafetyError
 
     operator_id = _operator_id(request)
     try:
         grant = activate_admin_beta_delegation(
-            products=ALLOWED_MODES, operator_id=operator_id, expected_count=12
+            products=ALLOWED_MODES,
+            operator_id=operator_id,
+            expected_count=DEFAULT_RECIPIENT_COUNT,
         )
     except DeliverySafetyError as exc:
         append_operator_audit(

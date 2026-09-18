@@ -20,7 +20,13 @@ DELEGATION_SCHEMA = "admin-beta-delegation-v1"
 DELEGATION_POLICY = "admin-beta-continuous-send-v1"
 DELEGATION_AUTHORITY = "ADMIN_BETA_DELEGATION"
 SUPPRESSION_POLICY = "ADMIN_DISABLED_RECIPIENTS_V1"
-DEFAULT_RECIPIENT_COUNT = 12
+# The exact beta cohort size the operator is allowed to delegate.  It is a
+# deployed constant, never runtime configuration, so the authorized cohort size
+# can only move through code review and deployment.  Changing it immediately
+# invalidates every grant recorded under the previous size: such a grant fails
+# closed with ADMIN_BETA_EXACT_COHORT_MISMATCH until the operator activates a
+# new grant for the new exact cohort through the normal admin route.
+DEFAULT_RECIPIENT_COUNT = 13
 ALLOWED_MODES = frozenset(
     {"today_genie", "keysuri_global_tech", "keysuri_korea_tech"}
 )

@@ -620,6 +620,17 @@ class AdminCustomerRecipientsRouteTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("발송되지 않습니다", resp.text)
 
+    def test_delegation_activation_ui_offers_the_exact_thirteen_cohort(self):
+        from admin_beta_delegation import DEFAULT_RECIPIENT_COUNT
+
+        self.assertEqual(DEFAULT_RECIPIENT_COUNT, 13)
+        resp = self._authed_get("/admin/customer-recipients")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("/admin/customer-recipients/delegation/activate", resp.text)
+        self.assertIn("13명 · 3개 상품 자동발송 권한 활성화", resp.text)
+        self.assertIn("정확한 13명에게만", resp.text)
+        self.assertNotIn("12명", resp.text)
+
     def test_add_valid_recipient(self):
         resp = self._authed_post(
             "/admin/customer-recipients/add",

@@ -39,7 +39,10 @@ def main() -> int:
     isolated_prefix = f"admin_safety_validation/admin_beta_cas/{evidence_id}"
     store.SAFETY_PREFIX = isolated_prefix
 
-    recipients = [f"gcs-cas-{index:02d}@example.test" for index in range(12)]
+    recipients = [
+        f"gcs-cas-{index:02d}@example.test"
+        for index in range(delegation.DEFAULT_RECIPIENT_COUNT)
+    ]
     admin_store.load_beta_recipient_config = lambda: {
         "recipients": recipients,
         "disabled_recipients": [],
