@@ -93,6 +93,58 @@ class FrozenParentPromptTests(unittest.TestCase):
             "regen_parent_source_pack_program_mismatch",
         )
 
+    def test_exact_generated_top5_keeps_new_korean_item_prose(self) -> None:
+        parent = self._parent()
+        generated_items = copy.deepcopy(parent["selected_items"])
+        generated_items[0]["korean_title"] = "새로 다듬은 한국어 제목"
+        generated = {"top_5_news": {"items": generated_items}}
+
+        def accept_payload(**kwargs):
+            return kwargs["prompt_input"], kwargs["base_briefing"], []
+
+        with patch.object(runner, "_build_repaired_reissue_payload", side_effect=accept_payload):
+            _prompt, briefing, fields, error = runner._repair_reissue_top5_from_parent_selection(
+                generated_briefing=generated,
+                prompt_input=parent["regen_prompt_input_snapshot"],
+                parent=parent,
+                program_id="keysuri_global_tech",
+                strict_frozen_parent=True,
+            )
+        self.assertIsNone(error)
+        self.assertEqual(fields["reissue_top5_repair_source"], "gemini_output_exact_parent_top5")
+        self.assertEqual(
+            briefing["top_5_news"]["items"][0]["korean_title"],
+            "새로 다듬은 한국어 제목",
+        )
+
+    def test_different_generated_top5_never_mix_with_new_narrative(self) -> None:
+        parent = self._parent()
+        parent["regen_generated_briefing_snapshot"] = {
+            "top_5_news": {"items": copy.deepcopy(parent["selected_items"])},
+            "deep_dive": {},
+            "one_line_checkpoint": {},
+            "closing_sources": {},
+        }
+        generated_items = copy.deepcopy(parent["selected_items"])
+        generated_items[0]["news_id"] = "unrelated-news"
+        generated = {"top_5_news": {"items": generated_items}, "deep_dive": {"body": "unrelated"}}
+
+        def accept_payload(**kwargs):
+            return kwargs["prompt_input"], kwargs["base_briefing"], []
+
+        with patch.object(runner, "_build_repaired_reissue_payload", side_effect=accept_payload) as build:
+            _prompt, briefing, fields, error = runner._repair_reissue_top5_from_parent_selection(
+                generated_briefing=generated,
+                prompt_input=parent["regen_prompt_input_snapshot"],
+                parent=parent,
+                program_id="keysuri_global_tech",
+                strict_frozen_parent=True,
+            )
+        self.assertIsNone(error)
+        self.assertEqual(build.call_count, 1)
+        self.assertEqual(fields["reissue_top5_repair_source"], "parent_generated_briefing_snapshot")
+        self.assertNotEqual(briefing["deep_dive"].get("body"), "unrelated")
+
 
 if __name__ == "__main__":
     unittest.main()

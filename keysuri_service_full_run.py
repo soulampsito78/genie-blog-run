@@ -1788,6 +1788,7 @@ def _regenerate_keysuri_text_from_frozen_parent(
             prompt_input=prompt_input,
             parent=parent,
             program_id=program_id,
+            strict_frozen_parent=True,
         )
     )
     fields.update(dict(repair_fields or {}))
@@ -1949,15 +1950,17 @@ def _repair_reissue_top5_from_parent_selection(
     prompt_input: Dict[str, Any],
     parent: Dict[str, Any],
     program_id: str,
+    strict_frozen_parent: bool = False,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any], Optional[str]]:
-    """Force the reissue TOP5 to the parent's authoritative selection.
+    """Repair TOP5, preserving exact generated prose for frozen-parent runs.
 
     Parent ``selected_items`` (or its validated briefing snapshot) are the source
-    of truth for TOP5; the fresh Gemini output is trusted only for prose. We first
-    try grafting the parent TOP5 onto the Gemini output, and if that still fails
-    the contract we fall back to the parent's validated briefing snapshot, which is
-    self-consistent by construction. Only when no parent base can yield a
-    contract-valid payload do we surface a safe failure.
+    of truth for TOP5 identity. A matching regenerated TOP5 carries the new
+    Korean item prose and must not be overwritten by raw RSS selection fields.
+    In strict frozen-parent mode, if identity or validation fails, the parent's
+    complete validated briefing is the only safe fallback; mixing its TOP5
+    with unrelated fresh prose is not. Legacy raw-text repair keeps its prior
+    behavior for non-frozen callers.
     """
     parent_items = _parent_selected_items_for_reissue(parent, program_id)
     if parent_items is None:
@@ -1972,10 +1975,26 @@ def _repair_reissue_top5_from_parent_selection(
     original_items = original_top.get("items") if isinstance(original_top, dict) else []
     original_count = len(original_items) if isinstance(original_items, list) else 0
 
-    # Base candidates in priority order: fresh Gemini prose first (keeps the
-    # regenerated body), parent validated snapshot as the guaranteed-valid fallback.
+    expected_identities = _frozen_parent_source_identities(
+        {"top_5_news": {"items": parent_items}}
+    )
+    generated_identities = _frozen_parent_source_identities(
+        {"top_5_news": {"items": original_items}}
+    )
+    # Never graft raw parent items over a new article narrative. That produced
+    # English, low-information TOP5 cards and a deep dive about different news.
     attempts: List[Tuple[str, Dict[str, Any], List[Dict[str, Any]]]] = []
-    if isinstance(generated_briefing, dict) and generated_briefing:
+    if (
+        strict_frozen_parent
+        and isinstance(generated_briefing, dict)
+        and generated_briefing
+        and isinstance(original_items, list)
+        and len(original_items) == KEYSURI_TOP_NEWS_COUNT
+        and len(expected_identities) == KEYSURI_TOP_NEWS_COUNT
+        and generated_identities == expected_identities
+    ):
+        attempts.append(("gemini_output_exact_parent_top5", generated_briefing, original_items))
+    elif not strict_frozen_parent and isinstance(generated_briefing, dict) and generated_briefing:
         attempts.append(("gemini_output_with_parent_top5", generated_briefing, parent_items))
     parent_base = _parent_base_briefing_for_reissue(parent)
     if parent_base is not None:
