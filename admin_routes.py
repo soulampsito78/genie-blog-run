@@ -178,10 +178,16 @@ REISSUE_REASON_OPTIONS_BY_SCOPE = {
         "구성 품질 이슈",
     ),
 }
+
+# These reasons repair prose, not the selected news. Keep the parent's frozen
+# TOP5 and source snapshot; selection defects still require fresh collection.
+PROSE_ONLY_BODY_REISSUE_REASONS = frozenset(
+    {"제목 수정 요청", "요약 수정 요청", "문장 표현 수정 요청"}
+)
 REISSUE_REASON_FALLBACKS = ("기타",)
 
 REISSUE_SCOPE_OPTIONS = (
-    ("body_only", "본문만 재발행", "중복·부적합 뉴스를 제외하고 후보군의 다음 순위 뉴스로 본문을 다시 생성합니다. 기존 이미지는 유지됩니다."),
+    ("body_only", "본문만 재발행", "제목·요약·문장 수정은 원본 뉴스 5건을 유지하고, 중복·부적합 뉴스 사유는 새 후보를 수집합니다. 기존 이미지는 유지됩니다."),
     ("image_only", "이미지만 재발행", "이미지 prompt와 이미지 산출물만 다시 생성합니다. 본문은 유지됩니다."),
     (
         "body_and_image",
@@ -2987,6 +2993,9 @@ def admin_run_reissue(
                 url=f"/admin/runs/{run_id}?reissue_error=invalid_reissue_scope",
                 status_code=303,
             )
+        runner_kwargs = {}
+        if scope == "body_only" and reason_code in PROSE_ONLY_BODY_REISSUE_REASONS:
+            runner_kwargs["frozen_parent"] = True
         try:
             result = runner(
                 run_id,
@@ -2994,6 +3003,7 @@ def admin_run_reissue(
                 reissue_reason_code=reason_code,
                 reissue_reason_note=note,
                 send_owner_email=not dry_run,
+                **runner_kwargs,
             )
         except Exception:  # noqa: BLE001
             # Log the full traceback server-side for diagnosis; never surface the

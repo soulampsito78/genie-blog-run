@@ -8,6 +8,7 @@ from keysuri_briefing_body_ux_normalizer import (
     normalize_generated_briefing_visible_prose,
     normalize_visible_deep_dive_text,
     remove_internal_validation_markers,
+    rewrite_signal_marker_sentence_to_natural_prose,
     split_long_korean_paragraphs,
 )
 from keysuri_briefing_content_quality import validate_briefing_content_gate
@@ -46,6 +47,23 @@ class KeysuriBriefingBodyUxNormalizerTests(unittest.TestCase):
         self.assertGreaterEqual(len(linked), 2)
         self.assertGreaterEqual(body.count("\n\n") + 1, 2)
         self.assertIn("주인님", body)
+
+    def test_clipped_quoted_headline_is_not_welded_into_reader_sentence(self) -> None:
+        items = [
+            {"korean_title": "화웨이, 엔비디아 대항마 '어센드 960DT' 2027년 1분기 출시 예고"},
+            {"korean_title": "마이크로소프트, 칩 설계 진입 장벽 낮추는 '디스커버리' 공개"},
+        ]
+        text = rewrite_signal_marker_sentence_to_natural_prose("독립된 관찰입니다.", items)
+        self.assertNotIn("오늘 눈에 띄는 점은", text)
+        self.assertNotIn("'어센드 흐름과", text)
+
+    def test_balanced_quote_can_still_be_used_as_a_lead(self) -> None:
+        items = [
+            {"korean_title": "「엔비디아」 신형 가속기 공급 확대"},
+            {"korean_title": "클라우드 수요 증가 발표"},
+        ]
+        text = rewrite_signal_marker_sentence_to_natural_prose("독립된 관찰입니다.", items)
+        self.assertIn("오늘 눈에 띄는 점은", text)
 
     def test_normalize_deep_dive_appends_official_followup_not_original_source(self) -> None:
         items = [{"korean_title": "Signal A"}, {"korean_title": "Signal B"}]

@@ -41,6 +41,8 @@ steps:
       - tests.test_delegated_internal_route
       - tests.test_delegated_grant_release_path
       - tests.test_keysuri_customer_delivery
+      - tests.test_admin_routes.AdminRoutesTests.test_reissue_body_only_executes_keysuri_helper_only
+      - tests.test_admin_routes.AdminRoutesTests.test_body_only_exhausted_pool_renders_safe_panel
 
   - name: gcr.io/cloud-builders/docker
     id: Push

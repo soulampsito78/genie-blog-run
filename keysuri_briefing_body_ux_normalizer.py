@@ -84,6 +84,22 @@ def _ends_on_dangling_modifier(text: str) -> bool:
     return last in _DANGLING_MODIFIER_ENDINGS
 
 
+# A clipped source title is not a usable lead when its quotation is still open.
+_QUOTE_PAIRS: Tuple[Tuple[str, str], ...] = (
+    ("「", "」"), ("『", "』"), ("《", "》"), ("〈", "〉"),
+    ("“", "”"), ("‘", "’"),
+)
+_SYMMETRIC_QUOTES: Tuple[str, ...] = ('"', "'")
+
+
+def _has_unbalanced_quote(text: str) -> bool:
+    value = _text(text)
+    for opener, closer in _QUOTE_PAIRS:
+        if value.count(opener) != value.count(closer):
+            return True
+    return any(value.count(mark) % 2 for mark in _SYMMETRIC_QUOTES)
+
+
 def _card_may_lend_a_title(item: Any) -> bool:
     """Whether this card's title may be quoted in synthesized prose."""
     if not isinstance(item, dict):
@@ -286,6 +302,8 @@ def rewrite_signal_marker_sentence_to_natural_prose(
         if matched_company:
             return True
         if not lead or not _HANGUL_RE.search(lead):
+            return False
+        if _has_unbalanced_quote(lead):
             return False
         # A Korean title cut to 24 characters can land mid-modifier, and the
         # sentence then welds a dangling adnominal to the next noun:

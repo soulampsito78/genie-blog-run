@@ -153,6 +153,13 @@ _BODY_ISSUE_CODES = frozenset(
     }
 )
 
+# This graded Global editorial residual is not in ISSUE_CODE_REGISTRY. Permit
+# only this exact reader-prose defect to select body_only; never classify every
+# global_visible_* code, because that prefix also includes hard blocks.
+_GLOBAL_VISIBLE_BODY_ISSUE_CODES = frozenset(
+    {"global_visible_repeated_low_information_label"}
+)
+
 # Registry stages whose defects live in generated text.
 _BODY_REGISTRY_STAGES = frozenset(
     {
@@ -188,6 +195,11 @@ def _manual_runs_allowed() -> bool:
     """QA/manual runs stay out of scope unless explicitly configured (§9)."""
     raw = os.getenv("GENIE_AUTO_REMEDIATION_ALLOW_MANUAL", "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _editorial_verdict_holds_for_review(meta: Dict[str, Any]) -> bool:
+    """Runtime-pass artifacts can still be held by graded editorial review."""
+    return str(meta.get("editorial_verdict") or "").strip().lower() == "review"
 
 
 def artifact_issue_codes(meta: Dict[str, Any]) -> List[str]:
@@ -240,6 +252,7 @@ def classify_issue_codes(
         if (
             code.startswith(_PRODUCT_SURFACE_CODE_PREFIX)
             or code in _BODY_ISSUE_CODES
+            or code in _GLOBAL_VISIBLE_BODY_ISSUE_CODES
             or code in _BODY_REGISTRY_CODES
         ):
             needs_body = True
@@ -325,6 +338,9 @@ def plan_auto_remediation(meta: Optional[Dict[str, Any]]) -> AutoRemediationPlan
         return AutoRemediationPlan(False, stop_reason="attempt_budget_exhausted")
 
     review_class = reissue_parent_review_class(meta)
+    if review_class == "pass" and _editorial_verdict_holds_for_review(meta):
+        # Planning-local: do not change the shared reissue eligibility authority.
+        review_class = "review_required"
     if review_class == "pass":
         return AutoRemediationPlan(False, stop_reason="run_passed", review_class=review_class)
     if review_class not in ("review_required", "product_review_required"):
@@ -491,6 +507,10 @@ def _child_outcome(child_meta: Optional[Dict[str, Any]]) -> Tuple[str, str, List
         return RESULT_FAILED, "UNKNOWN", []
     review_class = reissue_parent_review_class(child_meta)
     remaining = artifact_issue_codes(child_meta)
+    if review_class == "pass" and _editorial_verdict_holds_for_review(child_meta):
+        return RESULT_CHILD_STILL_REVIEWABLE, "REVIEW_REQUIRED", remaining
+    if review_class == "pass" and str(child_meta.get("editorial_verdict") or "").strip().upper() == "POOR":
+        return RESULT_FAILED, "EDITORIAL_POOR", remaining
     if review_class == "pass":
         return RESULT_SUCCEEDED, "PASS", remaining
     if review_class in ("review_required", "product_review_required"):

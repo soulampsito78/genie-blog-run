@@ -1031,6 +1031,7 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertEqual(mock_text_only.call_args.args[0], parent_id)
         self.assertEqual(mock_text_only.call_args.kwargs["reissue_reason_code"], "제목 수정 요청")
         self.assertEqual(mock_text_only.call_args.kwargs["reissue_reason_note"], "refresh copy")
+        self.assertIs(mock_text_only.call_args.kwargs["frozen_parent"], True)
         mock_exec.assert_not_called()
 
     @patch("admin_routes.execute_orchestrator_run")
@@ -1534,6 +1535,7 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertNotIn("Traceback", resp.text)
         self.assertNotIn("ValueError", resp.text)
         mock_text_only.assert_called_once()
+        self.assertNotIn("frozen_parent", mock_text_only.call_args.kwargs)
         mock_exec.assert_not_called()
 
     @patch("admin_routes.execute_orchestrator_run")
