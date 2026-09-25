@@ -20,13 +20,12 @@ DELEGATION_SCHEMA = "admin-beta-delegation-v1"
 DELEGATION_POLICY = "admin-beta-continuous-send-v1"
 DELEGATION_AUTHORITY = "ADMIN_BETA_DELEGATION"
 SUPPRESSION_POLICY = "ADMIN_DISABLED_RECIPIENTS_V1"
-# The exact beta cohort size the operator is allowed to delegate.  It is a
-# deployed constant, never runtime configuration, so the authorized cohort size
-# can only move through code review and deployment.  Changing it immediately
-# invalidates every grant recorded under the previous size: such a grant fails
-# closed with ADMIN_BETA_EXACT_COHORT_MISMATCH until the operator activates a
-# new grant for the new exact cohort through the normal admin route.
-DEFAULT_RECIPIENT_COUNT = 13
+# Capacity guard for the beta programme.  The exact authorized cohort is read
+# from the durable admin configuration at activation time and frozen into the
+# grant below; it is deliberately not a compiled-in headcount.  This lets the
+# owner expand a valid beta cohort without a code release while preserving the
+# exact-list/hash fail-closed boundary for every customer submission.
+MAX_BETA_RECIPIENT_COUNT = 25
 ALLOWED_MODES = frozenset(
     {"today_genie", "keysuri_global_tech", "keysuri_korea_tech"}
 )
@@ -135,13 +134,11 @@ def _compare_and_swap_current(
         raise DeliverySafetyError("ADMIN_BETA_DELEGATION_STATE_UNAVAILABLE") from exc
 
 
-def _current_cohort(*, expected_count: int) -> dict[str, Any]:
+def _current_cohort(*, expected_count: int | None = None) -> dict[str, Any]:
     from admin_store import _is_valid_email, load_beta_recipient_config
     from delegated_delivery_safety import DeliverySafetyError
     from email_sender import parse_customer_to_addrs
 
-    if expected_count != DEFAULT_RECIPIENT_COUNT:
-        raise DeliverySafetyError("ADMIN_BETA_EXACT_COHORT_MISMATCH")
     cfg = load_beta_recipient_config()
     if cfg.get("load_ok") is not True:
         raise DeliverySafetyError("ADMIN_BETA_RECIPIENT_CONFIG_UNAVAILABLE")
@@ -163,12 +160,17 @@ def _current_cohort(*, expected_count: int) -> dict[str, Any]:
     ]
     if any(not _is_valid_email(value) for value in recipients):
         raise DeliverySafetyError("ADMIN_BETA_RECIPIENT_CONFIG_INVALID")
-    if (
-        expected_count < 1
-        or len(recipients) != expected_count
-        or len(set(recipients)) != len(recipients)
-    ):
+    if not recipients or len(recipients) > MAX_BETA_RECIPIENT_COUNT:
+        raise DeliverySafetyError("ADMIN_BETA_RECIPIENT_CAPACITY_INVALID")
+    if len(set(recipients)) != len(recipients):
         raise DeliverySafetyError("ADMIN_BETA_EXACT_COHORT_MISMATCH")
+    if expected_count is not None:
+        try:
+            count_assertion = int(expected_count)
+        except (TypeError, ValueError) as exc:
+            raise DeliverySafetyError("ADMIN_BETA_EXACT_COHORT_MISMATCH") from exc
+        if len(recipients) != count_assertion:
+            raise DeliverySafetyError("ADMIN_BETA_EXACT_COHORT_MISMATCH")
     version = int(cfg.get("version") or 1)
     identity = {
         "env_recipients": [],
@@ -191,7 +193,7 @@ def activate_admin_beta_delegation(
     *,
     products: Iterable[str],
     operator_id: str,
-    expected_count: int = DEFAULT_RECIPIENT_COUNT,
+    expected_count: int | None = None,
     now: dt.datetime | None = None,
 ) -> dict[str, Any]:
     """Persist one exact, revocable grant; normal publications need no new click."""
@@ -203,9 +205,10 @@ def activate_admin_beta_delegation(
     instant = now or dt.datetime.now(KST)
     if instant.tzinfo is None:
         raise DeliverySafetyError("AWARE_CLOCK_REQUIRED")
-    if int(expected_count) != DEFAULT_RECIPIENT_COUNT:
-        raise DeliverySafetyError("ADMIN_BETA_EXACT_COHORT_MISMATCH")
-    cohort = _current_cohort(expected_count=DEFAULT_RECIPIENT_COUNT)
+    # The server derives the cohort from durable storage. ``expected_count`` is
+    # retained only as an optional optimistic assertion for non-HTTP callers;
+    # it never authorizes a count supplied by an admin form.
+    cohort = _current_cohort(expected_count=expected_count)
     payload = {
         "schema": DELEGATION_SCHEMA,
         "policy_version": DELEGATION_POLICY,
@@ -283,9 +286,13 @@ def load_active_admin_beta_delegation() -> dict[str, Any]:
         or _normalised_products(grant.get("products") or []) != grant.get("products")
     ):
         raise DeliverySafetyError("ADMIN_BETA_DELEGATION_GRANT_INVALID")
-    if int(grant.get("recipient_count") or 0) != DEFAULT_RECIPIENT_COUNT:
-        raise DeliverySafetyError("ADMIN_BETA_EXACT_COHORT_MISMATCH")
-    current = _current_cohort(expected_count=DEFAULT_RECIPIENT_COUNT)
+    try:
+        grant_recipient_count = int(grant.get("recipient_count") or 0)
+    except (TypeError, ValueError) as exc:
+        raise DeliverySafetyError("ADMIN_BETA_DELEGATION_GRANT_INVALID") from exc
+    if not 1 <= grant_recipient_count <= MAX_BETA_RECIPIENT_COUNT:
+        raise DeliverySafetyError("ADMIN_BETA_DELEGATION_GRANT_INVALID")
+    current = _current_cohort(expected_count=grant_recipient_count)
     for field in (
         "recipient_count",
         "recipients",

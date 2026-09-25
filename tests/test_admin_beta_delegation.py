@@ -13,6 +13,7 @@ import delegated_delivery_safety as safety
 
 
 NOW = dt.datetime(2026, 9, 14, 0, 30, tzinfo=dt.timezone.utc)
+BASELINE_RECIPIENT_COUNT = 13
 
 
 class AdminBetaDelegationTests(unittest.TestCase):
@@ -21,7 +22,7 @@ class AdminBetaDelegationTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.recipients = [
             f"beta-{index:02d}@example.test"
-            for index in range(delegation.DEFAULT_RECIPIENT_COUNT)
+            for index in range(BASELINE_RECIPIENT_COUNT)
         ]
         self.state = {
             "recipients": self.recipients,
@@ -80,7 +81,6 @@ class AdminBetaDelegationTests(unittest.TestCase):
         return delegation.activate_admin_beta_delegation(
             products=delegation.ALLOWED_MODES,
             operator_id="owner-chat-delegation",
-            expected_count=delegation.DEFAULT_RECIPIENT_COUNT,
             now=NOW,
         )
 
@@ -88,7 +88,7 @@ class AdminBetaDelegationTests(unittest.TestCase):
         grant = self.activate()
         authority = delegation.AdminBetaRecipientAuthority()
         plan = authority.prepare("keysuri_korea_tech", NOW.date(), NOW)
-        self.assertEqual(grant["recipient_count"], delegation.DEFAULT_RECIPIENT_COUNT)
+        self.assertEqual(grant["recipient_count"], len(self.recipients))
         self.assertEqual(plan["authority"], "ADMIN_BETA_DELEGATION")
         self.assertEqual(plan["authority_grant_id"], grant["grant_id"])
         self.assertEqual(
@@ -96,10 +96,8 @@ class AdminBetaDelegationTests(unittest.TestCase):
         )
         self.assertTrue(authority.revalidate(plan, NOW))
 
-    def test_off_size_activation_is_never_valid(self):
-        # 12 is the previously authorized size and must be refused like any
-        # other off-size request.
-        for requested in (0, 12, delegation.DEFAULT_RECIPIENT_COUNT + 1):
+    def test_optional_count_assertion_cannot_authorize_a_different_cohort(self):
+        for requested in (0, BASELINE_RECIPIENT_COUNT - 1, BASELINE_RECIPIENT_COUNT + 1):
             with self.subTest(expected_count=requested):
                 with self.assertRaisesRegex(
                     safety.DeliverySafetyError, "EXACT_COHORT_MISMATCH"
@@ -111,10 +109,7 @@ class AdminBetaDelegationTests(unittest.TestCase):
                         now=NOW,
                     )
 
-    def test_exact_thirteen_cohort_activates_and_loads(self):
-        # The owner-selected cohort is exactly thirteen distinct enabled
-        # addresses; nothing smaller or larger may be delegated.
-        self.assertEqual(delegation.DEFAULT_RECIPIENT_COUNT, 13)
+    def test_current_thirteen_cohort_activates_and_loads(self):
         self.assertEqual(len(self.recipients), 13)
         grant = self.activate()
         self.assertEqual(grant["recipient_count"], 13)
@@ -131,63 +126,50 @@ class AdminBetaDelegationTests(unittest.TestCase):
             grant["recipient_configuration_version"],
         )
 
-    def test_thirteen_cohort_must_be_thirteen_distinct_addresses(self):
+    def test_cohort_must_contain_distinct_addresses_within_capacity(self):
         self.state["recipients"] = self.recipients[:-1] + [self.recipients[0]]
         with self.assertRaisesRegex(
             safety.DeliverySafetyError, "ADMIN_BETA_EXACT_COHORT_MISMATCH"
         ):
             self.activate()
-        self.state["recipients"] = list(self.recipients[:-1])
+        self.state["recipients"] = []
         with self.assertRaisesRegex(
-            safety.DeliverySafetyError, "ADMIN_BETA_EXACT_COHORT_MISMATCH"
+            safety.DeliverySafetyError, "ADMIN_BETA_RECIPIENT_CAPACITY_INVALID"
+        ):
+            self.activate()
+        self.state["recipients"] = [
+            f"over-cap-{index:02d}@example.test"
+            for index in range(delegation.MAX_BETA_RECIPIENT_COUNT + 1)
+        ]
+        with self.assertRaisesRegex(
+            safety.DeliverySafetyError, "ADMIN_BETA_RECIPIENT_CAPACITY_INVALID"
         ):
             self.activate()
 
-    def test_stale_twelve_grant_is_rejected_until_a_new_grant_is_activated(self):
-        # Reproduce the deployed state: a grant recorded while the authorized
-        # cohort size was twelve, then the owner-approved move to thirteen.
-        legacy_recipients = self.recipients[:12]
-        self.state["recipients"] = list(legacy_recipients)
-        with mock.patch.object(delegation, "DEFAULT_RECIPIENT_COUNT", 12):
-            legacy_grant = delegation.activate_admin_beta_delegation(
-                products=delegation.ALLOWED_MODES,
-                operator_id="owner-legacy-twelve",
-                expected_count=12,
-                now=NOW,
-            )
-            self.assertEqual(legacy_grant["recipient_count"], 12)
+    def test_existing_thirteen_grant_remains_valid_after_dynamic_release(self):
+        grant = self.activate()
+        loaded = delegation.load_active_admin_beta_delegation()
+        self.assertEqual(loaded["grant_id"], grant["grant_id"])
+        self.assertEqual(loaded["recipient_count"], 13)
 
-        # The pointer still says ACTIVE, but the grant is no longer loadable at
-        # the current authorized size -- both before and after the recipient
-        # configuration is widened to the thirteen the owner selected.
-        for stage, config in (
-            ("config_still_twelve", legacy_recipients),
-            ("config_now_thirteen", self.recipients),
+    def test_expansion_invalidates_old_grant_until_current_cohort_is_activated(self):
+        old_grant = self.activate()
+        self.state["recipients"].append("beta-13@example.test")
+        self.state["version"] += 1
+        with self.assertRaisesRegex(
+            safety.DeliverySafetyError, "ADMIN_BETA_EXACT_COHORT_MISMATCH"
         ):
-            with self.subTest(stage=stage):
-                self.state["recipients"] = list(config)
-                with self.assertRaisesRegex(
-                    safety.DeliverySafetyError, "ADMIN_BETA_EXACT_COHORT_MISMATCH"
-                ):
-                    delegation.load_active_admin_beta_delegation()
-                with self.assertRaisesRegex(
-                    safety.DeliverySafetyError, "ADMIN_BETA_EXACT_COHORT_MISMATCH"
-                ):
-                    delegation.AdminBetaRecipientAuthority().prepare(
-                        "keysuri_global_tech", NOW.date(), NOW
-                    )
+            delegation.load_active_admin_beta_delegation()
 
-        # Only a NEW grant, activated through the normal activation entry point
-        # against the exact thirteen, restores delegated authority.
         new_grant = self.activate()
-        self.assertNotEqual(new_grant["grant_id"], legacy_grant["grant_id"])
-        self.assertEqual(new_grant["recipient_count"], 13)
+        self.assertNotEqual(new_grant["grant_id"], old_grant["grant_id"])
+        self.assertEqual(new_grant["recipient_count"], 14)
         self.assertEqual(
             delegation.load_active_admin_beta_delegation()["grant_id"],
             new_grant["grant_id"],
         )
 
-    def test_altered_thirteen_cohort_is_rejected_after_activation(self):
+    def test_altered_cohort_is_rejected_after_activation(self):
         grant = self.activate()
         authority = delegation.AdminBetaRecipientAuthority()
         plan = authority.prepare("keysuri_global_tech", NOW.date(), NOW)
@@ -229,16 +211,10 @@ class AdminBetaDelegationTests(unittest.TestCase):
                 plan["plan_id"],
             )
 
-    def test_approval_snapshot_path_blocks_on_a_stale_twelve_grant(self):
-        self.state["recipients"] = self.recipients[:12]
-        with mock.patch.object(delegation, "DEFAULT_RECIPIENT_COUNT", 12):
-            delegation.activate_admin_beta_delegation(
-                products=delegation.ALLOWED_MODES,
-                operator_id="owner-legacy-twelve",
-                expected_count=12,
-                now=NOW,
-            )
-        self.state["recipients"] = list(self.recipients)
+    def test_approval_snapshot_path_blocks_after_unactivated_expansion(self):
+        self.activate()
+        self.state["recipients"].append("beta-13@example.test")
+        self.state["version"] += 1
         with mock.patch.dict(
             os.environ, {"GENIE_RECIPIENT_AUTHORITY": "ADMIN_BETA_DELEGATION"}
         ):

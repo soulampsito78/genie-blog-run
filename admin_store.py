@@ -2599,6 +2599,10 @@ def _beta_recipients_local_path() -> Path:
     return p
 
 
+class BetaRecipientConfigConflictError(RuntimeError):
+    """The recipient list changed after it was read and was not overwritten."""
+
+
 def load_beta_recipient_config() -> Dict[str, Any]:
     """Load admin-managed beta recipient config.
 
@@ -2621,6 +2625,7 @@ def load_beta_recipient_config() -> Dict[str, Any]:
         "updated_by": "admin",
         "version": 1,
         "load_ok": True,
+        "_storage_generation": "0",
     }
 
     def _error_empty() -> Dict[str, Any]:
@@ -2630,10 +2635,22 @@ def load_beta_recipient_config() -> Dict[str, Any]:
 
     try:
         if _uses_gcs_backend():
-            raw = _gcs_download_text(_BETA_RECIPIENTS_GCS_KEY)
+            blob = _get_gcs_bucket().blob(_BETA_RECIPIENTS_GCS_KEY)
+            if blob.exists():
+                blob.reload()
+                raw = blob.download_as_text(encoding="utf-8")
+                storage_generation = str(blob.generation or "")
+                if not storage_generation:
+                    return _error_empty()
+            else:
+                raw = None
+                storage_generation = "0"
         else:
             p = _beta_recipients_local_path()
             raw = p.read_text(encoding="utf-8") if p.is_file() else None
+            storage_generation = (
+                hashlib.sha256(raw.encode("utf-8")).hexdigest() if raw is not None else "0"
+            )
     except Exception:
         return _error_empty()
     if raw is None:
@@ -2654,6 +2671,7 @@ def load_beta_recipient_config() -> Dict[str, Any]:
         "updated_by": str(data.get("updated_by") or "admin"),
         "version": int(data.get("version") or 1),
         "load_ok": True,
+        "_storage_generation": storage_generation,
     }
 
 
@@ -2663,8 +2681,9 @@ def save_beta_recipient_config(
     disabled_recipients: Optional[List[str]] = None,
     updated_by: str = "admin",
     version: int = 1,
+    expected_generation: Optional[str] = None,
 ) -> None:
-    """Persist admin-managed beta recipient config to GCS (or local fallback)."""
+    """Persist the recipient config, optionally only from the version just read."""
     payload = {
         "recipients": [str(r).strip().lower() for r in recipients],
         "disabled_recipients": [str(r).strip().lower() for r in (disabled_recipients or [])],
@@ -2674,10 +2693,43 @@ def save_beta_recipient_config(
     }
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     if _uses_gcs_backend():
-        _gcs_upload_text(_BETA_RECIPIENTS_GCS_KEY, text, content_type="application/json")
+        blob = _get_gcs_bucket().blob(_BETA_RECIPIENTS_GCS_KEY)
+        kwargs: Dict[str, Any] = {"content_type": "application/json"}
+        if expected_generation is not None:
+            try:
+                kwargs["if_generation_match"] = int(expected_generation)
+            except (TypeError, ValueError) as exc:
+                raise BetaRecipientConfigConflictError("config_conflict") from exc
+        try:
+            blob.upload_from_string(text, **kwargs)
+        except Exception as exc:
+            if getattr(exc, "code", None) in (409, 412) or exc.__class__.__name__ in {
+                "Conflict",
+                "PreconditionFailed",
+            }:
+                raise BetaRecipientConfigConflictError("config_conflict") from exc
+            raise
     else:
+        import fcntl
+
         p = _beta_recipients_local_path()
-        p.write_text(text, encoding="utf-8")
+        lock_path = p.with_suffix(p.suffix + ".lock")
+        with lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            current_raw = p.read_text(encoding="utf-8") if p.is_file() else None
+            current_generation = (
+                hashlib.sha256(current_raw.encode("utf-8")).hexdigest()
+                if current_raw is not None
+                else "0"
+            )
+            if (
+                expected_generation is not None
+                and current_generation != str(expected_generation)
+            ):
+                raise BetaRecipientConfigConflictError("config_conflict")
+            temp = p.with_suffix(p.suffix + ".tmp")
+            temp.write_text(text, encoding="utf-8")
+            os.replace(temp, p)
 
 
 def resolve_customer_recipients() -> Dict[str, Any]:
@@ -2776,11 +2828,19 @@ def add_beta_recipient(email: str) -> tuple[bool, str]:
     if norm in current:
         return False, "already_exists"
     current.append(norm)
-    save_beta_recipient_config(
-        current,
-        disabled_recipients=cfg.get("disabled_recipients", []),
-        version=int(cfg.get("version") or 1) + 1,
-    )
+    from admin_beta_delegation import MAX_BETA_RECIPIENT_COUNT
+
+    if len(current) > MAX_BETA_RECIPIENT_COUNT:
+        return False, "recipient_limit_reached"
+    try:
+        save_beta_recipient_config(
+            current,
+            disabled_recipients=cfg.get("disabled_recipients", []),
+            version=int(cfg.get("version") or 1) + 1,
+            expected_generation=str(cfg.get("_storage_generation") or ""),
+        )
+    except BetaRecipientConfigConflictError:
+        return False, "config_conflict"
     return True, ""
 
 
@@ -2800,11 +2860,15 @@ def remove_beta_recipient(email: str) -> tuple[bool, str]:
     if norm not in current:
         return False, "not_found"
     updated = [r for r in current if r != norm]
-    save_beta_recipient_config(
-        updated,
-        disabled_recipients=cfg.get("disabled_recipients", []),
-        version=int(cfg.get("version") or 1) + 1,
-    )
+    try:
+        save_beta_recipient_config(
+            updated,
+            disabled_recipients=cfg.get("disabled_recipients", []),
+            version=int(cfg.get("version") or 1) + 1,
+            expected_generation=str(cfg.get("_storage_generation") or ""),
+        )
+    except BetaRecipientConfigConflictError:
+        return False, "config_conflict"
     return True, ""
 
 

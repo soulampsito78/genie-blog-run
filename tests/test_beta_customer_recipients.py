@@ -25,7 +25,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import admin_store
 from admin_store import (
+    BetaRecipientConfigConflictError,
     _is_valid_email,
     add_beta_recipient,
     load_beta_recipient_config,
@@ -165,6 +167,35 @@ class BetaRecipientConfigStoreTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(err, "already_exists")
 
+    def test_add_rejects_recipient_above_beta_capacity(self):
+        from admin_beta_delegation import MAX_BETA_RECIPIENT_COUNT
+
+        save_beta_recipient_config(
+            [f"beta-{index:02d}@example.test" for index in range(MAX_BETA_RECIPIENT_COUNT)]
+        )
+        ok, err = add_beta_recipient("over-cap@example.test")
+        self.assertFalse(ok)
+        self.assertEqual(err, "recipient_limit_reached")
+
+    def test_concurrent_recipient_edit_does_not_overwrite_newer_config(self):
+        save_beta_recipient_config(["initial@example.com"])
+        first = load_beta_recipient_config()
+        stale = load_beta_recipient_config()
+        save_beta_recipient_config(
+            ["initial@example.com", "winner@example.com"],
+            version=2,
+            expected_generation=first["_storage_generation"],
+        )
+        with self.assertRaises(BetaRecipientConfigConflictError):
+            save_beta_recipient_config(
+                ["initial@example.com", "lost-update@example.com"],
+                version=2,
+                expected_generation=stale["_storage_generation"],
+            )
+        cfg = load_beta_recipient_config()
+        self.assertIn("winner@example.com", cfg["recipients"])
+        self.assertNotIn("lost-update@example.com", cfg["recipients"])
+
     def test_add_invalid_email_rejected(self):
         ok, err = add_beta_recipient("not-an-email")
         self.assertFalse(ok)
@@ -258,6 +289,67 @@ class BetaRecipientConfigStoreTests(unittest.TestCase):
         ok, err = add_beta_recipient("x@example.com")
         self.assertFalse(ok)
         self.assertEqual(err, "config_unavailable")
+
+
+class BetaRecipientConfigGcsCasTests(unittest.TestCase):
+    class PreconditionFailed(Exception):
+        pass
+
+    class Blob:
+        def __init__(self, state):
+            self.state = state
+            self.generation = None
+
+        def exists(self):
+            return self.state["raw"] is not None
+
+        def reload(self):
+            self.generation = self.state["generation"]
+
+        def download_as_text(self, encoding="utf-8"):
+            return self.state["raw"]
+
+        def upload_from_string(self, text, content_type=None, if_generation_match=None):
+            if (
+                if_generation_match is not None
+                and if_generation_match != self.state["generation"]
+            ):
+                raise BetaRecipientConfigGcsCasTests.PreconditionFailed()
+            self.state["raw"] = text
+            self.state["generation"] += 1
+            self.generation = self.state["generation"]
+
+    class Bucket:
+        def __init__(self, state):
+            self.state = state
+
+        def blob(self, _key):
+            return BetaRecipientConfigGcsCasTests.Blob(self.state)
+
+    def test_gcs_generation_precondition_prevents_lost_update(self):
+        state = {"raw": None, "generation": 0}
+        bucket = self.Bucket(state)
+        with (
+            patch.object(admin_store, "_uses_gcs_backend", return_value=True),
+            patch.object(admin_store, "_get_gcs_bucket", return_value=bucket),
+        ):
+            save_beta_recipient_config(["initial@example.com"])
+            first = load_beta_recipient_config()
+            stale = load_beta_recipient_config()
+            save_beta_recipient_config(
+                ["initial@example.com", "winner@example.com"],
+                version=2,
+                expected_generation=first["_storage_generation"],
+            )
+            with self.assertRaises(BetaRecipientConfigConflictError):
+                save_beta_recipient_config(
+                    ["initial@example.com", "lost-update@example.com"],
+                    version=2,
+                    expected_generation=stale["_storage_generation"],
+                )
+            cfg = load_beta_recipient_config()
+        self.assertIn("winner@example.com", cfg["recipients"])
+        self.assertNotIn("lost-update@example.com", cfg["recipients"])
 
 
 # ---------------------------------------------------------------------------
@@ -620,16 +712,15 @@ class AdminCustomerRecipientsRouteTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("발송되지 않습니다", resp.text)
 
-    def test_delegation_activation_ui_offers_the_exact_thirteen_cohort(self):
-        from admin_beta_delegation import DEFAULT_RECIPIENT_COUNT
+    def test_delegation_activation_ui_uses_current_cohort_and_shows_capacity(self):
+        from admin_beta_delegation import MAX_BETA_RECIPIENT_COUNT
 
-        self.assertEqual(DEFAULT_RECIPIENT_COUNT, 13)
         resp = self._authed_get("/admin/customer-recipients")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("/admin/customer-recipients/delegation/activate", resp.text)
-        self.assertIn("13명 · 3개 상품 자동발송 권한 활성화", resp.text)
-        self.assertIn("정확한 13명에게만", resp.text)
-        self.assertNotIn("12명", resp.text)
+        self.assertIn("현재 1명 · 3개 상품 자동발송 권한 활성화", resp.text)
+        self.assertIn("활성화 시점의 정확한 1명에게만", resp.text)
+        self.assertIn(f"베타 운영 상한은 {MAX_BETA_RECIPIENT_COUNT}명", resp.text)
 
     def test_add_valid_recipient(self):
         resp = self._authed_post(

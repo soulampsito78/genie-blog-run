@@ -39,10 +39,9 @@ def main() -> int:
     isolated_prefix = f"admin_safety_validation/admin_beta_cas/{evidence_id}"
     store.SAFETY_PREFIX = isolated_prefix
 
-    recipients = [
-        f"gcs-cas-{index:02d}@example.test"
-        for index in range(delegation.DEFAULT_RECIPIENT_COUNT)
-    ]
+    # Use a non-legacy cohort size to prove activation derives the exact current
+    # list instead of relying on the former compiled-in count of thirteen.
+    recipients = [f"gcs-cas-{index:02d}@example.test" for index in range(14)]
     admin_store.load_beta_recipient_config = lambda: {
         "recipients": recipients,
         "disabled_recipients": [],

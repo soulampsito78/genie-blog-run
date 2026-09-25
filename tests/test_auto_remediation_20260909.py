@@ -480,7 +480,10 @@ class SweepTests(_StoreBase):
     def test_sweep_endpoint_is_registered(self) -> None:
         from main import app
 
-        paths = {getattr(route, "path", "") for route in app.routes}
+        # FastAPI 0.141 keeps included routers as dynamic route containers
+        # instead of copying every child into ``app.routes``. OpenAPI is the
+        # stable public inventory across both representations.
+        paths = set((app.openapi().get("paths") or {}).keys())
         self.assertIn("/internal/jobs/auto-remediate-reviewable", paths)
 
     def _summary(self, run_id: str, **overrides: Any) -> Dict[str, Any]:

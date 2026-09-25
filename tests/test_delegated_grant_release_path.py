@@ -17,6 +17,7 @@ import delegated_gate as gate
 
 NOW = dt.datetime(2026, 9, 14, 0, 30, tzinfo=dt.timezone.utc)
 KEY = gate.ReviewerKey("work-reviewer", b"release-gate-test-key-material-1234567890")
+BASELINE_RECIPIENT_COUNT = 13
 
 
 class DelegatedGrantReleasePathTests(unittest.TestCase):
@@ -25,7 +26,7 @@ class DelegatedGrantReleasePathTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.recipients = [
             f"beta-{index:02d}@example.test"
-            for index in range(delegation.DEFAULT_RECIPIENT_COUNT)
+            for index in range(BASELINE_RECIPIENT_COUNT)
         ]
         config = {
             "recipients": self.recipients,
@@ -183,7 +184,7 @@ class DelegatedGrantReleasePathTests(unittest.TestCase):
                 "email_sender.last_send_trace",
                 return_value={
                     "smtp_submission_started": True,
-                    "smtp_accepted_recipient_count": delegation.DEFAULT_RECIPIENT_COUNT,
+                    "smtp_accepted_recipient_count": len(self.recipients),
                 },
             ),
             mock.patch("email_sender.last_send_diagnostic", return_value=""),
@@ -204,7 +205,7 @@ class DelegatedGrantReleasePathTests(unittest.TestCase):
         self.assertEqual(result["approval_authority"], "ADMIN_BETA_DELEGATION")
         self.assertEqual(result["authority_grant_id"], self.grant["grant_id"])
         self.assertEqual(
-            len(sent[0]["recipients"]), delegation.DEFAULT_RECIPIENT_COUNT
+            len(sent[0]["recipients"]), len(self.recipients)
         )
         self.assertEqual(sent[0]["html_body"], candidate.customer_html)
         self.assertEqual(rows[-1]["approval_authority"], "ADMIN_BETA_DELEGATION")

@@ -3237,7 +3237,7 @@ def _render_customer_recipients_page(
     invalid = resolved["invalid_entries"]
     source_summary = resolved["source_summary"]
     updated_at = cfg.get("updated_at") or "—"
-    from admin_beta_delegation import DEFAULT_RECIPIENT_COUNT
+    from admin_beta_delegation import MAX_BETA_RECIPIENT_COUNT
 
     try:
         from admin_beta_delegation import load_active_admin_beta_delegation
@@ -3319,8 +3319,9 @@ def _render_customer_recipients_page(
 <h2 style="font-size:16px;margin:0 0 8px">지속 자동발송 권한</h2>
 <p style="font-size:14px;margin:0 0 10px"><strong>{_esc(delegation_status)}</strong> — {_esc(delegation_detail)}</p>
 <p style="font-size:13px;color:#64748b;margin:0 0 12px">
-  한 번 활성화하면 정상 PASS 발행은 추가 승인 없이 현재의 정확한 {DEFAULT_RECIPIENT_COUNT}명에게만 발송됩니다.
+  한 번 활성화하면 정상 PASS 발행은 추가 승인 없이 활성화 시점의 정확한 {len(final_addrs)}명에게만 발송됩니다.
   명단·버전·제외 상태가 바뀌면 전체 자동발송이 즉시 중지됩니다.
+  베타 운영 상한은 {MAX_BETA_RECIPIENT_COUNT}명입니다.
 </p>
 {f'''<form method="post" action="/admin/customer-recipients/delegation/revoke">
 {_csrf_field(request, 'admin_beta_delegation_revoke')}
@@ -3328,7 +3329,7 @@ def _render_customer_recipients_page(
 <button type="submit" class="btn" style="background:#dc2626">자동발송 권한 중지</button>
 </form>''' if active_delegation else f'''<form method="post" action="/admin/customer-recipients/delegation/activate">
 {_csrf_field(request, 'admin_beta_delegation_activate')}
-<button type="submit" class="btn">{DEFAULT_RECIPIENT_COUNT}명 · 3개 상품 자동발송 권한 활성화</button>
+<button type="submit" class="btn">현재 {len(final_addrs)}명 · 3개 상품 자동발송 권한 활성화</button>
 </form>'''}
 </div>
 
@@ -3391,7 +3392,6 @@ def admin_customer_recipients_delegation_activate(
         return _csrf_rejected()
     from admin_beta_delegation import (
         ALLOWED_MODES,
-        DEFAULT_RECIPIENT_COUNT,
         activate_admin_beta_delegation,
     )
     from delegated_delivery_safety import DeliverySafetyError
@@ -3401,7 +3401,6 @@ def admin_customer_recipients_delegation_activate(
         grant = activate_admin_beta_delegation(
             products=ALLOWED_MODES,
             operator_id=operator_id,
-            expected_count=DEFAULT_RECIPIENT_COUNT,
         )
     except DeliverySafetyError as exc:
         append_operator_audit(
@@ -3476,6 +3475,8 @@ def admin_customer_recipients_add(
             "invalid_format": "유효하지 않은 이메일 형식입니다.",
             "already_exists": "이미 목록에 있는 주소입니다.",
             "config_unavailable": "수신자 설정을 읽을 수 없어 저장을 중단했습니다. 잠시 후 다시 시도하세요.",
+            "recipient_limit_reached": "베타 운영 상한에 도달해 수신자를 추가하지 않았습니다.",
+            "config_conflict": "다른 관리자가 명단을 먼저 변경해 저장하지 않았습니다. 새로고침 후 다시 시도하세요.",
         }
         return _render_customer_recipients_page(
             request, error=_error_labels.get(err, f"추가 실패: {err}")
@@ -3506,6 +3507,7 @@ def admin_customer_recipients_remove(
             "empty_email": "이메일 주소를 입력하세요.",
             "not_found": "목록에 없는 주소입니다.",
             "config_unavailable": "수신자 설정을 읽을 수 없어 삭제를 중단했습니다. 잠시 후 다시 시도하세요.",
+            "config_conflict": "다른 관리자가 명단을 먼저 변경해 삭제하지 않았습니다. 새로고침 후 다시 시도하세요.",
         }
         return _render_customer_recipients_page(
             request, error=_error_labels.get(err, f"삭제 실패: {err}")
