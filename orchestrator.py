@@ -89,6 +89,8 @@ def _runtime_check_from_api_payload(
         issue_codes = [str(x) for x in payload.get("issue_codes")]
     elif isinstance(detail.get("issue_codes"), list):
         issue_codes = [str(x) for x in detail.get("issue_codes")]
+    elif isinstance(runtime.get("issue_codes"), list):
+        issue_codes = [str(x) for x in runtime["issue_codes"]]
     else:
         issue_codes = [
             str(item.get("code"))
@@ -125,6 +127,9 @@ def _runtime_check_from_api_payload(
         "today_genie_feed_staleness",
         "today_genie_live_feed_staleness",
         "today_genie_stale_feeds",
+        "today_genie_feed_refresh_source_results",
+        "today_required_feed_contract_missing",
+        "today_required_feed_contract_stale",
     ):
         if key in runtime:
             out[key] = runtime.get(key)
@@ -460,6 +465,9 @@ def build_run_artifact_metadata(
         "today_genie_feed_staleness",
         "today_genie_live_feed_staleness",
         "today_genie_stale_feeds",
+        "today_genie_feed_refresh_source_results",
+        "today_required_feed_contract_missing",
+        "today_required_feed_contract_stale",
     ):
         if key in runtime_check:
             meta[key] = runtime_check.get(key)
