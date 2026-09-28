@@ -606,6 +606,11 @@ def run_natural_preflight(
     status = "PRECHECK_PASS" if result.get("ok") else (
         "PRECHECK_INCONCLUSIVE" if inconclusive else "PRECHECK_FAIL"
     )
+    # A no-alert probe is an extra validation, not the scheduled day's
+    # readiness record. Keep it separately so it cannot rewrite Scheduler evidence.
+    readiness_name = f"{date}_{pid}" if alert_on_fail else (
+        f"{date}_{pid}_no_alert_{datetime.now(KST).strftime('%H%M%S%f')}"
+    )
     readiness = {
         "program_id": pid,
         "kst_date": date,
@@ -626,7 +631,7 @@ def run_natural_preflight(
         "alert_suppressed_reason": "model_output_unconfirmed" if inconclusive else None,
         "error": result.get("error"),
     }
-    readiness["artifact_uri"] = _save_json(PREFLIGHT_PREFIX, f"{date}_{pid}", readiness)
+    readiness["artifact_uri"] = _save_json(PREFLIGHT_PREFIX, readiness_name, readiness)
 
     alert_sent = False
     if alert_on_fail and status == "PRECHECK_FAIL":
@@ -674,7 +679,7 @@ def run_natural_preflight(
     }
     # Persist the alert outcome and representative-input identity, not only the
     # preliminary status written before alert dispatch.
-    readiness["artifact_uri"] = _save_json(PREFLIGHT_PREFIX, f"{date}_{pid}", readiness)
+    readiness["artifact_uri"] = _save_json(PREFLIGHT_PREFIX, readiness_name, readiness)
     return readiness
 
 

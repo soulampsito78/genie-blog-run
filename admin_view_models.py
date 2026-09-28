@@ -597,6 +597,13 @@ def preflight_projection(
     status = str(evidence.get("status") or "").upper()
     checked = str(evidence.get("checked_at") or evidence.get("finished_at") or "")
     if status in {"PRECHECK_PASS", "PASS"}:
+        if evidence.get("alert_on_fail") is False:
+            return {
+                "state": "pass",
+                "label": "무알림 추가검사 정상",
+                "detail": display_timestamp(checked),
+                "provenance": "NO_ALERT_PRECHECK_PASS",
+            }
         return {"state": "pass", "label": "사전점검 정상", "detail": display_timestamp(checked), "provenance": status or "PRECHECK_PASS"}
     if status == "PRECHECK_INCONCLUSIVE":
         return {

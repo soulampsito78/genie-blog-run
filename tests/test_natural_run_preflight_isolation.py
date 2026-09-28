@@ -153,6 +153,39 @@ class PreflightIsolationTests(unittest.TestCase):
         self.assertEqual(projection["state"], "warn")
         self.assertEqual(projection["label"], "사전점검 불확실")
 
+    def test_no_alert_probe_does_not_replace_scheduled_readiness(self) -> None:
+        from natural_run_reliability import run_natural_preflight
+
+        probe = self._global_probe(ok=True, artifact="memory://probe")
+        with mock.patch(
+            "natural_run_reliability.run_program_canary", return_value=probe
+        ), mock.patch(
+            "natural_run_reliability._save_json", return_value="memory://extra"
+        ) as save:
+            readiness = run_natural_preflight(
+                "keysuri_global_tech",
+                scheduled_service_date="2026-09-28",
+                alert_on_fail=False,
+            )
+        self.assertEqual(readiness["status"], "PRECHECK_PASS")
+        self.assertFalse(readiness["alert_on_fail"])
+        self.assertEqual(save.call_count, 2)
+        names = [call.args[1] for call in save.call_args_list]
+        self.assertEqual(names[0], names[1])
+        self.assertTrue(names[0].startswith("2026-09-28_keysuri_global_tech_no_alert_"))
+        self.assertNotEqual(names[0], "2026-09-28_keysuri_global_tech")
+
+    def test_admin_labels_existing_no_alert_probe_as_extra_check(self) -> None:
+        from admin_view_models import preflight_projection
+
+        projection = preflight_projection(
+            {"status": "PRECHECK_PASS", "alert_on_fail": False,
+             "checked_at": "2026-09-28T13:03:00+09:00"},
+            {"preflight_time": "11:45"},
+        )
+        self.assertEqual(projection["label"], "무알림 추가검사 정상")
+        self.assertEqual(projection["provenance"], "NO_ALERT_PRECHECK_PASS")
+
     def test_preflight_and_reliability_never_complete_natural_slot(self) -> None:
         for cls in (EXECUTION_CLASS_PREFLIGHT_CANARY, EXECUTION_CLASS_RELIABILITY_CANARY):
             art = {
