@@ -497,6 +497,66 @@ def run_program_canary(program_id: str, *, execution_class: str) -> Dict[str, An
     return {"ok": False, "error": "unknown_program", "program_id": pid}
 
 
+def _checked_preflight_model_identity(program_id: str, result: Mapping[str, Any]) -> Dict[str, Any]:
+    checked = dict(result)
+    if (
+        program_id in {PROGRAM_GLOBAL, PROGRAM_KOREA}
+        and checked.get("called_gemini")
+        and not str(checked.get("model") or "").strip()
+    ):
+        checked["ok"] = False
+        codes = list(checked.get("issue_codes") or [])
+        if "keysuri_preflight_model_identity_missing" not in codes:
+            codes.append("keysuri_preflight_model_identity_missing")
+        checked["issue_codes"] = codes
+        checked["error"] = checked.get("error") or "model_identity_missing"
+    return checked
+
+
+def _inconclusive_global_preflight_result(result: Mapping[str, Any]) -> bool:
+    """A model-only output failure is not evidence that the natural run will fail."""
+    diagnostics = result.get("generation_diagnostics")
+    issue_codes = [str(code) for code in result.get("issue_codes") or []]
+    output_issue_codes = {
+        "keysuri_reader_surface_blocked",
+        "top_5_news_item_headline_missing",
+        "top_5_news_item_summary_missing",
+    }
+    return bool(
+        not result.get("ok")
+        and result.get("program_id") == PROGRAM_GLOBAL
+        and result.get("execution_class") == EXECUTION_CLASS_PREFLIGHT_CANARY
+        and result.get("input_mode") == "live_current_feed"
+        and result.get("parse_status") == "parsed_invalid"
+        and result.get("called_gemini")
+        and str(result.get("model") or "").strip()
+        and str(result.get("source_snapshot_hash") or "").strip()
+        and str(result.get("selection_fingerprint") or "").strip()
+        and str(result.get("contract_fingerprint") or "").strip()
+        and isinstance(result.get("source_count"), int)
+        and result["source_count"] >= 5
+        and "keysuri_reader_surface_blocked" in issue_codes
+        and all(
+            code in output_issue_codes
+            or code.startswith(
+                "Gemini parse failed (parsed_invalid): keysuri_reader_surface_blocked:"
+            )
+            for code in issue_codes
+        )
+        and isinstance(diagnostics, Mapping)
+        and diagnostics.get("retry_applied") is True
+        and diagnostics.get("global_generation_budget_exhausted") is True
+        and diagnostics.get("global_generation_call_count") == 2
+        and diagnostics.get("generation_attempt_count") == 1
+        and set(diagnostics.get("initial_generation_issue_codes") or []) == output_issue_codes
+        and not diagnostics.get("recovery_generation_issue_codes")
+        and result.get("called_image_api") == 0
+        and result.get("smtp") == 0
+        and result.get("customer") == 0
+        and result.get("natural_slot_mutation") == 0
+    )
+
+
 def build_preflight_failure_email_html(result: Mapping[str, Any]) -> str:
     program = str(result.get("program_id") or "")
     slot = NATURAL_SLOTS.get(program, "?")
@@ -535,28 +595,22 @@ def run_natural_preflight(
     send_fn=None,
     alert_on_fail: bool = True,
 ) -> Dict[str, Any]:
-    """Weekday pre-natural preflight. PASS silent; FAIL may email early warning."""
+    """Weekday no-send preflight; model-only uncertainty is not a FAIL alert."""
     pid = str(program_id or "").strip()
     slot = scheduled_slot or NATURAL_SLOTS.get(pid, "")
     date = scheduled_service_date or datetime.now(KST).strftime("%Y-%m-%d")
-    result = run_program_canary(pid, execution_class=EXECUTION_CLASS_PREFLIGHT_CANARY)
-    if (
-        pid in {PROGRAM_GLOBAL, PROGRAM_KOREA}
-        and result.get("called_gemini")
-        and not str(result.get("model") or "").strip()
-    ):
-        result = dict(result)
-        result["ok"] = False
-        issue_codes = list(result.get("issue_codes") or [])
-        if "keysuri_preflight_model_identity_missing" not in issue_codes:
-            issue_codes.append("keysuri_preflight_model_identity_missing")
-        result["issue_codes"] = issue_codes
-        result["error"] = result.get("error") or "model_identity_missing"
+    result = _checked_preflight_model_identity(
+        pid, run_program_canary(pid, execution_class=EXECUTION_CLASS_PREFLIGHT_CANARY)
+    )
+    inconclusive = pid == PROGRAM_GLOBAL and _inconclusive_global_preflight_result(result)
+    status = "PRECHECK_PASS" if result.get("ok") else (
+        "PRECHECK_INCONCLUSIVE" if inconclusive else "PRECHECK_FAIL"
+    )
     readiness = {
         "program_id": pid,
         "kst_date": date,
         "scheduled_slot": slot,
-        "status": "PRECHECK_PASS" if result.get("ok") else "PRECHECK_FAIL",
+        "status": status,
         "checked_at": result.get("finished_at") or _now_kst_iso(),
         "validation_pass": bool(result.get("ok")),
         "issue_codes": list(result.get("issue_codes") or []),
@@ -569,12 +623,13 @@ def run_natural_preflight(
         "natural_slot_mutation": 0,
         "incident_created": 0,
         "canary_artifact_uri": result.get("artifact_uri"),
+        "alert_suppressed_reason": "model_output_unconfirmed" if inconclusive else None,
         "error": result.get("error"),
     }
     readiness["artifact_uri"] = _save_json(PREFLIGHT_PREFIX, f"{date}_{pid}", readiness)
 
     alert_sent = False
-    if alert_on_fail and not result.get("ok"):
+    if alert_on_fail and status == "PRECHECK_FAIL":
         html = build_preflight_failure_email_html({**result, **readiness})
         subject = f"[GENIE 사전점검 실패] {pid} {slot} 자연실행 사전점검 실패"
         try:

@@ -598,6 +598,13 @@ def preflight_projection(
     checked = str(evidence.get("checked_at") or evidence.get("finished_at") or "")
     if status in {"PRECHECK_PASS", "PASS"}:
         return {"state": "pass", "label": "사전점검 정상", "detail": display_timestamp(checked), "provenance": status or "PRECHECK_PASS"}
+    if status == "PRECHECK_INCONCLUSIVE":
+        return {
+            "state": "warn",
+            "label": "사전점검 불확실",
+            "detail": f"모델 출력 변동성 · 정규 실행 확인 대기 ({display_timestamp(checked)})",
+            "provenance": status,
+        }
     if status in {"PRECHECK_FAIL", "FAIL", "FAILED"}:
         return {"state": "fail", "label": "사전점검 실패", "detail": display_timestamp(checked), "provenance": status}
     now_kst = (now or datetime.now(ZoneInfo("Asia/Seoul")))

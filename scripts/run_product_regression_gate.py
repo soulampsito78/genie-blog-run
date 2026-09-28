@@ -30,6 +30,7 @@ TEST_MODULES = (
     "test_keysuri_global_corpus_20260828",
     "test_keysuri_reader_surface_contract_20260828",
     "test_keysuri_global_20260911_reader_surface_incident",
+    "test_natural_run_preflight_isolation",
     "test_keysuri_korea_20260814_1830_slash_label_harness",
 )
 

@@ -969,7 +969,9 @@ def natural_run_preflight_endpoint(
     readiness["customer_send"] = 0
     readiness["natural_slot_mutation"] = 0
     readiness["auto_retry"] = 0
-    status = 200 if readiness.get("status") in {"PRECHECK_PASS", "PRECHECK_FAIL"} else 500
+    status = 200 if readiness.get("status") in {
+        "PRECHECK_PASS", "PRECHECK_FAIL", "PRECHECK_INCONCLUSIVE"
+    } else 500
     return JSONResponse(status_code=status, content=readiness)
 
 
