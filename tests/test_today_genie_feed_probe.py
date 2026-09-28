@@ -60,6 +60,21 @@ def _naver_day_html(rows: list[tuple[str, str, str, str, str]]) -> str:
     return "<table class=\"type_1\">" + "".join(_naver_day_row(*r) for r in rows) + "</table>"
 
 
+def _naver_domestic_day_payload(rows: list[tuple[str, str, str, str, str]]) -> str:
+    direction = {"상승": ("RISING", "+"), "하락": ("FALLING", "-"), "보합": ("STEADY", "")}
+    return json.dumps([
+        {
+            "localTradedAt": day.replace(".", "-"),
+            "closePrice": close,
+            "compareToPreviousClosePrice": sign + pts,
+            "fluctuationsRatio": pct,
+            "compareToPreviousPrice": {"name": name},
+        }
+        for day, close, pts, pct, arrow in rows
+        for name, sign in [direction[arrow]]
+    ])
+
+
 def _naver_world_day_payload(rows) -> str:
     """Naver world index price API: one dated session per entry.
 
@@ -130,18 +145,18 @@ class TodayGenieFeedProbeTests(unittest.TestCase):
             if url == probe.NAVER_INDEX["KOSDAQ"]:
                 # 1002.44 -> 911.39 is -91.05pts = -9.08%; the 상승 label is stale.
                 return _naver_html("911.39", "91.05", "-9.08", "상승", "2026.06.08")
-            if url == probe.NAVER_INDEX_DAY["KOSPI"]:
+            if url == probe.NAVER_DOMESTIC_INDEX_PRICE["KOSPI"]:
                 # The target session (06-09) is still open and leads the table;
                 # the settled row the briefing needs is 06-08.
-                return _naver_day_html(
+                return _naver_domestic_day_payload(
                     [
                         ("2026.06.09", "7,500.00", "15.59", "+0.21", "상승"),
                         ("2026.06.08", "7,484.41", "676.18", "-8.29", "하락"),
                         ("2026.06.05", "8,160.59", "40.00", "+0.49", "상승"),
                     ]
                 )
-            if url == probe.NAVER_INDEX_DAY["KOSDAQ"]:
-                return _naver_day_html(
+            if url == probe.NAVER_DOMESTIC_INDEX_PRICE["KOSDAQ"]:
+                return _naver_domestic_day_payload(
                     [
                         ("2026.06.09", "915.00", "3.61", "+0.40", "상승"),
                         ("2026.06.08", "911.39", "91.05", "-9.08", "하락"),
@@ -180,6 +195,41 @@ class TodayGenieFeedProbeTests(unittest.TestCase):
         self.assertEqual(out["indices"]["KOSPI"]["change_pct"], -8.29)
         self.assertEqual(out["indices"]["KOSDAQ"]["change_pct"], -9.08)
         self.assertEqual(out["errors"], {"KOSPI": None, "KOSDAQ": None, "NIKKEI": None})
+
+    def test_domestic_daily_api_uses_last_settled_session_across_holiday(self) -> None:
+        payload = _naver_domestic_day_payload([
+            ("2026.09.28", "7,037.44", "43.48", "-0.61", "하락"),
+            ("2026.09.23", "7,080.92", "63.01", "+0.90", "상승"),
+            ("2026.09.22", "7,017.91", "10.19", "+0.15", "상승"),
+        ])
+        row = probe.select_settled_naver_domestic_row(
+            payload, "KOSPI", target_date="2026-09-28"
+        )
+        self.assertEqual(row["as_of"], "2026-09-23")
+        self.assertEqual(row["close"], 7080.92)
+        self.assertEqual(row["change_pts"], 63.01)
+        self.assertEqual(row["change_pct"], 0.90)
+        self.assertEqual(row["source_url"], probe.NAVER_DOMESTIC_INDEX_PRICE["KOSPI"])
+
+    def test_domestic_daily_api_rejects_conflicting_or_missing_data(self) -> None:
+        rows = [
+            ("2026.09.28", "7,037.44", "43.48", "-0.61", "하락"),
+            ("2026.09.23", "7,080.92", "63.01", "+0.90", "상승"),
+            ("2026.09.22", "7,017.91", "10.19", "+0.15", "상승"),
+        ]
+        for field, bad_value in (
+            ("compareToPreviousClosePrice", "-63.01"),
+            ("fluctuationsRatio", "-0.90"),
+            ("fluctuationsRatio", ""),
+            ("fluctuationsRatio", "NaN"),
+            ("compareToPreviousPrice", {"name": "FALLING"}),
+        ):
+            payload = json.loads(_naver_domestic_day_payload(rows))
+            payload[1][field] = bad_value
+            with self.subTest(field=field, value=bad_value), self.assertRaises(probe.FeedProbeError):
+                probe.select_settled_naver_domestic_row(
+                    json.dumps(payload), "KOSPI", target_date="2026-09-28"
+                )
 
     def test_valid_macro_schema(self) -> None:
         fetch = self._mock_fetch()

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import shutil
 import sys
@@ -51,6 +52,13 @@ NAVER_INDEX = {
 NAVER_INDEX_DAY = {
     "KOSPI": "https://finance.naver.com/sise/sise_index_day.nhn?code=KOSPI&page=1",
     "KOSDAQ": "https://finance.naver.com/sise/sise_index_day.nhn?code=KOSDAQ&page=1",
+}
+# Naver retired the server-rendered domestic daily table (HTTP 410 in
+# September 2026). Its mobile price API supplies dated sessions and explicit
+# close/change fields. The current-day row is intraday and is never selected.
+NAVER_DOMESTIC_INDEX_PRICE = {
+    "KOSPI": "https://m.stock.naver.com/api/index/KOSPI/price?pageSize=10&page=1",
+    "KOSDAQ": "https://m.stock.naver.com/api/index/KOSDAQ/price?pageSize=10&page=1",
 }
 # KRX regular session end, plus a margin for the closing auction to settle.
 KRX_SESSION_SETTLED_AFTER = (15, 40)
@@ -579,6 +587,91 @@ def select_settled_naver_day_row(
     }
 
 
+def select_settled_naver_domestic_row(
+    payload: str,
+    code: str,
+    *,
+    target_date: str,
+    now_kst: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Read a completed domestic session from Naver's dated price API.
+
+    Derive the change from adjacent closes and require the provider's signed
+    change, percent and direction to agree. A missing or conflicting row is
+    unusable rather than a reason to substitute an older quote.
+    """
+    target = _parse_iso_date(target_date)
+    if target is None:
+        raise FeedProbeError(f"Naver {code}: invalid target date {target_date!r}")
+    try:
+        parsed = json.loads(payload)
+    except (TypeError, ValueError) as exc:
+        raise FeedProbeError(f"Naver {code}: daily price payload is not JSON") from exc
+    if not isinstance(parsed, list):
+        raise FeedProbeError(f"Naver {code}: daily price payload is not a list")
+
+    now = now_kst or _kst_now()
+    candidates = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        market_date = _parse_iso_date(item.get("localTradedAt"))
+        if market_date is not None and market_date < target and _krx_session_settled(market_date, now):
+            candidates.append((market_date, item))
+    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    if len(candidates) < 2:
+        raise FeedProbeError(f"Naver {code}: insufficient completed daily sessions")
+    market_date, row = candidates[0]
+    previous_date, previous = candidates[1]
+    if previous_date >= market_date:
+        raise FeedProbeError(f"Naver {code}: duplicate or unordered daily sessions")
+
+    close = _parse_float(row.get("closePrice"))
+    previous_close = _parse_float(previous.get("closePrice"))
+    raw_change = row.get("compareToPreviousClosePrice")
+    raw_rate = row.get("fluctuationsRatio")
+    published_change = _parse_float(raw_change) if str(raw_change or "").strip() else None
+    published_rate = _parse_float(raw_rate) if str(raw_rate or "").strip() else None
+    direction = row.get("compareToPreviousPrice")
+    direction_name = direction.get("name") if isinstance(direction, dict) else None
+    direction_sign = _NAVER_WORLD_DIRECTION.get(str(direction_name or "").strip().upper())
+    if (
+        close is None or close <= 0 or previous_close is None or previous_close <= 0
+        or published_change is None or published_rate is None or direction_sign is None
+        or not all(math.isfinite(value) for value in (close, previous_close, published_change, published_rate))
+    ):
+        raise FeedProbeError(f"Naver {code}: incomplete completed daily session")
+
+    change_pts = round(close - previous_close, 2)
+    change_pct = round(change_pts / previous_close * 100.0, 2)
+    derived_sign = 0 if change_pts == 0 else (1 if change_pts > 0 else -1)
+    if (
+        abs(published_change - change_pts) > 0.05
+        or abs(published_rate - change_pct) > 0.05
+        or direction_sign != derived_sign
+    ):
+        raise FeedProbeError(f"Naver {code}: daily change conflicts with adjacent closes")
+
+    as_of = market_date.isoformat()
+    return {
+        "close": round(close, 2),
+        "change_pts": change_pts,
+        "change_pct": change_pct,
+        "change_direction": derived_sign,
+        "previous_close": round(previous_close, 2),
+        "market_date": as_of,
+        "as_of": as_of,
+        "session_state": "closed",
+        "settlement_evidence": f"naver_domestic_daily_close_api:{as_of}",
+        "source_name": "Naver Finance",
+        "source_url": NAVER_DOMESTIC_INDEX_PRICE[code],
+        "cross_check_url": NAVER_INDEX[code],
+        "confidence": "high",
+        "accuracy_status": "verified",
+        "notes": f"Settled session close from Naver Finance domestic daily price API for {code}.",
+    }
+
+
 # Direction tokens the world price API publishes alongside each session.
 _NAVER_WORLD_DIRECTION = {
     "RISING": 1,
@@ -876,9 +969,9 @@ def probe_korea_japan_indices(
             code,
             fetch_fn,
             timeout_sec,
-            url=NAVER_INDEX_DAY[code],
-            parse=lambda html, sym: select_settled_naver_day_row(
-                html, sym, target_date=target_date, now_kst=now_kst
+            url=NAVER_DOMESTIC_INDEX_PRICE[code],
+            parse=lambda payload, sym: select_settled_naver_domestic_row(
+                payload, sym, target_date=target_date, now_kst=now_kst
             ),
         )
         errors[code] = error

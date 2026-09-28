@@ -102,6 +102,21 @@ def _naver_day_html(rows: list) -> str:
     return f'<table class="type_1">{cells}</table>'
 
 
+def _naver_domestic_day_payload(rows: list) -> str:
+    direction = {"상승": ("RISING", "+"), "하락": ("FALLING", "-"), "보합": ("STEADY", "")}
+    return json.dumps([
+        {
+            "localTradedAt": day.replace(".", "-"),
+            "closePrice": close,
+            "compareToPreviousClosePrice": sign + pts,
+            "fluctuationsRatio": pct,
+            "compareToPreviousPrice": {"name": name},
+        }
+        for day, close, pts, pct, arrow in rows
+        for name, sign in [direction[arrow]]
+    ])
+
+
 # The same 2026-07-29 incident tape as the settled daily table publishes it: the
 # session in progress leads the table, and the settled 07-28 row is the one a
 # 07-29 pre-open briefing may quote.
@@ -548,8 +563,8 @@ class IncidentEndToEndTests(unittest.TestCase):
     def test_live_20260729_tape_end_to_end(self) -> None:
         """Live tape: probe -> runtime context -> snapshot rows -> rendered cells."""
         pages = {
-            probe.NAVER_INDEX_DAY["KOSPI"]: _naver_day_html(LIVE_DAY_ROWS["KOSPI"]),
-            probe.NAVER_INDEX_DAY["KOSDAQ"]: _naver_day_html(LIVE_DAY_ROWS["KOSDAQ"]),
+            probe.NAVER_DOMESTIC_INDEX_PRICE["KOSPI"]: _naver_domestic_day_payload(LIVE_DAY_ROWS["KOSPI"]),
+            probe.NAVER_DOMESTIC_INDEX_PRICE["KOSDAQ"]: _naver_domestic_day_payload(LIVE_DAY_ROWS["KOSDAQ"]),
             probe.NAVER_WORLD_INDEX["NIKKEI"]: _naver_world_day_payload(LIVE_NIKKEI_DAY_ROWS),
         }
         for sym, body in PerIndexIsolationTests.LIVE_CNBC.items():
@@ -587,8 +602,7 @@ class IncidentEndToEndTests(unittest.TestCase):
         report = market_index_validation_report(data, runtime_input)
         self.assertEqual(report["market_index_validation_status"], "pass")
         self.assertEqual(_today_market_index_integrity_issues(data, runtime_input), [])
-        # The settled daily table carries the arrow alt and a signed rate that
-        # agree, so it never produces the quote page's stale-blind-label dissent.
+        # The dated daily API carries a signed rate and direction that agree.
         self.assertEqual(report["market_index_warnings"], [])
 
         html = _today_snapshot_grouped_html(data["market_snapshot"])
@@ -625,8 +639,8 @@ class PerIndexIsolationTests(unittest.TestCase):
 
     def _fetch(self, *, broken: tuple[str, ...] = ()) -> object:
         pages = {
-            probe.NAVER_INDEX_DAY["KOSPI"]: _naver_day_html(LIVE_DAY_ROWS["KOSPI"]),
-            probe.NAVER_INDEX_DAY["KOSDAQ"]: _naver_day_html(LIVE_DAY_ROWS["KOSDAQ"]),
+            probe.NAVER_DOMESTIC_INDEX_PRICE["KOSPI"]: _naver_domestic_day_payload(LIVE_DAY_ROWS["KOSPI"]),
+            probe.NAVER_DOMESTIC_INDEX_PRICE["KOSDAQ"]: _naver_domestic_day_payload(LIVE_DAY_ROWS["KOSDAQ"]),
             probe.NAVER_WORLD_INDEX["NIKKEI"]: _naver_world_day_payload(LIVE_NIKKEI_DAY_ROWS),
         }
         for sym, body in self.LIVE_CNBC.items():
@@ -634,7 +648,7 @@ class PerIndexIsolationTests(unittest.TestCase):
         broken_urls = set()
         for sym in broken:
             broken_urls.add(
-                probe.NAVER_INDEX_DAY.get(sym)
+                probe.NAVER_DOMESTIC_INDEX_PRICE.get(sym)
                 or probe.NAVER_WORLD_INDEX.get(sym)
                 or probe.CNBC_QUOTES[sym]
             )
