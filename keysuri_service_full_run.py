@@ -3066,9 +3066,9 @@ def _repair_reissue_top5_from_live_selection(
 
     The authoritative TOP5 is the live candidate-pool selection (prompt_input),
     never the parent snapshot. Gemini output is used only as prose; if it cannot
-    yield a contract-valid briefing, fall back to the parent snapshot as a *text
-    scaffold* but with its source references rewritten to the live selection, so
-    the final news is always the fresh selection.
+    yield a contract-valid briefing, never rewrite an old parent narrative to
+    new sources when selections differ. Parent text scaffold may only be used
+    when identical canonical article URLs match for all items.
     """
     live_items = _live_selection_items_from_prompt_input(prompt_input)
     if live_items is None:
@@ -3083,12 +3083,28 @@ def _repair_reissue_top5_from_live_selection(
     original_items = original_top.get("items") if isinstance(original_top, dict) else []
     original_count = len(original_items) if isinstance(original_items, list) else 0
 
+    live_urls: Set[str] = set()
+    if isinstance(live_items, list) and len(live_items) == KEYSURI_TOP_NEWS_COUNT:
+        for it in live_items:
+            u = _reissue_canonical_url(it) if isinstance(it, dict) else None
+            if isinstance(u, str) and u.strip():
+                live_urls.add(u.strip())
+
     bases: List[Tuple[str, Dict[str, Any], bool]] = []
     if isinstance(generated_briefing, dict) and generated_briefing:
         bases.append(("gemini_output", copy.deepcopy(generated_briefing), False))
     parent_base = _parent_base_briefing_for_reissue(parent or {})
-    if parent_base is not None:
-        bases.append(("parent_scaffold", parent_base, True))
+    if parent_base is not None and len(live_urls) == KEYSURI_TOP_NEWS_COUNT:
+        parent_top = parent_base.get("top_5_news") if isinstance(parent_base, dict) else None
+        parent_items = parent_top.get("items") if isinstance(parent_top, dict) else None
+        parent_urls: Set[str] = set()
+        if isinstance(parent_items, list) and len(parent_items) == KEYSURI_TOP_NEWS_COUNT:
+            for it in parent_items:
+                u = _reissue_canonical_url(it) if isinstance(it, dict) else None
+                if isinstance(u, str) and u.strip():
+                    parent_urls.add(u.strip())
+        if len(parent_urls) == KEYSURI_TOP_NEWS_COUNT and parent_urls == live_urls:
+            bases.append(("parent_scaffold", parent_base, True))
 
     last_codes: List[str] = []
     content_hold_fields: Dict[str, Any] = {}
@@ -3110,6 +3126,21 @@ def _repair_reissue_top5_from_live_selection(
             live_items=live_items,
             base_items=base_items,
         )
+        raw_matched = correlation.get("reissue_correlation_matched_count") if isinstance(correlation, dict) else None
+        try:
+            matched_count = int(raw_matched) if raw_matched is not None else None
+        except (TypeError, ValueError):
+            matched_count = None
+        if _label == "gemini_output" and (matched_count is None or matched_count <= 0):
+            last_codes = ["reissue_top5_identity_unbound"]
+            content_hold_fields = {
+                "reissue_top5_identity_unbound": True,
+                "reissue_top5_clean_korean_fallback_used": bool(fallback_used),
+                "reissue_visible_text_sanitized_fields": sanitized_fields,
+            }
+            if isinstance(correlation, dict):
+                content_hold_fields.update(correlation)
+            continue
         # Composed reissue items are bound to live candidates, so their
         # canonical URLs are mandatory here.
         content_codes = reissue_top5_content_issue_codes(top5_for_base, require_source_url=True)
@@ -3167,11 +3198,12 @@ def _repair_reissue_top5_from_live_selection(
         "reissue_top5_repair_failed_sections": last_codes,
     }
     fields.update(content_hold_fields)
-    reason = (
-        "reissue_top5_content_integrity_hold"
-        if content_hold_fields
-        else "reissue_top5_live_repair_validation_failed"
-    )
+    if "reissue_top5_identity_unbound" in last_codes or content_hold_fields.get("reissue_top5_identity_unbound"):
+        reason = "reissue_top5_identity_unbound"
+    elif content_hold_fields:
+        reason = "reissue_top5_content_integrity_hold"
+    else:
+        reason = "reissue_top5_live_repair_validation_failed"
     return None, None, fields, reason
 
 
