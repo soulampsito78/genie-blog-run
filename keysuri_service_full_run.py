@@ -1922,22 +1922,101 @@ def _build_repaired_reissue_payload(
     empty on success and otherwise holds safe contract issue codes (never raw
     detail) so callers can record an internal failure summary.
     """
-    top_5_news = {
-        "news_scope": expected_news_scope_for_program(program_id),
-        "section_heading": expected_top5_heading_for_program(program_id),
-        "items": copy.deepcopy(top5_items),
-    }
+    if not isinstance(top5_items, list) or len(top5_items) != KEYSURI_TOP_NEWS_COUNT:
+        return None, None, ["reissue_output_count_mismatch"]
+
+    raw_top5 = prompt_input.get("top_5_news") if isinstance(prompt_input, dict) else None
+    if not isinstance(raw_top5, dict):
+        return None, None, ["reissue_evidence_missing"]
+    raw_evidence_items = raw_top5.get("items")
+    if not isinstance(raw_evidence_items, list) or len(raw_evidence_items) != KEYSURI_TOP_NEWS_COUNT:
+        return None, None, ["reissue_evidence_count_mismatch"]
+
+    raw_by_id: Dict[str, int] = {}
+    raw_by_url: Dict[str, int] = {}
+    for idx, item in enumerate(raw_evidence_items):
+        if not isinstance(item, dict):
+            return None, None, ["reissue_evidence_malformed"]
+        nid = item.get("news_id")
+        if not isinstance(nid, str) or not nid.strip():
+            return None, None, ["reissue_evidence_identity_missing"]
+        nid = nid.strip()
+        if nid in raw_by_id:
+            return None, None, ["reissue_evidence_duplicate_identity"]
+        raw_by_id[nid] = idx
+
+        url = _reissue_canonical_url(item)
+        if isinstance(url, str) and url.strip():
+            u = url.strip()
+            if u in raw_by_url:
+                return None, None, ["reissue_evidence_duplicate_identity"]
+            raw_by_url[u] = idx
+
+        sum_val = item.get("summary")
+        why_val = item.get("why_it_matters")
+        if (
+            not isinstance(sum_val, str)
+            or not sum_val.strip()
+            or not isinstance(why_val, str)
+            or not why_val.strip()
+        ):
+            return None, None, ["reissue_evidence_incomplete"]
+
+    bound_evidence_indices: Set[int] = set()
+    aligned_evidence: List[Dict[str, Any]] = []
+
+    for out_item in top5_items:
+        if not isinstance(out_item, dict):
+            return None, None, ["reissue_output_item_malformed"]
+        out_nid = out_item.get("news_id")
+        if not isinstance(out_nid, str) or not out_nid.strip():
+            return None, None, ["reissue_output_identity_missing"]
+        out_nid = out_nid.strip()
+
+        matched_idx = raw_by_id.get(out_nid)
+        if matched_idx is None:
+            return None, None, ["reissue_evidence_unbound"]
+
+        raw_item = raw_evidence_items[matched_idx]
+        raw_url = _reissue_canonical_url(raw_item)
+        raw_u = raw_url.strip() if isinstance(raw_url, str) and raw_url.strip() else None
+        out_url = _reissue_canonical_url(out_item)
+        out_u = out_url.strip() if isinstance(out_url, str) and out_url.strip() else None
+
+        if out_u is not None:
+            if raw_u is not None and out_u != raw_u:
+                return None, None, ["reissue_evidence_id_url_disagreement"]
+            if raw_u is None:
+                return None, None, ["reissue_evidence_id_url_disagreement"]
+            if out_u in raw_by_url and raw_by_url[out_u] != matched_idx:
+                return None, None, ["reissue_evidence_id_url_disagreement"]
+
+        if matched_idx in bound_evidence_indices:
+            return None, None, ["reissue_evidence_duplicate_binding"]
+
+        bound_evidence_indices.add(matched_idx)
+        aligned_evidence.append(copy.deepcopy(raw_item))
+
+    if len(bound_evidence_indices) != KEYSURI_TOP_NEWS_COUNT:
+        return None, None, ["reissue_evidence_binding_incomplete"]
+
+    prompt_top_5 = copy.deepcopy(raw_top5)
+    prompt_top_5["items"] = aligned_evidence
+
     repaired_prompt_input = copy.deepcopy(prompt_input)
-    repaired_prompt_input["top_5_news"] = copy.deepcopy(top_5_news)
-    repaired_prompt_input["selected_items"] = copy.deepcopy(top5_items)
+    repaired_prompt_input["top_5_news"] = prompt_top_5
+    repaired_prompt_input["selected_items"] = copy.deepcopy(aligned_evidence)
     repaired_prompt_input["required_count"] = KEYSURI_TOP_NEWS_COUNT
     repaired_prompt_input["selected_count"] = KEYSURI_TOP_NEWS_COUNT
+
+    briefing_top_5 = copy.deepcopy(raw_top5)
+    briefing_top_5["items"] = copy.deepcopy(top5_items)
 
     repaired_briefing = copy.deepcopy(base_briefing)
     repaired_briefing["program_id"] = program_id
     repaired_briefing["news_scope"] = expected_news_scope_for_program(program_id)
     repaired_briefing["section_heading"] = expected_top5_heading_for_program(program_id)
-    repaired_briefing["top_5_news"] = copy.deepcopy(top_5_news)
+    repaired_briefing["top_5_news"] = briefing_top_5
     parse_result = parse_keysuri_generated_response(
         json.dumps(repaired_briefing, ensure_ascii=False),
         program_id,

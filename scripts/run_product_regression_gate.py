@@ -24,6 +24,7 @@ TEST_MODULES = (
     "test_keysuri_frozen_parent_prompt_20260918",
     "test_service_full_run.KeysuriReissueTop5RepairTests",
     "test_reissue_selection_identity_guard",
+    "test_reissue_evidence_separation",
     "test_keysuri_generation_prompt.KeysuriGlobalMaxTokensRecoveryTests",
     "test_auto_remediation_editorial_review_20260918",
     "test_keysuri_renderer_validator_compat",

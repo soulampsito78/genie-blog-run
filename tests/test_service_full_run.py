@@ -599,7 +599,8 @@ class KeysuriReissueTop5RepairTests(unittest.TestCase):
         prompt_input = {
             "program_id": PROGRAM_GLOBAL,
             "source_pack": {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []},
-            "top_5_news": generated["top_5_news"],
+            # The evidence pack is complete even when model output is short.
+            "top_5_news": _generated_briefing_with_top_count(parent_items)["top_5_news"],
         }
 
         repaired_prompt, repaired_briefing, fields, err = _repair_reissue_top5_from_raw_text(
@@ -723,6 +724,7 @@ class KeysuriReissueTop5RepairTests(unittest.TestCase):
         prompt_input = {
             "program_id": PROGRAM_GLOBAL,
             "source_pack": {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []},
+            "top_5_news": _generated_briefing_with_top_count(parent_items)["top_5_news"],
         }
 
         repaired_prompt, repaired_briefing, fields, err = _repair_reissue_top5_from_raw_text(
@@ -756,6 +758,7 @@ class KeysuriReissueTop5RepairTests(unittest.TestCase):
         prompt_input = {
             "program_id": PROGRAM_GLOBAL,
             "source_pack": {"program_id": PROGRAM_GLOBAL, "sources": [], "claims": []},
+            "top_5_news": _generated_briefing_with_top_count(parent_items)["top_5_news"],
         }
 
         repaired_prompt, repaired_briefing, fields, err = _repair_reissue_top5_from_raw_text(
@@ -2537,7 +2540,7 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
     @patch("keysuri_service_full_run.validate_keysuri_html_visible_text_quality")
     @patch("keysuri_service_full_run.resolve_korea_bottom_email_image_path")
     @patch("keysuri_service_full_run.apply_keysuri_mirai_on_watermark")
-    def test_text_and_image_reissue_recovers_from_parent_snapshot_when_gemini_invalid(
+    def test_text_and_image_reissue_rejects_unrelated_parent_snapshot_when_gemini_invalid(
         self,
         mock_watermark: MagicMock,
         mock_bottom: MagicMock,
@@ -2551,10 +2554,10 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
         mock_run_id: MagicMock,
         mock_customer_final: MagicMock,
     ) -> None:
-        """Mirror of the 20260629 production failure: live smoke returns an invalid
-        Gemini briefing, but the parent run has a validated snapshot. The reissue
-        must complete (new run artifact) from the parent snapshot rather than
-        safe-fail, with traceable repair metadata, and must not send to customers."""
+        """An invalid model body about the parent must not be grafted onto a
+        disjoint live selection. The old expectation already fails on fbbd5b2's
+        identity guard; preserve that fail-closed behavior, not unsafe recovery.
+        Same-identity frozen-parent recovery has a separate real reader test."""
         from keysuri_service_full_run import run_keysuri_text_and_image_reissue
 
         repo = Path(__file__).resolve().parents[1]
@@ -2675,22 +2678,13 @@ class KeysuriImageOnlyReissueTests(unittest.TestCase):
             reissue_reason_note="recover from snapshot",
         )
 
-        self.assertTrue(result["ok"])
-        mock_customer_final.assert_not_called()  # customer final never sent
-        child = load_run_artifact(child_id) or {}
-        self.assertEqual(child.get("customer_delivery_status"), "not_sent")
-        self.assertTrue(child.get("reissue_reselection_enabled"))
-        self.assertFalse(child.get("reissue_top5_repaired_from_parent"))
-        self.assertEqual(child.get("reissue_top5_original_count"), 2)
-        self.assertEqual(child.get("reissue_top5_repaired_count"), 5)
-        # Final TOP5 comes from the fresh live selection, never the parent snapshot.
-        self.assertEqual(child.get("reissue_top5_repair_source"), "reissue_live_selected_items")
-        self.assertEqual(child.get("artifact_status"), "emailed")
-        snap = child.get("regen_generated_briefing_snapshot") or {}
-        child_items = (snap.get("top_5_news") or {}).get("items") or []
-        self.assertEqual([it.get("news_id") for it in child_items], [it["news_id"] for it in live_items])
-        parent_urls = {it["canonical_url"] for it in parent_items}
-        self.assertTrue(all(it.get("canonical_url") not in parent_urls for it in child_items))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "reissue_top5_identity_unbound")
+        self.assertEqual(result["reissue_correlation_matched_count"], 0)
+        mock_customer_final.assert_not_called()
+        send_fn.assert_not_called()
+        image_runner.assert_not_called()
+        mock_render_preview.assert_not_called()
         parent = load_run_artifact(parent_id) or {}
         self.assertNotIn("regen_type", parent)  # parent artifact not overwritten
 
