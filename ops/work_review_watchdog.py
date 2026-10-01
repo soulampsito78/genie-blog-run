@@ -16,9 +16,20 @@ import os
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
+from zoneinfo import ZoneInfo
+
+
+KST = ZoneInfo("Asia/Seoul")
+
+CANONICAL_PRODUCT_TIMES = {
+    "today_genie": (6, 30),
+    "keysuri_global_tech": (12, 30),
+    "keysuri_korea_tech": (18, 30),
+}
+RECURRING_WINDOW_OFFSETS = (3, 8, 13, 18)
 
 
 VERDICTS = {
@@ -44,6 +55,57 @@ REQUIRED_CHECK_GROUPS = (
 
 class WatchdogError(RuntimeError):
     pass
+
+
+def _validate_recurring_policy(policy: Any) -> Dict[str, Any]:
+    if not isinstance(policy, Mapping):
+        raise WatchdogError("malformed_recurring_policy:not_a_mapping")
+    if policy.get("timezone") != "Asia/Seoul":
+        raise WatchdogError("malformed_recurring_policy:invalid_timezone")
+    calendar = policy.get("calendar")
+    if not isinstance(calendar, Mapping):
+        raise WatchdogError("malformed_recurring_policy:calendar_missing")
+    valid_from_str = calendar.get("valid_from")
+    valid_through_str = calendar.get("valid_through")
+    if not valid_from_str or not valid_through_str:
+        raise WatchdogError("malformed_recurring_policy:calendar_bounds_missing")
+    try:
+        valid_from = date.fromisoformat(str(valid_from_str))
+        valid_through = date.fromisoformat(str(valid_through_str))
+    except Exception:
+        raise WatchdogError("malformed_recurring_policy:calendar_date_invalid")
+    if valid_from > valid_through:
+        raise WatchdogError("malformed_recurring_policy:calendar_range_inverted")
+    if "excluded_dates" not in calendar:
+        raise WatchdogError("malformed_recurring_policy:excluded_dates_missing")
+    raw_excluded = calendar["excluded_dates"]
+    if not isinstance(raw_excluded, list):
+        raise WatchdogError("malformed_recurring_policy:excluded_dates_invalid")
+    excluded_dates = set()
+    for item in raw_excluded:
+        try:
+            parsed_d = date.fromisoformat(str(item))
+        except Exception:
+            raise WatchdogError("malformed_recurring_policy:excluded_date_invalid")
+        if not (valid_from <= parsed_d <= valid_through):
+            raise WatchdogError("malformed_recurring_policy:excluded_date_out_of_bounds")
+        excluded_dates.add(parsed_d.isoformat())
+    products = policy.get("products")
+    if not isinstance(products, list) or not products:
+        raise WatchdogError("malformed_recurring_policy:products_missing")
+    for p in products:
+        if not isinstance(p, str) or p not in CANONICAL_PRODUCT_TIMES:
+            raise WatchdogError("malformed_recurring_policy:products_invalid")
+    if len(products) != len(set(products)):
+        raise WatchdogError("malformed_recurring_policy:products_not_unique")
+    if any(k in policy for k in ("times", "slot_times", "template", "slot_id_template")):
+        raise WatchdogError("malformed_recurring_policy:arbitrary_config_disallowed")
+    return {
+        "valid_from": valid_from,
+        "valid_through": valid_through,
+        "excluded_dates": excluded_dates,
+        "products": products,
+    }
 
 
 def _instant(value: Any) -> datetime:
@@ -197,14 +259,117 @@ def inspect_slots(*, manifest: Mapping[str, Any], evidence_dir: Path,
                   now: datetime) -> Dict[str, Any]:
     if now.tzinfo is None or now.utcoffset() is None:
         raise WatchdogError("now_timezone_required")
-    slots = manifest.get("slots")
-    if not isinstance(slots, list):
+    has_policy = "recurring_policy" in manifest
+    has_slots = "slots" in manifest
+    if not has_policy and not has_slots:
         raise WatchdogError("manifest_slots_missing")
+
+    current = now.astimezone(timezone.utc)
+    current_kst = now.astimezone(KST)
+    current_kst_date = current_kst.date()
+
     pending: List[str] = []
     complete: List[str] = []
     skipped: List[str] = []
     exceptions: List[Dict[str, Any]] = []
-    current = now.astimezone(timezone.utc)
+
+    if has_policy:
+        policy = _validate_recurring_policy(manifest["recurring_policy"])
+        if current_kst_date < policy["valid_from"] or current_kst_date > policy["valid_through"]:
+            exceptions.append(_packet(
+                {
+                    "slot_id": f"{current_kst_date.isoformat()}_coverage",
+                    "product": policy["products"][0],
+                    "publication_date": current_kst_date.isoformat(),
+                },
+                verdict="HOLD_ANOMALY",
+                problem_code="CALENDAR_COVERAGE_UNAVAILABLE",
+                now=current,
+            ))
+            slots = []
+        elif current_kst_date.weekday() >= 5 or current_kst_date.isoformat() in policy["excluded_dates"]:
+            slots = []
+        else:
+            slots = []
+            for product in policy["products"]:
+                hour, minute = CANONICAL_PRODUCT_TIMES[product]
+                base_dt = datetime(
+                    current_kst_date.year, current_kst_date.month, current_kst_date.day,
+                    hour, minute, tzinfo=KST
+                )
+                windows = [
+                    (base_dt + timedelta(minutes=m)).isoformat()
+                    for m in RECURRING_WINDOW_OFFSETS
+                ]
+                slots.append({
+                    "slot_id": f"{current_kst_date.isoformat()}_{product}",
+                    "product": product,
+                    "publication_date": current_kst_date.isoformat(),
+                    "windows_kst": windows,
+                    "watchdog_monitor": True,
+                })
+    else:
+        raw_slots = manifest.get("slots")
+        if not isinstance(raw_slots, list):
+            raise WatchdogError("manifest_slots_missing")
+        if not raw_slots:
+            exceptions.append(_packet(
+                {
+                    "slot_id": f"{current_kst_date.isoformat()}_manifest",
+                    "product": "manifest",
+                    "publication_date": current_kst_date.isoformat(),
+                },
+                verdict="HOLD_ANOMALY",
+                problem_code="MANIFEST_COVERAGE_UNAVAILABLE",
+                now=current,
+            ))
+            slots = []
+        else:
+            seen_ids = set()
+            for s in raw_slots:
+                if not isinstance(s, Mapping) or not s.get("slot_id"):
+                    raise WatchdogError("manifest_slot_invalid")
+                sid = str(s["slot_id"])
+                if sid in seen_ids:
+                    raise WatchdogError("manifest_duplicate_slots")
+                seen_ids.add(sid)
+            monitored = [
+                s for s in raw_slots
+                if s.get("watchdog_monitor", True) is not False
+            ]
+            if not monitored:
+                exceptions.append(_packet(
+                    {
+                        "slot_id": f"{current_kst_date.isoformat()}_manifest",
+                        "product": "manifest",
+                        "publication_date": current_kst_date.isoformat(),
+                    },
+                    verdict="HOLD_ANOMALY",
+                    problem_code="MANIFEST_COVERAGE_UNAVAILABLE",
+                    now=current,
+                ))
+            if monitored:
+                instants = []
+                for s in monitored:
+                    windows = s.get("windows_kst")
+                    if not isinstance(windows, list) or not windows:
+                        raise WatchdogError("manifest_windows_missing:" + str(s["slot_id"]))
+                    for w in windows:
+                        instants.append(_instant(w))
+                latest_date = max(i.astimezone(KST).date() for i in instants)
+                if current_kst_date > latest_date:
+                    exceptions.append(_packet(
+                        {
+                            "slot_id": f"{current_kst_date.isoformat()}_manifest",
+                            "product": str(monitored[-1].get("product") or "manifest"),
+                            "publication_date": current_kst_date.isoformat(),
+                        },
+                        verdict="HOLD_ANOMALY",
+                        problem_code="STALE_FINITE_MANIFEST",
+                        now=current,
+                    ))
+            slots = raw_slots
+
     for slot in slots:
         if not isinstance(slot, Mapping) or not slot.get("slot_id"):
             raise WatchdogError("manifest_slot_invalid")

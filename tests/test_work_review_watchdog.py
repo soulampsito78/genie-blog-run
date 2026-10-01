@@ -187,8 +187,11 @@ def test_final_hold_anomaly_before_deadline_is_immediate_exception(tmp_path):
     assert result["exceptions"][0]["verdict"] == "HOLD_ANOMALY"
 
 
-def test_explicitly_unmonitored_missed_slot_is_preserved_without_alert(tmp_path):
+def test_explicitly_unmonitored_slot_is_preserved_but_zero_coverage_is_reported(tmp_path):
     result = inspect_slots(manifest=_manifest(monitor=False), evidence_dir=tmp_path,
         now=datetime(2026, 9, 12, 0, 0, tzinfo=timezone.utc))
     assert result["skipped_slots"] == ["2026-09-11_keysuri_korea_tech"]
-    assert result["exceptions"] == []
+    # No per-slot missed-review alarm; independently flag that nothing is monitored.
+    assert len(result["exceptions"]) == 1
+    assert result["exceptions"][0]["problem_code"] == "MANIFEST_COVERAGE_UNAVAILABLE"
+    assert result["exceptions"][0]["customer_send_authorized"] is False

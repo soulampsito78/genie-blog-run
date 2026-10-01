@@ -22,6 +22,19 @@ FIDELITY_RULES: Tuple[str, ...] = (
     "causality, and modality. Never turn '~일 수 있다' or '~로 보인다' into a confirmed fact.",
     "Keep edits local to each item. Never merge article identities, borrow prose from another "
     "rank, or trade factual fidelity for a more human-sounding sentence.",
+    "Preserve semantic subject and object roles precisely. Never swap agent and target, such as "
+    "viruses attacking resistant bacteria versus resistant viruses.",
+    "Preserve metric identity and scope across all fields (headings, subject, deepdive): do not "
+    "substitute accuracy for recall, drop 'up-to' qualifiers, omit comparison baselines, or "
+    "blur high-selectivity filter conditions.",
+    "Distinguish limited preview or private access from general availability or full production "
+    "launch. Never present an experimental preview as widely released.",
+    "Treat media comparisons, analogies, and speculative commentary as external characterizations, "
+    "not verified internal codenames or architectural facts.",
+    "Distinguish source publication date from historical event date. Never reannounce earlier "
+    "funding, grants, or milestones as newly occurring today.",
+    "Never claim validated clinical therapy, full autonomy, or realized cost savings from "
+    "inspectable workflow demonstrations, prototypes, or vendor forecasts.",
 )
 
 #: Internal copy must never surface.
