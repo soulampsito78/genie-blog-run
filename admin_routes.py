@@ -3222,14 +3222,101 @@ def admin_run_reissue(
 # Beta customer recipient management
 # ---------------------------------------------------------------------------
 
+_BETA_EDIT_MESSAGES = {
+    "ADMIN_BETA_EDIT_STALE_FORM": "명단 또는 승인이 다른 작업에서 변경됐습니다. 저장하지 않았습니다. 새로고침 후 다시 시도하세요.",
+    "ADMIN_BETA_EDIT_PENDING": "이전 명단 변경의 승인 연결을 복구 중입니다. 새 변경은 잠시 대기합니다.",
+    "ADMIN_BETA_EDIT_INVALID_EMAIL": "유효하지 않은 이메일 형식입니다. 올바른 주소를 입력하세요.",
+    "ADMIN_BETA_EDIT_ALREADY_EXISTS": "이미 명단에 있는 주소입니다.",
+    "ADMIN_BETA_EDIT_NOT_FOUND": "명단에 없는 주소입니다.",
+    "ADMIN_BETA_RECIPIENT_CAPACITY_INVALID": "베타 명단은 중복 없이 최대 25명까지 저장할 수 있습니다.",
+    "ADMIN_BETA_EXACT_COHORT_MISMATCH": "저장된 명단과 활성 승인이 다릅니다. 고객 발송은 차단됐습니다.",
+    "ADMIN_BETA_DELEGATION_COHORT_CHANGED": "저장된 명단과 활성 승인이 다릅니다. 고객 발송은 차단됐습니다.",
+    "ADMIN_BETA_DELEGATION_CONFIRMATION_CHANGED": "확인 이후 명단이 바뀌어 권한을 활성화하지 않았습니다.",
+}
+
+
+def _beta_edit_field(request: Request, base: dict, action: str, email: str = "") -> str:
+    import base64
+    context = {**base, "operation_id": "abe_" + secrets.token_hex(16), "action": action, "email": email}
+    raw = base64.urlsafe_b64encode(json.dumps(context, sort_keys=True, separators=(",", ":")).encode()).decode()
+    signature = hmac.new(admin_password().encode(),
+        ("genie-beta-edit-context-v1|" + _session_token_from_request(request) + "|" + raw).encode(), hashlib.sha256).hexdigest()
+    return f'<input type="hidden" name="edit_context" value="{_esc(raw)}"><input type="hidden" name="edit_signature" value="{signature}">'
+
+
+def _beta_edit_context(request: Request, raw: str, signature: str) -> dict:
+    import base64
+    if not raw or len(raw) > 2048:
+        raise ValueError("invalid_edit_context")
+    expected = hmac.new(admin_password().encode(),
+        ("genie-beta-edit-context-v1|" + _session_token_from_request(request) + "|" + raw).encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        raise ValueError("invalid_edit_context")
+    value = json.loads(base64.urlsafe_b64decode(raw.encode()).decode())
+    if not isinstance(value, dict):
+        raise ValueError("invalid_edit_context")
+    return value
+
+
+def _beta_edit_notice(result: dict) -> str:
+    saved = "명단 저장 완료" if result.get("config_saved") is True else ("명단 저장 안 됨" if result.get("config_saved") is False else "명단 저장 결과 미확인")
+    if result.get("connection") == "SUPERSEDED":
+        return saved + " · 이 작업 이후 명단·승인이 변경됐습니다. 이전 명단을 다시 쓰지 않고 현재 상태를 유지했습니다."
+    if result.get("connection") == "LINKED":
+        return saved + " · 기존 활성 승인을 새 명단에 연결했습니다. 실제 발송은 검수·중복 방지 및 현재 runtime 조건을 별도로 통과해야 합니다."
+    return saved + " · 자동발송 승인 연결 안 됨. 중지·철회 또는 충돌 상태를 유지했습니다. 고객에게 발송하지 않았습니다."
+
+
+def _perform_beta_edit(request: Request, action: str, email: str, raw: str, signature: str) -> Response:
+    from admin_beta_edits import edit_recipient
+    from delegated_delivery_safety import DeliverySafetyError
+    try:
+        context = _beta_edit_context(request, raw, signature)
+    except Exception:
+        return HTMLResponse(_layout("명단 변경 차단", "<div class='warn'>명단 변경 확인 정보가 유효하지 않습니다. 새로고침 후 다시 시도하세요.</div>"), status_code=400)
+    try:
+        result = edit_recipient(context=context, action=action, email=email, operator_id=_operator_id(request))
+    except DeliverySafetyError as exc:
+        return _render_customer_recipients_page(request, recovery_operation_id=context.get("operation_id", ""), error=_BETA_EDIT_MESSAGES.get(str(exc), "명단 변경·승인 연결을 완료하지 못했습니다. 저장 상태를 확인하고 중단된 동일 작업을 복구합니다."))
+    except Exception:
+        return _render_customer_recipients_page(request, recovery_operation_id=context.get("operation_id", ""), error="저장 또는 승인 연결 응답을 확인하지 못했습니다. 기록된 동일 작업을 재대조한 상태를 아래에 표시합니다.")
+    append_operator_audit("recipient_config_changed", operator_id=_operator_id(request),
+        result="recipient_" + ("added" if action == "add" else "removed"),
+        related_id=result["operation_id"], metadata={"config_saved": result["config_saved"], "connection": result["connection"]})
+    return _render_customer_recipients_page(request, success=_beta_edit_notice(result))
+
 def _render_customer_recipients_page(
     request: Request,
     *,
     error: str = "",
     success: str = "",
+    recovery_operation_id: str = "",
 ) -> HTMLResponse:
-    resolved = resolve_customer_recipients()
+    from admin_beta_delegation import MAX_BETA_RECIPIENT_COUNT, _read_current_with_generation
+    from admin_beta_edits import form_context, config_identity, reconcile_pending_edit
+
+    def stale_page() -> HTMLResponse:
+        return HTMLResponse(_layout("명단 상태 다시 확인", "<div class='warn'>명단·승인이 화면 확인 중 변경됐거나 상태를 읽을 수 없습니다. 최신 상태를 다시 불러오세요.</div><a href='/admin/customer-recipients'>명단 상태 다시 확인</a>"), status_code=409)
+
+    # POST error returns and ordinary GET share this ordering. Recovery may
+    # write, but completes before any list/status/form snapshot is captured.
+    try:
+        recovered = reconcile_pending_edit()
+        if recovered and (recovered["operation_id"] == recovery_operation_id or not error):
+            success = _beta_edit_notice(recovered)
+            error = ""
+    except Exception:
+        error = error or "중단된 명단 변경의 연결을 아직 완료하지 못했습니다. 동일 기록을 보존했고 현재 저장·승인 상태를 표시합니다."
+    try:
+        snapshot_pointer, snapshot_generation = _read_current_with_generation()
+    except Exception:
+        return stale_page()
     cfg = load_beta_recipient_config()
+    if cfg.get("load_ok") is not True:
+        return stale_page()
+    snapshot_config_generation = cfg.get("_storage_generation")
+    snapshot_config_hash = config_identity(cfg)
+    resolved = resolve_customer_recipients()
 
     env_addrs = resolved["env_recipients"]
     admin_addrs = resolved["admin_recipients"]
@@ -3237,13 +3324,17 @@ def _render_customer_recipients_page(
     invalid = resolved["invalid_entries"]
     source_summary = resolved["source_summary"]
     updated_at = cfg.get("updated_at") or "—"
-    from admin_beta_delegation import MAX_BETA_RECIPIENT_COUNT
+    try:
+        edit_base = form_context("add")
+    except Exception:
+        edit_base = None
 
     try:
         from admin_beta_delegation import load_active_admin_beta_delegation
         from delegated_gate import GateSettings, POLICY_VERSION
 
-        active_delegation = load_active_admin_beta_delegation()
+        # Display reads must never mutate the already captured snapshot.
+        active_delegation = load_active_admin_beta_delegation(reconcile_edits=False)
         runtime = GateSettings.from_environment()
         runtime_ready = (
             runtime.mode == "ON"
@@ -3264,6 +3355,14 @@ def _render_customer_recipients_page(
         delegation_status = "STOPPED"
         delegation_detail = str(exc)[:120]
 
+    activation_field = ""
+    try:
+        from admin_beta_delegation import _current_cohort
+        activation_hash = _current_cohort()["recipient_configuration_hash"]
+        activation_field = f'<input type="hidden" name="configuration_sha256" value="{activation_hash}">'
+    except Exception:
+        pass
+
     # env recipients table (read-only)
     env_rows = "".join(
         f"<tr><td>{_esc(a)}</td><td style='color:#64748b;font-size:13px'>env (GENIE_CUSTOMER_EMAIL_TO)</td></tr>"
@@ -3278,8 +3377,9 @@ def _render_customer_recipients_page(
             f"<td>"
             f"<form method='post' action='/admin/customer-recipients/remove' style='margin:0'>"
             f"{_csrf_field(request, 'recipient_remove')}"
+            f"{_beta_edit_field(request, edit_base, 'remove', a) if edit_base else ''}"
             f"<input type='hidden' name='email' value='{_esc(a)}'>"
-            f"<button type='submit' class='btn' style='background:#dc2626;padding:6px 12px;font-size:13px;min-height:32px;'>삭제</button>"
+            f"<button type='submit' class='btn' {'disabled' if not edit_base else ''} style='background:#dc2626;padding:6px 12px;font-size:13px;min-height:32px;'>삭제 · 활성 승인 연결 갱신</button>"
             f"</form>"
             f"</td></tr>"
         )
@@ -3319,8 +3419,9 @@ def _render_customer_recipients_page(
 <h2 style="font-size:16px;margin:0 0 8px">지속 자동발송 권한</h2>
 <p style="font-size:14px;margin:0 0 10px"><strong>{_esc(delegation_status)}</strong> — {_esc(delegation_detail)}</p>
 <p style="font-size:13px;color:#64748b;margin:0 0 12px">
-  한 번 활성화하면 정상 PASS 발행은 추가 승인 없이 활성화 시점의 정확한 {len(final_addrs)}명에게만 발송됩니다.
-  명단·버전·제외 상태가 바뀌면 전체 자동발송이 즉시 중지됩니다.
+  현재 ACTIVE 승인과 정확히 일치하는 명단을 이 화면에서 추가·삭제하면 기존 승인 상품 범위를 새 명단에 자동 연결합니다.
+  저장·승인 연결·실제 발송 가능은 별개입니다. 중간 실패는 기록된 동일 작업만 복구하며 철회·중지된 승인은 되살리지 않습니다.
+  수신거부·제외·직접 설정 변경 및 이전에 확정된 발송 대상은 자동으로 새 권한을 얻지 않습니다.
   베타 운영 상한은 {MAX_BETA_RECIPIENT_COUNT}명입니다.
 </p>
 {f'''<form method="post" action="/admin/customer-recipients/delegation/revoke">
@@ -3329,7 +3430,8 @@ def _render_customer_recipients_page(
 <button type="submit" class="btn" style="background:#dc2626">자동발송 권한 중지</button>
 </form>''' if active_delegation else f'''<form method="post" action="/admin/customer-recipients/delegation/activate">
 {_csrf_field(request, 'admin_beta_delegation_activate')}
-<button type="submit" class="btn">현재 {len(final_addrs)}명 · 3개 상품 자동발송 권한 활성화</button>
+{activation_field}
+<button type="submit" class="btn" {'disabled' if not activation_field or not edit_base else ''}>현재 {len(final_addrs)}명 · 3개 상품 자동발송 권한 활성화</button>
 </form>'''}
 </div>
 
@@ -3358,18 +3460,52 @@ def _render_customer_recipients_page(
 <h2 style="font-size:16px;margin:0 0 12px">수신자 추가</h2>
 <form method="post" action="/admin/customer-recipients/add">
 {_csrf_field(request, 'recipient_add')}
+{_beta_edit_field(request, edit_base, 'add') if edit_base else ''}
 <label for="new-email" style="display:block;font-size:14px;font-weight:600;margin:0 0 6px">이메일 주소</label>
 <input type="text" id="new-email" name="email" placeholder="example@domain.com"
   style="max-width:360px;margin-bottom:12px;" autocomplete="off" autocapitalize="none">
 <div class="form-actions">
-<button type="submit" class="btn">추가</button>
+<button type="submit" class="btn" {'disabled' if not edit_base else ''}>추가 · 활성 승인 연결 갱신</button>
 </div>
 </form>
 <p style="font-size:12px;color:#64748b;margin:12px 0 0">
-  추가 후 즉시 발송되지 않습니다. 다음 고객 승인 발송 시 적용됩니다.
+  현재 활성 승인의 명단 변경이면 저장과 승인 연결을 함께 진행합니다. 즉시 발송하지 않으며 철회·중지 상태는 유지합니다.
 </p>
 </div>
 """
+    # Multi-object storage is not an atomic transaction. Reject a page that
+    # observed any intervening edit/revoke; never splice list/form/status from
+    # different generations or quietly re-read and relabel it as a success.
+    try:
+        final_cfg = load_beta_recipient_config()
+        final_pointer, final_generation = _read_current_with_generation()
+        stable = (
+            final_cfg.get("load_ok") is True
+            and final_cfg.get("_storage_generation") == snapshot_config_generation
+            and config_identity(final_cfg) == snapshot_config_hash
+            and final_pointer == snapshot_pointer
+            and final_generation == snapshot_generation
+            and resolved.get("admin_config_ok") is True
+            and resolved.get("recipient_configuration_version") == f"env+admin:v{cfg['version']}"
+        )
+        if edit_base:
+            stable = stable and (
+                edit_base["config_generation"] == snapshot_config_generation
+                and edit_base["config_sha256"] == snapshot_config_hash
+                and edit_base["pointer_generation"] == snapshot_generation
+            )
+        if active_delegation:
+            stable = stable and (
+                active_delegation["_pointer_generation"] == snapshot_generation
+                and active_delegation["recipients"] == final_addrs
+                and active_delegation["recipient_count"] == len(final_addrs)
+                and active_delegation["recipient_configuration_version"] == resolved["recipient_configuration_version"]
+                and active_delegation["recipient_configuration_hash"] == resolved["recipient_configuration_hash"]
+            )
+        if not stable:
+            return stale_page()
+    except Exception:
+        return stale_page()
     return HTMLResponse(_layout("베타 고객 수신자 관리", inner))
 
 
@@ -3383,13 +3519,15 @@ def admin_customer_recipients(request: Request) -> HTMLResponse:
 
 @router.post("/admin/customer-recipients/delegation/activate")
 def admin_customer_recipients_delegation_activate(
-    request: Request, csrf_token: str = Form("")
+    request: Request, csrf_token: str = Form(""), configuration_sha256: str = Form("")
 ) -> Response:
     gate = _require_login(request)
     if gate is not None:
         return gate  # type: ignore[return-value]
     if not _verify_csrf(request, "admin_beta_delegation_activate", csrf_token):
         return _csrf_rejected()
+    if not re.fullmatch(r"[a-f0-9]{64}", configuration_sha256):
+        return HTMLResponse(_layout("권한 활성화 차단", "현재 명단을 새로 확인한 후 다시 시도하세요."), status_code=400)
     from admin_beta_delegation import (
         ALLOWED_MODES,
         activate_admin_beta_delegation,
@@ -3401,6 +3539,7 @@ def admin_customer_recipients_delegation_activate(
         grant = activate_admin_beta_delegation(
             products=ALLOWED_MODES,
             operator_id=operator_id,
+            expected_configuration_sha256=configuration_sha256,
         )
     except DeliverySafetyError as exc:
         append_operator_audit(
@@ -3462,32 +3601,15 @@ def admin_customer_recipients_add(
     request: Request,
     email: str = Form(...),
     csrf_token: str = Form(""),
+    edit_context: str = Form(""),
+    edit_signature: str = Form(""),
 ) -> Response:
     gate = _require_login(request)
     if gate is not None:
         return gate  # type: ignore[return-value]
     if not _verify_csrf(request, "recipient_add", csrf_token):
         return _csrf_rejected()
-    ok, err = add_beta_recipient(email)
-    if not ok:
-        _error_labels = {
-            "empty_email": "이메일 주소를 입력하세요.",
-            "invalid_format": "유효하지 않은 이메일 형식입니다.",
-            "already_exists": "이미 목록에 있는 주소입니다.",
-            "config_unavailable": "수신자 설정을 읽을 수 없어 저장을 중단했습니다. 잠시 후 다시 시도하세요.",
-            "recipient_limit_reached": "베타 운영 상한에 도달해 수신자를 추가하지 않았습니다.",
-            "config_conflict": "다른 관리자가 명단을 먼저 변경해 저장하지 않았습니다. 새로고침 후 다시 시도하세요.",
-        }
-        return _render_customer_recipients_page(
-            request, error=_error_labels.get(err, f"추가 실패: {err}")
-        )
-    append_operator_audit(
-        "recipient_config_changed",
-        operator_id=_operator_id(request),
-        result="recipient_added",
-        metadata={"new_count": len(resolve_customer_recipients().get("final_recipients") or [])},
-    )
-    return RedirectResponse(url="/admin/customer-recipients?added=1", status_code=303)
+    return _perform_beta_edit(request, "add", email, edit_context, edit_signature)
 
 
 @router.post("/admin/customer-recipients/remove")
@@ -3495,30 +3617,15 @@ def admin_customer_recipients_remove(
     request: Request,
     email: str = Form(...),
     csrf_token: str = Form(""),
+    edit_context: str = Form(""),
+    edit_signature: str = Form(""),
 ) -> Response:
     gate = _require_login(request)
     if gate is not None:
         return gate  # type: ignore[return-value]
     if not _verify_csrf(request, "recipient_remove", csrf_token):
         return _csrf_rejected()
-    ok, err = remove_beta_recipient(email)
-    if not ok:
-        _error_labels = {
-            "empty_email": "이메일 주소를 입력하세요.",
-            "not_found": "목록에 없는 주소입니다.",
-            "config_unavailable": "수신자 설정을 읽을 수 없어 삭제를 중단했습니다. 잠시 후 다시 시도하세요.",
-            "config_conflict": "다른 관리자가 명단을 먼저 변경해 삭제하지 않았습니다. 새로고침 후 다시 시도하세요.",
-        }
-        return _render_customer_recipients_page(
-            request, error=_error_labels.get(err, f"삭제 실패: {err}")
-        )
-    append_operator_audit(
-        "recipient_config_changed",
-        operator_id=_operator_id(request),
-        result="recipient_removed",
-        metadata={"new_count": len(resolve_customer_recipients().get("final_recipients") or [])},
-    )
-    return RedirectResponse(url="/admin/customer-recipients?removed=1", status_code=303)
+    return _perform_beta_edit(request, "remove", email, edit_context, edit_signature)
 
 
 # ---------------------------------------------------------------------------

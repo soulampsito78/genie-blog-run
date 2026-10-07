@@ -519,14 +519,24 @@ def manual_recipient_plan(*, run_id, mode, now):
     from admin_store import validate_run_id
     if not validate_run_id(run_id):
         raise DeliverySafetyError("INVALID_ATTEMPT_IDENTITY")
-    key = "manual_recipient_plan_bindings/" + _digest(run_id) + ".json"
-    binding = store._read_json(key)
     authority = recipient_authority()
+    context = run_id
+    # A fresh confirmation may freeze the current authorized beta cohort for
+    # the same unsent run. Existing snapshot/command plan IDs are immutable and
+    # still revalidated against the current grant at the final send boundary.
+    if isinstance(authority, __import__("admin_beta_delegation").AdminBetaRecipientAuthority):
+        from admin_beta_delegation import load_active_admin_beta_delegation
+        grant = load_active_admin_beta_delegation()
+        context = [run_id, mode, grant["grant_id"], grant["_pointer_generation"]]
+    key = "manual_recipient_plan_bindings/" + _digest(context) + ".json"
+    binding = store._read_json(key)
     if binding is None:
         # Same run always retains its original plan once created. A racing
         # creator must load the winner; it may not replace the frozen target.
         day = dt.datetime.strptime(run_id[:8], "%Y%m%d").date()
         plan = authority.prepare(mode, day, now)
+        if isinstance(context, list) and [plan["authority_grant_id"], plan["authority_pointer_generation"]] != context[2:]:
+            raise DeliverySafetyError("ADMIN_BETA_DELEGATION_STATE_CHANGED")
         proposed = {"plan_id": plan["plan_id"], "sha256": plan["sha256"]}
         store._create_json_once(key, proposed)
         binding = store._read_json(key)

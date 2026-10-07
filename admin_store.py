@@ -2638,8 +2638,8 @@ def load_beta_recipient_config() -> Dict[str, Any]:
             blob = _get_gcs_bucket().blob(_BETA_RECIPIENTS_GCS_KEY)
             if blob.exists():
                 blob.reload()
-                raw = blob.download_as_text(encoding="utf-8")
                 storage_generation = str(blob.generation or "")
+                raw = blob.download_as_text(encoding="utf-8", if_generation_match=int(storage_generation))
                 if not storage_generation:
                     return _error_empty()
             else:
@@ -2672,6 +2672,7 @@ def load_beta_recipient_config() -> Dict[str, Any]:
         "version": int(data.get("version") or 1),
         "load_ok": True,
         "_storage_generation": storage_generation,
+        "last_edit_operation_id": str(data.get("last_edit_operation_id") or ""),
     }
 
 
@@ -2682,15 +2683,19 @@ def save_beta_recipient_config(
     updated_by: str = "admin",
     version: int = 1,
     expected_generation: Optional[str] = None,
+    operation_id: str = "",
+    updated_at: Optional[str] = None,
 ) -> None:
     """Persist the recipient config, optionally only from the version just read."""
     payload = {
         "recipients": [str(r).strip().lower() for r in recipients],
         "disabled_recipients": [str(r).strip().lower() for r in (disabled_recipients or [])],
-        "updated_at": now_kst_iso(),
+        "updated_at": updated_at or now_kst_iso(),
         "updated_by": updated_by,
         "version": max(1, int(version)),
     }
+    if operation_id:
+        payload["last_edit_operation_id"] = operation_id
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     if _uses_gcs_backend():
         blob = _get_gcs_bucket().blob(_BETA_RECIPIENTS_GCS_KEY)

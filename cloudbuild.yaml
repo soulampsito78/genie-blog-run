@@ -38,6 +38,7 @@ steps:
       - unittest
       - -v
       - tests.test_admin_beta_delegation
+      - tests.test_admin_beta_edits
       - tests.test_delegated_internal_route
       - tests.test_delegated_grant_release_path
       - tests.test_keysuri_customer_delivery

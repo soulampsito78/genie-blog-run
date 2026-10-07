@@ -306,7 +306,9 @@ class BetaRecipientConfigGcsCasTests(unittest.TestCase):
         def reload(self):
             self.generation = self.state["generation"]
 
-        def download_as_text(self, encoding="utf-8"):
+        def download_as_text(self, encoding="utf-8", if_generation_match=None):
+            if if_generation_match is not None and if_generation_match != self.state["generation"]:
+                raise BetaRecipientConfigGcsCasTests.PreconditionFailed()
             return self.state["raw"]
 
         def upload_from_string(self, text, content_type=None, if_generation_match=None):
@@ -693,6 +695,21 @@ class AdminCustomerRecipientsRouteTests(unittest.TestCase):
         return self.client.get(url, cookies={"genie_admin_session": self.session_cookie})
 
     def _authed_post(self, url: str, data: dict):
+        # Exercise the normal authenticated, snapshot-bound form contract.
+        # Missing/tampered context has separate negative coverage.
+        if url in {"/admin/customer-recipients/add", "/admin/customer-recipients/remove"}:
+            import html
+            import re
+            page = self._authed_get("/admin/customer-recipients")
+            for attrs, body in re.findall(r"<form\b([^>]*)>(.*?)</form>", page.text, re.S):
+                if not re.search(r"action=['\"]" + re.escape(url) + r"['\"]", attrs):
+                    continue
+                fields = {name: html.unescape(value) for _, name, _, value in
+                    re.findall(r"name=(['\"])(.*?)\1\s+value=(['\"])(.*?)\3", body)}
+                if url.endswith("remove") and fields.get("email") != data.get("email"):
+                    continue
+                data = {**fields, **data}
+                break
         return self.client.post(url, data=data, cookies={"genie_admin_session": self.session_cookie})
 
     def test_get_requires_login(self):
@@ -719,7 +736,8 @@ class AdminCustomerRecipientsRouteTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("/admin/customer-recipients/delegation/activate", resp.text)
         self.assertIn("현재 1명 · 3개 상품 자동발송 권한 활성화", resp.text)
-        self.assertIn("활성화 시점의 정확한 1명에게만", resp.text)
+        self.assertIn("현재 ACTIVE 승인과 정확히 일치하는 명단", resp.text)
+        self.assertIn("철회·중지된 승인은 되살리지 않습니다", resp.text)
         self.assertIn(f"베타 운영 상한은 {MAX_BETA_RECIPIENT_COUNT}명", resp.text)
 
     def test_add_valid_recipient(self):

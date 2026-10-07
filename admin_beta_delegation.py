@@ -60,8 +60,8 @@ def _read_current_with_generation() -> tuple[dict[str, Any] | None, str]:
             if not blob.exists():
                 return None, "0"
             blob.reload()
-            raw = blob.download_as_text()
             generation = str(blob.generation or "")
+            raw = blob.download_as_text(if_generation_match=int(generation))
         else:
             path = store._local_path(_CURRENT_KEY)
             if not path.is_file():
@@ -194,6 +194,7 @@ def activate_admin_beta_delegation(
     products: Iterable[str],
     operator_id: str,
     expected_count: int | None = None,
+    expected_configuration_sha256: str | None = None,
     now: dt.datetime | None = None,
 ) -> dict[str, Any]:
     """Persist one exact, revocable grant; normal publications need no new click."""
@@ -208,7 +209,12 @@ def activate_admin_beta_delegation(
     # The server derives the cohort from durable storage. ``expected_count`` is
     # retained only as an optional optimistic assertion for non-HTTP callers;
     # it never authorizes a count supplied by an admin form.
+    pointer, expected_generation = _read_current_with_generation()
+    if pointer and pointer.get("status") == "EDITING":
+        raise DeliverySafetyError("ADMIN_BETA_EDIT_PENDING")
     cohort = _current_cohort(expected_count=expected_count)
+    if expected_configuration_sha256 is not None and cohort["recipient_configuration_hash"] != expected_configuration_sha256:
+        raise DeliverySafetyError("ADMIN_BETA_DELEGATION_CONFIRMATION_CHANGED")
     payload = {
         "schema": DELEGATION_SCHEMA,
         "policy_version": DELEGATION_POLICY,
@@ -224,7 +230,8 @@ def activate_admin_beta_delegation(
     key = f"admin_beta_delegation/grants/{payload['grant_id']}.json"
     if not _create_json_once(key, payload) and _read_json(key) != payload:
         raise DeliverySafetyError("ADMIN_BETA_DELEGATION_GRANT_CONFLICT")
-    _, expected_generation = _read_current_with_generation()
+    if _current_cohort() != cohort:
+        raise DeliverySafetyError("ADMIN_BETA_DELEGATION_COHORT_CHANGED")
     _compare_and_swap_current(
         expected_generation,
         {
@@ -255,15 +262,30 @@ def revoke_admin_beta_delegation(
         "reason": str(reason).strip()[:240],
         "revoked_at": instant.astimezone(dt.timezone.utc).isoformat(),
     }
+    if pointer.get("edit_operation_id"):
+        record["edit_operation_id"] = pointer["edit_operation_id"]
+        record["edit_intent_sha256"] = pointer.get("edit_intent_sha256", "")
     _compare_and_swap_current(expected_generation, record)
     return record
 
 
-def load_active_admin_beta_delegation() -> dict[str, Any]:
+def load_active_admin_beta_delegation(*, reconcile_edits: bool = True) -> dict[str, Any]:
     from admin_safety_store import _read_json
     from delegated_delivery_safety import DeliverySafetyError
 
     pointer, pointer_generation = _read_current_with_generation()
+    if reconcile_edits and isinstance(pointer, dict) and pointer.get("status") == "EDITING":
+        # Existing authority reads (including natural runs) recover only this
+        # pointer-bound authenticated intent, not arbitrary current recipients.
+        # The edit implementation uses reconcile_edits=False to avoid recursion.
+        from admin_beta_edits import reconcile_pending_edit
+        try:
+            reconcile_pending_edit()
+        except DeliverySafetyError:
+            raise
+        except Exception as exc:
+            raise DeliverySafetyError("ADMIN_BETA_EDIT_PENDING") from exc
+        pointer, pointer_generation = _read_current_with_generation()
     if not isinstance(pointer, dict) or pointer.get("status") != "ACTIVE":
         raise DeliverySafetyError("ADMIN_BETA_DELEGATION_NOT_ACTIVE")
     grant_id = str(pointer.get("grant_id") or "")
