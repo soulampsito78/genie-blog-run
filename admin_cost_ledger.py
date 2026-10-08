@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
@@ -324,6 +325,11 @@ def build_cost_record(meta: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
         "owner_review_url": meta.get("owner_review_url") or meta.get("admin_review_url"),
         "artifact_url": meta.get("artifact_url") or _artifact_display_path(run_id),
     }
+    provenance = image_usage.get("image_token_provenance")
+    if isinstance(provenance, Mapping):
+        # JSON-only additive observation. CSV columns and billing values stay
+        # unchanged, and callers retain ownership of their nested input data.
+        record["image_token_provenance"] = deepcopy(dict(provenance))
     record.update(infra_estimate)
     record["ai_model_direct_cost_usd"] = cost_estimate.get("total_cost_usd")
     record["allocated_shared_overhead_usd"] = meta.get("allocated_shared_overhead_usd")

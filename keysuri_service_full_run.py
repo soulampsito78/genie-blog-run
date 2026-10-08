@@ -5899,6 +5899,14 @@ def _run_keysuri_service_full_run_impl(
             image_usage[target] = int(image_usage.get(target) or 0) + int(
                 bottom_image_meta.get(source) or 0
             )
+        from image_usage_provenance import image_token_provenance, merge_image_token_provenance
+
+        image_usage["image_token_provenance"] = merge_image_token_provenance(
+            [image_usage["image_token_provenance"],
+             bottom_image_meta.get("bottom_shot_image_token_provenance")
+             or image_token_provenance(bottom_image_meta.get("bottom_shot_image_output_tokens"))],
+            image_usage.get("image_output_tokens"),
+        )
     meta.update(image_usage)
     try:
         cost_estimate = estimate_keysuri_gemini_cost(

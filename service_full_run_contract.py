@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from image_usage_provenance import image_token_provenance, merge_image_token_provenance
 
 IMAGE_SOURCE_GENERATED = "generated"
 IMAGE_SOURCE_FALLBACK = "fallback"
@@ -93,6 +94,7 @@ class ServiceImageOutcome:
     image_output_tokens: Optional[int] = None
     image_evidence_confidence: Optional[str] = None
     image_evidence_source: Optional[str] = None
+    image_token_provenance: Optional[Dict[str, Any]] = None
 
     @property
     def ok(self) -> bool:
@@ -124,6 +126,8 @@ class ServiceImageOutcome:
             or ("medium" if self.ok else None),
             "image_evidence_source": self.image_evidence_source
             or ("service_image_success_contract" if self.ok else None),
+            "image_token_provenance": self.image_token_provenance
+            if self.image_token_provenance is not None else image_token_provenance(self.image_output_tokens),
             "generated_image_count_semantics": "paid_successful_api_outputs",
         }
 
@@ -271,6 +275,10 @@ def build_service_artifact_fields(
                 ),
                 "image_output_tokens": sum(item.image_output_tokens or 0 for item in outcomes)
                 or None,
+                "image_token_provenance": merge_image_token_provenance(
+                    [item["image_token_provenance"] for item in outcome_usage],
+                    sum(item.image_output_tokens or 0 for item in outcomes) or None,
+                ),
                 "generated_image_count_semantics": "paid_successful_api_outputs",
                 "image_evidence_confidence": next(
                     (item.image_evidence_confidence for item in outcomes if item.image_evidence_confidence),

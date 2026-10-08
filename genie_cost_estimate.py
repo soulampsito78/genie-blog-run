@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import os
 import re
+from copy import deepcopy
 from typing import Any, Dict, Mapping, Optional, Sequence
+from image_usage_provenance import image_token_provenance
 
 GOOGLE_CLOUD_VERTEX_PRICING_URL = (
     "https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing"
@@ -402,6 +404,17 @@ def estimate_genie_generation_cost(
                     successful_output_count * int(image_contract["output_tokens_per_image"])
                 )
                 image_usage_data["image_output_tokens"] = image_output_tokens
+                upstream_provenance = image_usage_data.get("image_token_provenance") or {}
+                if not isinstance(upstream_provenance, Mapping):
+                    upstream_provenance = {}
+                image_usage_data["image_token_provenance"] = image_token_provenance(
+                    image_output_tokens, calculated_tokens=image_output_tokens,
+                    tokens_per_output=int(image_contract["output_tokens_per_image"]),
+                    response_measured_tokens=upstream_provenance.get("response_measured_output_tokens"),
+                    response_usage_source=upstream_provenance.get("response_measured_usage_source", "UNKNOWN"),
+                )
+                if upstream_provenance:
+                    image_usage_data["image_token_provenance"]["upstream_provenance"] = deepcopy(upstream_provenance)
             image_cost = calculate_image_list_price(
                 pricing_mode=image_pricing_mode,
                 successful_output_count=successful_output_count,
@@ -414,6 +427,8 @@ def estimate_genie_generation_cost(
                 successful_output_count=successful_output_count,
                 usd_per_image=image_price,
             )
+        if not isinstance(image_usage_data.get("image_token_provenance"), Mapping):
+            image_usage_data["image_token_provenance"] = image_token_provenance(image_output_tokens)
         failed_request_count = int(image_usage_data.get("image_failed_request_count") or 0)
         image_state_unknown = bool(
             image_model and not explicit_image_usage and successful_output_count == 0

@@ -5,6 +5,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
+from image_usage_provenance import image_token_provenance
 
 from service_full_run_contract import (
     ERROR_IMAGE_GENERATION_FAILED,
@@ -119,6 +120,14 @@ def invoke_vertex_image_generation(
             ),
             image_evidence_confidence="high",
             image_evidence_source="runtime_vertex_response_image_parts",
+            image_token_provenance=image_token_provenance(
+                output_count * GEMINI_2_5_FLASH_IMAGE_OUTPUT_TOKENS
+                if normalized_model == "gemini-2.5-flash-image" else None,
+                calculated_tokens=(output_count * GEMINI_2_5_FLASH_IMAGE_OUTPUT_TOKENS
+                                   if normalized_model == "gemini-2.5-flash-image" else None),
+                tokens_per_output=(GEMINI_2_5_FLASH_IMAGE_OUTPUT_TOKENS
+                                   if normalized_model == "gemini-2.5-flash-image" else None),
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("invoke_vertex_image_generation failed: %s", exc)

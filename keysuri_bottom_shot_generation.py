@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
+from image_usage_provenance import image_token_provenance
 
 from keysuri_bottom_shot_prompt_builder import (
     ASSET01_PATH,
@@ -144,6 +145,7 @@ def generate_keysuri_korea_bottom_v6(
         "bottom_shot_cache_reuse_count": 0,
         "bottom_shot_static_fallback_count": 0,
         "bottom_shot_image_output_tokens": None,
+        "bottom_shot_image_token_provenance": image_token_provenance(None),
         "bottom_shot_image_evidence_confidence": None,
         "bottom_shot_image_evidence_source": None,
         "bottom_shot_prompt_contract_version": "v6",
@@ -257,6 +259,11 @@ def generate_keysuri_korea_bottom_v6(
         if model.lower() == "gemini-2.5-flash-image":
             metadata["bottom_shot_image_output_tokens"] = (
                 metadata["bottom_shot_successful_output_count"] * 1290
+            )
+            metadata["bottom_shot_image_token_provenance"] = image_token_provenance(
+                metadata["bottom_shot_image_output_tokens"],
+                calculated_tokens=metadata["bottom_shot_image_output_tokens"],
+                tokens_per_output=1290,
             )
         return BottomShotGenerationResult(
             ok=True,
