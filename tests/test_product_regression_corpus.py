@@ -6,6 +6,7 @@ import json
 import unittest
 from pathlib import Path
 from typing import Any, Dict, Tuple
+from tests.synthetic_today_source_binding import bind_synthetic_today_sources
 
 from product_surface_contract import (
     CUSTOMER_SURFACE_PASS,
@@ -48,6 +49,12 @@ class ProductRegressionCorpusTests(unittest.TestCase):
         for entry in fixtures:
             with self.subTest(fixture=entry["id"]):
                 structured, source_input = _load_case(entry)
+                # This historical GOOD excerpt predates source fields. Bind a
+                # synthetic test context without modifying persisted evidence.
+                if entry["id"] == "today_20260416_contract_known_good":
+                    structured, source_input = bind_synthetic_today_sources(
+                        structured, fixture="april-copy-positive-excerpt"
+                    )
                 result = evaluate_product_surface(
                     entry["mode"], structured, source_input=source_input
                 )

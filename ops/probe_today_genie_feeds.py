@@ -19,6 +19,7 @@ import shutil
 import sys
 from datetime import date, datetime, timedelta
 from email.utils import parsedate_to_datetime
+from html import unescape as html_unescape
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
@@ -836,7 +837,20 @@ def parse_cnbc_rss_xml(xml: str, *, min_items: int = 4, max_items: int = 6) -> L
                 item_date = ""
         if not item_date:
             continue
-        out.append({"headline": headline, "source": "CNBC", "date": item_date})
+        # Preserve source-supplied provenance; never derive a URL from title.
+        # Missing/invalid links remain visible to the downstream draft guard.
+        link_m = re.search(r"<link>(.*?)</link>", item, re.S)
+        link = link_m.group(1).strip() if link_m else ""
+        if link.startswith("<![CDATA[") and link.endswith("]]>"):
+            link = link[9:-3]
+        else:
+            link = html_unescape(link)
+        out.append({
+            "headline": headline, "source": "CNBC", "date": item_date,
+            "url": link, "source_url": link,
+            "source_url_origin": "rss_link",
+            "published_at": pub_m.group(1).strip() if pub_m else "",
+        })
         if len(out) >= max_items:
             break
     if len(out) < min_items:

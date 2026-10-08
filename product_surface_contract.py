@@ -21,6 +21,7 @@ import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
+from today_genie_source_provenance import SOURCE_PROVENANCE_ISSUE, watchpoint_source_issue
 
 TECHNICAL_TEST_PASS = "TECHNICAL_TEST_PASS"
 RUNTIME_SAFETY_PASS = "RUNTIME_SAFETY_PASS"
@@ -428,7 +429,7 @@ def evaluate_product_surface(
     *,
     source_input: Mapping[str, Any] | None = None,
 ) -> ProductSurfaceResult:
-    """Evaluate only reader-facing fields; identity, URLs and source labels are excluded."""
+    """Inspect copy plus Today input-link binding; never certify source facts."""
     fields = _collect_surface_fields(mode, structured_output)
     source_titles = _source_headlines(source_input)
     findings: List[ProductSurfaceFinding] = []
@@ -507,6 +508,10 @@ def evaluate_product_surface(
         if not item.get(PRODUCT_REVIEW_MARKER_KEY):
             continue
         reason = _one_line(item.get(PRODUCT_REVIEW_REASON_KEY)) or "unspecified"
+        if mode == "today_genie" and reason == item.get("source_provenance_issue"):
+            # The dedicated input-binding check below reports the URL defect;
+            # do not mislabel it as a missing Korean title/fact sentence.
+            continue
         findings.append(
             ProductSurfaceFinding(
                 MISSING_GROUNDED_READER_TITLE,
@@ -515,6 +520,27 @@ def evaluate_product_surface(
                 (index,),
             )
         )
+
+    # Source-link syntax is not article truth. Re-check the original input at
+    # this inspect-only boundary, even if a caller removed assembly markers.
+    if mode == "today_genie":
+        from today_genie_top3_assembly import collect_valid_major_overseas_news, canonical_news_id
+
+        selected = collect_valid_major_overseas_news(dict(source_input or {}), max_items=3)
+        for index, item in enumerate(_surface_items(mode, structured_output)):
+            original = selected[index][1] if index < len(selected) else None
+            issue = watchpoint_source_issue(
+                item, original,
+                allow_market_feed=source_input is not None and index >= len(selected),
+            )
+            if original is not None and item.get("news_id") != canonical_news_id(original):
+                issue = "selected_article_identity_mismatch"
+            if issue:
+                findings.append(ProductSurfaceFinding(
+                    SOURCE_PROVENANCE_ISSUE, f"items[{index + 1}]",
+                    f"선정 기사 원본 링크와 입력 결속 검수가 필요합니다: {issue}",
+                    (index + 1,),
+                ))
 
     # Repetition is compared across cards, never between aliases on one card.
     card_sentences: Dict[int, List[Tuple[str, str]]] = {}

@@ -4,6 +4,7 @@ import json
 import re
 from html import escape as html_escape, unescape as html_unescape
 from typing import Any, Dict, List, Optional, Tuple
+from today_genie_source_provenance import article_url_issue
 
 # Email: one-line finance discipline (server-owned, not model output)
 TODAY_EMAIL_CLOSING_CRITERION = (
@@ -1010,6 +1011,21 @@ def _email_summary_body_paragraphs(summary_raw: str, greeting_raw: str) -> List[
     return [p for p in filtered if p][:3]
 
 
+def _today_news_source_link_html(item: Dict[str, Any]) -> str:
+    """Render only the safe bound input URL; no inferred or diagnostic prose."""
+    url = item.get("source_url")
+    if item.get("source_provenance_status") != "INPUT_URL_BOUND_NOT_FACT_PASS" or article_url_issue(url):
+        return ""
+    label = item.get("source_name") or "원문"
+    published = item.get("source_published_at") or ""
+    timestamp = f" · {_safe(published)}" if published else ""
+    return (
+        '<p style="margin:8px 0 0;font-size:12px;line-height:1.6;color:#666;">'
+        f'<a href="{html_escape(url, quote=True)}" rel="noopener noreferrer">출처: {_safe(label)}</a>'
+        f"{timestamp}</p>"
+    )
+
+
 def _build_today_genie_email_editorial_html(data: Dict[str, Any]) -> str:
     """today_genie email body only (no image slots); use email-safe block tags (div/p/ul/li)."""
     title = _safe(data.get("title", ""))
@@ -1030,6 +1046,7 @@ def _build_today_genie_email_editorial_html(data: Dict[str, Any]) -> str:
         '<li style="margin:0 0 12px 0;">'
         f'<p style="margin:0 0 6px 0;font-size:16px;line-height:1.5;font-weight:700;color:#1a1a1a;">{_safe(item.get("headline"))}</p>'
         f'<p style="margin:0;font-size:15px;line-height:1.7;color:#1a1a1a;">{_safe(item.get("detail"))}</p>'
+        f'{_today_news_source_link_html(item)}'
         "</li>"
         for item in data.get("key_watchpoints", [])
         if isinstance(item, dict)

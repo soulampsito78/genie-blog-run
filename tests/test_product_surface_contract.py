@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import copy
 import unittest
+from unittest.mock import patch
+from admin_store import can_approve_customer_send
+from today_genie_source_provenance import SOURCE_PROVENANCE_ISSUE
+from tests.synthetic_today_source_binding import bind_synthetic_today_sources
 
 from product_surface_contract import (
     CUSTOMER_SURFACE_PASS,
@@ -21,6 +25,7 @@ from product_surface_contract import (
     TRUNCATED_ENGLISH_HEADLINE,
     evaluate_product_surface,
     prepare_final_customer_copy,
+    product_surface_run_fields,
     runtime_safety_status,
 )
 
@@ -30,6 +35,51 @@ def _codes(result) -> set[str]:
 
 
 class ProductSurfaceContractTests(unittest.TestCase):
+    def _synthetic_today_provenance_fixture(self):
+        payload = {"key_watchpoints": [
+            {"headline": "연준 문서의 발표 조건", "detail": "연준은 회의 자료에 정책 논의의 범위를 설명했고 발표 시점은 후속 확인사항입니다."},
+            {"headline": "엔비디아 공급 계약의 기준", "detail": "엔비디아는 제품별 계약 조건을 공개했으며 생산과 실제 납품은 구분할 필요가 있습니다."},
+            {"headline": "운송 노선의 비용 구조", "detail": "운송 업체는 노선별 운영 계획을 설명하고 추가 계약의 범위는 별도 자료로 공개할 예정입니다."},
+        ]}
+        return bind_synthetic_today_sources(payload, fixture="release-provenance-counterexamples")
+
+    def _assert_provenance_blocks_before_readiness(self, payload, source):
+        before = copy.deepcopy((payload, source))
+        inspected = prepare_final_customer_copy("today_genie", payload, source_input=source)
+        fields = product_surface_run_fields(inspected)
+        self.assertIn(SOURCE_PROVENANCE_ISSUE, fields["product_surface_issue_codes"])
+        self.assertEqual(fields["customer_surface_status"], PRODUCT_REVIEW_REQUIRED)
+        meta = {"mode": "today_genie", "owner_review_status": "pending_review",
+                "customer_delivery_status": "not_sent", "validation_result": "pass",
+                "artifact_status": "emailed", **fields}
+        with patch("delegated_delivery_safety.publication_guard_required",
+                   side_effect=AssertionError("Must not reach readiness")) as readiness:
+            self.assertEqual(can_approve_customer_send(meta, has_email_html=True),
+                             (False, "product_surface_remediation_needed"))
+            readiness.assert_not_called()
+        self.assertEqual((payload, source), before)
+
+    def test_today_missing_original_links_block_partial_and_all_before_readiness(self):
+        for missing_count in (1, 3):
+            with self.subTest(missing=missing_count):
+                payload, source = self._synthetic_today_provenance_fixture()
+                for index in range(missing_count):
+                    source["top_market_news"][index]["url"] = ""
+                    payload["key_watchpoints"][index]["source_url"] = ""
+                self._assert_provenance_blocks_before_readiness(payload, source)
+
+    def test_today_signed_private_link_blocks_before_readiness(self):
+        payload, source = self._synthetic_today_provenance_fixture()
+        signed = source["top_market_news"][0]["url"] + "?x-goog-signature=synthetic-only"
+        source["top_market_news"][0]["url"] = signed
+        payload["key_watchpoints"][0]["source_url"] = signed
+        self._assert_provenance_blocks_before_readiness(payload, source)
+
+    def test_today_original_source_substitution_blocks_before_readiness(self):
+        payload, source = self._synthetic_today_provenance_fixture()
+        payload["key_watchpoints"][1]["source_url"] = "https://different.example.test/articles/synthetic-substitution"
+        self._assert_provenance_blocks_before_readiness(payload, source)
+
     def test_truncated_english_heading_and_raw_source_copy_are_context_aware(self) -> None:
         source = {"top_market_news": [{"headline": "Lululemon stock plunges 10% after outlook cut"}]}
         payload = {
@@ -53,8 +103,9 @@ class ProductSurfaceContractTests(unittest.TestCase):
                 }
             ]
         }
+        payload, source = bind_synthetic_today_sources(payload, fixture="company-ticker-copy")
         self.assertEqual(
-            evaluate_product_surface("today_genie", payload).status,
+            evaluate_product_surface("today_genie", payload, source_input=source).status,
             CUSTOMER_SURFACE_PASS,
         )
 

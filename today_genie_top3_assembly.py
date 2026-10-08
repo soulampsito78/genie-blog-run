@@ -13,6 +13,7 @@ from product_surface_contract import (
     is_grounded_korean_reader_sentence,
     is_grounded_korean_reader_title,
 )
+from today_genie_source_provenance import input_source_fields
 
 # Shown instead of a fabricated title when no grounded Korean reader title
 # exists.  It is an operator marker, not a claim about the article: the card
@@ -591,6 +592,12 @@ def assemble_key_watchpoints_from_slots(
             if nh:
                 detail = _inject_headline_grounding_anchor(detail, nh)
         watchpoint = {"headline": hk, "detail": detail, "basis": "fact"}
+        watchpoint["source_kind"] = "selected_news" if position < len(valid) else "market_feed"
+        if position < len(valid):
+            provenance = input_source_fields(valid[position][1])
+            watchpoint.update(provenance)
+            if provenance["source_provenance_issue"]:
+                review_reason = review_reason or provenance["source_provenance_issue"]
         if news_id:
             watchpoint["news_id"] = news_id
         if review_reason:
