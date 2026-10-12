@@ -223,3 +223,83 @@ class ProductSurfaceContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RuntimeRiskListBoundaryTests(unittest.TestCase):
+    """Portable new list boundary, collected by the existing CI module loader.
+
+    No external baseline tree or prior13/16 test module is imported. The original
+    file above is retained byte-for-byte. CI imports this module, so this class
+    is collected despite the preserved earlier direct-script main guard.
+    """
+
+    def _prepare(self, payload):
+        return prepare_final_customer_copy("today_genie", payload, source_input={"date": "2026-10-12"})
+
+    def _role_paths(self, output):
+        from temporal_context_diagnostic import ROLE_CONTEXT_UNKNOWN
+        return [f["path"] for f in output[PRODUCT_SURFACE_DIAGNOSTIC_KEY]["findings"]
+                if f["code"] == ROLE_CONTEXT_UNKNOWN]
+
+    def test_service_list_shape_detects_third_current_span(self):
+        payload = {"summary": "현재 트럼프 전 대통령의 계획을 살핍니다.",
+                   "key_watchpoints": [{"detail": "현재 밴스 의원의 입장을 점검합니다."}],
+                   "risk_check": [{"risk": "정책 발언", "detail": "트럼프 전 대통령의 발언을 주시합니다.", "basis": "interpretation"}]}
+        output = self._prepare(payload)
+        self.assertEqual(self._role_paths(output), ["summary", "items[1].detail", "risk_check[1].detail"])
+        self.assertEqual(output[PRODUCT_SURFACE_DIAGNOSTIC_KEY]["customer_surface_status"], PRODUCT_REVIEW_REQUIRED)
+
+    def test_each_row_collects_both_fields_in_original_order(self):
+        payload = {"risk_check": [
+            {"risk": "현재 트럼프 대통령의 입장입니다.", "detail": "현재 밴스 의원의 발언입니다.", "basis": "fact"},
+            {"risk": "트럼프 전 대통령의 발언입니다.", "detail": "밴스 부통령의 계획입니다.", "basis": "speculation"}]}
+        output = self._prepare(payload)
+        self.assertEqual(self._role_paths(output), ["risk_check[1].risk", "risk_check[1].detail", "risk_check[2].risk", "risk_check[2].detail"])
+
+    def test_skipped_rows_keep_original_positions(self):
+        payload = {"risk_check": [None, "not an object", {},
+                   {"risk": "", "detail": "현재 밴스 의원의 발언입니다."}, 42,
+                   {"risk": "현재 트럼프 대통령입니다.", "detail": None}]}
+        self.assertEqual(self._role_paths(self._prepare(payload)), ["risk_check[4].detail", "risk_check[6].risk"])
+
+    def test_empty_and_nontext_values_are_safe(self):
+        for risks in (None, [], "text", 42, [None, [], {}, {"risk": "  ", "detail": 42}, {"risk": False, "detail": None}]):
+            with self.subTest(risks=risks):
+                self.assertEqual(self._role_paths(self._prepare({"risk_check": risks})), [])
+
+    def test_body_basis_order_and_input_are_preserved(self):
+        payload = {"summary": "임의 교정하지 않습니다.", "risk_check": [
+            {"risk": "정책", "detail": "현재 트럼프 전 대통령입니다.", "basis": "fact", "extra": [1, 2]},
+            None, {"risk": "현재 밴스 부통령입니다.", "detail": "전망", "basis": "speculation"}]}
+        before = copy.deepcopy(payload)
+        output = self._prepare(payload)
+        self.assertEqual(payload, before)
+        del output[PRODUCT_SURFACE_DIAGNOSTIC_KEY]
+        self.assertEqual(output, before)
+        self.assertIsNot(output["risk_check"], payload["risk_check"])
+
+    def test_object_support_and_other_product_contracts_are_retained(self):
+        output = self._prepare({"risk_check": {"risk": "현재 밴스 의원입니다.", "detail": "입장을 점검합니다."}})
+        self.assertEqual(self._role_paths(output), ["risk_check.risk"])
+        payload = {"summary": "문구입니다.", "risk_check": [
+            {"risk": "현재 트럼프 전 대통령입니다.", "detail": "현재 밴스 의원입니다."}]}
+        expected_diagnostic = {"customer_surface_status": CUSTOMER_SURFACE_PASS, "customer_ready": True,
+                               "issue_codes": [], "findings": [], "contract_version": "genie-product-surface-v1",
+                               "structural_similarity_threshold": 0.82}
+        for mode in ("keysuri_global_tech", "keysuri_korea_tech"):
+            with self.subTest(mode=mode):
+                result = prepare_final_customer_copy(mode, payload)
+                self.assertEqual(result.pop(PRODUCT_SURFACE_DIAGNOSTIC_KEY), expected_diagnostic)
+                self.assertEqual(result, payload)
+
+    def test_existing_source_body_and_fact_boundaries_survive(self):
+        from temporal_context_diagnostic import ROLE_CONTEXT_UNKNOWN
+        payload = {"summary": "TODO", "key_watchpoints": [{"detail": "확인할 기사입니다."}],
+                   "risk_check": [{"risk": "현재 밴스 의원의 정책입니다.", "detail": "리스크를 살펴봅니다.", "basis": "fact"}]}
+        output = self._prepare(payload)
+        diagnostic = output[PRODUCT_SURFACE_DIAGNOSTIC_KEY]
+        self.assertIn(INTERNAL_PLACEHOLDER_LEAK, diagnostic["issue_codes"])
+        self.assertIn(SOURCE_PROVENANCE_ISSUE, diagnostic["issue_codes"])
+        self.assertIn(ROLE_CONTEXT_UNKNOWN, diagnostic["issue_codes"])
+        self.assertEqual(self._role_paths(output), ["risk_check[1].risk"])
+        self.assertEqual(diagnostic["temporal_context"]["fact_verdict"], "NOT_CERTIFIED")

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 from today_genie_source_provenance import SOURCE_PROVENANCE_ISSUE, watchpoint_source_issue
+from temporal_context_diagnostic import ROLE_CONTEXT_UNKNOWN, inspect_role_fields
 
 TECHNICAL_TEST_PASS = "TECHNICAL_TEST_PASS"
 RUNTIME_SAFETY_PASS = "RUNTIME_SAFETY_PASS"
@@ -389,6 +390,23 @@ def _collect_surface_fields(mode: str, payload: Mapping[str, Any]) -> List[Surfa
             if value:
                 fields.append(SurfaceField(f"items[{index}].{key}", value, role, index))
 
+    if mode == "today_genie":
+        raw_risks = payload.get("risk_check")
+        if isinstance(raw_risks, Mapping):
+            risk_items = (("risk_check", raw_risks),)
+        elif isinstance(raw_risks, list):
+            # Keep original positions even when malformed rows are skipped.
+            risk_items = ((f"risk_check[{index}]", item)
+                          for index, item in enumerate(raw_risks, start=1)
+                          if isinstance(item, Mapping))
+        else:
+            risk_items = ()
+        for path, item in risk_items:
+            for key in ("risk", "detail"):
+                value = _one_line(item.get(key))
+                if value:
+                    fields.append(SurfaceField(f"{path}.{key}", value, "body"))
+
     deep_dive = payload.get("deep_dive")
     if isinstance(deep_dive, Mapping):
         for key in ("section_heading", "body"):
@@ -650,6 +668,21 @@ def evaluate_product_surface(
                 )
             )
 
+    if mode == "today_genie":
+        # No generated flag or source-link PASS supplies independent role facts.
+        # An explicit runtime date only scopes time; it does not certify events.
+        target_date = None
+        if isinstance(source_input, Mapping):
+            target_date = source_input.get("target_date") or source_input.get("date")
+        for role_finding in inspect_role_fields(fields, target_date=target_date):
+            if role_finding.review_required:
+                findings.append(ProductSurfaceFinding(
+                    ROLE_CONTEXT_UNKNOWN, role_finding.path,
+                    "현재 직함과 사건 시점의 독립 근거가 확인되지 않아 검수가 필요합니다: "
+                    + role_finding.reason,
+                    (role_finding.card_index,) if role_finding.card_index > 0 else (),
+                ))
+
     unique = _dedupe_findings(findings)
     return ProductSurfaceResult(
         PRODUCT_REVIEW_REQUIRED if unique else CUSTOMER_SURFACE_PASS,
@@ -678,6 +711,17 @@ def prepare_final_customer_copy(
     out = copy.deepcopy(dict(structured_output))
     result = evaluate_product_surface(mode, out, source_input=source_input)
     out[PRODUCT_SURFACE_DIAGNOSTIC_KEY] = result.as_dict()
+    if mode == "today_genie":
+        out[PRODUCT_SURFACE_DIAGNOSTIC_KEY]["temporal_context"] = {
+            "contract_version": "today-role-context-diagnostic-v1",
+            "fact_verdict": "NOT_CERTIFIED",
+            "independent_role_evidence": "NOT_INJECTED",
+            "coverage": "Trump/Vance named roles and unresolved role pronouns only",
+            "publication_date_used_as_event_date": False,
+            "current_role_review_required": any(
+                finding.code == ROLE_CONTEXT_UNKNOWN for finding in result.findings
+            ),
+        }
     return out
 
 
