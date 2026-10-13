@@ -220,6 +220,25 @@ def compare_natural_input_to_preflight(
     }
 
 
+def _model_call_status_from_response(
+    response_status: Optional[int], payload: Mapping[str, Any]
+) -> Optional[bool]:
+    """Return model-call status only when the response contains direct evidence."""
+    model_evidence = payload.get("model_call_evidence")
+    detail = payload.get("detail") if isinstance(payload.get("detail"), Mapping) else {}
+    if not isinstance(model_evidence, list):
+        model_evidence = detail.get("model_call_evidence")
+    if isinstance(model_evidence, list):
+        return bool(model_evidence)
+
+    reason = detail.get("reason") or payload.get("reason")
+    if (response_status == 403 and reason == "forbidden") or (
+        response_status == 503 and reason == "internal_job_token_not_configured"
+    ):
+        return False
+    return None
+
+
 def run_keysuri_reliability_generation(
     program_id: str,
     *,
@@ -385,7 +404,7 @@ def run_today_reliability_generation(
     response_status = None
     validation_result = ""
     issue_codes: List[str] = []
-    called_gemini = False
+    called_gemini: Optional[bool] = None
     api_url = "inprocess"
     error = None
 
@@ -394,17 +413,25 @@ def run_today_reliability_generation(
         from main import app
 
         client = TestClient(app)
-        resp = client.post("/", json={"type": "today_genie"})
+        resp = client.post(
+            "/",
+            json={"type": "today_genie"},
+            headers={
+                "X-Genie-Internal-Job-Token": os.getenv(
+                    "GENIE_INTERNAL_JOB_TOKEN", ""
+                ).strip()
+            },
+        )
         response_status = resp.status_code
         payload: Dict[str, Any] = {}
         try:
             payload = resp.json()
         except Exception:
             payload = {}
-        called_gemini = True
         if isinstance(payload, dict):
-            validation_result = str(payload.get("validation_result") or "")
             detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else {}
+            called_gemini = _model_call_status_from_response(response_status, payload)
+            validation_result = str(payload.get("validation_result") or "")
             if not validation_result and detail:
                 validation_result = str(
                     detail.get("runtime_validation_check", {}).get("validation_result")
@@ -446,7 +473,7 @@ def run_today_reliability_generation(
         payload = result_job.response_data if isinstance(result_job.response_data, dict) else {}
         response_status = result_job.response_status
         validation_result = str(payload.get("validation_result") or "")
-        called_gemini = response_status == 200
+        called_gemini = _model_call_status_from_response(response_status, payload)
         for item in payload.get("validation_issues") or []:
             if isinstance(item, dict) and item.get("code"):
                 issue_codes.append(str(item["code"]))
@@ -465,7 +492,12 @@ def run_today_reliability_generation(
         "preflight_canary": execution_class == EXECUTION_CLASS_PREFLIGHT_CANARY,
         "started_at": started,
         "finished_at": _now_kst_iso(),
-        "called_gemini": bool(called_gemini),
+        "called_gemini": called_gemini,
+        "model_usage_status": (
+            "confirmed_called" if called_gemini is True else
+            "confirmed_not_called" if called_gemini is False else
+            "unknown"
+        ),
         "called_image_api": 0,
         "smtp": 0,
         "customer": 0,

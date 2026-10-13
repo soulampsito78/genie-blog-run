@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,13 @@ _REISSUE_SCOPE_SUBJECT_PREFIXES = {
     "body_only": "[본문 재발행]",
     "image_only": "[이미지 재발행]",
 }
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep the internal auth header from following any redirect target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 GENIE_API_URL = os.getenv("GENIE_API_URL", "http://localhost:8080")
 GENIE_REQUEST_TIMEOUT = int(os.getenv("GENIE_REQUEST_TIMEOUT", "120"))
@@ -191,14 +199,20 @@ def run_genie_job(
         url,
         data=body,
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "X-Genie-Internal-Job-Token": os.getenv(
+                "GENIE_INTERNAL_JOB_TOKEN", ""
+            ).strip(),
+        },
     )
 
     last_exc = None
     retries = GENIE_API_RETRIES if transport_retries is None else max(0, transport_retries)
     for attempt in range(retries + 1):
         try:
-            with urllib.request.urlopen(req, timeout=GENIE_REQUEST_TIMEOUT) as resp:
+            opener = urllib.request.build_opener(_NoRedirectHandler())
+            with opener.open(req, timeout=GENIE_REQUEST_TIMEOUT) as resp:
                 status = resp.getcode()
                 raw = resp.read()
             break

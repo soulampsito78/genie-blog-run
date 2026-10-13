@@ -84,10 +84,14 @@ def test_a_429_then_success_same_logical_model_call(monkeypatch):
 
 def test_b_exhaustion_survives_api_and_artifact_boundary(isolated, monkeypatch):
     monkeypatch.setattr(main.time, 'sleep', lambda _: None)
+    monkeypatch.setenv('GENIE_INTERNAL_JOB_TOKEN', 'synthetic-root-token')
     model = Model([gexc.TooManyRequests('429')] * 3)
     monkeypatch.setattr(main, '_generate_impl', lambda job: invoke(model))
     with pytest.raises(HTTPException) as error:
-        main.generate(main.JobRequest(type='today_genie'))
+        main.generate(
+            main.JobRequest(type='today_genie'),
+            x_genie_internal_job_token='synthetic-root-token',
+        )
     assert error.value.status_code == 500
     payload = {'detail': error.value.detail}
     result = orchestrator.OrchestrationResult(

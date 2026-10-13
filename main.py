@@ -8,6 +8,7 @@ import math
 from contextvars import ContextVar
 import re
 import hashlib
+import hmac
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -15,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -2854,9 +2855,39 @@ def _generate_impl(job: JobRequest) -> Dict[str, Any]:
     }
 
 
+def _verify_root_internal_job_token(provided: Optional[str]) -> None:
+    """Fail closed on the internal-only generation route before model work."""
+    expected = os.getenv("GENIE_INTERNAL_JOB_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "failed", "reason": "internal_job_token_not_configured"},
+        )
+    # Direct Python calls do not receive FastAPI's injected Header value and
+    # may see the Header default object. Only accept an actual string token.
+    candidate = provided.strip() if isinstance(provided, str) else ""
+    try:
+        matches = bool(candidate) and hmac.compare_digest(candidate, expected)
+    except (TypeError, ValueError):
+        # compare_digest rejects non-ASCII str values; treat them as an
+        # ordinary invalid credential instead of allowing a 500 response.
+        matches = False
+    if not matches:
+        raise HTTPException(
+            status_code=403,
+            detail={"status": "failed", "reason": "forbidden"},
+        )
+
+
 @app.post("/")
-def generate(job: JobRequest) -> Dict[str, Any]:
+def generate(
+    job: JobRequest,
+    x_genie_internal_job_token: Optional[str] = Header(
+        None, alias="X-Genie-Internal-Job-Token"
+    ),
+) -> Dict[str, Any]:
     """Bounded memory evidence around the model API request itself."""
+    _verify_root_internal_job_token(x_genie_internal_job_token)
     with memory_evidence_scope() as recorder:
         recorder.record("request_start")
         calls = []

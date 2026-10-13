@@ -37,6 +37,7 @@ steps:
       - -m
       - unittest
       - -v
+      - tests.test_genie_root_auth
       - tests.test_admin_beta_delegation
       - tests.test_admin_beta_edits
       - tests.test_delegated_internal_route

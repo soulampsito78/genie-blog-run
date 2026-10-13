@@ -22,6 +22,7 @@ from main import app
 
 _ENDPOINT = "/internal/jobs/create-keysuri-owner-review"
 _TOKEN = "unit-test-internal-token"
+_ROOT_TOKEN = "unit-test-root-internal-token"
 
 
 # 이 엔드포인트 테스트들은 예약 트리거 + dry_run=False 를 사용하므로 실행일이
@@ -477,29 +478,44 @@ class KeysuriInternalJobsRegressionTests(unittest.TestCase):
 
     def test_keysuri_not_routable_via_root_post(self) -> None:
         client = TestClient(app)
-        resp = client.post("/", json={"type": "keysuri_global_tech"})
+        with mock.patch.dict(os.environ, {"GENIE_INTERNAL_JOB_TOKEN": _ROOT_TOKEN}, clear=False):
+            resp = client.post(
+                "/",
+                json={"type": "keysuri_global_tech"},
+                headers={"X-Genie-Internal-Job-Token": _ROOT_TOKEN},
+            )
         self.assertEqual(resp.status_code, 400)
         self.assertIn("Unsupported type", resp.json()["detail"])
 
     def test_today_genie_root_endpoint_unchanged(self) -> None:
         client = TestClient(app)
-        with mock.patch(
-            "main.build_runtime_input",
-            return_value={"today_genie_feed_gate": "block"},
-        ):
-            resp = client.post("/", json={"type": "today_genie"})
+        with mock.patch.dict(os.environ, {"GENIE_INTERNAL_JOB_TOKEN": _ROOT_TOKEN}, clear=False):
+            with mock.patch(
+                "main.build_runtime_input",
+                return_value={"today_genie_feed_gate": "block"},
+            ):
+                resp = client.post(
+                    "/",
+                    json={"type": "today_genie"},
+                    headers={"X-Genie-Internal-Job-Token": _ROOT_TOKEN},
+                )
         self.assertEqual(resp.status_code, 422)
         self.assertEqual(resp.json()["detail"]["reason"], "today_genie_feed_unavailable")
 
     def test_tomorrow_genie_root_endpoint_unchanged(self) -> None:
         client = TestClient(app, raise_server_exceptions=False)
-        with mock.patch("main.build_runtime_input", return_value={}):
-            with mock.patch("main.build_full_prompt", return_value="prompt") as build_prompt:
-                with mock.patch(
-                    "main.call_gemini",
-                    side_effect=RuntimeError("mocked-gemini"),
-                ) as call_gemini:
-                    resp = client.post("/", json={"type": "tomorrow_genie"})
+        with mock.patch.dict(os.environ, {"GENIE_INTERNAL_JOB_TOKEN": _ROOT_TOKEN}, clear=False):
+            with mock.patch("main.build_runtime_input", return_value={}):
+                with mock.patch("main.build_full_prompt", return_value="prompt") as build_prompt:
+                    with mock.patch(
+                        "main.call_gemini",
+                        side_effect=RuntimeError("mocked-gemini"),
+                    ) as call_gemini:
+                        resp = client.post(
+                            "/",
+                            json={"type": "tomorrow_genie"},
+                            headers={"X-Genie-Internal-Job-Token": _ROOT_TOKEN},
+                        )
         self.assertEqual(resp.status_code, 500)
         build_prompt.assert_called_once()
         call_gemini.assert_called_once_with("prompt", "tomorrow_genie", usage_sink={})

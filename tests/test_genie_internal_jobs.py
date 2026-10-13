@@ -427,22 +427,24 @@ class KeysuriEndpointRegressionTests(unittest.TestCase):
 class RootEndpointRegressionTests(unittest.TestCase):
     def test_today_genie_root_unchanged(self) -> None:
         client = TestClient(app)
-        with mock.patch(
-            "main.build_runtime_input",
-            return_value={"today_genie_feed_gate": "block"},
-        ):
-            resp = client.post("/", json={"type": "today_genie"})
+        with mock.patch.dict(os.environ, {"GENIE_INTERNAL_JOB_TOKEN": _TOKEN}, clear=False):
+            with mock.patch(
+                "main.build_runtime_input",
+                return_value={"today_genie_feed_gate": "block"},
+            ):
+                resp = client.post("/", json={"type": "today_genie"}, headers=_auth_headers())
         self.assertEqual(resp.status_code, 422)
 
     def test_tomorrow_genie_root_unchanged(self) -> None:
         client = TestClient(app, raise_server_exceptions=False)
-        with mock.patch("main.build_runtime_input", return_value={}):
-            with mock.patch("main.build_full_prompt", return_value="prompt"):
-                with mock.patch(
-                    "main.call_gemini",
-                    side_effect=RuntimeError("mocked-gemini"),
-                ):
-                    resp = client.post("/", json={"type": "tomorrow_genie"})
+        with mock.patch.dict(os.environ, {"GENIE_INTERNAL_JOB_TOKEN": _TOKEN}, clear=False):
+            with mock.patch("main.build_runtime_input", return_value={}):
+                with mock.patch("main.build_full_prompt", return_value="prompt"):
+                    with mock.patch(
+                        "main.call_gemini",
+                        side_effect=RuntimeError("mocked-gemini"),
+                    ):
+                        resp = client.post("/", json={"type": "tomorrow_genie"}, headers=_auth_headers())
         self.assertEqual(resp.status_code, 500)
 
 
