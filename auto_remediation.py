@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import html
 import hashlib
+import copy
 import logging
 import os
 import re
@@ -95,8 +96,13 @@ _INFRASTRUCTURE_CODES = frozenset(
     }
 )
 
+# Independent evidence cannot be created by regenerating the same source set.
+# Keep the product REVIEW and its dated-evidence dependency unchanged.
+_EVIDENCE_DEPENDENCY_CODES = frozenset({"customer_surface_current_office_context_unknown"})
+
 NON_REMEDIABLE_ISSUE_CODES = (
-    frozenset(FINANCE_SAFETY_CODES) | _TERMINAL_REGISTRY_CODES | _INFRASTRUCTURE_CODES
+    frozenset(FINANCE_SAFETY_CODES) | _TERMINAL_REGISTRY_CODES
+    | _INFRASTRUCTURE_CODES | _EVIDENCE_DEPENDENCY_CODES
 )
 
 # A ``*_repaired`` code records that the pipeline already fixed something. It is
@@ -652,6 +658,25 @@ def run_auto_remediation(
 
     child_run_id = str((result or {}).get("run_id") or "").strip()
     runner_error = str((result or {}).get("error") or "").strip()
+    failure_diagnostics: Dict[str, Any] = {}
+    failed_sections = (result or {}).get("reissue_top5_repair_failed_sections")
+    if isinstance(failed_sections, list):
+        # Internal parser codes only; never raw model text, mail or exception detail.
+        failure_diagnostics["automatic_remediation_failed_section_codes"] = [
+            code for code in failed_sections
+            if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_]{1,96}", code)
+        ]
+    generation_diagnostics = (result or {}).get("reissue_generation_diagnostics")
+    if isinstance(generation_diagnostics, dict):
+        # The service runner already applies its existing diagnostic allowlist.
+        failure_diagnostics["automatic_remediation_generation_diagnostics"] = copy.deepcopy(
+            generation_diagnostics
+        )
+    if (result or {}).get("reissue_generation_diagnostics_status") in {"AVAILABLE", "UNAVAILABLE"}:
+        failure_diagnostics["automatic_remediation_generation_diagnostics_status"] = result[
+            "reissue_generation_diagnostics_status"
+        ]
+    summary.update(failure_diagnostics)
     child_meta = load_run_artifact(child_run_id) if child_run_id else None
 
     if not (result or {}).get("ok") or not child_run_id:
@@ -662,6 +687,7 @@ def run_auto_remediation(
                 "automatic_remediation_result": RESULT_FAILED,
                 "automatic_remediation_stop_reason": runner_error or "remediation_failed",
                 "automatic_remediation_completed_at": now_kst_iso(),
+                **failure_diagnostics,
             },
         )
         summary["automatic_remediation_child_run_id"] = child_run_id or None
@@ -699,6 +725,7 @@ def run_auto_remediation(
             "approved_at": None,
             "approved_by": None,
             "approval_snapshot_id": None,
+            **failure_diagnostics,
         },
     )
     _stamp(
@@ -707,6 +734,7 @@ def run_auto_remediation(
             "automatic_remediation_child_run_id": child_run_id,
             "automatic_remediation_result": outcome,
             "automatic_remediation_completed_at": now_kst_iso(),
+            **failure_diagnostics,
         },
     )
     summary["automatic_remediation_child_run_id"] = child_run_id

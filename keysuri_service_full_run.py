@@ -92,7 +92,7 @@ from keysuri_live_source_smoke import (
     scan_sample_markers,
 )
 from keysuri_prompt_input import build_keysuri_prompt_input
-from sent_news_dedup_gate import normalize_candidate
+from sent_news_dedup_gate import canonicalize_url, normalize_candidate
 from sent_news_log_store import recent_sent_news_log
 from owner_review_exposure_log_store import recent_owner_review_exposure_log_with_status
 from keysuri_news_contract import (
@@ -1656,6 +1656,7 @@ def _regenerate_keysuri_text_from_snapshot(
     program_id: str,
     *,
     text_caller: Optional[Callable[..., str]] = None,
+    diagnostics_out: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[str]]:
     prompt_input, err = _regen_prompt_input_from_parent(parent, program_id)
     if err:
@@ -1663,9 +1664,11 @@ def _regenerate_keysuri_text_from_snapshot(
     # Use the same bounded Global MAX_TOKENS compact retry as natural runs.
     # Calling Gemini directly here made a single stochastic truncation fall
     # through to the stale parent prose and produce another REVIEW child.
-    raw_text, _generation_diagnostics = generate_keysuri_body_raw_text(
+    raw_text, generation_diagnostics = generate_keysuri_body_raw_text(
         prompt_input, gemini_caller=text_caller
     )
+    if isinstance(diagnostics_out, dict) and isinstance(generation_diagnostics, Mapping):
+        diagnostics_out.update(_bounded_generation_diagnostics(generation_diagnostics))
     parse_result = parse_keysuri_generated_response(raw_text, program_id, prompt_input)
     if str(parse_result.get("parse_status") or "") != "parsed_valid":
         return None, None, "generated_briefing_regen_parse_failed"
@@ -1761,10 +1764,12 @@ def _regenerate_keysuri_text_from_frozen_parent(
         return None, None, fields, err or "text_only_reissue_missing_parent_source_snapshot"
 
     generated_briefing: Dict[str, Any] = {}
+    generation_diagnostics: Dict[str, Any] = {}
     try:
         _snapshot_prompt_input, snapshot_briefing, snapshot_err = (
             _regenerate_keysuri_text_from_snapshot(
-                parent, program_id, text_caller=text_caller
+                parent, program_id, text_caller=text_caller,
+                diagnostics_out=generation_diagnostics,
             )
         )
     except Exception:  # noqa: BLE001 - the parent snapshot fallback still applies
@@ -1774,6 +1779,11 @@ def _regenerate_keysuri_text_from_frozen_parent(
         snapshot_prompt_input, snapshot_briefing, snapshot_err = None, None, "regen_exception"
     else:
         snapshot_prompt_input = _snapshot_prompt_input
+    fields["reissue_generation_diagnostics_status"] = (
+        "AVAILABLE" if generation_diagnostics else "UNAVAILABLE"
+    )
+    if generation_diagnostics:
+        fields["reissue_generation_diagnostics"] = generation_diagnostics
     if snapshot_err is None and isinstance(snapshot_briefing, dict):
         generated_briefing = snapshot_briefing
         if isinstance(snapshot_prompt_input, dict):
@@ -1909,6 +1919,57 @@ def _parent_base_briefing_for_reissue(parent: Dict[str, Any]) -> Optional[Dict[s
     return copy.deepcopy(snapshot)
 
 
+def _restore_reissue_canonical_urls(
+    output_items: List[Dict[str, Any]],
+    evidence_items: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Restore the producer's canonical URL, not relax the equality gate.
+
+    Only a unique exact news_id and all asserted URL aliases matching the
+    existing sent-news normalization policy can restore canonical_url. Genuine
+    host/path/query disagreement and missing URL evidence are left for the
+    unchanged binding gate to reject. Article prose/order/source_ids are untouched.
+    """
+    by_id: Dict[str, Dict[str, Any]] = {}
+    duplicate_ids: Set[str] = set()
+    for item in evidence_items:
+        if not isinstance(item, dict):
+            continue
+        news_id = str(item.get("news_id") or "").strip()
+        if news_id in by_id:
+            duplicate_ids.add(news_id)
+        by_id[news_id] = item
+    restored = copy.deepcopy(output_items)
+    for item in restored:
+        if not isinstance(item, dict):
+            continue
+        news_id = str(item.get("news_id") or "").strip()
+        evidence = by_id.get(news_id)
+        if not news_id or news_id in duplicate_ids or evidence is None:
+            continue
+        canonical = str(evidence.get("canonical_url") or "").strip()
+        try:
+            canonical_is_normalized = bool(canonical) and canonicalize_url(canonical) == canonical
+        except ValueError:
+            canonical_is_normalized = False
+        if not canonical_is_normalized:
+            continue
+        aliases = [
+            str(item.get(key) or "").strip()
+            for key in ("canonical_url", "source_url", "url")
+            if str(item.get(key) or "").strip()
+        ]
+        try:
+            equivalent = bool(aliases) and all(
+                canonicalize_url(url) == canonical for url in aliases
+            )
+        except ValueError:
+            equivalent = False
+        if equivalent:
+            item["canonical_url"] = canonical
+    return restored
+
+
 def _build_repaired_reissue_payload(
     *,
     base_briefing: Dict[str, Any],
@@ -1962,6 +2023,9 @@ def _build_repaired_reissue_payload(
         ):
             return None, None, ["reissue_evidence_incomplete"]
 
+    # The evidence index was produced by normalize_candidate; restore that
+    # exact canonical identity only for proven equivalent URL representations.
+    top5_items = _restore_reissue_canonical_urls(top5_items, raw_evidence_items)
     bound_evidence_indices: Set[int] = set()
     aligned_evidence: List[Dict[str, Any]] = []
 
@@ -1982,6 +2046,20 @@ def _build_repaired_reissue_payload(
         raw_u = raw_url.strip() if isinstance(raw_url, str) and raw_url.strip() else None
         out_url = _reissue_canonical_url(out_item)
         out_u = out_url.strip() if isinstance(out_url, str) and out_url.strip() else None
+
+        # A canonical alias must not hide a contradictory article URL.
+        for url_key in ("source_url", "url"):
+            alias = str(out_item.get(url_key) or "").strip()
+            if not alias:
+                continue
+            try:
+                alias_matches = bool(raw_u) and (
+                    canonicalize_url(alias) == canonicalize_url(raw_u)
+                )
+            except ValueError:
+                alias_matches = False
+            if not alias_matches:
+                return None, None, ["reissue_evidence_id_url_disagreement"]
 
         if out_u is not None:
             if raw_u is not None and out_u != raw_u:
@@ -4374,9 +4452,10 @@ def run_keysuri_text_only_reissue(
         # / Cloud Logging can identify why a content-integrity hold fired.
         failure.update(dict(repair_fields or {}))
         logger.warning(
-            "keysuri body_only text regeneration failed: parent=%s error=%s content_codes=%s correlation_matched=%s",
+            "keysuri body_only text regeneration failed: parent=%s error=%s failed_sections=%s content_codes=%s correlation_matched=%s",
             parent_run_id,
             failure.get("error"),
+            failure.get("reissue_top5_repair_failed_sections"),
             failure.get("reissue_top5_content_issue_codes"),
             failure.get("reissue_correlation_matched_count"),
         )
