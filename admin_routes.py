@@ -2349,11 +2349,24 @@ def admin_run_detail(request: Request, run_id: str):
         )
     has_email = run_email_html_exists(run_id)
     email_link = f'<a href="/admin/runs/{_esc(run_id)}/email" target="_blank">이메일 HTML 미리보기</a>' if has_email else "<em>저장된 이메일 HTML 없음</em>"
-    can_approve, approve_err = can_approve_customer_send(meta, has_email_html=has_email)
+    # This route has required the current authenticated Admin session.
+    can_approve, approve_err = can_approve_customer_send(
+        meta, has_email_html=has_email, allow_manual_quality_warning=True,
+    )
     mode = str(meta.get("mode") or "")
     recipient_count, recipients_ok = _current_recipient_count()
     recipient_display = recipient_count if recipients_ok else "확인 필요"
     approve_block = ""
+    manual_quality_warning = bool(
+        can_approve and str(meta.get("mode") or "") == "today_genie"
+        and str(meta.get("customer_surface_status") or "") == "PRODUCT_REVIEW_REQUIRED"
+    )
+    if manual_quality_warning:
+        warn += (
+            '<div class="warn">품질 검수 경고가 남아 있습니다. 검수 통과로 표시하지 않습니다. '
+            '운영책임자의 이 실행 발송 결정은 아래 기존 최종 확인에서 처리하며 '
+            '품질 경고만으로 재발행이나 추가 품질 승인을 요구하지 않습니다.</div>'
+        )
     if can_approve:
         approve_block = (
             '<div class="form-actions"><p style="margin:0;">'
@@ -2711,7 +2724,10 @@ def admin_run_approve_confirm(request: Request, run_id: str):
         return HTMLResponse(_layout("Not found", "<p>실행 기록을 찾을 수 없습니다.</p>"), status_code=404)
     email_html = load_run_email_html(run_id)
     has_email = email_html is not None
-    can_approve, approve_err = can_approve_customer_send(meta, has_email_html=has_email)
+    # This route has required the current authenticated Admin session.
+    can_approve, approve_err = can_approve_customer_send(
+        meta, has_email_html=has_email, allow_manual_quality_warning=True,
+    )
     if not can_approve:
         msg = _APPROVE_ERROR_MESSAGES.get(approve_err, approve_err)
         inner = f"<p>{_esc(msg)}</p><p><a href=\"/admin/runs/{_esc(run_id)}\">돌아가기</a></p>"
@@ -2765,6 +2781,7 @@ def admin_run_approve_confirm(request: Request, run_id: str):
     memory.record("after_projection")
     inner = f"""
 {_ui_page_header('고객 발송 최종 확인', '이 정확한 브리핑을 아래의 정확한 수신자에게 발송합니다.', view['program']['display'])}
+{"" if not snapshot.get("manual_owner_quality_warning") else '<div class="warn">품질 검수 경고가 남아 있습니다. 아래 발송 확인은 운영책임자의 발송 결정이며 사실성 검수 통과를 의미하지 않습니다.</div>'}
 <section class="surface"><div class="metrics">
 {_ui_metric('실제 제목', prepared_subject)}
 {_ui_metric('고정 수신자', recipient_label)}
@@ -2862,6 +2879,7 @@ def admin_run_approve(
         operator_id=_operator_id(request),
         approval_audit=approval_audit,
         review_warning_confirmed=bool(str(review_warning_confirm or "").strip()),
+        manual_owner_quality_warning=True,
     )
     if status != "ok" or not updated:
         code = status if status in _APPROVE_ERROR_MESSAGES else "send_failed"

@@ -12,7 +12,9 @@ from admin_store import _get_gcs_client, resolve_customer_recipients
 from customer_review_confirmation import (
     HUMAN_OWNER,
     PRE_SEND_REVIEWED,
+    PRE_SEND_OWNER_WITH_WARNINGS,
     customer_review_confirmation,
+    today_quality_warning_present,
 )
 from email_sender import parse_customer_to_addrs, send_genie_email
 from renderers import today_genie_email_inline_cid_pair
@@ -20,8 +22,11 @@ from renderers import today_genie_email_inline_cid_pair
 logger = logging.getLogger(__name__)
 
 REVIEW_CONFIRMATION_STATE_REVIEW_PASSED = "review_passed"
+REVIEW_CONFIRMATION_STATE_OWNER_WARNING = "owner_send_with_warnings"
 
-_GENIE_CUSTOMER_OUTBOUND_REVIEW_STATES = frozenset({REVIEW_CONFIRMATION_STATE_REVIEW_PASSED})
+_GENIE_CUSTOMER_OUTBOUND_REVIEW_STATES = frozenset({
+    REVIEW_CONFIRMATION_STATE_REVIEW_PASSED, REVIEW_CONFIRMATION_STATE_OWNER_WARNING,
+})
 
 _OPERATIONAL_HANDOFF_RE = re.compile(
     r'<section[^>]*\bid=["\']genie-operational-handoff["\'][^>]*>.*?</section>',
@@ -260,7 +265,11 @@ def render_genie_review_confirmation_box(
         )
     selected_state, confirmation_text = customer_review_confirmation(
         approval_source=approval_source,
-        display_state=PRE_SEND_REVIEWED,
+        display_state=(
+            PRE_SEND_OWNER_WITH_WARNINGS
+            if review_state == REVIEW_CONFIRMATION_STATE_OWNER_WARNING
+            else PRE_SEND_REVIEWED
+        ),
     )
     if selected_state != review_state:
         raise ValueError("customer review display state does not match review_confirmation_state")
@@ -347,10 +356,16 @@ def prepare_today_geenee_customer_delivery(
         ready, err = customer_delivery_config_ready()
         if not ready:
             return {"ok": False, "error": err}
+    warning_present = today_quality_warning_present(meta)
+    if warning_present and approval_source != HUMAN_OWNER:
+        return {"ok": False, "error": "manual_warning_requires_human_owner"}
     try:
         html_body = prepare_customer_final_html(
             saved_html,
-            review_confirmation_state=REVIEW_CONFIRMATION_STATE_REVIEW_PASSED,
+            review_confirmation_state=(
+                REVIEW_CONFIRMATION_STATE_OWNER_WARNING if warning_present
+                else REVIEW_CONFIRMATION_STATE_REVIEW_PASSED
+            ),
             approval_source=approval_source,
         )
     except ValueError as exc:

@@ -1786,7 +1786,10 @@ def _keysuri_korea_bottom_baseline_confirmed(meta: Dict[str, Any]) -> tuple[bool
     return True, "ok"
 
 
-def can_approve_customer_send(meta: Dict[str, Any], *, has_email_html: bool) -> tuple[bool, str]:
+def can_approve_customer_send(
+    meta: Dict[str, Any], *, has_email_html: bool,
+    allow_manual_quality_warning: bool = False,
+) -> tuple[bool, str]:
     mode = str(meta.get("mode") or "")
     if mode not in APPROVABLE_MODES:
         return False, "unsupported_mode"
@@ -1820,7 +1823,11 @@ def can_approve_customer_send(meta: Dict[str, Any], *, has_email_html: bool) -> 
     if vr == "block" or str(meta.get("artifact_status") or "") == "failed":
         return False, "not_approvable"
     if str(meta.get("customer_surface_status") or "") == PRODUCT_REVIEW_REQUIRED:
-        return False, "product_surface_remediation_needed"
+        from customer_review_confirmation import today_quality_warning_present
+        # Only the authenticated human route opts in. Default/automated callers
+        # remain blocked, and all hard guards above/below remain unchanged.
+        if not (allow_manual_quality_warning and today_quality_warning_present(meta)):
+            return False, "product_surface_remediation_needed"
     if mode == "today_genie" and vr != "pass":
         return False, "review_required_remediation_needed"
     if mode in {"keysuri_global_tech", "keysuri_korea_tech"}:
@@ -1982,6 +1989,7 @@ def approve_run(
     operator_id: str = "",
     approval_audit: Optional[Dict[str, Any]] = None,
     review_warning_confirmed: bool = False,
+    manual_owner_quality_warning: bool = False,
 ) -> tuple[Optional[Dict[str, Any]], str]:
     """Verify a frozen target, reserve one command, then submit exactly that payload."""
     meta = load_run_artifact(run_id)
@@ -1989,7 +1997,19 @@ def approve_run(
         return None, "not_found"
 
     saved_html = load_run_email_html(run_id) or ""
-    ok, msg = can_approve_customer_send(meta, has_email_html=bool(saved_html.strip()))
+    # An opt-in flag alone is not a manual authorization receipt. The existing
+    # Admin POST has already verified login/CSRF/session nonce and builds this
+    # server-side audit; immutable snapshot/operator/target checks still follow.
+    manual_context = bool(
+        manual_owner_quality_warning and approval_snapshot_id and operator_id
+        and isinstance(approval_audit, dict)
+        and approval_audit.get("approval_channel") == "browser_confirm"
+        and approval_audit.get("approval_nonce_used") is True
+    )
+    ok, msg = can_approve_customer_send(
+        meta, has_email_html=bool(saved_html.strip()),
+        allow_manual_quality_warning=manual_context,
+    )
     if not ok:
         return None, msg
     if not approval_snapshot_id or not operator_id:

@@ -140,6 +140,13 @@ def build_current_approval_target(
             and str(meta.get("editorial_verdict") or "") == "REVIEW"
         ),
     }
+    from customer_review_confirmation import today_quality_warning_present
+    if today_quality_warning_present(meta):
+        # Bound warning attestation in the exact human target, not a second
+        # quality-consent step or a claim that the original quality verdict passed.
+        fields["manual_owner_quality_warning"] = True
+        fields["customer_surface_status"] = str(meta.get("customer_surface_status") or "")
+        fields["product_surface_issue_codes"] = list(meta.get("product_surface_issue_codes") or [])
     if recipient_plan is not None:
         fields["recipient_plan_id"] = recipient_plan["plan_id"]
         fields["recipient_plan_sha256"] = recipient_plan["sha256"]
