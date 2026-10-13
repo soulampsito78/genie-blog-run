@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -141,7 +141,62 @@ app.include_router(internal_jobs_router)
 
 _static_dir = Path(__file__).resolve().parent / "static"
 if _static_dir.is_dir():
-    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+    class _PublicStaticFiles(StaticFiles):
+        async def get_response(self, path: str, scope):
+            # This deployment metadata contains local filesystem paths; it is
+            # not a customer-facing asset and must not be exposed by /static.
+            if path == "email/GENIE_EMAIL_today_genie_latest_manifest.json":
+                return Response(status_code=404)
+            return await super().get_response(path, scope)
+
+    app.mount("/static", _PublicStaticFiles(directory=str(_static_dir)), name="static")
+
+class _RootPreparseBoundary:
+    """Authenticate before parsing and bound the private root RPC body."""
+    max_body_bytes = 1024 * 1024
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("method") != "POST" or scope.get("path") != "/":
+            return await self.app(scope, receive, send)
+        token_headers = [v for k, v in scope.get("headers", []) if k.lower() == b"x-genie-internal-job-token"]
+        token = token_headers[0].decode("latin-1") if len(token_headers) == 1 else None
+        from fastapi.responses import JSONResponse
+        try:
+            _verify_root_internal_job_token(token)
+        except HTTPException as exc:
+            return await JSONResponse({"detail": exc.detail}, status_code=exc.status_code)(scope, receive, send)
+        lengths = [v for k, v in scope.get("headers", []) if k.lower() == b"content-length"]
+        if len(lengths) > 1 or (lengths and (not lengths[0].isdigit() or len(lengths[0]) > 20)):
+            return await JSONResponse({"detail": {"reason": "invalid_content_length"}}, status_code=400)(scope, receive, send)
+        if lengths and int(lengths[0]) > self.max_body_bytes:
+            return await JSONResponse({"detail": {"reason": "request_too_large"}}, status_code=413)(scope, receive, send)
+        parts = []
+        total = 0
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                return
+            body = message.get("body", b"")
+            total += len(body)
+            if total > self.max_body_bytes:
+                return await JSONResponse({"detail": {"reason": "request_too_large"}}, status_code=413)(scope, receive, send)
+            parts.append(body)
+            if not message.get("more_body", False):
+                break
+        payload = b"".join(parts)
+        consumed = False
+        async def replay():
+            nonlocal consumed
+            if not consumed:
+                consumed = True
+                return {"type": "http.request", "body": payload, "more_body": False}
+            return await receive()
+        return await self.app(scope, replay, send)
+
+app.add_middleware(_RootPreparseBoundary)
 
 logger = logging.getLogger(__name__)
 
@@ -1847,12 +1902,13 @@ def call_gemini(
     except HTTPException:
         raise
     except Exception as e:
+        # Provider exception messages and tracebacks can contain request data,
+        # credentials, or signed URLs. Keep the diagnostic useful without
+        # persisting provider-controlled text in application logs.
         logger.error(
-            "genie_api failure mode=%s internal_reason=vertex_path_unhandled exc_type=%s message=%s",
+            "genie_api failure mode=%s internal_reason=vertex_path_unhandled exc_type=%s",
             mode,
             type(e).__name__,
-            str(e),
-            exc_info=True,
         )
         raise
 
@@ -2898,7 +2954,11 @@ def generate(
             recorder.record("request_end")
             failure = getattr(exc, "genie_infrastructure_failure", None)
             if failure is None:
-                raise
+                raise HTTPException(status_code=500, detail={
+                    "status": "failed", "reason": "vertex_transient_unclassified",
+                    "exception_type": type(exc).__name__, "artifact_usable": False,
+                    "model_call_evidence": calls,
+                }) from None
             # Keep a visible HTTP 500 for the model API; the Scheduler-facing
             # create-owner-review contract remains unchanged. Persist the exact
             # exhausted provider class for the watchdog, never parse log prose.
@@ -2907,9 +2967,16 @@ def generate(
                 "infrastructure_failure": failure, "artifact_usable": False,
                 "model_call_evidence": calls,
             }) from exc
-        except Exception:
+        except HTTPException:
             recorder.record("request_end")
             raise
+        except Exception as exc:
+            recorder.record("request_end")
+            raise HTTPException(status_code=500, detail={
+                "status": "failed", "reason": "internal_processing_failed",
+                "exception_type": type(exc).__name__, "artifact_usable": False,
+                "model_call_evidence": calls,
+            }) from None
         finally:
             _vertex_call_evidence.reset(token)
         recorder.record("request_end")

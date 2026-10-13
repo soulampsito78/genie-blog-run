@@ -80,6 +80,24 @@ class PreflightIsolationTests(unittest.TestCase):
         self.assertEqual(readiness["natural_slot_mutation"], 0)
         self.assertEqual(readiness["customer"], 0)
 
+    def test_unknown_model_usage_remains_unknown_in_saved_readiness(self) -> None:
+        from natural_run_reliability import run_natural_preflight
+
+        probe = self._global_probe(ok=False, artifact="memory://first")
+        probe["called_gemini"] = None
+        probe["model_usage_status"] = "unknown"
+        with mock.patch(
+            "natural_run_reliability.run_program_canary", return_value=probe
+        ), mock.patch(
+            "natural_run_reliability._save_json", return_value="memory://readiness"
+        ) as save:
+            readiness = run_natural_preflight("keysuri_global_tech", send_fn=mock.Mock())
+        saved = save.call_args.args[2]
+        self.assertIsNone(readiness["model_called"])
+        self.assertEqual(readiness["model_usage_status"], "unknown")
+        self.assertIsNone(saved["model_called"])
+        self.assertEqual(saved["model_usage_status"], "unknown")
+
     def test_global_missing_input_identity_keeps_failure_alert(self) -> None:
         from natural_run_reliability import run_natural_preflight
 

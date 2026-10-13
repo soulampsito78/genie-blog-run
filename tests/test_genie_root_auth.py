@@ -75,6 +75,79 @@ class GenieRootAuthTests(unittest.TestCase):
         self.assertEqual(response.json()["validation_result"], "block")
         generate.assert_called_once()
 
+    def test_wrong_token_rejected_before_invalid_JSON_parsing(self) -> None:
+        with mock.patch.dict(os.environ, {"GENIE_INTERNAL_JOB_TOKEN": "synthetic-secret"}, clear=True):
+            response = self.client.post("/", content=b"not-json", headers={"X-Genie-Internal-Job-Token": "wrong", "Content-Type": "application/json"})
+        self.assertEqual(response.status_code, 403)
+
+    def test_root_declared_oversize_rejected_before_receive(self) -> None:
+        import asyncio
+        from main import _RootPreparseBoundary
+        receive = mock.AsyncMock(side_effect=AssertionError("BODY_MUST_NOT_BE_READ"))
+        downstream = mock.AsyncMock()
+        send = mock.AsyncMock()
+        scope = {"type": "http", "method": "POST", "path": "/", "headers": [(b"x-genie-internal-job-token", b"synthetic-secret"), (b"content-length", b"1048577")]}
+        with mock.patch.dict(os.environ, {"GENIE_INTERNAL_JOB_TOKEN": "synthetic-secret"}, clear=True):
+            asyncio.run(_RootPreparseBoundary(downstream)(scope, receive, send))
+        receive.assert_not_called(); downstream.assert_not_called()
+        self.assertEqual(send.call_args_list[0].args[0]["status"], 413)
+
+    def test_root_chunked_oversize_stops_before_app_work(self) -> None:
+        import asyncio
+        from main import _RootPreparseBoundary
+        messages = [{"type": "http.request", "body": b"a" * 524288, "more_body": True}, {"type": "http.request", "body": b"b" * 524289, "more_body": True}]
+        receive = mock.AsyncMock(side_effect=messages)
+        downstream = mock.AsyncMock(); send = mock.AsyncMock()
+        scope = {"type": "http", "method": "POST", "path": "/", "headers": [(b"x-genie-internal-job-token", b"synthetic-secret")]}
+        with mock.patch.dict(os.environ, {"GENIE_INTERNAL_JOB_TOKEN": "synthetic-secret"}, clear=True):
+            asyncio.run(_RootPreparseBoundary(downstream)(scope, receive, send))
+        self.assertEqual(receive.call_count, 2); downstream.assert_not_called()
+        self.assertEqual(send.call_args_list[0].args[0]["status"], 413)
+
+    def test_unauthenticated_root_never_reads_body(self) -> None:
+        import asyncio
+        from main import _RootPreparseBoundary
+        receive = mock.AsyncMock(side_effect=AssertionError("BODY_MUST_NOT_BE_READ")); downstream = mock.AsyncMock(); send = mock.AsyncMock()
+        scope = {"type": "http", "method": "POST", "path": "/", "headers": []}
+        with mock.patch.dict(os.environ, {"GENIE_INTERNAL_JOB_TOKEN": "synthetic-secret"}, clear=True):
+            asyncio.run(_RootPreparseBoundary(downstream)(scope, receive, send))
+        receive.assert_not_called(); downstream.assert_not_called()
+        self.assertEqual(send.call_args_list[0].args[0]["status"], 403)
+
+    def test_preparse_preserves_normal_frozen_news_selection(self) -> None:
+        frozen = [{"title": "PUBLIC_FROZEN_NEWS", "url": "https://example.com/" + str(i), "summary": "public " * 2000} for i in range(5)]
+        with mock.patch.dict(os.environ, {"GENIE_INTERNAL_JOB_TOKEN": "synthetic-secret"}, clear=True):
+            with mock.patch("main._generate_impl", return_value={"status": "ok"}) as generate:
+                response = self.client.post("/", json={"type": "today_genie", "frozen_top_market_news": frozen, "frozen_parent_run_id": "PUBLIC_PARENT"}, headers={"X-Genie-Internal-Job-Token": "synthetic-secret"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(generate.call_args.args[0].frozen_top_market_news, frozen)
+        self.assertEqual(generate.call_args.args[0].frozen_parent_run_id, "PUBLIC_PARENT")
+
+    def test_unexpected_provider_error_does_not_escape_RPC_server(self) -> None:
+        with mock.patch.dict(os.environ, {"GENIE_INTERNAL_JOB_TOKEN": "synthetic-secret"}, clear=True):
+            with mock.patch("main._generate_impl", side_effect=RuntimeError("PUBLIC_PRIVATE_PROVIDER_SENTINEL")):
+                response = self.client.post("/", json={"type": "today_genie"}, headers={"X-Genie-Internal-Job-Token": "synthetic-secret"})
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["detail"]["reason"], "internal_processing_failed")
+        self.assertNotIn("PUBLIC_PRIVATE_PROVIDER_SENTINEL", response.text)
+
+    def test_unclassified_transient_error_does_not_escape_RPC_server(self) -> None:
+        from google.api_core.exceptions import ServiceUnavailable
+        with mock.patch.dict(os.environ, {"GENIE_INTERNAL_JOB_TOKEN": "synthetic-secret"}, clear=True):
+            with mock.patch("main._generate_impl", side_effect=ServiceUnavailable("PUBLIC_PRIVATE_TRANSIENT_SENTINEL")):
+                response = self.client.post("/", json={"type": "today_genie"}, headers={"X-Genie-Internal-Job-Token": "synthetic-secret"})
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["detail"]["reason"], "vertex_transient_unclassified")
+        self.assertNotIn("PUBLIC_PRIVATE_TRANSIENT_SENTINEL", response.text)
+
+    def test_public_static_hides_internal_image_manifest_but_serves_public_image(self) -> None:
+        manifest = self.client.get(
+            "/static/email/GENIE_EMAIL_today_genie_latest_manifest.json"
+        )
+        image = self.client.get("/static/email/GENIE_EMAIL_today_genie_top_latest.jpg")
+        self.assertEqual(manifest.status_code, 404)
+        self.assertEqual(image.status_code, 200)
+
     def test_orchestrator_forwards_shared_token_without_retrying_auth_failure(self) -> None:
         import orchestrator
 

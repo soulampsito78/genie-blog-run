@@ -653,7 +653,14 @@ def run_natural_preflight(
         "issue_codes": list(result.get("issue_codes") or []),
         "deployed_revision": result.get("deployed_revision"),
         "deployed_commit_sha": result.get("deployed_commit_sha"),
-        "model_called": bool(result.get("called_gemini")),
+        # Do not collapse missing runtime evidence into a confirmed no-call.
+        # Preserve the tri-state value for downstream cost/usage accounting.
+        "model_called": result.get("called_gemini"),
+        "model_usage_status": result.get("model_usage_status") or (
+            "confirmed_called" if result.get("called_gemini") is True else
+            "confirmed_not_called" if result.get("called_gemini") is False else
+            "unknown"
+        ),
         "called_image_api": 0,
         "smtp": 0,
         "customer": 0,

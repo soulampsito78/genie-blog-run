@@ -38,6 +38,7 @@ steps:
       - unittest
       - -v
       - tests.test_genie_root_auth
+      - tests.test_today_vertex_transient_retry_20260910.VertexTransientRetryTests.test_call_gemini_does_not_log_provider_exception_text_or_traceback
       - tests.test_admin_beta_delegation
       - tests.test_admin_beta_edits
       - tests.test_delegated_internal_route

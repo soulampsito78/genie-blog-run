@@ -25,6 +25,7 @@ These tests pin:
 from __future__ import annotations
 
 import unittest
+import logging
 from unittest import mock
 
 from google.api_core import exceptions as gexc
@@ -144,6 +145,20 @@ class VertexTransientRetryTests(unittest.TestCase):
             text = main.call_gemini("prompt", "today_genie")
         self.assertEqual(text, '{"a": 1}')
         self.assertEqual(model.calls, 2)
+
+    def test_call_gemini_does_not_log_provider_exception_text_or_traceback(self):
+        secret = "provider-secret-do-not-log"
+        model = _FakeModel([RuntimeError(secret)])
+        with self.assertLogs(main.logger, level=logging.ERROR) as captured:
+            with mock.patch.object(main, "init_vertex", lambda: None), mock.patch.object(
+                main, "get_model", lambda: model
+            ):
+                with self.assertRaisesRegex(RuntimeError, secret):
+                    main.call_gemini("prompt", "today_genie")
+        output = "\n".join(captured.output)
+        self.assertIn("exc_type=RuntimeError", output)
+        self.assertNotIn(secret, output)
+        self.assertNotIn("Traceback", output)
 
 
 class FailedNaturalArtifactVisibilityTests(unittest.TestCase):
