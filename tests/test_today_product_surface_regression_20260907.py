@@ -44,18 +44,21 @@ _INCIDENT_NEWS = [
         "headline": "U.S. Energy Secretary Wright says Iran nuclear deal may never happen",
         "source": "CNBC",
         "date": "2026-09-06",
+        "source_url": "https://www.cnbc.com/2026/09/06/test-iran-nuclear-deal.html",
         "news_id": "today-0acd885777f180afbdf0",
     },
     {
         "headline": "AI data centers are transforming rural land markets — and fueling a backlash",
         "source": "CNBC",
         "date": "2026-09-06",
+        "source_url": "https://www.cnbc.com/2026/09/06/test-ai-data-centers.html",
         "news_id": "today-199658faf6f12f418f36",
     },
     {
         "headline": "SEC sues ISS as Trump administration ramps up scrutiny of proxy advisers",
         "source": "CNBC",
         "date": "2026-09-06",
+        "source_url": "https://www.cnbc.com/2026/09/06/test-sec-iss.html",
         "news_id": "today-170c677876b999c89d97",
     },
 ]

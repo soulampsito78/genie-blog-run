@@ -14,6 +14,7 @@ from genie_schedule_policy import (
     SKIPPED_HOLIDAY_STATUS,
     korean_public_holiday_name,
 )
+from delivery_trace import customer_delivery_evidence_conflict
 
 
 ACTIVE_PROGRAMS = (
@@ -320,7 +321,17 @@ def delivery_projection(meta: Mapping[str, Any]) -> Dict[str, Any]:
         "sent_at": meta.get("customer_email_sent_at_kst") or meta.get("customer_sent_at") or meta.get("customer_delivery_completed_at"),
         "receipt_confirmed": False,
         "unknown": as_int(meta.get("customer_delivery_unknown_count")),
+        "evidence_conflict": customer_delivery_evidence_conflict(dict(meta)),
     }
+    if base["evidence_conflict"]:
+        return {
+            **base,
+            "label": "RESULT UNKNOWN",
+            "label_ko": "SMTP 원장 불일치",
+            "tone": "danger",
+            "summary": f"SMTP 상태와 집계 근거가 서로 맞지 않습니다 ({base['evidence_conflict']}). 성공으로 판정하지 않으며 재전송하지 않습니다.",
+            "flow": "승인 → SMTP 결과 원장 대조 필요",
+        }
     if status == "partial_refusal" or ((accepted or 0) > 0 and (refused or 0) > 0):
         return {
             **base,
@@ -400,6 +411,48 @@ def delivery_projection(meta: Mapping[str, Any]) -> Dict[str, Any]:
         "tone": "warn",
         "summary": "현재 기록만으로 고객 발송 결과를 확정할 수 없습니다. 수신함 도착은 확인되지 않았습니다.",
         "flow": "발송 결과 확인 필요",
+    }
+
+
+def persisted_customer_approval_receipt(meta: Mapping[str, Any]) -> Dict[str, Any]:
+    """Require persisted human approval plus its exact SMTP outcome event."""
+    status = str(
+        meta.get("customer_email_delivery_status")
+        or meta.get("customer_delivery_status")
+        or ""
+    ).strip()
+    command_id = str(meta.get("delivery_command_id") or "").strip()
+    snapshot_id = str(meta.get("approval_snapshot_id") or "").strip()
+    events = meta.get("customer_delivery_events")
+    event_recorded = bool(
+        isinstance(events, list)
+        and status
+        and any(
+            isinstance(event, Mapping)
+            and event.get("event_type") == "smtp_submission_result"
+            and event.get("source") == "approve_run"
+            and str(event.get("status") or "").strip() == status
+            and str(event.get("at") or "").strip()
+            for event in events
+        )
+    )
+    recorded = bool(
+        str(meta.get("owner_review_status") or "").strip() == "approved"
+        and meta.get("approval_authority") == "HUMAN_OWNER_APPROVAL"
+        and meta.get("approval_source") == "HUMAN_OWNER"
+        and meta.get("approval_channel") == "browser_confirm"
+        and meta.get("approval_nonce_used") is True
+        and str(meta.get("approval_confirmed_at") or "").strip()
+        and str(meta.get("owner_reviewed_at") or meta.get("approved_at") or "").strip()
+        and snapshot_id
+        and command_id
+        and event_recorded
+    )
+    return {
+        "recorded": recorded,
+        "delivery_status": status,
+        "delivery_command_id": command_id,
+        "approval_snapshot_id": snapshot_id,
     }
 
 

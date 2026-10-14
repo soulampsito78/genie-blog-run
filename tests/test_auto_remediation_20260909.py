@@ -188,6 +188,13 @@ class ScopeSelectionTests(unittest.TestCase):
         self.assertIsNone(scope)
         self.assertIn("keysuri_korea_post_render_qa_blocked", blocking)
 
+    def test_verified_current_office_mismatch_is_not_auto_regenerated(self) -> None:
+        code = "customer_surface_current_office_role_mismatch"
+        scope, blocking, unclassified = classify_issue_codes([code])
+        self.assertIsNone(scope)
+        self.assertEqual(blocking, [code])
+        self.assertFalse(unclassified)
+
     def test_unknown_code_fails_closed_rather_than_guessing(self) -> None:
         scope, blocking, unclassified = classify_issue_codes(["a_code_added_next_quarter"])
         self.assertIsNone(scope)

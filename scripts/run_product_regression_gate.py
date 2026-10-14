@@ -10,6 +10,10 @@ from pathlib import Path
 
 TEST_MODULES = (
     "test_product_surface_contract",
+    "test_today_role_evidence_integration",
+    "test_admin_routes.CustomerDeliveryAdminPanelTests.test_conflicting_canonical_delivery_status_aliases_never_project_success",
+    "test_admin_routes.CustomerDeliveryAdminPanelTests.test_detail_projection_rejects_accepted_status_with_false_smtp_boolean",
+    "test_admin_routes.CustomerDeliveryAdminPanelTests.test_approval_result_query_cannot_create_success_notice",
     "test_product_regression_corpus",
     "test_product_acceptance_authority",
     "test_owner_review_send_policy",

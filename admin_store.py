@@ -15,7 +15,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from delivery_trace import build_customer_email_delivery_fields, sanitize_email_diagnostic
+from delivery_trace import (
+    build_customer_email_delivery_fields,
+    customer_delivery_evidence_conflict,
+    sanitize_email_diagnostic,
+)
 from product_surface_contract import PRODUCT_REVIEW_REQUIRED
 from sent_news_log_store import append_or_upsert_sent_news
 
@@ -450,19 +454,29 @@ _CUSTOMER_DELIVERY_STATUS_LABELS_KO = {
     "customer_sent_after_approval": "SMTP 접수",
     "sent_after_owner_approval": "SMTP 접수",
     "blocked": "정책 차단",
+    "accepted_all": "모든 대상 SMTP 접수 · 수신함 미확인",
+    "partial_refusal": "일부 SMTP 접수 · 일부 즉시 거절",
+    "refused_all": "모든 대상 SMTP 즉시 거절",
+    "outcome_unknown": "SMTP 결과 미확정 · 자동 재시도 차단",
+    "submitted": "제출 시도 기록 · 최종 결과 대기",
 }
 
 _CUSTOMER_DELIVERY_PANEL_GRADE: Dict[str, tuple[str, str]] = {
     "smtp_accepted": ("PASS", "발송 접수 완료"),
-    "delivery_confirmed": ("PASS", "발송 접수 완료"),
+    "delivery_confirmed": ("UNKNOWN", "전달 확인 표기 · 수신 근거 확인 필요"),
     "customer_sent_after_approval": ("PASS", "발송 접수 완료"),
     "sent_after_owner_approval": ("PASS", "발송 접수 완료"),
+    "accepted_all": ("PASS", "모든 대상 SMTP 접수 · 수신함 미확인"),
+    "partial_refusal": ("PARTIAL", "일부 SMTP 접수 · 일부 즉시 거절 (재발송 차단)"),
+    "refused_all": ("FAIL", "모든 대상 SMTP 즉시 거절 · 재시도 차단"),
+    "outcome_unknown": ("UNKNOWN", "SMTP 결과 미확정 · 중복 위험으로 재시도 차단"),
+    "submitted": ("PENDING", "제출 시도 기록 · 최종 결과 대기"),
+    "send_attempted": ("PENDING", "발송 시도 기록 · 최종 결과 대기"),
     "failed": ("FAIL", "발송 실패"),
     "bounced": ("FAIL", "발송 실패"),
     "rejected": ("FAIL", "발송 실패"),
     "blocked": ("BLOCKED", "정책 차단"),
     "not_sent": ("대기", "미발송"),
-    "send_attempted": ("대기", "발송 시도 중"),
     "unknown": ("대기", "확인 불가"),
 }
 
@@ -874,7 +888,7 @@ def sanitize_delivery_error_summary(raw: str, *, max_len: int = 240) -> str:
 
 def customer_delivery_status_label_ko(status: str) -> str:
     key = str(status or "not_sent").strip() or "not_sent"
-    return _CUSTOMER_DELIVERY_STATUS_LABELS_KO.get(key, key)
+    return _CUSTOMER_DELIVERY_STATUS_LABELS_KO.get(key.lower(), key)
 
 
 def mask_customer_email(address: str) -> str:
@@ -931,41 +945,92 @@ def _panel_recipients(meta: Dict[str, Any]) -> List[str]:
     return []
 
 
+def _panel_delivery_status(meta: Dict[str, Any]) -> str:
+    return str(
+        meta.get("customer_email_delivery_status")
+        or meta.get("customer_delivery_status")
+        or "not_sent"
+    ).strip() or "not_sent"
+
+
 def _panel_delivery_grade(meta: Dict[str, Any]) -> tuple[str, str, str]:
-    delivery_status = str(meta.get("customer_delivery_status") or "not_sent").strip() or "not_sent"
-    if delivery_status in _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED:
-        return delivery_status, "PASS", "발송 접수 완료"
-    if delivery_status == "failed":
+    delivery_status = _panel_delivery_status(meta)
+    normalized = delivery_status.lower()
+    if _panel_smtp_evidence_consistent(meta).startswith("모순"):
+        return delivery_status, "UNKNOWN", "SMTP 원장 불일치 · 성공 여부 미확정"
+    accepted_count = meta.get("customer_delivery_accepted_count", meta.get("smtp_accepted_recipient_count"))
+    refused_count = meta.get("customer_delivery_refused_count", meta.get("smtp_refused_recipient_count"))
+    try:
+        if int(accepted_count or 0) > 0 and int(refused_count or 0) > 0:
+            return delivery_status, "PARTIAL", "일부 SMTP 접수 · 일부 즉시 거절 (재발송 차단)"
+    except (TypeError, ValueError):
+        pass
+    if normalized in {"smtp_accepted", "customer_sent_after_approval", "sent_after_owner_approval"}:
+        return delivery_status, "PASS", "SMTP 접수 · 수신함 미확인"
+    if normalized == "failed":
         return delivery_status, "FAIL", "발송 실패"
-    if delivery_status == "blocked":
+    if normalized == "blocked":
         return delivery_status, "BLOCKED", "정책 차단"
     grade = _CUSTOMER_DELIVERY_PANEL_GRADE.get(
-        delivery_status,
+        normalized,
         ("대기", customer_delivery_status_label_ko(delivery_status)),
     )
     return delivery_status, grade[0], grade[1]
 
 
 def _panel_double_send_blocked(meta: Dict[str, Any]) -> str:
-    delivery_status = str(meta.get("customer_delivery_status") or "not_sent").strip()
+    delivery_status = _panel_delivery_status(meta).lower()
     owner_status = str(meta.get("owner_review_status") or "").strip()
-    if delivery_status in _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED or delivery_status.upper() in {
-        "SUBMITTED", "ACCEPTED_ALL", "PARTIAL_REFUSAL", "REFUSED_ALL", "OUTCOME_UNKNOWN"
-    } or owner_status == "approved":
-        return "예 — 이미 발송됨 / 재발송 차단"
+    blocked_statuses = {status.lower() for status in _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED}
+    blocked_statuses.update({"submitted", "send_attempted", "sending", "pending"})
+    if delivery_status in {"outcome_unknown", "submitted", "send_attempted", "sending", "pending"}:
+        return "예 — 중복 방지 잠금 (제출/수신 미확정)"
+    if delivery_status in blocked_statuses:
+        return "예 — 기존 발송 시도/결과 보호로 재발송 차단"
+    if owner_status == "approved":
+        return "예 — 승인 기록 보호로 재발송 차단 (배송 결과는 별도 상태 참조)"
     return "아니오"
 
 
+def _panel_smtp_evidence_consistent(meta: Dict[str, Any]) -> str:
+    conflict = customer_delivery_evidence_conflict(meta)
+    if conflict:
+        return f"모순 — {conflict}"
+    if not isinstance(meta.get("smtp_accepted"), bool):
+        return _ADMIN_MISSING
+    return "일치"
+
+
 def _panel_smtp_accepted(meta: Dict[str, Any]) -> str:
-    if meta.get("smtp_accepted") is True:
-        return "예"
-    if meta.get("smtp_accepted") is False:
+    status = _panel_delivery_status(meta).lower()
+    if _panel_smtp_evidence_consistent(meta).startswith("모순"):
+        return "미확인 — SMTP 필드 모순"
+    accepted = meta.get("customer_delivery_accepted_count", meta.get("smtp_accepted_recipient_count"))
+    refused = meta.get("customer_delivery_refused_count", meta.get("smtp_refused_recipient_count"))
+    try:
+        if int(accepted or 0) > 0 and int(refused or 0) > 0:
+            return f"일부 접수 {accepted}명 · 일부 거절 {refused}명"
+    except (TypeError, ValueError):
+        pass
+    if status in {"smtp_accepted", "customer_sent_after_approval", "sent_after_owner_approval", "accepted_all"}:
+        count = meta.get("customer_delivery_accepted_count", meta.get("smtp_accepted_recipient_count"))
+        return f"예 — {count}명 SMTP 접수, 수신함 미확인" if count is not None else "예 — SMTP 접수, 수신함 미확인"
+    if status == "delivery_confirmed":
+        return "미확인 — 전달/SMTP 단계 원장 대조 필요"
+    if status == "partial_refusal":
+        accepted = meta.get("customer_delivery_accepted_count", meta.get("smtp_accepted_recipient_count"))
+        refused = meta.get("customer_delivery_refused_count", meta.get("smtp_refused_recipient_count"))
+        return f"일부 접수 {accepted if accepted is not None else '?'}명 · 일부 거절 {refused if refused is not None else '?'}명"
+    if status == "refused_all":
+        return "아니오 — 전체 즉시 거절"
+    if status == "outcome_unknown":
+        return "미확인 — 자동 재시도 차단"
+    if status in {"submitted", "send_attempted", "sending", "pending"}:
+        return "미확인 — 최종 결과 대기"
+    if status in {"not_sent", "failed", "bounced", "rejected", "blocked"}:
         return "아니오"
-    delivery_status = str(meta.get("customer_delivery_status") or "not_sent").strip()
-    if delivery_status in _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED:
-        return "예"
-    if delivery_status in {"failed", "bounced", "rejected"}:
-        return "아니오"
+    if status in {"unknown", "outcome_unknown"}:
+        return "미확인 — 자동 재시도 차단"
     return _ADMIN_MISSING
 
 
@@ -1066,19 +1131,20 @@ def build_customer_delivery_admin_panel(meta: Dict[str, Any]) -> Dict[str, Any]:
             "message_id",
             default=_ADMIN_MISSING,
         ),
+        "smtp_evidence_consistent": _panel_smtp_evidence_consistent(meta),
         "failure_reason_code": (
-            _ADMIN_NONE
-            if status_code in _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED
-            else _panel_value(
+            _panel_value(
                 meta,
                 "customer_delivery_error_code",
                 default=_ADMIN_NONE,
             )
+            if str(status_code).lower() in {"failed", "bounced", "rejected", "refused_all", "partial_refusal", "outcome_unknown"}
+            else _ADMIN_NONE
         ),
         "failure_message": (
-            _ADMIN_NONE
-            if status_code in _CUSTOMER_DELIVERY_SENT_OR_ACCEPTED
-            else _panel_value(meta, "customer_delivery_error_summary", default=_ADMIN_NONE)
+            _panel_value(meta, "customer_delivery_error_summary", default=_ADMIN_NONE)
+            if str(status_code).lower() in {"failed", "bounced", "rejected", "refused_all", "partial_refusal", "outcome_unknown"}
+            else _ADMIN_NONE
         ),
         "double_send_blocked": _panel_double_send_blocked(meta),
         "mode": _panel_value(meta, "mode", "program_id", default=_ADMIN_MISSING),

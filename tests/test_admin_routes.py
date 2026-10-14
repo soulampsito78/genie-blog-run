@@ -1720,12 +1720,17 @@ class AdminApprovalHardeningTests(unittest.TestCase):
         resp = post_customer_approve_with_confirm(self.client, run_id, note="browser ok")
         self.assertEqual(resp.status_code, 303)
         self.assertNotIn("approve_error", resp.headers.get("location", ""))
+        self.assertEqual(resp.headers.get("location"), f"/admin/runs/{run_id}?approval_result=recorded")
         mock_send.assert_called_once()
         meta = load_run_artifact(run_id) or {}
         self.assertEqual(meta.get("owner_review_status"), "approved")
         self.assertEqual(meta.get("approval_channel"), "browser_confirm")
         self.assertTrue(meta.get("approval_nonce_used"))
         self.assertEqual(meta.get("approval_note"), "browser ok")
+        detail = self.client.get(resp.headers["location"])
+        self.assertEqual(detail.status_code, 200)
+        self.assertIn("승인과 SMTP 결과 원장 기록을 확인했습니다", detail.text)
+        self.assertIn("수신함 도착", detail.text)
 
     @patch("today_geenee_customer_delivery.send_today_geenee_customer_final_email")
     def test_approval_nonce_cannot_be_reused(self, mock_send: MagicMock) -> None:
@@ -1832,8 +1837,102 @@ class CustomerDeliveryAdminPanelTests(unittest.TestCase):
             }
         )
         self.assertEqual(panel["status_grade"], "PASS")
-        self.assertEqual(panel["status_detail"], "발송 접수 완료")
+        self.assertEqual(panel["status_detail"], "SMTP 접수 · 수신함 미확인")
         self.assertEqual(panel["failure_reason_code"], "없음")
+
+    def test_detail_projection_rejects_accepted_status_with_false_smtp_boolean(self) -> None:
+        from admin_view_models import delivery_projection
+
+        projection = delivery_projection({
+            "customer_delivery_status": "ACCEPTED_ALL",
+            "smtp_accepted": False,
+            "smtp_accepted_recipient_count": 2,
+            "customer_email_recipient_count": 2,
+        })
+        self.assertEqual(projection["label_ko"], "SMTP 원장 불일치")
+        self.assertEqual(projection["evidence_conflict"], "smtp_boolean_conflicts_with_accepted_status")
+        self.assertNotIn("명 SMTP 접수", projection["summary"])
+
+    def test_conflicting_canonical_delivery_status_aliases_never_project_success(self) -> None:
+        from admin_view_models import delivery_projection
+        from delivery_trace import customer_delivery_evidence_conflict
+
+        evidence = {
+            "customer_email_delivery_status": "ACCEPTED_ALL",
+            "customer_delivery_status": "REFUSED_ALL",
+            "smtp_accepted": True,
+            "customer_delivery_accepted_count": 2,
+            "customer_delivery_refused_count": 0,
+            "customer_email_recipient_count": 2,
+        }
+        self.assertEqual(customer_delivery_evidence_conflict(evidence), "delivery_status_alias_conflict")
+        projection = delivery_projection(evidence)
+        self.assertEqual(projection["label_ko"], "SMTP 원장 불일치")
+        panel = build_customer_delivery_admin_panel(evidence)
+        self.assertEqual(panel["status_grade"], "UNKNOWN")
+        self.assertEqual(panel["smtp_accepted"], "미확인 — SMTP 필드 모순")
+
+        legacy_partial = {
+            "customer_delivery_status": "smtp_accepted",
+            "smtp_accepted": True,
+            "customer_delivery_accepted_count": 12,
+            "customer_delivery_refused_count": 1,
+            "smtp_accepted_recipient_count": 12,
+            "smtp_refused_recipient_count": 1,
+            "customer_email_recipient_count": 13,
+        }
+        self.assertIsNone(customer_delivery_evidence_conflict(legacy_partial))
+        self.assertEqual(delivery_projection(legacy_partial)["label_ko"], "일부 수신자 거절")
+
+    def test_panel_distinguishes_exact_smtp_outcomes_and_never_overrides_status(self) -> None:
+        cases = (
+            ("ACCEPTED_ALL", "PASS", "예 — 2명 SMTP 접수, 수신함 미확인"),
+            ("PARTIAL_REFUSAL", "PARTIAL", "일부 접수 2명 · 일부 거절 1명"),
+            ("REFUSED_ALL", "FAIL", "아니오 — 전체 즉시 거절"),
+            ("OUTCOME_UNKNOWN", "UNKNOWN", "미확인 — 자동 재시도 차단"),
+            ("SUBMITTED", "PENDING", "미확인 — 최종 결과 대기"),
+            ("delivery_confirmed", "UNKNOWN", "미확인 — 전달/SMTP 단계 원장 대조 필요"),
+            ("NOT_SENT", "대기", "아니오"),
+        )
+        for status, grade, smtp in cases:
+            with self.subTest(status=status):
+                panel = build_customer_delivery_admin_panel(
+                    {
+                        "customer_delivery_status": status,
+                        "customer_delivery_accepted_count": 2 if status in {"ACCEPTED_ALL", "PARTIAL_REFUSAL"} else 0,
+                        "smtp_accepted_recipient_count": 2 if status in {"ACCEPTED_ALL", "PARTIAL_REFUSAL"} else 0,
+                        "customer_delivery_refused_count": 1 if status == "PARTIAL_REFUSAL" else 0,
+                    }
+                )
+                self.assertEqual(panel["status_grade"], grade)
+                self.assertEqual(panel["smtp_accepted"], smtp)
+                if status in {"PARTIAL_REFUSAL", "REFUSED_ALL", "OUTCOME_UNKNOWN", "SUBMITTED", "delivery_confirmed"}:
+                    self.assertTrue(
+                        "중복 방지 잠금" in panel["double_send_blocked"]
+                        or "기존 발송 시도/결과 보호" in panel["double_send_blocked"]
+                    )
+        contradiction = build_customer_delivery_admin_panel(
+            {"customer_delivery_status": "REFUSED_ALL", "smtp_accepted": True}
+        )
+        self.assertEqual(contradiction["smtp_accepted"], "미확인 — SMTP 필드 모순")
+        self.assertEqual(
+            contradiction["smtp_evidence_consistent"],
+            "모순 — smtp_boolean_conflicts_with_refused_status",
+        )
+        count_conflict = build_customer_delivery_admin_panel(
+            {
+                "customer_delivery_status": "ACCEPTED_ALL",
+                "customer_delivery_accepted_count": 2,
+                "smtp_accepted_recipient_count": 3,
+            }
+        )
+        self.assertEqual(count_conflict["smtp_accepted"], "미확인 — SMTP 필드 모순")
+        accepted_boolean_conflict = build_customer_delivery_admin_panel(
+            {"customer_delivery_status": "ACCEPTED_ALL", "smtp_accepted": False}
+        )
+        self.assertEqual(accepted_boolean_conflict["status_grade"], "UNKNOWN")
+        self.assertEqual(accepted_boolean_conflict["smtp_accepted"], "미확인 — SMTP 필드 모순")
+        self.assertNotIn("이미 고객에게 발송됨", accepted_boolean_conflict["double_send_blocked"])
 
     def test_panel_uses_customer_email_trace_fields(self) -> None:
         panel = build_customer_delivery_admin_panel(
@@ -1919,6 +2018,47 @@ class CustomerDeliveryAdminPanelTests(unittest.TestCase):
             self.assertEqual(resp.status_code, 200, msg=mode)
             self.assertIn("고객 이메일 발송 상태", resp.text, msg=mode)
             self.assertIn("미발송", resp.text, msg=mode)
+
+    def test_detail_page_does_not_render_refused_all_as_accepted(self) -> None:
+        self._login()
+        run_id = "20261014_080200_today_genie_8f21c6d4"
+        save_run_artifact(
+            {
+                "run_id": run_id,
+                "mode": "today_genie",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "customer_delivery_status": "REFUSED_ALL",
+                "customer_email_delivery_status": "REFUSED_ALL",
+                "smtp_accepted": False,
+                "customer_delivery_refused_count": 2,
+                "smtp_refused_recipient_count": 2,
+            }
+        )
+        response = self.client.get(f"/admin/runs/{run_id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("전체 즉시 거절", response.text)
+        self.assertIn("자동 재전송하지 않습니다", response.text)
+        self.assertNotIn("발송 접수 완료", response.text)
+        self.assertNotIn("PASS / 발송 접수 완료", response.text)
+
+    def test_approval_result_query_cannot_create_success_notice(self) -> None:
+        self._login()
+        run_id = "20261014_080300_today_genie_8f21c6d5"
+        save_run_artifact(
+            {
+                "run_id": run_id,
+                "mode": "today_genie",
+                "validation_result": "pass",
+                "workflow_status": "validated",
+                "owner_review_status": "pending_review",
+                "customer_delivery_status": "not_sent",
+            }
+        )
+        response = self.client.get(f"/admin/runs/{run_id}?approval_result=recorded")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("이 URL만으로 승인 성공을 표시하지 않습니다", response.text)
+        self.assertNotIn("승인과 SMTP 결과 원장 기록을 확인했습니다", response.text)
 
     def test_detail_failed_and_double_send_blocked(self) -> None:
         self._login()

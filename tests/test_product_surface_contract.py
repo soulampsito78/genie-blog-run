@@ -5,8 +5,19 @@ import copy
 import unittest
 from unittest.mock import patch
 from admin_store import can_approve_customer_send
-from today_genie_source_provenance import SOURCE_PROVENANCE_ISSUE
+from today_genie_source_provenance import SOURCE_PROVENANCE_ISSUE, input_source_fields
+from today_genie_top3_assembly import canonical_news_id
 from tests.synthetic_today_source_binding import bind_synthetic_today_sources
+from temporal_context_diagnostic import build_role_evidence_from_source_headings
+
+
+def _role_evidence(day: str):
+    return build_role_evidence_from_source_headings(
+        day,
+        ["President Donald J. Trump", "Vice President JD Vance"],
+        observed_at=f"{day}T12:00:00+09:00",
+        source_sha256="a" * 64,
+    )
 
 from product_surface_contract import (
     CUSTOMER_SURFACE_PASS,
@@ -14,6 +25,9 @@ from product_surface_contract import (
     HARD_FAIL,
     INTERNAL_KEYWORD_FRAGMENT,
     INTERNAL_PLACEHOLDER_LEAK,
+    OPENAI_DEVICE_CAVEAT_MISSING,
+    BOFA_PENALTY_SCOPE_UNCLEAR,
+    BOFA_AGGREGATE_SOURCE_CONFLICT,
     MIXED_SENTENCE_END_STYLE,
     PRODUCT_REVIEW_REQUIRED,
     PRODUCT_SURFACE_DIAGNOSTIC_KEY,
@@ -80,11 +94,119 @@ class ProductSurfaceContractTests(unittest.TestCase):
         payload["key_watchpoints"][1]["source_url"] = "https://different.example.test/articles/synthetic-substitution"
         self._assert_provenance_blocks_before_readiness(payload, source)
 
+    def test_today_openai_device_story_requires_source_backed_negative_access_caveat(self):
+        article = {
+            "headline": "Employee arrested after listening device found in OpenAI conference room, FBI and the company say",
+            "url": "https://apnews.com/article/ai-fbi-justice-department-7f512b2552ffcbbf8f1ebbb18f81a9ba",
+            "source": "AP News",
+        }
+        source = {"top_market_news": [article]}
+        payload = {"key_watchpoints": [{
+            "news_id": canonical_news_id(article), **input_source_fields(article),
+            "headline": "OpenAI 사무실 녹음장치 사건",
+            "detail": "회사는 직원이 회의실에 녹음 장치를 숨긴 사실을 확인해 수사기관에 알렸습니다.",
+        }]}
+        result = evaluate_product_surface("today_genie", payload, source_input=source)
+        self.assertIn(OPENAI_DEVICE_CAVEAT_MISSING, _codes(result))
+        self.assertEqual(result.status, PRODUCT_REVIEW_REQUIRED)
+        prepared = prepare_final_customer_copy("today_genie", payload, source_input=source)
+        meta = {"mode": "today_genie", "owner_review_status": "pending_review",
+                "customer_delivery_status": "not_sent", "validation_result": "pass",
+                "artifact_status": "emailed", **product_surface_run_fields(prepared)}
+        self.assertEqual(can_approve_customer_send(meta, has_email_html=True),
+                         (False, "product_surface_remediation_needed"))
+
+        payload["key_watchpoints"][0]["detail"] += (
+            " 회사는 모델 가중치, 소스 코드 또는 고객 데이터에 부적절하게 접근하거나 반출한 징후가 없다고 밝혔습니다."
+        )
+        result = evaluate_product_surface("today_genie", payload, source_input=source)
+        self.assertNotIn(OPENAI_DEVICE_CAVEAT_MISSING, _codes(result))
+
+    def test_today_bofa_12b_requires_fincen_aml_scope_and_separates_aggregate(self):
+        source = {"top_market_news": [{"headline": "Treasury announces more than $1.21 billion in penalties against Bank of America"}]}
+        payload = {"key_watchpoints": [{"headline": "뱅크오브아메리카 벌금", "detail": "미 재무부가 자금세탁방지와 제재 위반으로 총 12억1천만 달러를 부과했습니다."}]}
+        result = evaluate_product_surface("today_genie", payload, source_input=source)
+        self.assertIn(BOFA_PENALTY_SCOPE_UNCLEAR, _codes(result))
+        self.assertIn(BOFA_AGGREGATE_SOURCE_CONFLICT, _codes(result))
+        prepared = prepare_final_customer_copy("today_genie", payload, source_input=source)
+        meta = {"mode": "today_genie", "owner_review_status": "pending_review",
+                "customer_delivery_status": "not_sent", "validation_result": "pass",
+                "artifact_status": "emailed", **product_surface_run_fields(prepared)}
+        self.assertEqual(can_approve_customer_send(meta, has_email_html=True),
+                         (False, "product_surface_remediation_needed"))
+
+        payload["key_watchpoints"][0]["detail"] = (
+            "FinCEN은 BSA/AML 위반으로 12억 달러, OCC는 7억5천만 달러, OFAC는 sanctions settlement 11.6 million dollars를 각각 부과해 총 12억1천만 달러를 넘었습니다."
+        )
+        result = evaluate_product_surface("today_genie", payload, source_input=source)
+        codes = _codes(result)
+        self.assertNotIn(BOFA_PENALTY_SCOPE_UNCLEAR, codes)
+        self.assertNotIn(BOFA_AGGREGATE_SOURCE_CONFLICT, codes)
+
+    def test_today_source_scope_binds_by_article_identity_not_card_position(self):
+        bofa = {
+            "news_id": "bofa-article",
+            "headline": "Treasury announces more than $1.21 billion in penalties against Bank of America",
+            "url": "https://example.test/news/bofa-article",
+            "source": "Example News",
+            "date": "2026-10-13",
+        }
+        openai = {
+            "news_id": "openai-article",
+            "headline": "OpenAI recording device investigation update",
+            "url": "https://example.test/news/openai-article",
+            "source": "Example News",
+            "date": "2026-10-13",
+        }
+        source = {"top_market_news": [bofa, openai]}
+        # Deliberately reverse the cards. The hidden rationale on the BofA card
+        # contains the missing qualifier, but the customer renderer does not
+        # display it and it must not turn the visible copy into a pass.
+        payload = {"key_watchpoints": [
+            {"news_id": canonical_news_id(openai), **input_source_fields(openai),
+             "headline": "OpenAI 녹음장치 조사", "detail": "수사 경과를 확인합니다."},
+            {"news_id": canonical_news_id(bofa), **input_source_fields(bofa),
+             "headline": "뱅크오브아메리카 벌금", "detail": "12억 달러의 벌금이 발표됐습니다.",
+             "selection_reason": "FinCEN BSA/AML 제재의 범위를 확인합니다."},
+        ]}
+        result = evaluate_product_surface("today_genie", payload, source_input=source)
+        findings = [f for f in result.findings if f.code == BOFA_PENALTY_SCOPE_UNCLEAR]
+        self.assertEqual([finding.path for finding in findings], ["items[2]"])
+        self.assertNotIn(SOURCE_PROVENANCE_ISSUE, _codes(result))
+
+    def test_today_titleless_source_does_not_shift_article_binding(self):
+        titleless = {"news_id": "no-title", "url": "https://example.test/news/no-title",
+                     "source": "Example News", "date": "2026-10-13"}
+        bofa = {
+            "news_id": "bofa-after-titleless",
+            "headline": "Treasury announces more than $1.21 billion in penalties against Bank of America",
+            "url": "https://example.test/news/bofa-after-titleless",
+            "source": "Example News",
+            "date": "2026-10-13",
+        }
+        payload = {"key_watchpoints": [{
+            "news_id": canonical_news_id(bofa), **input_source_fields(bofa),
+            "headline": "뱅크오브아메리카 벌금", "detail": "12억 달러 벌금입니다.",
+        }]}
+        result = evaluate_product_surface("today_genie", payload,
+                                          source_input={"top_market_news": [titleless, bofa]})
+        self.assertIn(BOFA_PENALTY_SCOPE_UNCLEAR, _codes(result))
+        self.assertNotIn(SOURCE_PROVENANCE_ISSUE, _codes(result))
+
     def test_truncated_english_heading_and_raw_source_copy_are_context_aware(self) -> None:
-        source = {"top_market_news": [{"headline": "Lululemon stock plunges 10% after outlook cut"}]}
+        article = {
+            "news_id": "lululemon-source",
+            "headline": "Lululemon stock plunges 10% after outlook cut",
+            "url": "https://example.test/news/lululemon-outlook-cut",
+            "source": "Example News",
+            "date": "2026-10-13",
+        }
+        source = {"top_market_news": [article]}
         payload = {
             "key_watchpoints": [
                 {
+                    "news_id": canonical_news_id(article),
+                    **input_source_fields(article),
                     "headline": "Lululemon stock plunges 1…",
                     "detail": "Lululemon stock plunges 10% after outlook cut. 국내 수급을 확인합니다.",
                 }
@@ -303,3 +425,109 @@ class RuntimeRiskListBoundaryTests(unittest.TestCase):
         self.assertIn(ROLE_CONTEXT_UNKNOWN, diagnostic["issue_codes"])
         self.assertEqual(self._role_paths(output), ["risk_check[1].risk"])
         self.assertEqual(diagnostic["temporal_context"]["fact_verdict"], "NOT_CERTIFIED")
+
+    def test_dated_first_party_snapshot_flags_actual_current_title_mismatch(self):
+        from temporal_context_diagnostic import ROLE_CONTEXT_MISMATCH
+        payload = {"summary": "현재 트럼프 전 대통령의 러시아 거래를 다룹니다."}
+        result = evaluate_product_surface(
+            "today_genie", payload, source_input={
+                "target_date": "2026-10-14",
+                "current_role_evidence": _role_evidence("2026-10-14"),
+            }
+        )
+        mismatches = [finding for finding in result.findings if finding.code == ROLE_CONTEXT_MISMATCH]
+        self.assertEqual(len(mismatches), 1)
+        self.assertEqual(mismatches[0].path, "summary")
+        self.assertEqual(result.status, PRODUCT_REVIEW_REQUIRED)
+
+    def test_both_current_trump_former_president_mentions_are_blocked(self):
+        from temporal_context_diagnostic import ROLE_CONTEXT_MISMATCH
+        source = {"target_date": "2026-10-14",
+                  "current_role_evidence": _role_evidence("2026-10-14")}
+        wrong = {"key_watchpoints": [
+            {"headline": "트럼프 전 대통령의 관세 발언", "detail": "트럼프 전 대통령의 발언을 확인합니다."}
+        ]}
+        result = evaluate_product_surface("today_genie", wrong, source_input=source)
+        mismatches = [finding for finding in result.findings if finding.code == ROLE_CONTEXT_MISMATCH]
+        self.assertEqual(len(mismatches), 2)
+        self.assertEqual(result.status, PRODUCT_REVIEW_REQUIRED)
+
+        corrected = {"key_watchpoints": [
+            {"headline": "트럼프 대통령의 관세 발언", "detail": "트럼프 대통령의 발언을 확인합니다."}
+        ]}
+        result = evaluate_product_surface("today_genie", corrected, source_input=source)
+        self.assertNotIn(ROLE_CONTEXT_MISMATCH, _codes(result))
+
+    def test_matching_current_title_does_not_claim_whole_fact_pass(self):
+        from temporal_context_diagnostic import (
+            ROLE_CONTEXT_MISMATCH, ROLE_CONTEXT_UNKNOWN,
+        )
+        payload = {"summary": "현재 트럼프 대통령과 밴스 부통령의 정책을 다룹니다."}
+        prepared = prepare_final_customer_copy(
+            "today_genie", payload, source_input={
+                "target_date": "2026-10-14",
+                "current_role_evidence": _role_evidence("2026-10-14"),
+            }
+        )
+        codes = prepared[PRODUCT_SURFACE_DIAGNOSTIC_KEY]["issue_codes"]
+        self.assertNotIn(ROLE_CONTEXT_MISMATCH, codes)
+        self.assertNotIn(ROLE_CONTEXT_UNKNOWN, codes)
+        self.assertEqual(prepared[PRODUCT_SURFACE_DIAGNOSTIC_KEY]["temporal_context"]["fact_verdict"], "NOT_CERTIFIED")
+
+    def test_snapshot_is_closed_on_other_dates_and_history_is_not_current_role(self):
+        from temporal_context_diagnostic import ROLE_CONTEXT_UNKNOWN
+        current = evaluate_product_surface(
+            "today_genie", {"summary": "현재 트럼프 대통령입니다."},
+            source_input={"target_date": "2026-10-15"},
+        )
+        self.assertIn(ROLE_CONTEXT_UNKNOWN, {finding.code for finding in current.findings})
+        historical = evaluate_product_surface(
+            "today_genie", {"summary": "2024년 당시 트럼프 대통령이 참석했습니다."},
+            source_input={"target_date": "2026-10-14"},
+        )
+        self.assertNotIn(ROLE_CONTEXT_UNKNOWN, {finding.code for finding in historical.findings})
+
+    def test_dated_snapshot_flows_to_both_generation_prompts_and_final_renderer_gate(self):
+        from prompts import build_full_prompt, build_top3_extraction_prompt
+        runtime_input = {
+            "target_date": "2026-10-14",
+            "current_role_evidence": _role_evidence("2026-10-14"),
+            "top_market_news": [],
+        }
+        for prompt in (
+            build_top3_extraction_prompt(runtime_input),
+            build_full_prompt("today_genie", runtime_input),
+        ):
+            with self.subTest(prompt=prompt[:60]):
+                self.assertIn('"contract_version": "today-current-role-evidence-v1"', prompt)
+                self.assertIn("DATED_CURRENT_ROLE_EVIDENCE", prompt)
+                self.assertIn('"as_of": "2026-10-14"', prompt)
+
+        prepared = prepare_final_customer_copy(
+            "today_genie", {"summary": "현재 트럼프 전 대통령입니다."},
+            source_input=runtime_input,
+        )
+        diagnostic = prepared[PRODUCT_SURFACE_DIAGNOSTIC_KEY]
+        self.assertEqual(diagnostic["temporal_context"]["role_evidence_as_of"], "2026-10-14")
+        self.assertEqual(
+            diagnostic["temporal_context"]["independent_role_evidence"],
+            "DATE_BOUND_FIRST_PARTY_SNAPSHOT",
+        )
+        self.assertIn("customer_surface_current_office_role_mismatch", diagnostic["issue_codes"])
+
+    def test_missing_or_tampered_role_snapshot_never_certifies_current_title(self):
+        from temporal_context_diagnostic import ROLE_CONTEXT_UNKNOWN
+        payload = {"summary": "현재 트럼프 대통령입니다."}
+        valid = _role_evidence("2026-10-14")
+        for evidence in (None, {**valid, "as_of": "2026-10-15"},
+                         {**valid, "roles": {"trump": "former_president", "vance": "vice_president"}}):
+            with self.subTest(evidence=evidence):
+                prepared = prepare_final_customer_copy(
+                    "today_genie", payload,
+                    source_input={"target_date": "2026-10-14", "current_role_evidence": evidence},
+                )
+                self.assertIn(ROLE_CONTEXT_UNKNOWN, prepared[PRODUCT_SURFACE_DIAGNOSTIC_KEY]["issue_codes"])
+                self.assertEqual(
+                    prepared[PRODUCT_SURFACE_DIAGNOSTIC_KEY]["temporal_context"]["fact_verdict"],
+                    "NOT_CERTIFIED",
+                )

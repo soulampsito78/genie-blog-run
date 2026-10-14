@@ -98,7 +98,12 @@ _INFRASTRUCTURE_CODES = frozenset(
 
 # Independent evidence cannot be created by regenerating the same source set.
 # Keep the product REVIEW and its dated-evidence dependency unchanged.
-_EVIDENCE_DEPENDENCY_CODES = frozenset({"customer_surface_current_office_context_unknown"})
+_EVIDENCE_DEPENDENCY_CODES = frozenset({
+    "customer_surface_current_office_context_unknown",
+    # A factual role mismatch requires source-backed correction; regenerating
+    # from the same inputs is not independent evidence and can repeat the error.
+    "customer_surface_current_office_role_mismatch",
+})
 
 NON_REMEDIABLE_ISSUE_CODES = (
     frozenset(FINANCE_SAFETY_CODES) | _TERMINAL_REGISTRY_CODES

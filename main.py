@@ -62,6 +62,7 @@ from product_surface_contract import (
     prepare_final_customer_copy,
     runtime_safety_status,
 )
+from temporal_context_diagnostic import fetch_current_role_evidence
 from memory_observability import memory_evidence_scope, record_memory_stage
 
 
@@ -1453,6 +1454,10 @@ def build_runtime_input(mode: str, controlled_test_target_date: Optional[str] = 
 
         return {
             "target_date": today_date,
+            # A single, date-bound first-party snapshot is passed through both
+            # generation phases and the final inspect-only surface diagnostic.
+            # Missing/expired dates produce None and remain fail-closed.
+            "current_role_evidence": fetch_current_role_evidence(today_date),
             "briefing_time_kst": "06:30",
             "purpose": "장전 금융 브리핑",
             "overnight_us_market": overnight_us_market,

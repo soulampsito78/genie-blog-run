@@ -220,9 +220,11 @@ def test_i_content_auto_remediation_separate(isolated):
 
 def test_recovery_transport_uncertainty_never_reposts(monkeypatch):
     import urllib.error
-    with mock.patch('urllib.request.urlopen', side_effect=urllib.error.URLError('timeout')) as request:
+    opener = mock.MagicMock()
+    opener.open.side_effect = urllib.error.URLError('timeout')
+    with mock.patch('urllib.request.build_opener', return_value=opener) as request:
         result = orchestrator.run_genie_job('today_genie', transport_retries=0)
-    assert request.call_count == 1 and result.response_status is None
+    assert opener.open.call_count == 1 and result.response_status is None
 
 
 @pytest.mark.parametrize('value', ['999999999','inf','nan','-4'])

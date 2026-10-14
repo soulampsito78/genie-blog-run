@@ -526,6 +526,24 @@ def today_genie_top3_extract_recovery_suffix() -> str:
     """).strip()
 
 
+def _current_role_evidence_rule(runtime_input: Dict[str, Any]) -> str:
+    """Bind generation to the same bounded evidence consumed by final QA."""
+    evidence = runtime_input.get("current_role_evidence")
+    if isinstance(evidence, dict):
+        as_of = evidence.get("as_of") or "unknown"
+        observed_at = evidence.get("observed_at") or "unknown"
+        return dedent(f"""
+        [DATED_CURRENT_ROLE_EVIDENCE — not general fact certification]
+        runtime_input.current_role_evidence is the only supplied first-party snapshot for current office wording (as_of={as_of}, observed_at={observed_at}).
+        It is valid only for this same KST date; if unavailable, stale, or inconsistent, do not guess a current title and preserve uncertainty.
+        Use it only to avoid misstating the named person's current title on that exact date. It does not prove article facts, event timing, allegations, or any other claim. Preserve attribution and uncertainty; do not infer extra roles or extend this snapshot to another date. The server's final inspect-only diagnostic independently checks current-role spans against the same evidence and may block the customer surface.
+        """).strip()
+    return dedent("""
+    [DATED_CURRENT_ROLE_EVIDENCE_UNAVAILABLE]
+    No dated first-party current-role snapshot is available for runtime_input.target_date. Do not assert a current office/title for named people unless the input itself includes explicitly dated, attributable evidence; otherwise omit or clearly qualify it. Do not infer a role from the publication date. The server's final inspect-only diagnostic will keep unsupported current-role wording in review.
+    """).strip()
+
+
 def build_top3_extraction_prompt(runtime_input: Dict[str, Any]) -> str:
     """Layer-1: fact-locked structured slots only (no full letter prose)."""
     headlines = _collect_top_market_news_headlines(runtime_input)
@@ -562,6 +580,8 @@ def build_top3_extraction_prompt(runtime_input: Dict[str, Any]) -> str:
 
     [RUNTIME_INPUT]
     {json.dumps(runtime_input, ensure_ascii=False, indent=2)}
+
+    {_current_role_evidence_rule(runtime_input)}
 
     [FINAL_INSTRUCTION]
     JSON 객체 1개만 반환하라.
@@ -670,6 +690,7 @@ def build_full_prompt(
     [RUNTIME_INPUT]
     아래 입력값만 근거로 사용한다.
     {json.dumps(runtime_input, ensure_ascii=False, indent=2)}
+    {_current_role_evidence_rule(runtime_input)}
     {image_weather_rule}
     {feed_alert}
 

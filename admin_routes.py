@@ -33,6 +33,7 @@ from admin_view_models import (
     ACTIVE_PROGRAMS,
     ACTIVE_PROGRAM_IDS,
     delivery_projection,
+    persisted_customer_approval_receipt,
     incident_projection,
     incident_current_projection,
     is_active_program,
@@ -660,6 +661,7 @@ def _render_customer_delivery_status_panel(meta: dict) -> str:
         _render_panel_row("수신자 수", str(panel.get("recipient_count") or "미기록")),
         _render_panel_row("수신자 목록 (마스킹)", recipients_display),
         _render_panel_row("SMTP accepted", str(panel.get("smtp_accepted") or "미기록")),
+        _render_panel_row("SMTP 필드 일관성", str(panel.get("smtp_evidence_consistent") or "미기록")),
         _render_panel_row("SMTP message id", str(panel.get("smtp_message_id") or "미기록")),
         _render_panel_row("실패 reason code", str(panel.get("failure_reason_code") or "없음")),
         _render_panel_row("실패 message", str(panel.get("failure_message") or "없음")),
@@ -2335,6 +2337,20 @@ def admin_run_detail(request: Request, run_id: str):
     if not meta:
         return HTMLResponse(_layout("Not found", "<p>실행 기록을 찾을 수 없습니다.</p>"), status_code=404)
     warn = ""
+    if request.query_params.get("approval_result") == "recorded":
+        approval_receipt = persisted_customer_approval_receipt(meta)
+        if approval_receipt["recorded"]:
+            delivery_result = delivery_projection(meta)
+            warn += (
+                '<div class="notice"><strong>승인과 SMTP 결과 원장 기록을 확인했습니다.</strong>'
+                f'<p>{_esc(delivery_result["label_ko"])} — {_esc(delivery_result["summary"])}</p>'
+                '<p>SMTP 접수와 고객 수신함 도착은 별개입니다.</p></div>'
+            )
+        else:
+            warn += (
+                '<div class="warn">화면 요청에 대응하는 승인 및 배송 결과 원장을 확인하지 못했습니다. '
+                '이 URL만으로 승인 성공을 표시하지 않습니다.</div>'
+            )
     if request.query_params.get("reissue_dry_run") == "1":
         warn += (
             '<div class="warn">QA dry-run(no-send) 재발행이 완료되었습니다. '
@@ -2894,7 +2910,7 @@ def admin_run_approve(
         client_ip,
         user_agent,
     )
-    resp = RedirectResponse(url=f"/admin/runs/{run_id}", status_code=303)
+    resp = RedirectResponse(url=f"/admin/runs/{run_id}?approval_result=recorded", status_code=303)
     _clear_approval_nonce_cookie(resp)
     return resp
 

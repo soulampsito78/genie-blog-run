@@ -22,7 +22,12 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 from today_genie_source_provenance import SOURCE_PROVENANCE_ISSUE, watchpoint_source_issue
-from temporal_context_diagnostic import ROLE_CONTEXT_UNKNOWN, inspect_role_fields
+from temporal_context_diagnostic import (
+    ROLE_CONTEXT_MISMATCH,
+    ROLE_CONTEXT_UNKNOWN,
+    inspect_role_fields,
+    _validated_role_evidence,
+)
 
 TECHNICAL_TEST_PASS = "TECHNICAL_TEST_PASS"
 RUNTIME_SAFETY_PASS = "RUNTIME_SAFETY_PASS"
@@ -47,6 +52,9 @@ DUPLICATE_FILLER = "customer_surface_duplicate_filler"
 FABRICATED_GENERIC_READER_TITLE = "customer_surface_fabricated_generic_reader_title"
 MISSING_GROUNDED_READER_TITLE = "customer_surface_missing_grounded_reader_title"
 INTERNAL_PIPELINE_CONCEPT = "customer_surface_internal_pipeline_concept"
+OPENAI_DEVICE_CAVEAT_MISSING = "customer_surface_openai_device_caveat_missing"
+BOFA_PENALTY_SCOPE_UNCLEAR = "customer_surface_bofa_penalty_scope_unclear"
+BOFA_AGGREGATE_SOURCE_CONFLICT = "customer_surface_bofa_aggregate_source_conflict"
 
 # Set by the grounded assembly layer when no grounded Korean reader title or
 # fact sentence existed for a card.  The assembly never invents one; it marks
@@ -324,6 +332,124 @@ def _source_headlines(source_input: Mapping[str, Any] | None) -> List[str]:
     return out
 
 
+def _today_bound_source(item: Mapping[str, Any], source_input: Mapping[str, Any] | None):
+    """Resolve one card to one exact input article; never infer from array position."""
+    if not isinstance(source_input, Mapping):
+        return None
+    from today_genie_top3_assembly import canonical_news_id
+
+    from today_genie_top3_assembly import collect_valid_major_overseas_news
+    sources = [source for _, source in collect_valid_major_overseas_news(dict(source_input), max_items=3)]
+    news_id = _one_line(item.get("news_id"))
+    if news_id:
+        matches = [source for source in sources if canonical_news_id(dict(source)) == news_id]
+        return matches[0] if len(matches) == 1 else None
+    source_url = _one_line(item.get("source_url"))
+    if source_url:
+        matches = [source for source in sources if _one_line(
+            source.get("source_url") or source.get("url") or source.get("link") or source.get("canonical_url")
+        ) == source_url]
+        return matches[0] if len(matches) == 1 else None
+    return None
+
+
+def _today_factual_scope_findings(
+    payload: Mapping[str, Any], source_input: Mapping[str, Any] | None,
+) -> List[ProductSurfaceFinding]:
+    """Fail closed on two narrow, source-backed Today claim-shape omissions.
+
+    This is not a fact checker: it detects only known high-risk subject/amount
+    combinations and requires the materially relevant qualification in the same
+    article card. It never rewrites copy or certifies truth.
+    """
+    findings: List[ProductSurfaceFinding] = []
+    for index, item in enumerate(_surface_items("today_genie", payload), start=1):
+        # Only fields rendered in the Today email/web customer card count as
+        # customer-visible qualification. Selection rationale/QA metadata and
+        # source headlines are not copy shown to the reader.
+        visible_parts = [
+            _one_line(item.get(key))
+            for key in ("headline", "detail")
+        ]
+        visible_card = " ".join(part for part in visible_parts if part).casefold()
+        bound_source = _today_bound_source(item, source_input)
+        source_title = _one_line(
+            (bound_source or {}).get("canonical_headline")
+            or (bound_source or {}).get("headline")
+            or (bound_source or {}).get("title")
+        ).casefold()
+        # Article identity may establish which narrow rule applies; it cannot
+        # supply a missing caveat in the customer-visible copy.
+        trigger_card = f"{visible_card} {source_title}"
+
+        openai_device = (
+            "openai" in trigger_card
+            and bool(re.search(r"녹음\s*(?:장치|기기|기|기록기)|도청\s*장치|recording\s+device|listening\s+device", trigger_card, re.I))
+        )
+        if openai_device:
+            no_indication = bool(re.search(
+                r"(?:징후|증거|정황).{0,24}(?:없|미확인|확인되지|발견되지)|"
+                r"(?:없|미확인|확인되지|발견되지).{0,24}(?:징후|증거|정황)|"
+                r"no\s+(?:indications?|evidence|signs?)",
+                visible_card, re.I,
+            ))
+            access_or_exfiltration = bool(re.search(
+                r"부적절하게\s*접근|무단\s*접근|접근.{0,12}(?:반출|유출)|"
+                r"(?:반출|유출).{0,12}접근|inappropriately\s+access(?:ing)?|"
+                r"access(?:ing)?.{0,30}exfiltrat",
+                visible_card, re.I,
+            ))
+            protected_categories = (
+                bool(re.search(r"모델\s*가중치|model\s+weights?", visible_card, re.I))
+                and bool(re.search(r"소스\s*코드|source\s+code", visible_card, re.I))
+                and bool(re.search(r"고객\s*데이터|customer\s+data", visible_card, re.I))
+            )
+            if not (no_indication and access_or_exfiltration and protected_categories):
+                findings.append(ProductSurfaceFinding(
+                    OPENAI_DEVICE_CAVEAT_MISSING,
+                    f"items[{index}]",
+                    "OpenAI 녹음장치 사건에 모델 가중치·소스 코드·고객 데이터의 부적절한 접근/반출 징후가 없다는 출처상 한정이 같은 카드에 없습니다.",
+                    (index,),
+                ))
+
+        bofa = bool(re.search(r"bank\s+of\s+america|뱅크\s*오브\s*아메리카|뱅크\s*오브\s*아메리카", trigger_card, re.I))
+        amount_12b = bool(re.search(r"(?:\$\s*)?1[.,]2\s*(?:billion|bn|b\b)|12\s*억\s*(?:달러)?", trigger_card, re.I))
+        mentions_penalty = bool(re.search(r"벌금|과징금|제재금|penalt(?:y|ies)|fine", trigger_card, re.I))
+        if bofa and amount_12b and mentions_penalty:
+            fincen = bool(re.search(r"fincen|핀센", visible_card, re.I))
+            aml = bool(re.search(r"aml|bsa|자금\s*세탁\s*방지|자금세탁방지", visible_card, re.I))
+            if not (fincen and aml):
+                findings.append(ProductSurfaceFinding(
+                    BOFA_PENALTY_SCOPE_UNCLEAR,
+                    f"items[{index}]",
+                    "Bank of America 12억 달러 벌금의 부과기관(FinCEN)과 BSA/AML 범위가 같은 카드에서 분명히 특정되지 않았습니다.",
+                    (index,),
+                ))
+        amount_121b_pattern = re.compile(r"(?:\$\s*)?1[.,]21\s*(?:billion|bn|b\b)|12\s*억\s*1천만\s*(?:달러)?", re.I)
+        exact_aggregate_claim = False
+        if amount_121b_pattern.search(trigger_card):
+            # A quoted source lower bound ("more than $1.21B") is compatible
+            # with the agency sum. Only an unqualified exact-total claim is
+            # unsupported by that lower-bound source.
+            for amount_match in amount_121b_pattern.finditer(trigger_card):
+                nearby = trigger_card[max(0, amount_match.start() - 48):min(len(trigger_card), amount_match.end() + 28)]
+                lower_bound = re.search(
+                    r"(?:more\s+than|over|exceed(?:s|ed)?|above|at\s+least|greater\s+than|>\s*|넘(?:게|어)?|초과|이상)",
+                    nearby, re.I,
+                )
+                if lower_bound is None:
+                    exact_aggregate_claim = True
+                    break
+        if bofa and exact_aggregate_claim and amount_121b_pattern.search(visible_card):
+            findings.append(ProductSurfaceFinding(
+                BOFA_AGGREGATE_SOURCE_CONFLICT,
+                f"items[{index}]",
+                "원문은 재무부 집계액을 ‘1.21B 초과’라는 하한으로 제시합니다. 기관별 합계와 양립하므로 이를 정확한 총액으로 단정할 근거는 아닙니다.",
+                (index,),
+            ))
+    return findings
+
+
 def _contains_source_headline(text: str, headlines: Sequence[str]) -> bool:
     compact = _one_line(text).lower()
     for headline in headlines:
@@ -384,6 +510,11 @@ def _collect_surface_fields(mode: str, payload: Mapping[str, Any]) -> List[Surfa
         ("next_watch", "body"),
         ("selection_reason", "body"),
     )
+    if mode == "today_genie":
+        # Today customer renderers print only these two values per news card.
+        # Internal rationale and alternative generation fields cannot satisfy
+        # a reader-visible caveat check.
+        item_keys = (("headline", "headline"), ("detail", "body"))
     for index, item in enumerate(_surface_items(mode, payload), start=1):
         for key, role in item_keys:
             value = _one_line(item.get(key))
@@ -449,10 +580,20 @@ def evaluate_product_surface(
 ) -> ProductSurfaceResult:
     """Inspect copy plus Today input-link binding; never certify source facts."""
     fields = _collect_surface_fields(mode, structured_output)
-    source_titles = _source_headlines(source_input)
+    source_titles = _source_headlines(source_input) if mode != "today_genie" else []
+    today_items = _surface_items(mode, structured_output) if mode == "today_genie" else []
     findings: List[ProductSurfaceFinding] = []
 
     for field in fields:
+        field_source_titles = source_titles
+        if mode == "today_genie" and field.card_index > 0 and field.card_index <= len(today_items):
+            bound_source = _today_bound_source(today_items[field.card_index - 1], source_input)
+            bound_title = _one_line(
+                (bound_source or {}).get("canonical_headline")
+                or (bound_source or {}).get("headline")
+                or (bound_source or {}).get("title")
+            )
+            field_source_titles = [bound_title] if bound_title else []
         if _TRUNCATED_ENGLISH_RE.search(field.text) or _looks_like_truncated_english(
             field.text
         ):
@@ -465,7 +606,7 @@ def evaluate_product_surface(
                 )
             )
         if _looks_like_raw_english_prose(field.text, role=field.role) or _contains_source_headline(
-            field.text, source_titles
+            field.text, field_source_titles
         ):
             findings.append(
                 ProductSurfaceFinding(
@@ -545,20 +686,36 @@ def evaluate_product_surface(
         from today_genie_top3_assembly import collect_valid_major_overseas_news, canonical_news_id
 
         selected = collect_valid_major_overseas_news(dict(source_input or {}), max_items=3)
+        selected_by_id: Dict[str, List[Mapping[str, Any]]] = {}
+        selected_by_url: Dict[str, List[Mapping[str, Any]]] = {}
+        for _, source in selected:
+            selected_by_id.setdefault(canonical_news_id(source), []).append(source)
+            source_url = _one_line(
+                source.get("source_url") or source.get("url") or source.get("link") or source.get("canonical_url")
+            )
+            if source_url:
+                selected_by_url.setdefault(source_url, []).append(source)
         for index, item in enumerate(_surface_items(mode, structured_output)):
-            original = selected[index][1] if index < len(selected) else None
+            news_id = _one_line(item.get("news_id"))
+            source_url = _one_line(item.get("source_url"))
+            original = None
+            if news_id:
+                matches = selected_by_id.get(news_id, [])
+                original = matches[0] if len(matches) == 1 else None
+            elif source_url:
+                matches = selected_by_url.get(source_url, [])
+                original = matches[0] if len(matches) == 1 else None
             issue = watchpoint_source_issue(
                 item, original,
-                allow_market_feed=source_input is not None and index >= len(selected),
+                allow_market_feed=source_input is not None,
             )
-            if original is not None and item.get("news_id") != canonical_news_id(original):
-                issue = "selected_article_identity_mismatch"
             if issue:
                 findings.append(ProductSurfaceFinding(
                     SOURCE_PROVENANCE_ISSUE, f"items[{index + 1}]",
                     f"선정 기사 원본 링크와 입력 결속 검수가 필요합니다: {issue}",
                     (index + 1,),
                 ))
+        findings.extend(_today_factual_scope_findings(structured_output, source_input))
 
     # Repetition is compared across cards, never between aliases on one card.
     card_sentences: Dict[int, List[Tuple[str, str]]] = {}
@@ -669,13 +826,24 @@ def evaluate_product_surface(
             )
 
     if mode == "today_genie":
-        # No generated flag or source-link PASS supplies independent role facts.
-        # An explicit runtime date only scopes time; it does not certify events.
+        # Generated flags/source-link status are not role evidence. The dated
+        # first-party snapshot can identify a current-role mismatch for its
+        # exact as-of day; historical and stale/missing contexts remain separate.
         target_date = None
+        role_evidence = None
         if isinstance(source_input, Mapping):
             target_date = source_input.get("target_date") or source_input.get("date")
-        for role_finding in inspect_role_fields(fields, target_date=target_date):
-            if role_finding.review_required:
+            role_evidence = source_input.get("current_role_evidence")
+        for role_finding in inspect_role_fields(
+            fields, target_date=target_date, role_evidence=role_evidence
+        ):
+            if role_finding.context == "CURRENT_ROLE_MISMATCH":
+                findings.append(ProductSurfaceFinding(
+                    ROLE_CONTEXT_MISMATCH, role_finding.path,
+                    "본문의 현재 직함이 날짜 결속된 공식 직함 근거와 다릅니다.",
+                    (role_finding.card_index,) if role_finding.card_index > 0 else (),
+                ))
+            elif role_finding.review_required:
                 findings.append(ProductSurfaceFinding(
                     ROLE_CONTEXT_UNKNOWN, role_finding.path,
                     "현재 직함과 사건 시점의 독립 근거가 확인되지 않아 검수가 필요합니다: "
@@ -712,14 +880,23 @@ def prepare_final_customer_copy(
     result = evaluate_product_surface(mode, out, source_input=source_input)
     out[PRODUCT_SURFACE_DIAGNOSTIC_KEY] = result.as_dict()
     if mode == "today_genie":
+        target_date = None
+        role_evidence = None
+        if isinstance(source_input, Mapping):
+            target_date = source_input.get("target_date") or source_input.get("date")
+            role_evidence = source_input.get("current_role_evidence")
+        canonical_evidence = _validated_role_evidence(target_date, role_evidence)
+        evidence_applied = canonical_evidence is not None
         out[PRODUCT_SURFACE_DIAGNOSTIC_KEY]["temporal_context"] = {
             "contract_version": "today-role-context-diagnostic-v1",
             "fact_verdict": "NOT_CERTIFIED",
-            "independent_role_evidence": "NOT_INJECTED",
+            "independent_role_evidence": "DATE_BOUND_FIRST_PARTY_SNAPSHOT" if evidence_applied else "UNAVAILABLE_OR_INVALID",
+            "role_evidence_as_of": canonical_evidence["as_of"] if evidence_applied else None,
             "coverage": "Trump/Vance named roles and unresolved role pronouns only",
             "publication_date_used_as_event_date": False,
             "current_role_review_required": any(
-                finding.code == ROLE_CONTEXT_UNKNOWN for finding in result.findings
+                finding.code in {ROLE_CONTEXT_UNKNOWN, ROLE_CONTEXT_MISMATCH}
+                for finding in result.findings
             ),
         }
     return out
