@@ -1,5 +1,6 @@
 """Security/dispatch contract tests. No Gmail, actual images or live SMTP used."""
 import copy
+import base64
 import hashlib
 import hmac
 import json
@@ -12,6 +13,7 @@ import pytest
 import delegated_gate as gate
 import delegated_delivery_safety as safety
 import admin_safety_store as store
+from scripts import submit_delegated_work_review as review_submitter
 
 NOW = datetime(2026, 9, 10, 7, 0, tzinfo=timezone.utc)
 KEY = gate.ReviewerKey("work-cloud-reviewer", b"test-only-shared-key-never-used-live-12345")
@@ -51,7 +53,8 @@ def setup_case(tmp_path, monkeypatch):
         evidence_refs=["fixture://inventory"], operator_id="fixture-owner",
         all_writers_use_publication_guard=True)
 
-    def make(mode="today_genie", *, suffix="abcdef12", source="https://example.test/news?a=1", parent=None):
+    def make(mode="today_genie", *, suffix="abcdef12", source="https://example.test/news?a=1", parent=None,
+             editorial="READY", customer_claim=""):
         product = safety.PRODUCTS[mode]
         plan = {"schema": safety.SCHEMA, "product_code": product, "publication_date": "2026-09-10",
             "frozen_at": (NOW-timedelta(minutes=15)).isoformat(), "excluded_reason_counts": {},
@@ -64,7 +67,7 @@ def setup_case(tmp_path, monkeypatch):
         meta = {"run_id": f"20260910_153000_{mode}_{suffix}", "mode": mode,
             "validation_result": "pass", "artifact_status": "emailed", "owner_review_status": "pending_review",
             "customer_surface_status": "CUSTOMER_SURFACE_PASS", "customer_delivery_status": "not_sent",
-            "safety_verdict": "SAFE", "editorial_verdict": "READY", "parent_run_id": parent,
+            "safety_verdict": "SAFE", "editorial_verdict": editorial, "parent_run_id": parent,
             "selected_items": [{"url": source}], "repair_trace": [{"stage": "pre_review", "validation_reran": True}]}
         if mode in {"keysuri_global_tech", "keysuri_korea_tech"}:
             meta.update({
@@ -79,7 +82,7 @@ def setup_case(tmp_path, monkeypatch):
             parts.append((str(path), role, f"{role}.jpg"))
         def prepared(*args, **kwargs):
             copy = gate._DELEGATED_COPY if kwargs.get("approval_source") == "DELEGATED_WORK_REVIEW" else gate._HUMAN_COPY
-            return {"ok": True, "subject": "Reviewed briefing", "html_body": f'<p>{copy}</p><a href="{source}">Source</a>',
+            return {"ok": True, "subject": "Reviewed briefing", "html_body": f'<p>{copy}</p><p>{customer_claim}</p><a href="{source}">Source</a>',
                     "inline_jpeg_parts": parts, "recipients": kwargs["recipients_override"]}
         if mode == "today_genie":
             monkeypatch.setattr("today_geenee_customer_delivery.prepare_today_geenee_customer_delivery", prepared)
@@ -106,6 +109,21 @@ def event_for(candidate, *, event_id="event_000000000001", verdict="PASS"):
             "critical_sources_checked": True, "anomalies": []}}
 
 
+def material_finding(candidate, claim, *, rule="SOURCE_CLAIM_CONTRADICTION", locator="line:1",
+                     excerpt="The source says latency declined during the measured period.", capture=None):
+    capture = capture or (excerpt + "\nAdditional source context.").encode("utf-8")
+    checks = {"SOURCE_CLAIM_CONTRADICTION": "sources",
+              "UNSUPPORTED_MATERIAL_CLAIM": "content+sources",
+              "MATERIAL_SUBJECT_OR_METRIC_MISMATCH": "content+sources"}[rule]
+    return {"rule_id": rule, "policy_ref": f"required_check:{checks}",
+        "candidate_sha256": candidate.candidate_sha256, "customer_text": claim,
+        "source_url": "https://example.test/news?a=1", "capture_url": "https://example.test/news?a=1",
+        "source_locator": locator, "source_excerpt": excerpt,
+        "source_capture_b64": base64.b64encode(capture).decode("ascii"),
+        "source_capture_sha256": hashlib.sha256(capture).hexdigest(),
+        "material_impact": "The opposite direction changes the principal customer-visible result."}
+
+
 def signed(event):
     raw = gate.canonical(event).encode()
     return raw, {"x-genie-review-key-id": "runner-v1", "x-genie-review-signature": hmac.new(KEY.secret, raw, hashlib.sha256).hexdigest()}
@@ -122,12 +140,44 @@ def run(candidate, *, event=None, authority=None, loader=None, sender=None, conf
         sender=sender or (lambda frozen, plan, audit: {"outcome": "ACCEPTED_ALL", "received": False}))
 
 
+def helper_event_for(candidate, *, verdict="PASS", source_status="PASS", source_attested=True,
+                     source_evidence=True, anomalies=None, event_id="helper_review_00000001"):
+    review_json = json.loads(json.dumps({
+        "run_id": candidate.binding["run_id"],
+        "overall_verdict": verdict,
+        "checks": {**{key: "PASS" for key in gate.REQUIRED_CHECKS}, "sources": source_status},
+        "evidence": {**{key: [f"fixture://{key}"] for key in gate.REQUIRED_CHECKS},
+                     "sources": ["fixture://sources"] if source_evidence else []},
+        "critical_sources_checked": source_attested,
+        "anomalies": anomalies or [],
+    }))
+    return review_submitter._construct_review_event(
+        review_json,
+        candidate,
+        principal=KEY.principal,
+        reviewer_model="gpt-6-test",
+        policy_version=gate.POLICY_VERSION,
+        now=NOW,
+        event_id=event_id,
+    )
+
+
+def run_helper_event(candidate, event, *, sender):
+    raw, headers = review_submitter._sign_review_event(
+        event, canonicalize=gate.canonical, key_id="runner-v1", secret=KEY.secret
+    )
+    return gate.process_review_event(
+        raw, headers, loader=Loader(candidate), recipient_authority=Authority(),
+        now=NOW, settings=settings(), sender=sender,
+    )
+
+
 @pytest.mark.parametrize("mode", ["today_genie", "keysuri_global_tech", "keysuri_korea_tech"])
 def test_authenticated_normal_dispatch_uses_frozen_bytes_and_truthful_authority(setup_case, mode):
     candidate = setup_case(mode)
     called = []
     result = run(candidate, sender=lambda frozen, plan, audit: called.append((frozen, plan, audit)) or {"outcome": "ACCEPTED_ALL"})
-    assert result["verdict"] == "PASS"
+    assert result["verdict"] == "PASS", result
     assert result["customer_send_authorized"] is True
     assert result["approval_source"] == "DELEGATED_WORK_REVIEW"
     assert result["owner_notification_required"] is False
@@ -137,6 +187,87 @@ def test_authenticated_normal_dispatch_uses_frozen_bytes_and_truthful_authority(
     assert gate._HUMAN_COPY not in candidate.customer_html
     assert gate._DELEGATED_COPY in candidate.customer_html
     assert called[0][1] == candidate.recipient_plan
+
+
+def test_safe_editorial_review_with_recommendation_only_can_dispatch(setup_case):
+    candidate = setup_case("keysuri_global_tech", editorial="REVIEW")
+    called = []
+    result = run(candidate, sender=lambda frozen, plan, audit: called.append(frozen) or {"outcome": "ACCEPTED_ALL"})
+    assert result["verdict"] == "PASS"
+    assert result["customer_send_authorized"] is True
+    assert len(called) == 1
+
+
+@pytest.mark.parametrize("dimension", sorted(gate.REQUIRED_CHECKS))
+@pytest.mark.parametrize("bad_value", ["UNKNOWN", "INCOMPLETE", "REVIEW", "", "PASSISH"])
+def test_non_pass_or_unsupported_required_dimension_cannot_dispatch(setup_case, dimension, bad_value):
+    candidate = setup_case()
+    event = event_for(candidate)
+    event["review"]["checks"][dimension] = bad_value
+    sent = []
+    result = run(candidate, event=event, sender=lambda *args: sent.append(True) or {"outcome": "ACCEPTED_ALL"})
+    assert result["verdict"] == "HOLD_INCOMPLETE"
+    assert result["customer_send_authorized"] is False
+    assert sent == []
+
+
+def test_material_finding_does_not_mask_unrelated_non_pass_dimension(setup_case):
+    claim = "The report says the service latency doubled."
+    candidate = setup_case("keysuri_global_tech", customer_claim=claim)
+    event = event_for(candidate)
+    event["review"]["checks"]["sources"] = "FAIL"
+    event["review"]["checks"]["images"] = "UNKNOWN"
+    event["review"]["anomalies"] = [material_finding(candidate, claim)]
+    sent = []
+    result = run(candidate, event=event, sender=lambda *args: sent.append(True) or {"outcome": "ACCEPTED_ALL"})
+    assert result["verdict"] == "HOLD_INCOMPLETE"
+    assert result["customer_send_authorized"] is False
+    assert sent == []
+
+
+def test_actual_submit_helper_payload_confirmed_material_source_failure_holds(setup_case):
+    claim = "The report says the service latency doubled."
+    candidate = setup_case("keysuri_global_tech", customer_claim=claim)
+    event = helper_event_for(candidate, verdict="HOLD_ANOMALY", source_status="FAIL",
+                             source_attested=True,
+                             anomalies=[material_finding(candidate, claim)])
+    assert event["review"]["critical_sources_checked"] is True
+    assert event["review"]["checks"]["sources"] == "FAIL"
+    sent = []
+    result = run_helper_event(candidate, event,
+                 sender=lambda *args, **kwargs: sent.append(True) or {"outcome": "ACCEPTED_ALL"})
+    assert result["verdict"] == "HOLD_ANOMALY"
+    assert result["customer_send_authorized"] is False
+    assert sent == []
+
+
+@pytest.mark.parametrize("verdict,source_status,attested,has_evidence", [
+    ("REVIEW_UNAVAILABLE", "REVIEW_UNAVAILABLE", False, False),
+    ("PASS", "PASS", False, True),
+])
+def test_actual_submit_helper_payload_source_unavailable_or_unattested_never_sends(
+    setup_case, verdict, source_status, attested, has_evidence
+):
+    candidate = setup_case("keysuri_global_tech", customer_claim="A complete ordinary briefing.")
+    event = helper_event_for(candidate, verdict=verdict, source_status=source_status,
+                             source_attested=attested, source_evidence=has_evidence)
+    sent = []
+    result = run_helper_event(candidate, event,
+                 sender=lambda *args, **kwargs: sent.append(True) or {"outcome": "ACCEPTED_ALL"})
+    assert result["verdict"] in {"REVIEW_UNAVAILABLE", "HOLD_INCOMPLETE"}
+    assert result["customer_send_authorized"] is False
+    assert sent == []
+
+
+def test_actual_submit_helper_payload_safe_review_submits_once_to_fake_sender(setup_case):
+    candidate = setup_case("keysuri_global_tech", editorial="REVIEW")
+    event = helper_event_for(candidate, source_status="PASS", source_attested=True)
+    sent = []
+    result = run_helper_event(candidate, event,
+                 sender=lambda *args, **kwargs: sent.append(True) or {"outcome": "ACCEPTED_ALL"})
+    assert result["verdict"] == "PASS", result
+    assert result["customer_send_authorized"] is True
+    assert sent == [True]
 
 
 @pytest.mark.parametrize("mode", ["OFF", "", "manual", "timeout", "unknown"])
@@ -242,11 +373,112 @@ def test_candidate_changes_between_review_and_provider_boundary(setup_case):
 
 
 def test_work_anomaly_never_triggers_repair_or_send(setup_case):
-    candidate = setup_case()
+    claim = "The report says the service latency doubled."
+    candidate = setup_case("keysuri_global_tech", customer_claim=claim)
     event = event_for(candidate)
-    event["review"]["anomalies"] = ["material contradiction"]
+    event["review"]["checks"]["sources"] = "FAIL"
+    event["review"]["anomalies"] = [material_finding(candidate, claim)]
     result = run(candidate, event=event)
     assert result["verdict"] == "HOLD_ANOMALY"
+
+
+def test_unbound_or_incomplete_anomaly_is_not_confirmed_error(setup_case):
+    candidate = setup_case("keysuri_global_tech", customer_claim="The report says the service latency doubled.")
+    event = event_for(candidate)
+    event["review"]["checks"]["sources"] = "FAIL"
+    event["review"]["anomalies"] = [material_finding(candidate, "different candidate")]
+    result = run(candidate, event=event)
+    assert result["verdict"] == "HOLD_INCOMPLETE"
+    assert result["customer_send_authorized"] is False
+
+
+@pytest.mark.parametrize("mutation", ["capture_hash", "source_url", "locator", "excerpt"])
+def test_material_anomaly_requires_real_candidate_bound_source_capture(setup_case, mutation):
+    claim = "The report says the service latency doubled."
+    candidate = setup_case("keysuri_global_tech", customer_claim=claim)
+    event = event_for(candidate)
+    event["review"]["checks"]["sources"] = "FAIL"
+    finding = material_finding(candidate, claim)
+    if mutation == "capture_hash":
+        finding["source_capture_sha256"] = "f" * 64
+    elif mutation == "source_url":
+        finding["source_url"] = finding["capture_url"] = "https://different.example/source"
+    elif mutation == "locator":
+        finding["source_locator"] = "line:2"
+    else:
+        finding["source_excerpt"] = "A fabricated excerpt absent from the captured bytes."
+    event["review"]["anomalies"] = [finding]
+    result = run(candidate, event=event)
+    assert result["verdict"] == "HOLD_INCOMPLETE"
+    assert result["customer_send_authorized"] is False
+
+
+def test_hidden_only_candidate_text_cannot_support_material_anomaly(setup_case):
+    claim = "The report says the service latency doubled."
+    candidate = setup_case("keysuri_global_tech", customer_claim=f'<span hidden>{claim}</span>')
+    event = event_for(candidate)
+    event["review"]["checks"]["sources"] = "FAIL"
+    event["review"]["anomalies"] = [material_finding(candidate, claim)]
+    result = run(candidate, event=event)
+    assert result["verdict"] == "HOLD_INCOMPLETE"
+
+
+def test_visible_text_after_hidden_void_tag_is_not_lost(setup_case):
+    claim = "The report says the service latency doubled."
+    candidate = setup_case("keysuri_global_tech", customer_claim=f'<span hidden>{claim}<img src="x"></span>{claim}')
+    event = event_for(candidate)
+    event["review"]["checks"]["sources"] = "FAIL"
+    event["review"]["anomalies"] = [material_finding(candidate, claim)]
+    assert run(candidate, event=event)["verdict"] == "HOLD_ANOMALY"
+
+
+def test_unmatched_void_end_tag_does_not_close_hidden_ancestor(setup_case):
+    claim = "The report says the service latency doubled."
+    candidate = setup_case("keysuri_global_tech", customer_claim=f'<span hidden>{claim}</img></span>')
+    event = event_for(candidate)
+    event["review"]["checks"]["sources"] = "FAIL"
+    event["review"]["anomalies"] = [material_finding(candidate, claim)]
+    assert run(candidate, event=event)["verdict"] == "HOLD_INCOMPLETE"
+
+
+def test_multiple_complete_content_findings_hold_and_are_not_dropped(setup_case):
+    claim_a = "The report says the service latency doubled."
+    claim_b = "The report names Orion as the measured vendor."
+    candidate = setup_case("keysuri_global_tech", customer_claim=f"{claim_a} {claim_b}")
+    capture = ("The source says latency declined during the measured period.\n"
+               "The source names Vega, not Orion, as the tested vendor.\n").encode()
+    excerpt_a, excerpt_b = capture.decode().splitlines()
+    event = event_for(candidate)
+    event["review"]["checks"]["sources"] = "FAIL"
+    event["review"]["checks"]["content"] = "FAIL"
+    event["review"]["anomalies"] = [
+        material_finding(candidate, claim_a, locator="line:1", excerpt=excerpt_a, capture=capture),
+        material_finding(candidate, claim_b, rule="MATERIAL_SUBJECT_OR_METRIC_MISMATCH",
+                         locator="line:2", excerpt=excerpt_b, capture=capture),
+    ]
+    assert run(candidate, event=event)["verdict"] == "HOLD_ANOMALY"
+
+
+def test_stale_review_is_classified_before_material_anomaly(setup_case):
+    claim = "The report says the service latency doubled."
+    candidate = setup_case("keysuri_global_tech", customer_claim=claim)
+    event = event_for(candidate)
+    event["review"]["checks"]["sources"] = "FAIL"
+    event["review"]["reviewed_at"] = (NOW - timedelta(hours=2)).isoformat()
+    event["review"]["anomalies"] = [material_finding(candidate, claim)]
+    result = run(candidate, event=event)
+    assert result["verdict"] == "REVIEW_UNAVAILABLE"
+    assert result["customer_send_authorized"] is False
+
+
+def test_unknown_image_rights_are_not_recast_as_content_anomaly(setup_case):
+    candidate = setup_case("keysuri_global_tech")
+    event = event_for(candidate)
+    event["review"]["checks"]["images"] = "ANOMALY"
+    event["review"]["anomalies"] = [{"rule_id": "IMAGE_RIGHTS_VIOLATION"}]
+    result = run(candidate, event=event)
+    assert result["verdict"] == "HOLD_INCOMPLETE"
+    assert result["customer_send_authorized"] is False
 
 
 def test_reissue_cannot_inherit_parent_pass_but_new_unsent_review_can_pass(setup_case):
@@ -501,16 +733,13 @@ def test_wrong_product_recipient_plan_cannot_freeze_candidate(setup_case):
             received_message=candidate.binding["received_message"], recipient_plan=plan)
 
 
-@pytest.mark.parametrize("reported", ["verdict", "anomalies", "check"])
-def test_meaningful_work_hold_latches_across_new_event_ids_until_fresh_run(setup_case, reported):
-    parent = setup_case()
+def test_meaningful_work_hold_latches_across_new_event_ids_until_fresh_run(setup_case):
+    claim = "The report says the service latency doubled."
+    parent = setup_case("keysuri_global_tech", customer_claim=claim)
     event = event_for(parent)
-    if reported == "verdict":
-        event["review"]["verdict"] = "HOLD_ANOMALY"
-    elif reported == "anomalies":
-        event["review"]["anomalies"] = ["material source contradiction"]
-    else:
-        event["review"]["checks"]["content"] = "ANOMALY"
+    event["review"]["verdict"] = "HOLD_ANOMALY"
+    event["review"]["checks"]["sources"] = "FAIL"
+    event["review"]["anomalies"] = [material_finding(parent, claim)]
     assert run(parent, event=event)["verdict"] == "HOLD_ANOMALY"
     retry = run(parent, event=event_for(parent, event_id="new_pass_after_anomaly_001"))
     assert retry["reason_codes"] == ["RUN_HELD_MANUAL_RECOVERY_REQUIRED"]
@@ -653,5 +882,5 @@ def test_read_only_shadow_anomaly_does_not_mutate_live_hold_state(setup_case):
     candidate = setup_case()
     event = event_for(candidate, verdict="HOLD_ANOMALY")
     result = run(candidate, event=event, configuration=settings("SHADOW"))
-    assert result["verdict"] == "HOLD_ANOMALY" and result["customer_send_authorized"] is False
+    assert result["verdict"] == "HOLD_INCOMPLETE" and result["customer_send_authorized"] is False
     assert admin_store.run_delivery_transition(candidate.binding["run_id"])["state"] == "READY"

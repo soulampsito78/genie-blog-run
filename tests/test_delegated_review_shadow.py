@@ -56,6 +56,14 @@ def test_complete_normal_shadow_three_modes_never_authorizes_send(mode):
     assert result["authenticity_verified"] is False
 
 
+def test_safe_editorial_review_is_recommendation_not_quality_hard_block():
+    candidate, review = case("keysuri_global_tech")
+    candidate["editorial_verdict"] = review["editorial_verdict"] = "REVIEW"
+    result = evaluate_shadow_review(candidate, review, now=NOW)
+    assert result["verdict"] == "PASS"
+    assert result["customer_send_authorized"] is False
+
+
 @pytest.mark.parametrize("field", ["run_id", "mode", "publication_date", "subject_sha256", "body_sha256", "image_sha256"])
 def test_binding_mismatch_holds(field):
     candidate, review = case()

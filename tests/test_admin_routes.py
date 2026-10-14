@@ -298,6 +298,19 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("베타 고객 수신자 관리", resp.text)
         self.assertIn('href="/admin/customer-recipients"', resp.text)
 
+    def test_run_detail_attributes_held_state_to_operator_not_owner(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        run_id = "20260530_120000_today_genie_aabbccdd"
+        save_run_artifact({
+            "run_id": run_id, "mode": "today_genie", "validation_result": "pass",
+            "workflow_status": "validated", "email_sent": False,
+            "customer_delivery_status": "not_sent", "owner_review_status": "held",
+        }, email_html="<p>held fixture</p>")
+        resp = self.client.get(f"/admin/runs/{run_id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("운영자가 고객 발송을 보류했습니다", resp.text)
+        self.assertNotIn("Owner가 이 결과를 아직 고객에게 발송하지 않기로 결정했습니다", resp.text)
+
     def test_reissue_requires_login(self) -> None:
         run_id = "20260530_120000_today_genie_aabbccdd"
         save_run_artifact(

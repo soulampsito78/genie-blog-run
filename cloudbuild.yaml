@@ -47,16 +47,52 @@ steps:
       - tests.test_admin_routes.AdminRoutesTests.test_reissue_body_only_executes_keysuri_helper_only
       - tests.test_admin_routes.AdminRoutesTests.test_body_only_exhausted_pool_renders_safe_panel
 
+  # Extend the already-built commit-tagged production image with pytest only.
+  # The test layer is never pushed; tests run without network.
+  - name: gcr.io/cloud-builders/docker
+    id: BuildReviewRegressionImage
+    waitFor:
+      - DelegatedAuthorityGate
+    args:
+      - build
+      - --no-cache
+      - --build-arg
+      - BASE_IMAGE=$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+      - -f
+      - Dockerfile.regression
+      - -t
+      - genie-review-regression:$COMMIT_SHA
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    id: DelegatedReviewRegressionGate
+    waitFor:
+      - BuildReviewRegressionImage
+    args:
+      - run
+      - --rm
+      - --network=none
+      - genie-review-regression:$COMMIT_SHA
+      - python
+      - -m
+      - pytest
+      - -q
+      - tests/test_delegated_authenticated_gate.py
+      - tests/test_delegated_review_shadow.py
+      - tests/test_admin_routes.py
+
   - name: gcr.io/cloud-builders/docker
     id: Push
     waitFor:
-      - DelegatedAuthorityGate
+      - DelegatedReviewRegressionGate
     args:
       - push
       - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
     id: ResolveDigest
+    waitFor:
+      - Push
     entrypoint: bash
     env:
       - IMAGE_TAG=$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
@@ -71,6 +107,8 @@ steps:
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
     id: DeployExact
+    waitFor:
+      - ResolveDigest
     entrypoint: bash
     env:
       - REVISION_SUFFIX=gcb-$BUILD_ID
@@ -103,6 +141,8 @@ steps:
   # created above, after its immutable digest has been verified.
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
     id: PromoteExact
+    waitFor:
+      - DeployExact
     entrypoint: bash
     env:
       - SERVICE_NAME=$_SERVICE_NAME

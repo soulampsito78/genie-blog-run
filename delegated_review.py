@@ -109,7 +109,7 @@ limits here are shadow-evaluation parameters, not live schedule promises.
         if candidate.get("customer_surface_status") != CUSTOMER_SURFACE_PASS:
             return outcome("HOLD", "PRODUCT_SURFACE_NOT_READY")
         if candidate["mode"] in {"keysuri_global_tech", "keysuri_korea_tech"} and (
-            candidate.get("safety_verdict") != "SAFE" or candidate.get("editorial_verdict") != "READY"
+            candidate.get("safety_verdict") != "SAFE" or candidate.get("editorial_verdict") not in {"READY", "REVIEW"}
         ):
             return outcome("HOLD", "FIRST_PASS_SAFETY_OR_EDITORIAL_NOT_READY")
         if candidate.get("customer_delivery_status") != "not_sent":

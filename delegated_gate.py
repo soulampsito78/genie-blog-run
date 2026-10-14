@@ -151,6 +151,119 @@ class _Links(HTMLParser):
                     self.urls.add(value)
 
 
+class _VisibleText(HTMLParser):
+    _VOID_TAGS = frozenset({
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+        "meta", "param", "source", "track", "wbr",
+    })
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        # Keep element identity, not only a depth counter: void tags have no
+        # matching end tag, and malformed end tags must not reveal hidden text.
+        self._stack = []
+
+    @property
+    def _hidden(self):
+        return any(hidden for _, hidden in self._stack)
+
+    @staticmethod
+    def _is_hidden(tag, attrs):
+        attr_map = {str(key).lower(): str(value or "").lower() for key, value in attrs}
+        style = re.sub(r"\s+", "", attr_map.get("style", ""))
+        classes = set(attr_map.get("class", "").split())
+        return (tag.lower() in {"script", "style", "template", "noscript"}
+                or "hidden" in attr_map or attr_map.get("aria-hidden") == "true"
+                or "display:none" in style or "visibility:hidden" in style
+                or bool(classes & {"hidden", "d-none", "display-none", "visually-hidden", "sr-only", "screen-reader-only"}))
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag not in self._VOID_TAGS:
+            self._stack.append((tag, self._hidden or self._is_hidden(tag, attrs)))
+
+    def handle_startendtag(self, tag, attrs):
+        # Self-closing syntax never changes the open-element stack.
+        return
+
+    def handle_data(self, data):
+        if not self._hidden:
+            self.parts.append(data)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        # Ignore unmatched closing tags. A matched close ends that element and
+        # any malformed descendants opened after it, matching browser recovery
+        # sufficiently for this narrow visible-text evidence check.
+        for index in range(len(self._stack) - 1, -1, -1):
+            if self._stack[index][0] == tag:
+                del self._stack[index:]
+                break
+
+
+_MATERIAL_RULE_CHECKS = {
+    "SOURCE_CLAIM_CONTRADICTION": frozenset({"sources"}),
+    "UNSUPPORTED_MATERIAL_CLAIM": frozenset({"content", "sources"}),
+    "MATERIAL_SUBJECT_OR_METRIC_MISMATCH": frozenset({"content", "sources"}),
+}
+
+
+def _validated_material_finding(candidate: FrozenCandidate, finding: Any) -> frozenset[str]:
+    """Check signed finding structure and candidate/source capture binding.
+
+    This verifies bytes supplied in the signed review event, not that the
+    captured public page is authentic or complete; that remains reviewer QA.
+    """
+    required = {"rule_id", "policy_ref", "candidate_sha256", "customer_text", "source_url", "capture_url",
+                "source_locator", "source_excerpt", "source_capture_b64", "source_capture_sha256",
+                "material_impact"}
+    if not isinstance(finding, dict) or not required.issubset(finding):
+        raise GateError("MATERIAL_ANOMALY_EVIDENCE_INCOMPLETE", "HOLD_INCOMPLETE")
+    rule = finding.get("rule_id")
+    required_checks = _MATERIAL_RULE_CHECKS.get(rule)
+    if required_checks is None:
+        raise GateError("MATERIAL_ANOMALY_RULE_UNSUPPORTED", "HOLD_INCOMPLETE")
+    policy_ref = "required_check:" + "+".join(sorted(required_checks))
+    visible = _VisibleText()
+    visible.feed(candidate.customer_html)
+    visible_customer_text = re.sub(r"\s+", " ", " ".join(visible.parts)).strip()
+    customer_text = finding.get("customer_text")
+    exact_customer_text = re.sub(r"\s+", " ", customer_text).strip() if isinstance(customer_text, str) else ""
+    if (finding.get("policy_ref") != policy_ref
+            or finding.get("candidate_sha256") != candidate.candidate_sha256
+            or len(exact_customer_text) < 12
+            or exact_customer_text not in visible_customer_text
+            or not isinstance(finding.get("source_url"), str)
+            or finding["source_url"] not in candidate.binding.get("source_urls", [])
+            or finding.get("capture_url") != finding.get("source_url")
+            or not isinstance(finding.get("source_locator"), str)):
+        raise GateError("MATERIAL_ANOMALY_EVIDENCE_NOT_BOUND", "HOLD_INCOMPLETE")
+
+    locator = re.fullmatch(r"line:(\d+)", finding["source_locator"].strip())
+    excerpt = finding.get("source_excerpt")
+    capture_b64 = finding.get("source_capture_b64")
+    capture_hash = finding.get("source_capture_sha256")
+    if (locator is None or not isinstance(excerpt, str) or len(excerpt.strip()) < 20
+            or not isinstance(capture_b64, str) or not capture_b64
+            or not isinstance(capture_hash, str) or not _HEX.fullmatch(capture_hash)
+            or not isinstance(finding.get("material_impact"), str)
+            or len(finding["material_impact"].strip()) < 20):
+        raise GateError("MATERIAL_ANOMALY_EVIDENCE_INCOMPLETE", "HOLD_INCOMPLETE")
+    try:
+        capture = base64.b64decode(capture_b64, validate=True)
+        if len(capture) == 0 or len(capture) > 32 * 1024 or hashlib.sha256(capture).hexdigest() != capture_hash:
+            raise ValueError("capture hash/size")
+        capture_text = capture.decode("utf-8")
+    except (ValueError, UnicodeError):
+        raise GateError("SOURCE_CAPTURE_INVALID", "HOLD_INCOMPLETE")
+    lines = capture_text.splitlines()
+    line_number = int(locator.group(1))
+    if line_number < 1 or line_number > len(lines) or excerpt.strip() not in lines[line_number - 1]:
+        raise GateError("SOURCE_EXCERPT_LOCATOR_MISMATCH", "HOLD_INCOMPLETE")
+    return required_checks
+
+
 @dataclass(frozen=True)
 class FrozenImage:
     role: str
@@ -396,26 +509,60 @@ def evaluate_authenticated_review(candidate: FrozenCandidate, event: dict, *, no
         raise GateError("FINAL_CUSTOMER_RENDER_BINDING_MISMATCH", "STATE_CONFLICT")
     if review.get("verdict") not in VERDICTS:
         raise GateError("UNKNOWN_REVIEW_STATE")
-    if review["verdict"] != "PASS":
+    if review["verdict"] not in {"PASS", "HOLD_ANOMALY"}:
         return {"verdict": review["verdict"], "reason_codes": ["REVIEWER_REPORTED_NON_PASS"]}
     checks, evidence = review.get("checks"), review.get("evidence")
     if not isinstance(checks, dict) or not isinstance(evidence, dict):
         raise GateError("REVIEW_DIMENSIONS_MISSING")
-    if any(value in {"FAIL", "HOLD", "ANOMALY"} for value in checks.values() if isinstance(value, str)):
-        raise GateError("REVIEW_ANOMALY", "HOLD_ANOMALY")
-    if any(checks.get(key) != "PASS" or not isinstance(evidence.get(key), list) or not evidence[key] or not all(isinstance(ref, str) and ref.strip() for ref in evidence[key]) for key in REQUIRED_CHECKS):
-        raise GateError("REVIEW_DIMENSIONS_INCOMPLETE")
-    # Reuse existing state/time/message invariants after strict v2 authentication
-    # and candidate digest validation. This is an internal compatibility mapping.
+    anomalies = review.get("anomalies")
+    anomaly_checks = {key for key, value in checks.items()
+                      if isinstance(value, str) and value in {"FAIL", "HOLD", "ANOMALY"}}
+    # Validate freshness, identity, mail/render binding and complete evidence
+    # before accepting any material-error classification. The actual failed
+    # dimensions are evaluated only after that structural preflight.
     legacy = dict(review)
     legacy["policy_version"] = SHADOW_POLICY
-    legacy["checks"] = {**checks, "operations": "PASS"}
-    legacy["evidence"] = {**evidence, "operations": evidence["run_identity"] + evidence["delivery_readiness"]}
+    legacy["verdict"] = "PASS"
+    legacy["anomalies"] = []
+    legacy["checks"] = {**checks, **{key: "PASS" for key in REQUIRED_CHECKS}, "operations": "PASS"}
+    run_identity_evidence = evidence.get("run_identity") if isinstance(evidence.get("run_identity"), list) else []
+    delivery_evidence = evidence.get("delivery_readiness") if isinstance(evidence.get("delivery_readiness"), list) else []
+    legacy["evidence"] = {**evidence, "operations": run_identity_evidence + delivery_evidence}
     result = evaluate_shadow_review(candidate.binding, legacy, now=now)
     mapped = {"HOLD": "STATE_CONFLICT", "REVIEW_INCOMPLETE": "HOLD_INCOMPLETE", "WORK_REVIEW_ERROR": "HOLD_INCOMPLETE"}
-    result["verdict"] = mapped.get(result["verdict"], result["verdict"])
-    if review.get("anomalies"):
-        result.update(verdict="HOLD_ANOMALY", reason_codes=["REVIEW_ANOMALY"])
+    preflight_verdict = mapped.get(result["verdict"], result["verdict"])
+    if preflight_verdict != "PASS":
+        raise GateError("REVIEW_STRUCTURAL_PREFLIGHT_FAILED", preflight_verdict)
+    incomplete_evidence = any(
+        not isinstance(evidence.get(key), list) or not evidence[key]
+        or not all(isinstance(ref, str) and ref.strip() for ref in evidence[key])
+        for key in REQUIRED_CHECKS
+    )
+    invalid_check_values = any(
+        not isinstance(checks.get(key), str)
+        or checks.get(key) not in {"PASS", "FAIL", "HOLD", "ANOMALY"}
+        for key in REQUIRED_CHECKS
+    )
+    if anomaly_checks or anomalies or review.get("verdict") == "HOLD_ANOMALY":
+        if incomplete_evidence or invalid_check_values or not isinstance(anomalies, list) or not 1 <= len(anomalies) <= 5:
+            raise GateError("MATERIAL_ANOMALY_EVIDENCE_INCOMPLETE", "HOLD_INCOMPLETE")
+        required_check_union = set()
+        seen_findings = set()
+        for finding in anomalies:
+            required_check_union.update(_validated_material_finding(candidate, finding))
+            identity = (finding["rule_id"], finding["customer_text"], finding["source_url"], finding["source_locator"])
+            if identity in seen_findings:
+                raise GateError("DUPLICATE_MATERIAL_FINDING", "HOLD_INCOMPLETE")
+            seen_findings.add(identity)
+        if anomaly_checks != required_check_union:
+            raise GateError("MATERIAL_ANOMALY_CHECK_BINDING_MISMATCH", "HOLD_INCOMPLETE")
+        if any((checks.get(key) not in {"FAIL", "HOLD", "ANOMALY"})
+               if key in required_check_union else checks.get(key) != "PASS"
+               for key in REQUIRED_CHECKS):
+            raise GateError("MATERIAL_ANOMALY_CHECK_BINDING_MISMATCH", "HOLD_INCOMPLETE")
+        raise GateError("MATERIAL_SOURCE_ANOMALY_CONFIRMED", "HOLD_ANOMALY")
+    if incomplete_evidence or invalid_check_values or any(checks.get(key) != "PASS" for key in REQUIRED_CHECKS):
+        raise GateError("REVIEW_DIMENSIONS_INCOMPLETE")
     return result
 
 

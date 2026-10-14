@@ -75,6 +75,60 @@ def _normalise_checks(review: dict) -> tuple[dict, dict]:
     return checks, evidence
 
 
+def _construct_review_event(
+    review_input: dict,
+    candidate,
+    *,
+    principal: str,
+    reviewer_model: str,
+    policy_version: str,
+    now: datetime,
+    event_id: str,
+) -> dict:
+    """Build the exact signed payload without acquiring secrets or transport.
+
+    ``critical_sources_checked`` is an explicit reviewer attestation that the
+    bound original source was actually inspected. A material finding can have
+    sources=FAIL while this attestation is true; an unreadable/missing source
+    must not be promoted to true merely because the finding includes evidence.
+    """
+    checks, evidence = _normalise_checks(review_input)
+    return {
+        "event_id": event_id,
+        "run_id": str(review_input.get("run_id") or ""),
+        "audience": "genie-delegated-review",
+        "policy_version": policy_version,
+        "issued_at": now.isoformat(),
+        "candidate_sha256": candidate.candidate_sha256,
+        "review": {
+            **candidate.binding,
+            "policy_version": policy_version,
+            "reviewer_agent": principal,
+            "reviewer_model": reviewer_model,
+            "verdict": str(review_input.get("overall_verdict") or "").upper(),
+            "reviewed_at": now.isoformat(),
+            "checks": checks,
+            "evidence": evidence,
+            "critical_sources_checked": review_input.get("critical_sources_checked") is True,
+            "anomalies": list(review_input.get("anomalies") or []),
+            "customer_render_capture_sha256": candidate.binding[
+                "customer_render_capture_sha256"
+            ],
+        },
+    }
+
+
+def _sign_review_event(event: dict, *, canonicalize, key_id: str, secret: bytes) -> tuple[bytes, dict[str, str]]:
+    """Serialize and sign the event using the exact helper transport contract."""
+    raw = canonicalize(event).encode("utf-8")
+    signature = hmac.new(secret, raw, hashlib.sha256).hexdigest()
+    return raw, {
+        "content-type": "application/json",
+        "x-genie-review-key-id": key_id,
+        "x-genie-review-signature": signature,
+    }
+
+
 def _post(path: str, raw: bytes, headers: dict[str, str]) -> dict:
     request = urllib.request.Request(
         SERVICE_URL + path, data=raw, headers=headers, method="POST"
@@ -144,38 +198,20 @@ def main() -> int:
         recipient_plan=plan,
     )
     candidate = RunArtifactCandidateLoader(authority).load(run_id, now=now)
-    checks, evidence = _normalise_checks(review_input)
-
     key_config = json.loads(_secret(REVIEWER_SECRET))
     key_record = key_config[KEY_ID]
     principal = str(key_record["principal"])
     secret = base64.b64decode(key_record["secret_b64"], validate=True)
     if len(secret) < 32 or not principal:
         raise RuntimeError("reviewer_secret_invalid")
-    event = {
-        "event_id": "review_" + secrets.token_hex(16),
-        "run_id": run_id,
-        "audience": "genie-delegated-review",
-        "policy_version": POLICY_VERSION,
-        "issued_at": now.isoformat(),
-        "candidate_sha256": candidate.candidate_sha256,
-        "review": {
-            **candidate.binding,
-            "policy_version": POLICY_VERSION,
-            "reviewer_agent": principal,
-            "reviewer_model": args.reviewer_model,
-            "verdict": verdict,
-            "reviewed_at": now.isoformat(),
-            "checks": checks,
-            "evidence": evidence,
-            "critical_sources_checked": checks.get("sources") == "PASS",
-            "anomalies": list(review_input.get("anomalies") or []),
-            "customer_render_capture_sha256": candidate.binding[
-                "customer_render_capture_sha256"
-            ],
-        },
-    }
-    raw = canonical(event).encode("utf-8")
+    event = _construct_review_event(
+        review_input, candidate, principal=principal,
+        reviewer_model=args.reviewer_model, policy_version=POLICY_VERSION, now=now,
+        event_id="review_" + secrets.token_hex(16),
+    )
+    raw, review_headers = _sign_review_event(
+        event, canonicalize=canonical, key_id=KEY_ID, secret=secret
+    )
     result = _post(
         "/internal/jobs/delegated-review",
         raw,
@@ -184,10 +220,7 @@ def main() -> int:
             "X-Genie-Internal-Job-Token": _secret(INTERNAL_TOKEN_SECRET).decode(
                 "utf-8"
             ),
-            "X-Genie-Review-Key-Id": KEY_ID,
-            "X-Genie-Review-Signature": hmac.new(
-                secret, raw, hashlib.sha256
-            ).hexdigest(),
+            **review_headers,
         },
     )
     safe = {

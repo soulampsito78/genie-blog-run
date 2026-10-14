@@ -1,0 +1,8 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG BASE_IMAGE
+LABEL org.genie.review-regression.base-image=${BASE_IMAGE}
+RUN pip install --no-cache-dir pytest==8.4.2
+
+CMD ["python", "-m", "pytest"]

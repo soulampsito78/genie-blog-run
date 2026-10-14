@@ -2481,7 +2481,7 @@ def admin_run_detail(request: Request, run_id: str):
     owner_status = str(meta.get("owner_review_status") or "pending_review")
     if owner_status == "held":
         hold_control = f'''
-<div class="notice"><strong>보류 중</strong><p>Owner가 이 결과를 아직 고객에게 발송하지 않기로 결정했습니다. 콘텐츠는 새로 생성되지 않았습니다.</p></div>
+<div class="notice"><strong>보류 중</strong><p>운영자가 고객 발송을 보류했습니다. 다시 검수하기 전에는 발송이 차단됩니다. 콘텐츠는 새로 생성되지 않았습니다.</p></div>
 <form method="post" action="/admin/runs/{_esc(run_id)}/reopen">
 {_csrf_field(request, f'reopen:{run_id}')}
 <div class="form-actions"><button class="btn btn--secondary" type="submit">다시 검수하기</button></div>
