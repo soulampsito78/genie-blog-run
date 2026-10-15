@@ -20,6 +20,7 @@ TEST_MODULES = (
     "test_today_genie_20260902_surgical_incident",
     "test_today_genie_grounding",
     "test_today_genie_grounding_stabilization",
+    "test_today_briefing_cue_regression",
     "test_today_genie_email_render_quality",
     "test_keysuri_news_contract",
     "test_keysuri_visible_text_quality",

@@ -528,7 +528,26 @@ def _detail_has_what_and_why_today(detail: str) -> bool:
     )
     meaning = _has_any(d, INTERPRETATION_CUE_TERMS) or _has_any(
         d,
-        ("무엇", "배경", "원인", "촉발", "발표", "이슈", "변수", "영향을", "의미를"),
+        (
+            "무엇",
+            "배경",
+            "원인",
+            "촉발",
+            "발표",
+            "이슈",
+            "변수",
+            "영향을",
+            "의미를",
+        ),
+    ) or any(
+        re.search(pattern, d)
+        for pattern in (
+            # Admit complete causal/predicate constructions from the live
+            # briefing, not the bare impact nouns that keyword padding can repeat.
+            r"압력으로 작용(?:하여|해|하며|하고|할 수 있(?:다|습니다)?|하는|할 전망)",
+            r"불안감을 조성(?:하여|해|하며|하고|할 수 있(?:다|습니다)?|하는|할 전망)",
+            r"하방 압력(?:을\s*(?:가할|키울|높일|유발할)|이\s*(?:커질|확대될|강해질)|으로\s*(?:이어질|작용할))",
+        )
     )
     return (todayish or tactical_today) and meaning
 

@@ -102,29 +102,18 @@ def attach_or_none(word: str, pair: Tuple[str, str]) -> Optional[str]:
 
 # --- detection -------------------------------------------------------------
 
-#: Only 을/를 and 과/와 are scanned. 이/가 and 은/는 collide with Korean verbal
-#: and interrogative endings — 것인가, 무엇인가, 같은, 하는 — where the trailing
-#: syllable is part of the verb, not a particle. Scanning them turned
-#: "영향을 미칠 것인가?" into "것인이?" in test, which is a worse defect than the
-#: one being fixed. 으로/로 is excluded for the same reason (…으로 as an adverb,
-#: 로 inside 로봇 etc. are handled by the word-break guard but the ending
-#: ambiguity remains).
-_SCAN_PAIRS: Tuple[Tuple[str, str], ...] = (OBJECT, CONJUNCTION, SUBJECT)
-
-#: Verbal / interrogative endings that must never be read as noun + particle.
-_VERBAL_ENDINGS: Tuple[str, ...] = (
-    # Noun-final syllables that are actually verb/adjective inflection. The
-    # particle regex consumes the trailing 가, so the ending seen here is the
-    # syllable before it: 달라졌"는"가, 무엇"인"가, 어떻"은"가.
-    "인", "은", "는", "던", "한", "할", "된", "될", "있", "없", "같",
-    "하", "되", "지", "느", "리", "우", "쁘", "크",
-)
-
-#: 이 is deliberately absent. Korean loanwords routinely END in that syllable —
-#: 릴레이, 플레이, 디스플레이 — and scanning it rewrote them to 릴레가/플레가 in a
-#: sweep over the real corpus. 가 alone still catches the 2026-08-14 공급망가
-#: defect, because that is the wrong-direction case.
-_TOKEN_RE = re.compile(r"([가-힣]{2,})(을|를|과|와|가)(?![가-힣])")
+# Korean has no orthographic boundary between many lexical suffixes and particles:
+# 평가, 전문가, 효과, 서울, etc. A regex that guesses the noun boundary from the
+# last syllable therefore cannot safely rewrite arbitrary prose. Keep automatic
+# repair limited to complete malformed tokens independently confirmed in the
+# product corpus. New forms require an explicit reviewed entry here; dynamic
+# template code should use attach_particle() with its known noun instead.
+_SAFE_REPAIRS: Dict[str, Tuple[str, str]] = {
+    "공급망가": ("공급망", "이"),
+    "흐름와": ("흐름", "과"),
+    "후속를": ("후속", "을"),
+}
+_TOKEN_RE = re.compile(r"(?<![가-힣])(" + "|".join(map(re.escape, _SAFE_REPAIRS)) + r")(?![가-힣])")
 
 
 def particle_findings(
@@ -134,26 +123,20 @@ def particle_findings(
     news_id: str = "",
     rank: Optional[int] = None,
 ) -> List[Dict[str, object]]:
-    """Mechanically impossible Hangul + particle pairs in ``text``.
+    """Find only complete, corpus-confirmed malformed tokens in ``text``.
 
-    Only reports where the rule is deterministic: the noun ends in a Hangul
-    syllable, so the correct particle follows from its final consonant. Anything
-    ending in Latin, a digit or a bracket is skipped rather than guessed.
+    Korean lexical suffixes can look exactly like particles, so this deliberately
+    refuses to infer arbitrary noun boundaries. Use attach_particle() where the
+    caller knows the noun; add new prose repair forms only after review.
     """
     findings: List[Dict[str, object]] = []
     blob = str(text or "")
     if not blob.strip():
         return findings
     for match in _TOKEN_RE.finditer(blob):
-        noun, actual = match.group(1), match.group(2)
-        if noun.endswith(_VERBAL_ENDINGS):
-            continue
-        pair = _pair_for(actual)
-        if pair is None:
-            continue
-        expected = select_particle(noun, pair)
-        if expected is None or expected == actual:
-            continue
+        token = match.group(1)
+        noun, expected = _SAFE_REPAIRS[token]
+        actual = token[len(noun):]
         findings.append(
             {
                 "issue_code": PARTICLE_MISMATCH_ISSUE,
@@ -161,7 +144,7 @@ def particle_findings(
                 "news_id": news_id,
                 "rank": rank,
                 "sentence": _sentence_around(blob, match.start()),
-                "token": f"{noun}{actual}",
+                "token": token,
                 "stem": noun[-1],
                 "expected_particle": expected,
                 "actual_particle": actual,
@@ -169,13 +152,6 @@ def particle_findings(
             }
         )
     return findings
-
-
-def _pair_for(particle: str) -> Optional[Tuple[str, str]]:
-    for pair in (OBJECT, CONJUNCTION, SUBJECT, TOPIC, INSTRUMENT):
-        if particle in pair:
-            return pair
-    return None
 
 
 def _sentence_around(blob: str, index: int) -> str:

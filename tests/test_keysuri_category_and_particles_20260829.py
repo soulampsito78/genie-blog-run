@@ -176,6 +176,35 @@ class ParticleDetectionTests(unittest.TestCase):
         found = particle_findings("정책·규제·자본·공급망가 실제 비용입니다.")
         self.assertEqual([f["token"] for f in found], ["공급망가"])
 
+    def test_lexical_nouns_ending_in_ga_are_not_split_as_particles(self) -> None:
+        for clean in (
+            "국내 반도체 저평가 주장",
+            "국가 산업 정책",
+            "생활 물가 상승",
+            "전문가 분석 결과",
+        ):
+            self.assertEqual(correct_particles(clean), (clean, []), clean)
+
+    def test_lexical_ga_guard_preserves_a_real_following_particle(self) -> None:
+        self.assertEqual(correct_particles("저평가가 핵심입니다."), ("저평가가 핵심입니다.", []))
+
+    def test_unreviewed_lexical_suffixes_are_never_guessed_or_rewritten(self) -> None:
+        for text in (
+            "고평가 전망", "재평가 결과", "전문가 분석", "사업가 의견", "기업가 가치",
+            "투자효과 분석", "부가효과 확인", "저평가 주장", "서울 경제", "서울을 방문",
+        ):
+            self.assertEqual(correct_particles(text), (text, []), text)
+
+    def test_only_complete_corpus_confirmed_tokens_are_repaired(self) -> None:
+        for malformed, corrected in (
+            ("공급망가 실제 비용입니다.", "공급망이 실제 비용입니다."),
+            ("흐름와 이어집니다.", "흐름과 이어집니다."),
+            ("후속를 확인합니다.", "후속을 확인합니다."),
+        ):
+            fixed, findings = correct_particles(malformed)
+            self.assertEqual(fixed, corrected)
+            self.assertEqual(len(findings), 1)
+
     def test_findings_are_structured(self) -> None:
         found = particle_findings("흐름와 갑니다.", field="why_now", news_id="n1", rank=2)
         self.assertEqual(found[0]["field"], "why_now")
@@ -220,6 +249,31 @@ class SurfaceGateTests(unittest.TestCase):
         repaired, fields = repair_keysuri_visible_text_fields(payload)
         self.assertIn("흐름과", repaired["top_5_news"]["items"][0]["why_now"])
         self.assertEqual(fields["korean_particle_repaired_count"], 1)
+
+    def test_all_visible_string_tree_preserves_lexical_ga_title_and_repairs_true_defects(self) -> None:
+        from keysuri_visible_text_quality import repair_keysuri_visible_text_fields
+
+        payload = {
+            "top_5_news": {
+                "items": [{
+                    "korean_title": "국내 반도체 저평가 주장",
+                    "headline": "국내 반도체 저평가 주장",
+                    "why_now": "투자 환경 흐름와 후속를 확인합니다.",
+                    "briefing_item": {
+                        "headline": "국내 반도체 저평가 주장",
+                        "owner_angle": "저평가가 핵심입니다.",
+                    },
+                }]
+            }
+        }
+        repaired, fields = repair_keysuri_visible_text_fields(payload)
+        item = repaired["top_5_news"]["items"][0]
+        self.assertEqual(item["korean_title"], "국내 반도체 저평가 주장")
+        self.assertEqual(item["headline"], "국내 반도체 저평가 주장")
+        self.assertEqual(item["briefing_item"]["headline"], "국내 반도체 저평가 주장")
+        self.assertEqual(item["why_now"], "투자 환경 흐름과 후속을 확인합니다.")
+        self.assertEqual(item["briefing_item"]["owner_angle"], "저평가가 핵심입니다.")
+        self.assertEqual(fields["korean_particle_repaired_count"], 2)
 
 
 if __name__ == "__main__":
