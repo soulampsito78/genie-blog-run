@@ -582,11 +582,14 @@ def inline_jpeg_parts_for_korea_service_email(
 ) -> List[Tuple[str, str, str]]:
     """Hero plus optional Korea-only bottom-shot inline JPEGs for Gmail-safe SMTP."""
     cid_token = keysuri_korea_service_email_cid_token(run_id)
-    fname = generated_image_path.name if generated_image_path.name else "keysuri_korea_service.jpg"
+    # Paths differ between the generating instance and a GCS-restoring reviewer.
+    # Transport filenames must be canonical, like the CID; image bytes/hash are
+    # still separately bound by the frozen-candidate and received-MIME guards.
+    fname = f"{cid_token}.jpg"
     parts = [(str(generated_image_path.resolve()), cid_token, fname)]
     if bottom_image_path is not None:
         bottom_cid = keysuri_korea_bottom_service_email_cid_token(run_id)
-        bottom_name = bottom_image_path.name if bottom_image_path.name else "keysuri_korea_bottom_105936.jpg"
+        bottom_name = f"{bottom_cid}.jpg"
         parts.append((str(bottom_image_path.resolve()), bottom_cid, bottom_name))
     return parts
 

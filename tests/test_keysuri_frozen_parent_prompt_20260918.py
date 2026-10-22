@@ -195,6 +195,15 @@ class FrozenParentPromptTests(unittest.TestCase):
 
 
 class EditorialRepairAndImageOriginTests(unittest.TestCase):
+    def test_korea_frozen_image_identity_is_independent_of_restore_paths(self):
+        run_id='20261022_200306_keysuri_korea_tech_a3bf255a'
+        warm=runner.inline_jpeg_parts_for_korea_service_email(Path('/warm/original.jpg'),run_id,bottom_image_path=Path('/warm/bottom.jpg'))
+        restored=runner.inline_jpeg_parts_for_korea_service_email(Path('/cold/restored_top.jpg'),run_id,bottom_image_path=Path('/cold/restored_bottom.jpg'))
+        self.assertEqual([(cid,name) for _,cid,name in warm],[(cid,name) for _,cid,name in restored])
+        self.assertEqual(warm[0][2],warm[0][1]+'.jpg')
+        self.assertEqual(warm[1][2],warm[1][1]+'.jpg')
+        self.assertNotEqual(warm[0][0],restored[0][0])
+
     def test_korea_reissue_pending_copy_stays_owner_only_in_delegated_final(self):
         from keysuri_customer_delivery import prepare_keysuri_customer_final_html
         from customer_review_confirmation import DELEGATED_WORK_REVIEW, DELEGATED_REVIEW_TEXT
