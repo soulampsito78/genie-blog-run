@@ -3702,6 +3702,16 @@ def keysuri_parent_top_image_reference_present(parent: Any) -> bool:
     )
 
 
+def _mark_korea_reissue_owner_pending_copy(email_html: str) -> str:
+    """Label owner-only pending copy for the existing customer-control stripper.
+
+    This does not grant a review verdict. The customer renderer must still add
+    the actual human/delegated source selected by its authenticated caller.
+    """
+    pending = "본 브리핑은 운영책임자의 직접 검수 대기 상태입니다."
+    return email_html.replace(pending, f'<span class="owner-review-badge">{pending}</span>')
+
+
 def _restore_exact_korea_parent_image(parent: Dict[str, Any], role: str) -> Optional[Path]:
     """Reuse only the recorded CID/hash bytes, including across revisions."""
     if role not in {"top", "bottom"}:
@@ -4633,6 +4643,7 @@ def run_keysuri_text_only_reissue(
             admin_url=owner_review_url,
             run_id=child_run_id,
         )
+        email_html = _mark_korea_reissue_owner_pending_copy(email_html)
 
     visible_text_quality_fields = merge_visible_text_quality_fields(
         repair_fields,

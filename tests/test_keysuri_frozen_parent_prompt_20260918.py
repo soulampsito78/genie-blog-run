@@ -195,6 +195,20 @@ class FrozenParentPromptTests(unittest.TestCase):
 
 
 class EditorialRepairAndImageOriginTests(unittest.TestCase):
+    def test_korea_reissue_pending_copy_stays_owner_only_in_delegated_final(self):
+        from keysuri_customer_delivery import prepare_keysuri_customer_final_html
+        from customer_review_confirmation import DELEGATED_WORK_REVIEW, DELEGATED_REVIEW_TEXT
+        pending = '본 브리핑은 운영책임자의 직접 검수 대기 상태입니다.'
+        original = '<html><body><p>사전등록 520명, 750명 이상 예상.</p><table><tr><td>'+pending+'</td></tr></table></body></html>'
+        owner = runner._mark_korea_reissue_owner_pending_copy(original)
+        self.assertIn(pending, owner)
+        customer = prepare_keysuri_customer_final_html(owner, meta={'mode':'keysuri_korea_tech'}, approval_source=DELEGATED_WORK_REVIEW)
+        self.assertNotIn('운영책임자의 직접 검수', customer)
+        self.assertNotIn('검수 대기', customer)
+        self.assertIn(DELEGATED_REVIEW_TEXT, customer)
+        self.assertIn('사전등록 520명, 750명 이상 예상.', customer)
+        self.assertIn('email_html = _mark_korea_reissue_owner_pending_copy(email_html)', Path(runner.__file__).read_text())
+
     def test_cold_revision_restores_exact_korea_top_and_bottom_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
             data = {"top": b"original top", "bottom": b"original bottom"}
