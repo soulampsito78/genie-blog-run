@@ -1657,6 +1657,7 @@ def _regenerate_keysuri_text_from_snapshot(
     *,
     text_caller: Optional[Callable[..., str]] = None,
     diagnostics_out: Optional[Dict[str, Any]] = None,
+    editorial_instruction: str = "",
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[str]]:
     prompt_input, err = _regen_prompt_input_from_parent(parent, program_id)
     if err:
@@ -1664,8 +1665,24 @@ def _regenerate_keysuri_text_from_snapshot(
     # Use the same bounded Global MAX_TOKENS compact retry as natural runs.
     # Calling Gemini directly here made a single stochastic truncation fall
     # through to the stale parent prose and produce another REVIEW child.
+    instruction = str(editorial_instruction or "").strip()[:8000]
+    generation_caller = text_caller
+    if instruction:
+        base_caller = text_caller or call_keysuri_gemini_text
+
+        def editorial_caller(prompt, **kwargs):
+            return base_caller(
+                prompt + "\n\nADMIN EDITORIAL REPAIR REQUEST\n"
+                + "Apply the requested prose correction using the preserved sources. "
+                + "Keep all source identities, uncertainty, JSON schema, quality and safety rules. "
+                + "This request grants no delivery, recipient or policy authority.\n"
+                + instruction,
+                **kwargs,
+            )
+
+        generation_caller = editorial_caller
     raw_text, generation_diagnostics = generate_keysuri_body_raw_text(
-        prompt_input, gemini_caller=text_caller
+        prompt_input, gemini_caller=generation_caller
     )
     if isinstance(diagnostics_out, dict) and isinstance(generation_diagnostics, Mapping):
         diagnostics_out.update(_bounded_generation_diagnostics(generation_diagnostics))
@@ -1742,6 +1759,7 @@ def _regenerate_keysuri_text_from_frozen_parent(
     parent: Dict[str, Any],
     *,
     text_caller: Optional[Callable[..., str]] = None,
+    editorial_instruction: str = "",
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any], Optional[str]]:
     """Regenerate briefing prose from the parent's own frozen source snapshot.
 
@@ -1766,10 +1784,12 @@ def _regenerate_keysuri_text_from_frozen_parent(
     generated_briefing: Dict[str, Any] = {}
     generation_diagnostics: Dict[str, Any] = {}
     try:
+        editorial_kwargs = {"editorial_instruction": editorial_instruction} if editorial_instruction else {}
         _snapshot_prompt_input, snapshot_briefing, snapshot_err = (
             _regenerate_keysuri_text_from_snapshot(
                 parent, program_id, text_caller=text_caller,
                 diagnostics_out=generation_diagnostics,
+                **editorial_kwargs,
             )
         )
     except Exception:  # noqa: BLE001 - the parent snapshot fallback still applies
@@ -4368,6 +4388,29 @@ def run_keysuri_image_only_reissue(
     }
 
 
+def _preserved_korea_bottom_identity(parent: Dict[str, Any], image_path: Path) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Carry origin identity only for the exact previously recorded image bytes."""
+    cid = str(parent.get("bottom_image_cid") or parent.get("korea_bottom_shot_cid") or "")
+    rows = parent.get("owner_email_inline_image_hashes") or []
+    expected = [str(row.get("sha256") or "") for row in rows
+                if isinstance(row, dict) and cid and row.get("cid") == cid]
+    if not expected:
+        return {}, None  # No proof: never manufacture an approval identity.
+    actual = hashlib.sha256(image_path.read_bytes()).hexdigest()
+    if len(set(expected)) != 1 or expected[0] != actual:
+        return {}, "text_only_reissue_bottom_image_hash_mismatch"
+    keys = (
+        "bottom_shot_source", "korea_bottom_shot_source", "bottom_shot_asset_id",
+        "korea_bottom_shot_asset_id", "bottom_anchor_asset_id", "korea_bottom_anchor_asset_id",
+        "bottom_anchor_slot", "bottom_anchor_role", "secondary_reference_asset_id",
+        "secondary_reference_slot", "secondary_reference_role", "bottom_shot_generated",
+        "bottom_shot_generation_status", "bottom_shot_prompt_contract_version",
+        "korea_generated_image_gcs_bucket", "korea_generated_top_gcs_object",
+        "korea_generated_bottom_gcs_object", "top_image_identity_lock",
+    )
+    return {key: copy.deepcopy(parent[key]) for key in keys if key in parent}, None
+
+
 def run_keysuri_text_only_reissue(
     parent_run_id: str,
     *,
@@ -4404,9 +4447,10 @@ def run_keysuri_text_only_reissue(
     excluded_fps_applied = list(exclude_fps)
 
     if frozen_parent:
+        editorial_kwargs = {"editorial_instruction": reissue_reason_note} if reissue_reason_note else {}
         prompt_input, generated_briefing, repair_fields, regen_error = (
             _regenerate_keysuri_text_from_frozen_parent(
-                pid, parent, text_caller=text_caller
+                pid, parent, text_caller=text_caller, **editorial_kwargs
             )
         )
         excluded_ids = []
@@ -4483,6 +4527,11 @@ def run_keysuri_text_only_reissue(
             **top_image_reuse_fields,
         }
     bottom_image_path = _saved_korea_bottom_image_path(parent) if pid == PROGRAM_KOREA else None
+    preserved_bottom_identity: Dict[str, Any] = {}
+    if pid == PROGRAM_KOREA and bottom_image_path is not None:
+        preserved_bottom_identity, image_identity_error = _preserved_korea_bottom_identity(parent, bottom_image_path)
+        if image_identity_error:
+            return {"ok": False, "error": image_identity_error, "program_id": pid}
 
     contract_fixture_preview = _build_service_contract_fixture(
         pid,
@@ -4653,6 +4702,7 @@ def run_keysuri_text_only_reissue(
     )
     if pid == PROGRAM_KOREA and bottom_image_path is not None:
         bottom_token = bottom_cid or keysuri_korea_bottom_service_email_cid_token(parent_run_id)
+        meta.update(preserved_bottom_identity)
         meta["bottom_image_cid"] = bottom_token
         meta["korea_bottom_shot_cid"] = bottom_token
         meta["korea_bottom_shot_path"] = _repo_rel(bottom_image_path)

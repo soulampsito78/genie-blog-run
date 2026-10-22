@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -189,6 +192,71 @@ class FrozenParentPromptTests(unittest.TestCase):
         self.assertFalse(fields["reissue_frozen_parent_prose_regenerated"])
         self.assertEqual(error, "text_only_reissue_prose_generation_failed")
         repair.assert_not_called()
+
+
+class EditorialRepairAndImageOriginTests(unittest.TestCase):
+    def test_operator_correction_reaches_actual_generation_caller_without_mutating_source(self):
+        prompt_input = {"program_id": "keysuri_korea_tech", "source_pack": {"preserved": True}}
+        original = copy.deepcopy(prompt_input)
+        caller = Mock(return_value="generated JSON")
+
+        def generate(value, *, gemini_caller):
+            self.assertEqual(value, original)
+            return gemini_caller("ORIGINAL SAFETY AND SOURCE CONTRACT", program_id="keysuri_korea_tech"), {}
+
+        with patch.object(runner, "_regen_prompt_input_from_parent", return_value=(prompt_input, None)), \
+             patch.object(runner, "generate_keysuri_body_raw_text", side_effect=generate), \
+             patch.object(runner, "parse_keysuri_generated_response", return_value={"parse_status": "parsed_valid", "generated_briefing": {"top_5_news": {}}}), \
+             patch.object(runner, "enrich_generated_briefing_content", side_effect=lambda value, *_: value), \
+             patch.object(runner, "repair_keysuri_visible_text_fields", side_effect=lambda value, **_: (value, {})):
+            _, _, error = runner._regenerate_keysuri_text_from_snapshot(
+                {}, "keysuri_korea_tech", text_caller=caller,
+                editorial_instruction="사전등록 520명, 현장 포함 750명 이상 예상으로 고칩니다.",
+            )
+        self.assertIsNone(error)
+        sent = caller.call_args.args[0]
+        self.assertIn("ORIGINAL SAFETY AND SOURCE CONTRACT", sent)
+        self.assertIn("750명 이상 예상", sent)
+        self.assertIn("grants no delivery", sent)
+        self.assertEqual(prompt_input, original)
+
+    def test_no_instruction_keeps_existing_caller_contract(self):
+        source = Path(runner.__file__).read_text()
+        self.assertIn('if reissue_reason_note else {}', source)
+        self.assertIn('if editorial_instruction else {}', source)
+
+    def test_exact_parent_image_bytes_preserve_generated_identity_not_send_authority(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/"bottom.jpg";path.write_bytes(b"exact image")
+            parent = {"bottom_image_cid": "bottom", "bottom_shot_source": "generated_v6_multi_ref",
+                      "bottom_anchor_asset_id": "keysuri_korea_bottom_20260605_105936", "bottom_anchor_slot": 0,
+                      "secondary_reference_asset_id": "Asset01", "secondary_reference_slot": 1,
+                      "bottom_shot_generated": True, "owner_review_status": "approved", "customer_send": 14,
+                      "owner_email_inline_image_hashes": [{"cid": "bottom", "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}]}
+            before=copy.deepcopy(parent)
+            result,error=runner._preserved_korea_bottom_identity(parent,path)
+            self.assertIsNone(error)
+            self.assertEqual(result["bottom_shot_source"], "generated_v6_multi_ref")
+            self.assertEqual(result["bottom_anchor_slot"],0)
+            self.assertNotIn("owner_review_status", result)
+            self.assertNotIn("customer_send", result)
+            self.assertEqual(parent,before)
+
+    def test_image_byte_mismatch_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/"bottom.jpg";path.write_bytes(b"changed")
+            parent={"bottom_image_cid":"bottom","bottom_shot_source":"generated_v6_multi_ref",
+                    "owner_email_inline_image_hashes":[{"cid":"bottom","sha256":"0"*64}]}
+            result,error=runner._preserved_korea_bottom_identity(parent,path)
+            self.assertEqual(result,{})
+            self.assertEqual(error,"text_only_reissue_bottom_image_hash_mismatch")
+
+    def test_missing_provenance_cannot_invent_approved_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/"bottom.jpg";path.write_bytes(b"unknown")
+            result,error=runner._preserved_korea_bottom_identity({"bottom_shot_source":"generated_v6_multi_ref"},path)
+            self.assertEqual(result,{})
+            self.assertIsNone(error)
 
 
 if __name__ == "__main__":
