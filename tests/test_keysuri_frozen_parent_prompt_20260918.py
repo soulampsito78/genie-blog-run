@@ -195,6 +195,42 @@ class FrozenParentPromptTests(unittest.TestCase):
 
 
 class EditorialRepairAndImageOriginTests(unittest.TestCase):
+    def test_cold_revision_restores_exact_korea_top_and_bottom_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = {"top": b"original top", "bottom": b"original bottom"}
+            parent = {"mode": "keysuri_korea_tech", "top_image_cid": "top", "bottom_image_cid": "bottom",
+                      "korea_generated_image_gcs_bucket": "existing-bucket",
+                      "korea_generated_top_gcs_object": "parent/top.jpg",
+                      "korea_generated_bottom_gcs_object": "parent/bottom.jpg",
+                      "owner_email_inline_image_hashes": [{"cid": role, "path": str(Path(tmp)/(role+"-gone.jpg")),
+                          "sha256": hashlib.sha256(value).hexdigest()} for role,value in data.items()]}
+            def download(dest, *, bucket_name, object_name):
+                self.assertEqual(bucket_name, "existing-bucket")
+                dest.write_bytes(data[Path(object_name).stem])
+                return None
+            with patch.object(runner, "_writable_keysuri_service_assets_dir", return_value=Path(tmp)), \
+                 patch.object(runner, "_download_keysuri_top_image_from_gcs", side_effect=download) as fetch:
+                top, fields = runner._saved_top_image_reference(parent)
+                bottom = runner._saved_korea_bottom_image_path(parent)
+            self.assertEqual(top.read_bytes(), data["top"])
+            self.assertEqual(bottom.read_bytes(), data["bottom"])
+            self.assertTrue(fields["reissue_body_only_image_hash_verified"])
+            self.assertEqual(fetch.call_count, 2)
+
+    def test_restored_korea_image_mismatch_or_missing_proof_never_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = {"top_image_cid": "top", "korea_generated_image_gcs_bucket": "existing-bucket",
+                      "korea_generated_top_gcs_object": "parent/top.jpg",
+                      "owner_email_inline_image_hashes": [{"cid": "top", "sha256": "0"*64}]}
+            def download(dest, **_):
+                dest.write_bytes(b"wrong bytes")
+                return None
+            with patch.object(runner, "_writable_keysuri_service_assets_dir", return_value=Path(tmp)), \
+                 patch.object(runner, "_download_keysuri_top_image_from_gcs", side_effect=download) as fetch:
+                self.assertIsNone(runner._restore_exact_korea_parent_image(parent, "top"))
+                self.assertIsNone(runner._restore_exact_korea_parent_image({}, "bottom"))
+                self.assertEqual(fetch.call_count, 1)
+
     def test_operator_correction_reaches_actual_generation_caller_without_mutating_source(self):
         prompt_input = {"program_id": "keysuri_korea_tech", "source_pack": {"preserved": True}}
         original = copy.deepcopy(prompt_input)

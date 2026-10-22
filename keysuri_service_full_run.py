@@ -3702,6 +3702,34 @@ def keysuri_parent_top_image_reference_present(parent: Any) -> bool:
     )
 
 
+def _restore_exact_korea_parent_image(parent: Dict[str, Any], role: str) -> Optional[Path]:
+    """Reuse only the recorded CID/hash bytes, including across revisions."""
+    if role not in {"top", "bottom"}:
+        return None
+    cid = str(parent.get("top_image_cid" if role == "top" else "bottom_image_cid") or "")
+    rows = [r for r in parent.get("owner_email_inline_image_hashes") or []
+            if isinstance(r, dict) and cid and r.get("cid") == cid]
+    hashes = {str(r.get("sha256") or "") for r in rows}
+    if len(hashes) != 1:
+        return None
+    expected = next(iter(hashes))
+    if not re.fullmatch(r"[a-f0-9]{64}", expected):
+        return None
+    for row in rows:
+        path = _path_from_parent_image_reference(row.get("path"))
+        if path is not None and path.is_file():
+            return path if _sha256_file(path) == expected else None
+    obj = str(parent.get(f"korea_generated_{role}_gcs_object") or "")
+    bucket = str(parent.get("korea_generated_image_gcs_bucket") or "")
+    if not obj or not bucket:
+        return None
+    dest = _writable_keysuri_service_assets_dir() / f"korea_reused_{role}_{expected}.jpg"
+    issue = _download_keysuri_top_image_from_gcs(dest, bucket_name=bucket, object_name=obj)
+    if issue is not None or not dest.is_file() or _sha256_file(dest) != expected:
+        return None
+    return dest
+
+
 def _saved_top_image_reference(parent: Dict[str, Any]) -> Tuple[Optional[Path], Dict[str, Any]]:
     """Resolve a parent top-image reference for body_only reissue.
 
@@ -3710,6 +3738,14 @@ def _saved_top_image_reference(parent: Dict[str, Any]) -> Tuple[Optional[Path], 
     body_only reissue. For no-send QA we can still render the child with the
     preserved CID/reference; actual owner email send still requires a local file.
     """
+    if parent.get("mode") == PROGRAM_KOREA and parent.get("korea_generated_top_gcs_object"):
+        restored = _restore_exact_korea_parent_image(parent, "top")
+        return restored, {
+            "reissue_body_only_image_reused": restored is not None,
+            "reissue_body_only_image_source": "korea_generated_top_gcs_object",
+            "reissue_body_only_image_local_file_present": restored is not None,
+            "reissue_body_only_image_hash_verified": restored is not None,
+        }
     candidates = _parent_top_image_candidates(parent)
 
     # 1) Prefer an existing local file (unchanged behavior).
@@ -3786,6 +3822,8 @@ def _saved_top_image_path(parent: Dict[str, Any]) -> Optional[Path]:
 
 
 def _saved_korea_bottom_image_path(parent: Dict[str, Any]) -> Optional[Path]:
+    if parent.get("korea_generated_bottom_gcs_object"):
+        return _restore_exact_korea_parent_image(parent, "bottom")
     return _resolve_saved_artifact_path(
         parent,
         "korea_bottom_shot_path",
@@ -4527,6 +4565,8 @@ def run_keysuri_text_only_reissue(
             **top_image_reuse_fields,
         }
     bottom_image_path = _saved_korea_bottom_image_path(parent) if pid == PROGRAM_KOREA else None
+    if pid == PROGRAM_KOREA and parent.get("korea_generated_bottom_gcs_object") and bottom_image_path is None:
+        return {"ok": False, "error": "text_only_reissue_bottom_image_restore_unverified", "program_id": pid}
     preserved_bottom_identity: Dict[str, Any] = {}
     if pid == PROGRAM_KOREA and bottom_image_path is not None:
         preserved_bottom_identity, image_identity_error = _preserved_korea_bottom_identity(parent, bottom_image_path)
