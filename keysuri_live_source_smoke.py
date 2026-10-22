@@ -88,6 +88,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_FETCH_TIMEOUT_SEC = 12
 DEFAULT_ITEMS_PER_FEED = 3
+KOREA_ITEMS_PER_FEED = 6
 # Global needs a deeper bounded reserve before scoring/dedup. Eight rows per
 # feed was sufficient on 2026-09-03, but the 2026-09-14 preflight again produced
 # only nine above-floor candidates and five were correctly removed as recent
@@ -515,6 +516,25 @@ def _now_kst_iso() -> str:
     return datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
 
 
+def _bounded_prompt_hold_reason_codes(prompt_input: dict) -> List[str]:
+    """Preserve selector reason codes, never raw claims, prompts or messages."""
+    raw = prompt_input.get("prompt_hold_reason_codes")
+    values = list(raw) if isinstance(raw, list) else []
+    selection = prompt_input.get("top_5_selection_result")
+    issues = selection.get("issues") if isinstance(selection, dict) else None
+    if isinstance(issues, list):
+        values.extend(issue.get("code") for issue in issues if isinstance(issue, dict))
+    codes: List[str] = []
+    for value in values:
+        if not isinstance(value, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,95}", value):
+            continue
+        if value not in codes:
+            codes.append(value)
+        if len(codes) == 8:
+            break
+    return codes
+
+
 def _prompt_input_diagnostic_snapshot(prompt_input: dict) -> Dict[str, Any]:
     top = prompt_input.get("top_5_news") if isinstance(prompt_input.get("top_5_news"), dict) else {}
     top_items = top.get("items") if isinstance(top.get("items"), list) else []
@@ -550,6 +570,9 @@ def _prompt_input_diagnostic_snapshot(prompt_input: dict) -> Dict[str, Any]:
     funnel = prompt_input.get("candidate_funnel_summary")
     if isinstance(funnel, dict):
         snapshot["candidate_funnel_summary"] = funnel
+    hold_codes = _bounded_prompt_hold_reason_codes(prompt_input)
+    if hold_codes:
+        snapshot["prompt_hold_reason_codes"] = hold_codes
     return snapshot
 
 
@@ -3033,6 +3056,8 @@ def _items_per_feed_for_program(program_id: str) -> int:
     pid = str(program_id or "").strip()
     if pid == PROGRAM_GLOBAL or pid.startswith("keysuri_global"):
         return GLOBAL_ITEMS_PER_FEED
+    if pid == PROGRAM_KOREA or pid.startswith("keysuri_korea"):
+        return KOREA_ITEMS_PER_FEED
     return DEFAULT_ITEMS_PER_FEED
 
 
@@ -3320,6 +3345,7 @@ def run_keysuri_live_source_smoke(
     )
     if prompt_input.get("prompt_status") != "ready_for_generation":
         funnel = prompt_input.get("candidate_funnel_summary")
+        hold_codes = _bounded_prompt_hold_reason_codes(prompt_input)
         return LiveSourceSmokeResult(
             ok=False,
             program_id=program_id,
@@ -3334,7 +3360,10 @@ def run_keysuri_live_source_smoke(
             side_effects=side_effects,
             candidate_funnel_summary=funnel if isinstance(funnel, dict) else None,
             hold_reason=prompt_input.get("hold_reason"),
-            error=f"prompt_status={prompt_input.get('prompt_status')!r} after source pack",
+            error=(
+                f"prompt_status={prompt_input.get('prompt_status')!r} after source pack"
+                + (f"; hold={hold_codes[0]}" if hold_codes else "")
+            ),
         )
 
     record_memory_stage("after_source_selection")

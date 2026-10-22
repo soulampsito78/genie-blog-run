@@ -11,6 +11,7 @@ from keysuri_live_source_smoke import (
     DEFAULT_ITEMS_PER_FEED,
     GLOBAL_ITEMS_PER_FEED,
     GLOBAL_TECH_SMOKE_FEEDS,
+    KOREA_ITEMS_PER_FEED,
     KOREA_TECH_ALLOWED_CATEGORIES,
     KOREA_TECH_SMOKE_FEEDS,
     PROGRAM_KOREA,
@@ -745,11 +746,12 @@ class KeysuriKoreaTechSmokeFeedConfigTests(unittest.TestCase):
         self.assertEqual(GLOBAL_ITEMS_PER_FEED, 16)
         self.assertEqual(_items_per_feed_for_program("keysuri_global_tech"), 16)
 
-    def test_korea_keeps_existing_per_feed_depth(self) -> None:
+    def test_korea_uses_bounded_six_item_reserve_without_changing_default(self) -> None:
         self.assertEqual(DEFAULT_ITEMS_PER_FEED, 3)
+        self.assertEqual(KOREA_ITEMS_PER_FEED, 6)
         self.assertEqual(
             _items_per_feed_for_program("keysuri_korea_tech"),
-            DEFAULT_ITEMS_PER_FEED,
+            KOREA_ITEMS_PER_FEED,
         )
 
     def test_feeds_for_program_korea_returns_korea_feeds(self) -> None:
