@@ -27,6 +27,7 @@ from customer_review_confirmation import (
 from email_sender import parse_customer_to_addrs, send_genie_email
 from keysuri_email_identity import build_keysuri_customer_subject, sanitize_preheader_text
 from keysuri_contract_preview_renderer import (
+    bound_gmail_presentation_table_layout,
     PREHEADER_STYLE,
     REVIEW_CONFIRMATION_TEXT,
     REVIEW_STATE_PREVIEW_PENDING,
@@ -250,7 +251,7 @@ def prepare_gmail_global_customer_final_html(
     out = _ADMIN_RUN_URL_RE.sub("", out)
     out = out.replace("[운영자 검토]", "")
     out = _finalize_gmail_global_customer_review_state(out, approval_source=approval_source)
-    return out.strip()
+    return bound_gmail_presentation_table_layout(out.strip())
 
 
 def strip_keysuri_owner_review_controls(html_body: str) -> str:
@@ -300,6 +301,8 @@ def prepare_keysuri_customer_final_html(
         html_body = f"{html_body}\n{review_box}"
     if not html_body.strip():
         raise ValueError("Kee-Suri customer final HTML is empty after stripping owner controls")
+    if '<style' not in html_body.lower() and 'role="presentation"' in html_body:
+        html_body = bound_gmail_presentation_table_layout(html_body)
     return html_body
 
 

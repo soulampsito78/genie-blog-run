@@ -83,6 +83,68 @@ def test_global_filename_canonicalization_does_not_ignore_changed_image(tmp_path
     assert first.candidate_sha256 != second.candidate_sha256
 
 
+def _email_semantics_without_layout(source):
+    from html.parser import HTMLParser
+    class Semantics(HTMLParser):
+        def __init__(self):
+            super().__init__(); self.events = []
+        def handle_starttag(self, tag, attrs):
+            self.events.append((tag, tuple((k, v) for k, v in attrs if k != "style")))
+        def handle_endtag(self, tag): self.events.append(("end", tag))
+        def handle_data(self, data): self.events.append(("text", data))
+    parser = Semantics(); parser.feed(source); return parser.events
+
+
+def _assert_gmail_tables_have_fixed_layout(source):
+    from html.parser import HTMLParser
+    class Tables(HTMLParser):
+        def __init__(self): super().__init__(); self.tables = []
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if tag == "table" and attrs.get("role") == "presentation": self.tables.append(attrs)
+    parser = Tables(); parser.feed(source)
+    assert parser.tables
+    assert all("table-layout:fixed" in a.get("style", "").replace(" ", "") for a in parser.tables)
+
+
+@pytest.mark.parametrize("source", ["HUMAN_OWNER", "DELEGATED_WORK_REVIEW"])
+def test_gmail_customer_saved_legacy_layout_is_bounded_not_just_future_generation(source):
+    from keysuri_customer_delivery import prepare_gmail_global_customer_final_html
+    from tests.test_keysuri_customer_delivery import _keysuri_global_gmail_owner_review_email_html
+    saved = _keysuri_global_gmail_owner_review_email_html().replace("table-layout:fixed;", "")
+    original = saved[:]
+    prepared = prepare_gmail_global_customer_final_html(saved, approval_source=source)
+    _assert_gmail_tables_have_fixed_layout(prepared)
+    assert saved == original
+    assert prepare_gmail_global_customer_final_html(prepared, approval_source=source) == prepared
+    assert (gate._DELEGATED_COPY in prepared) == (source == "DELEGATED_WORK_REVIEW")
+
+
+@pytest.mark.parametrize("program", ["global", "korea"])
+def test_gmail_future_owner_and_actual_customer_share_bounded_table_layout(program):
+    import keysuri_contract_preview_renderer as renderer
+    from tests.test_keysuri_contract_preview_renderer import build_global_contract_fixture, build_korea_contract_fixture
+    fixture = build_global_contract_fixture() if program == "global" else build_korea_contract_fixture()
+    build = renderer.build_keysuri_global_gmail_owner_email_html if program == "global" else renderer.build_keysuri_korea_gmail_owner_email_html
+    saved = build(fixture, subject="synthetic layout fixture")
+    _assert_gmail_tables_have_fixed_layout(saved)
+
+
+def test_gmail_layout_fix_preserves_every_content_link_cid_and_nonlayout_attribute():
+    from keysuri_contract_preview_renderer import bound_gmail_presentation_table_layout
+    before = ('<table role="presentation" width="100%" style="background:white;table-layout:auto">'
+              '<tr><td><a href="https://example.test/exact?a=1&amp;b=2">원문 그대로</a>'
+              '<img src="cid:exact-original-cid" width="896"><blockquote>정확 인용문</blockquote>'
+              '</td></tr></table><table role="presentation" width="600"><tr><td>내용</td></tr></table>'
+              '<table id="unrelated"><tr><td>다른 테이블</td></tr></table>')
+    after = bound_gmail_presentation_table_layout(before)
+    assert _email_semantics_without_layout(before) == _email_semantics_without_layout(after)
+    assert bound_gmail_presentation_table_layout(after) == after
+    assert '<table id="unrelated">' in after
+    assert "overflow:hidden" not in after  # constrain the layout, do not hide content
+    _assert_gmail_tables_have_fixed_layout(after)
+
+
 NOW = datetime(2026, 9, 10, 7, 0, tzinfo=timezone.utc)
 HUMAN_COPY = "운영책임자의 직접 검수"
 

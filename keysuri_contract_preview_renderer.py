@@ -2255,6 +2255,30 @@ def _gmail_render_korea_sources(source_list: Sequence[Mapping[str, Any]]) -> str
     )
 
 
+def bound_gmail_presentation_table_layout(html_text: str) -> str:
+    """Keep nested percentage email tables within their containing width.
+
+    Auto table layout can expand a 100% wrapper to the intrinsic minimum of
+    nested cards plus padding. Fixed layout honors the declared email widths;
+    it does not clip text, rewrite links/images, or change review semantics.
+    Applied to both new Gmail output and preserved-HTML customer preparation.
+    """
+    def fixed_table(match):
+        tag = match.group(0)
+        if not re.search(r'\brole\s*=\s*(["\'])presentation\1', tag, re.I):
+            return tag
+        style = re.search(r'\bstyle\s*=\s*(["\'])(.*?)\1', tag, re.I | re.S)
+        if style is None:
+            return tag[:-1] + ' style="table-layout:fixed;">'
+        value = style.group(2)
+        if re.search(r'(?:^|;)\s*table-layout\s*:\s*fixed\s*(?:;|$)', value, re.I):
+            return tag
+        value = re.sub(r'(?:^|;)\s*table-layout\s*:[^;]*(?:;|$)', ';', value, flags=re.I)
+        value = value.rstrip().rstrip(';') + ';table-layout:fixed;'
+        return tag[:style.start(2)] + value + tag[style.end(2):]
+    return re.sub(r'<table\b[^>]*>', fixed_table, html_text, flags=re.I)
+
+
 def build_keysuri_korea_gmail_owner_email_html(
     fixture: Mapping[str, Any],
     *,
@@ -2321,7 +2345,7 @@ def build_keysuri_korea_gmail_owner_email_html(
 
     admin_block = _owner_review_admin_email_block(admin_url=admin_url, run_id=run_id)
 
-    return f"""<!DOCTYPE html>
+    return bound_gmail_presentation_table_layout(f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8"/>
@@ -2366,7 +2390,7 @@ def build_keysuri_korea_gmail_owner_email_html(
 </td></tr>
 </table>
 </body>
-</html>"""
+</html>""")
 
 
 def build_keysuri_global_gmail_owner_email_html(
@@ -2437,7 +2461,7 @@ def build_keysuri_global_gmail_owner_email_html(
 
     admin_block = _owner_review_admin_email_block(admin_url=admin_url, run_id=run_id)
 
-    return f"""<!DOCTYPE html>
+    return bound_gmail_presentation_table_layout(f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8"/>
@@ -2479,7 +2503,7 @@ def build_keysuri_global_gmail_owner_email_html(
 </td></tr>
 </table>
 </body>
-</html>"""
+</html>""")
 
 
 _STYLE_BLOCK_RE = re.compile(r"<style[^>]*>(.*?)</style>", re.DOTALL | re.IGNORECASE)
