@@ -2603,8 +2603,12 @@ def _delegated_preview_asset_meta(meta, saved_html):
     if meta.get("mode") != "today_genie":
         return meta
     from renderers import today_genie_email_inline_cid_pair
+    pair = today_genie_email_inline_cid_pair()
+    saved_cids = [match[1] for match in re.findall(r"\bsrc\s*=\s*(['\"])cid:([^'\"]+)\1", saved_html, re.I)]
+    if sorted(saved_cids) != sorted(pair):
+        raise ValueError("DELEGATED_PREVIEW_SAVED_CID_MISMATCH")
     projected = dict(meta)
-    for slot, cid in zip(("top", "bottom"), today_genie_email_inline_cid_pair()):
+    for slot, cid in zip(("top", "bottom"), pair):
         field = slot + "_image_cid"
         if (meta.get(field) not in (None, "", cid)
                 or not re.search(r"\bsrc\s*=\s*(['\"])cid:" + re.escape(cid) + r"\1", saved_html, re.I)):

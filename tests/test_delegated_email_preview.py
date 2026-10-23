@@ -248,4 +248,10 @@ def test_today_production_shape_uses_saved_canonical_cids_and_run_bound_objects(
     with pytest.raises(ValueError, match="SAVED_CID_MISMATCH"):
         routes._delegated_preview_asset_meta(meta, html.replace(top_cid, "foreign-cid"))
     with pytest.raises(ValueError, match="SAVED_CID_MISMATCH"):
+        routes._delegated_preview_asset_meta(meta, html + '<img src="cid:extra">')
+    with pytest.raises(ValueError, match="SAVED_CID_MISMATCH"):
+        routes._delegated_preview_asset_meta(meta, html + f'<img src="cid:{top_cid}">')
+    with pytest.raises(ValueError, match="SAVED_CID_MISMATCH"):
+        routes._delegated_preview_asset_meta(meta, html.replace(f'<img src="cid:{bottom_cid}">', ""))
+    with pytest.raises(ValueError, match="SAVED_CID_MISMATCH"):
         routes._delegated_preview_asset_meta(dict(meta, top_image_cid="foreign-cid"), html)

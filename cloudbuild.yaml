@@ -80,6 +80,8 @@ steps:
       - tests/test_delegated_authenticated_gate.py
       - tests/test_delegated_review_shadow.py
       - tests/test_admin_routes.py
+      - tests/test_delegated_real_customer_renderer_gate.py
+      - tests/test_delegated_email_preview.py
 
   - name: gcr.io/cloud-builders/docker
     id: Push
