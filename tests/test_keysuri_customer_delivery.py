@@ -1840,5 +1840,49 @@ class KeysuriGlobalTopImageGcsRestoreTests(unittest.TestCase):
         self.assertEqual(blocked.exception.code, GLOBAL_TOP_EXPECTED_HASH_MISSING)
 
 
+class KeysuriKoreaGmailReviewCopyTests(unittest.TestCase):
+    """Exercise Korea's actual Gmail tables for both legitimate review sources."""
+
+    def test_all_korea_gmail_review_states_use_exact_requested_source_once(self):
+        from customer_review_confirmation import (
+            DELEGATED_WORK_REVIEW, DELEGATED_REVIEW_TEXT, HUMAN_OWNER,
+            HUMAN_DIRECT_REVIEW_TEXT,
+        )
+        from keysuri_contract_preview_renderer import build_keysuri_korea_gmail_owner_email_html
+        from keysuri_customer_delivery import prepare_keysuri_customer_final_html
+        from tests.test_keysuri_contract_preview_renderer import build_korea_contract_fixture
+
+        rid = "20261023_183002_keysuri_korea_tech_aabbccdd"
+        for state in ("preview_pending", "review_passed", "sent_archived"):
+            for source, expected in (
+                (DELEGATED_WORK_REVIEW, DELEGATED_REVIEW_TEXT),
+                (HUMAN_OWNER, HUMAN_DIRECT_REVIEW_TEXT),
+            ):
+                with self.subTest(state=state, source=source):
+                    fixture = build_korea_contract_fixture(review_state=state)
+                    fixture["top_shot_image_src"] = "cid:keysuri_topshot_korea_20261023"
+                    fixture["bottom_shot_image_src"] = "cid:keysuri_bottomshot_korea_20261023"
+                    owner = build_keysuri_korea_gmail_owner_email_html(
+                        fixture, subject="[운영자 검토] Korea", run_id=rid,
+                        admin_url="https://example.com/admin/runs/" + rid,
+                    )
+                    meta = {"mode": PROGRAM_KOREA, "owner_review_status": "pending_review",
+                            "editorial_verdict": "READY", "customer_delivery_status": "not_sent"}
+                    before = json.loads(json.dumps(meta))
+                    customer = prepare_keysuri_customer_final_html(owner, meta=meta, approval_source=source)
+                    self.assertEqual(customer.count(expected), 1)
+                    self.assertNotIn("직접 검수 대기", customer)
+                    self.assertNotIn("운영자 검수 화면 열기", customer)
+                    self.assertNotIn("/admin/runs/", customer)
+                    for cid in ("topshot", "bottomshot"):
+                        self.assertEqual(customer.count("cid:keysuri_" + cid + "_korea_20261023"), 1)
+                    if source == DELEGATED_WORK_REVIEW:
+                        self.assertNotIn(HUMAN_DIRECT_REVIEW_TEXT, customer)
+                    self.assertEqual(meta, before)
+                    self.assertIn("run_id: " + rid, owner)
+                    self.assertEqual(prepare_keysuri_customer_final_html(customer, meta=meta,
+                                     approval_source=source), customer)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -204,7 +204,10 @@ def _is_gmail_safe_keysuri_html(html_body: str) -> bool:
     lowered = raw.lower()
     if "<style" in lowered:
         return False
-    return 'role="presentation"' in lowered and "cid:keysuri_topshot_global_" in lowered
+    return 'role="presentation"' in lowered and any(
+        prefix in lowered
+        for prefix in ("cid:keysuri_topshot_global_", "cid:keysuri_topshot_korea_")
+    )
 
 
 def _finalize_gmail_global_customer_review_state(
@@ -286,7 +289,9 @@ def prepare_keysuri_customer_final_html(
     approval_source: str = HUMAN_OWNER,
 ) -> str:
     mode = str(meta.get("mode") or meta.get("program_id") or "")
-    if mode == PROGRAM_GLOBAL and _is_gmail_safe_keysuri_html(saved_html):
+    # Both Gmail renderers use the same table-based review confirmation. Korea
+    # must not retain a human-pending sentence and append a second AI verdict.
+    if mode in _KEYSURI_MODES and _is_gmail_safe_keysuri_html(saved_html):
         html_body = prepare_gmail_global_customer_final_html(
             saved_html,
             approval_source=approval_source,
