@@ -816,6 +816,43 @@ def test_corrupt_transition_object_fails_closed(setup_case):
             admin_store.run_delivery_transition(run_id, action=action, candidate_sha256=candidate.candidate_sha256)
 
 
+def test_local_create_once_never_exposes_unwritten_claim(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setattr(store, "_uses_gcs_backend", lambda: False)
+    monkeypatch.setenv("GENIE_ADMIN_SAFETY_LOCAL_DIR", str(tmp_path / "safety"))
+    key = "atomic/claim.json"
+    target = store._local_path(key)
+    original = os.fdopen
+    observations = []
+    def inspect_before_write(fd, *args, **kwargs):
+        observations.append(target.exists())
+        return original(fd, *args, **kwargs)
+    monkeypatch.setattr(store.os, "fdopen", inspect_before_write)
+    payload = {"state": "SUBMITTED", "body": "large" * 20000}
+    assert store._create_json_once(key, payload)
+    assert observations == [False], "The final claim must be invisible until complete"
+    assert store._read_json(key) == payload
+    assert not store._create_json_once(key, {"state": "HELD"})
+    assert store._read_json(key) == payload
+    assert list(target.parent.iterdir()) == [target]
+
+
+def test_local_create_once_write_failure_leaves_no_occupied_claim(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setattr(store, "_uses_gcs_backend", lambda: False)
+    monkeypatch.setenv("GENIE_ADMIN_SAFETY_LOCAL_DIR", str(tmp_path / "safety"))
+    key = "atomic/failed.json"
+    target = store._local_path(key)
+    def fail_write(fd, *args, **kwargs):
+        os.close(fd)
+        raise OSError("fixture write failure")
+    monkeypatch.setattr(store.os, "fdopen", fail_write)
+    with pytest.raises(OSError, match="fixture write failure"):
+        store._create_json_once(key, {"state": "SUBMITTED"})
+    assert not target.exists()
+    assert not list(target.parent.iterdir())
+
+
 def test_independent_processes_linearize_hold_against_provider_handoff(setup_case):
     import os, sys, subprocess
     from concurrent.futures import ThreadPoolExecutor

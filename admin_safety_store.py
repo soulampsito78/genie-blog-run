@@ -14,6 +14,7 @@ import itertools
 import os
 import re
 import secrets
+import tempfile
 from calendar import monthrange
 from datetime import datetime
 from pathlib import Path
@@ -98,13 +99,21 @@ def _create_json_once(key: str, payload: Dict[str, Any]) -> bool:
                 return False
             raise
     path = _local_path(key)
+    # Publish complete bytes atomically without overwriting an existing claim.
+    # O_EXCL on the final name exposed an empty/partial JSON to other processes.
+    fd, temporary = tempfile.mkstemp(prefix=".claim-", suffix=".tmp", dir=path.parent)
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return False
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    return True
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        os.unlink(temporary)
 
 
 def _write_json(key: str, payload: Dict[str, Any]) -> None:
