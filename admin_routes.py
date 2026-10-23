@@ -2595,6 +2595,24 @@ def admin_run_reopen(
     return RedirectResponse(url=f"/admin/runs/{run_id}", status_code=303)
 
 
+def _delegated_preview_asset_meta(meta, saved_html):
+    """Today stores object slots, not CID fields; derive only its saved CIDs.
+
+    This transient projection never changes the raw artifact/candidate identity.
+    """
+    if meta.get("mode") != "today_genie":
+        return meta
+    from renderers import today_genie_email_inline_cid_pair
+    projected = dict(meta)
+    for slot, cid in zip(("top", "bottom"), today_genie_email_inline_cid_pair()):
+        field = slot + "_image_cid"
+        if (meta.get(field) not in (None, "", cid)
+                or not re.search(r"\bsrc\s*=\s*(['\"])cid:" + re.escape(cid) + r"\1", saved_html, re.I)):
+            raise ValueError("DELEGATED_PREVIEW_SAVED_CID_MISMATCH")
+        projected[field] = cid
+    return projected
+
+
 def _delegated_email_preview_target(run_id, meta, saved_html, *, now=None):
     """Read-only display target, never a receipt, review or send authorization.
 
@@ -2638,7 +2656,7 @@ def _delegated_email_preview_target(run_id, meta, saved_html, *, now=None):
     if "운영책임자의 직접 검수" in content or DELEGATED_REVIEW_TEXT not in content:
         raise ValueError("DELEGATED_PREVIEW_DISPLAY_SOURCE_MISMATCH")
     images = []
-    assets = preview_assets_for_run(run_id, meta)
+    assets = preview_assets_for_run(run_id, _delegated_preview_asset_meta(meta, saved_html))
     for index, (path, cid, filename) in enumerate(prepared["inline_jpeg_parts"]):
         payload = Path(path).read_bytes()
         if not payload:
@@ -2687,6 +2705,7 @@ def admin_run_email_preview(request: Request, run_id: str):
     snapshot_id = str(request.query_params.get("approval_snapshot_id") or "").strip()
     preview_source = str(request.query_params.get("preview_source") or "").strip()
     delegated_binding = None
+    preview_meta = meta
     if preview_source:
         expected = str(request.query_params.get("target_sha256") or "")
         if (preview_source != "DELEGATED_WORK_REVIEW" or snapshot_id
@@ -2704,6 +2723,7 @@ def admin_run_email_preview(request: Request, run_id: str):
                     or hashlib.sha256((load_run_email_html(run_id) or "").encode("utf-8")).hexdigest()
                     != delegated_binding["received_html_sha256"]):
                 raise ValueError("DELEGATED_PREVIEW_ARTIFACT_CHANGED")
+            preview_meta = _delegated_preview_asset_meta(meta, load_run_email_html(run_id) or "")
         except Exception:
             # No raw provider/store exception or private recipient data in HTML.
             return HTMLResponse("<p>현재 위임 검수 대상과 결속되지 않은 미리보기입니다.</p>", status_code=409,
@@ -2734,7 +2754,7 @@ def admin_run_email_preview(request: Request, run_id: str):
     def observed_preview_stream():
         memory.record("after_template")
         try:
-            for chunk in stream_customer_html_for_admin_preview(run_id, meta, content):
+            for chunk in stream_customer_html_for_admin_preview(run_id, preview_meta, content):
                 if delegated_binding is not None:
                     for image in delegated_binding["image_identity"]:
                         url = f"/admin/runs/{run_id}/preview-assets/{image['role']}"
@@ -2818,6 +2838,11 @@ def admin_run_preview_asset(request: Request, run_id: str, slot: str):
     meta = load_run_artifact(run_id)
     if not meta:
         return Response(status_code=404)
+    if expected_sha is not None and meta.get("mode") == "today_genie":
+        try:
+            meta = _delegated_preview_asset_meta(meta, load_run_email_html(run_id) or "")
+        except ValueError:
+            return Response(status_code=409, headers={"Cache-Control": "private, no-store"})
     payload, media_type = read_preview_asset(run_id, meta, slot)
     if payload is None or media_type is None:
         return Response(status_code=404)

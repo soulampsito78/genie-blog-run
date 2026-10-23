@@ -9,7 +9,10 @@ from fastapi.testclient import TestClient
 import admin_routes as routes
 import delegated_gate as gate
 from main import app
+import admin_preview_assets as asset_module
 from tests.test_delegated_real_customer_renderer_gate import _case, _receipt, NOW
+
+REAL_PREVIEW_ASSETS = asset_module.preview_assets_for_run
 
 
 @pytest.fixture
@@ -176,6 +179,9 @@ def test_artifact_or_grant_changes_during_preparation_fail_closed(preview, monke
 @pytest.mark.parametrize("mode", ["today_genie", "keysuri_korea_tech"])
 def test_other_two_products_use_real_frozen_display_adapter(preview, tmp_path, monkeypatch, mode):
     meta, html, plan = _case(tmp_path, mode)
+    if mode == "today_genie":
+        from renderers import today_genie_email_inline_cid_pair
+        html += "".join(f'<img src="cid:{cid}">' for cid in today_genie_email_inline_cid_pair())
     meta["owner_review_status"] = "held"
     monkeypatch.setattr("admin_store._keysuri_korea_bottom_baseline_confirmed", lambda _: (True, "ok"))
     preview[4]["products"] = [mode]
@@ -189,3 +195,57 @@ def test_other_two_products_use_real_frozen_display_adapter(preview, tmp_path, m
     assert binding["image_identity"] == frozen.binding["image_identity"]
     assert binding["artifact_sha256"] == frozen.binding["artifact_sha256"]
     assert preview[6].call_count == 0
+
+
+def test_today_production_shape_uses_saved_canonical_cids_and_run_bound_objects(preview, tmp_path, monkeypatch):
+    from renderers import today_genie_email_inline_cid_pair
+    meta, html, plan = _case(tmp_path, "today_genie")
+    meta["owner_review_status"] = "held"
+    top_cid, bottom_cid = today_genie_email_inline_cid_pair()
+    html += f'<img src="cid:{top_cid}"><img src="cid:{bottom_cid}">'
+    meta.update(customer_image_gcs_bucket="fixture-bucket", customer_image_gcs_objects={
+        slot: f"admin_runs/{meta['run_id']}.images/{slot}.jpg" for slot in ("top", "bottom")})
+    assert "top_image_cid" not in meta and "bottom_image_cid" not in meta
+    before = deepcopy(meta)
+    preview[4]["products"] = [meta["mode"]]
+    monkeypatch.setenv("GENIE_ARTIFACT_BUCKET", "fixture-bucket")
+    monkeypatch.setattr(asset_module, "preview_assets_for_run", REAL_PREVIEW_ASSETS)
+    projected = routes._delegated_preview_asset_meta(meta, html)
+    mapped = REAL_PREVIEW_ASSETS(meta["run_id"], projected)
+    assert set(mapped) == {"top", "bottom"}
+    assert mapped["top"].cid == top_cid and mapped["bottom"].cid == bottom_cid
+    assert all(a.backend == "gcs" for a in mapped.values())
+    content, binding, target = preview[10](meta["run_id"], meta, html, now=NOW)
+    frozen = gate.freeze_candidate(meta=meta, saved_html=html, received_message=_receipt(), recipient_plan=plan)
+    assert content == frozen.customer_html
+    assert binding["artifact_sha256"] == frozen.binding["artifact_sha256"]
+    assert binding["image_identity"] == frozen.binding["image_identity"]
+    assert meta == before and "top_image_cid" not in meta
+    monkeypatch.setattr(routes, "load_run_artifact", lambda _: deepcopy(meta))
+    monkeypatch.setattr(routes, "load_run_email_html", lambda _: html)
+    response = preview[0].get(f"/admin/runs/{meta['run_id']}/email", params={
+        "preview_source": "DELEGATED_WORK_REVIEW", "target_sha256": target})
+    assert response.status_code == 200
+    assert response.text.count("?expected_sha256=") == 2
+    top_bytes = Path(meta["generated_image_paths"]["top"]).read_bytes()
+    seen = []
+    def read(rid, current, slot):
+        seen.append(deepcopy(current))
+        assert rid == meta["run_id"] and slot == "top"
+        return (top_bytes, "image/jpeg") if current.get("top_image_cid") == top_cid else (None, None)
+    monkeypatch.setattr(routes, "read_preview_asset", read)
+    asset_url = f"/admin/runs/{meta['run_id']}/preview-assets/top"
+    assert preview[0].get(asset_url).status_code == 404  # unchanged default projection
+    response = preview[0].get(asset_url, params={"expected_sha256": hashlib.sha256(top_bytes).hexdigest()})
+    assert response.status_code == 200 and response.content == top_bytes
+    assert "top_image_cid" not in seen[0] and seen[1]["top_image_cid"] == top_cid
+    assert meta == before and preview[6].call_count == 0
+    # The existing exact-run object boundary still refuses a foreign object.
+    foreign = deepcopy(meta)
+    foreign["customer_image_gcs_objects"]["top"] = "admin_runs/foreign-run.images/top.jpg"
+    with pytest.raises(ValueError, match="CID_ASSET_MISMATCH"):
+        preview[10](foreign["run_id"], foreign, html, now=NOW)
+    with pytest.raises(ValueError, match="SAVED_CID_MISMATCH"):
+        routes._delegated_preview_asset_meta(meta, html.replace(top_cid, "foreign-cid"))
+    with pytest.raises(ValueError, match="SAVED_CID_MISMATCH"):
+        routes._delegated_preview_asset_meta(dict(meta, top_image_cid="foreign-cid"), html)
