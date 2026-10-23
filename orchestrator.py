@@ -510,6 +510,7 @@ def persist_orchestrator_run_artifact(
     scheduled_slot: str | None = None,
     original_incident_id: str | None = None,
     owner_email_notice_html: str | None = None,
+    owner_email_html_snapshot: str | None = None,
 ) -> str:
     from admin_store import generate_run_id, save_run_artifact
     from datetime import datetime
@@ -536,8 +537,13 @@ def persist_orchestrator_run_artifact(
         from today_genie_orchestrator_images import persist_today_genie_customer_images
 
         meta.update(persist_today_genie_customer_images(rid, today_image_result))
-    email_html = extract_email_html_for_artifact(result, run_id=rid)
-    email_html = _inject_owner_email_notice(email_html, owner_email_notice_html)
+    if owner_email_html_snapshot is None:
+        email_html = extract_email_html_for_artifact(result, run_id=rid)
+        email_html = _inject_owner_email_notice(email_html, owner_email_notice_html)
+    else:
+        # Persist exactly the attempted owner MIME HTML, including its notice.
+        # Re-rendering after SMTP changes wall-clock fields and breaks binding.
+        email_html = owner_email_html_snapshot
     return save_run_artifact(meta, email_html=email_html)
 
 
@@ -568,6 +574,7 @@ def send_email_if_allowed(
     send_owner_email: bool = True,
     subject_prefix: str = "",
     owner_email_notice_html: str | None = None,
+    owner_email_html_snapshot: str | None = None,
 ) -> bool:
     """
     If policy allows sending email and we have payload, send via email_sender.
@@ -677,12 +684,15 @@ def send_email_if_allowed(
                 logger.warning("send_email_if_allowed: skipped (missing_admin_url)")
                 return False
 
-        html_body = build_today_genie_email_html_for_cid_mime_send(
-            data,
-            validation_result=validation_result,
-            run_id=rid or None,
-        )
-        html_body = _inject_owner_email_notice(html_body, owner_email_notice_html)
+        if owner_email_html_snapshot is None:
+            html_body = build_today_genie_email_html_for_cid_mime_send(
+                data,
+                validation_result=validation_result,
+                run_id=rid or None,
+            )
+            html_body = _inject_owner_email_notice(html_body, owner_email_notice_html)
+        else:
+            html_body = owner_email_html_snapshot
         if validation_result == "pass" and allow_send and "운영자 검수 화면 열기" not in html_body:
             logger.warning("send_email_if_allowed: skipped (admin_review_link_missing_in_html)")
             return False
@@ -850,6 +860,14 @@ def execute_orchestrator_run(
                         runtime_input,
                     )
 
+        owner_html_kwargs: Dict[str, Any] = {}
+        if str(mode or "") == "today_genie" and run_id:
+            # One render per run, shared by send and persistence. None means
+            # legacy preparation; an empty snapshot must stay empty/fail closed.
+            owner_html = extract_email_html_for_artifact(result, run_id=run_id)
+            owner_html = _inject_owner_email_notice(owner_html, owner_email_notice_html)
+            owner_html_kwargs["owner_email_html_snapshot"] = owner_html
+
         email_sent = send_email_if_allowed(
             result,
             run_id=run_id,
@@ -859,6 +877,7 @@ def execute_orchestrator_run(
                 str(reissue_scope or "").strip(), ""
             ),
             owner_email_notice_html=owner_email_notice_html,
+            **owner_html_kwargs,
         )
         resolved_trigger = trigger_source
         if not resolved_trigger:
@@ -883,6 +902,7 @@ def execute_orchestrator_run(
             scheduled_slot=scheduled_slot,
             original_incident_id=original_incident_id,
             owner_email_notice_html=owner_email_notice_html,
+            **owner_html_kwargs,
         )
         logger.info(
             "execute_orchestrator_run: mode=%s run_id=%s email_sent=%s parent_run_id=%s execution_class=%s",

@@ -8,8 +8,14 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import unittest
+from contextlib import ExitStack
+from dataclasses import replace
 from datetime import datetime, timedelta
+from email import policy
+from email.parser import BytesParser
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from unittest import mock
 from zoneinfo import ZoneInfo
@@ -678,6 +684,183 @@ class TodayNaturalSlotHarness(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(self.effects.orchestrator_calls, 1)
         self.assertEqual(self.effects.failure_events, [])
+
+
+class TodayOwnerMimePersistenceHarness(unittest.TestCase):
+    """Real execute -> render -> owner-send -> local store -> received-HTML gate.
+
+    Fake only paid model/image, SMTP transport, clock and remote I/O boundaries.
+    The orchestrator, renderer, notice injection, persistence and binding gate
+    remain real. Advancing the render clock makes the 2026-10-23 bug falsifiable.
+    This is not a live SMTP, independent content QA, or customer-send test.
+    """
+
+    def setUp(self) -> None:
+        from orchestrator import OrchestrationResult
+        from publishing_policy import PublishingDecision
+        from today_genie_orchestrator_images import TodayGenieOrchestratorImageResult
+
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.runs = self.root / "runs"
+        self.runs.mkdir()
+        self.stack.enter_context(mock.patch.dict(os.environ, {
+            "GENIE_ARTIFACT_STORE_BACKEND": "local",
+            "GENIE_ARTIFACT_BUCKET": "",
+            "GENIE_ADMIN_PUBLIC_BASE_URL": "https://admin.example.test",
+            "GENIE_ADMIN_REISSUE": "",
+            "GENIE_ADMIN_SAFETY_LOCAL_DIR": str(self.root / "safety"),
+            "EMAIL_TO": "offline-owner@example.test",
+        }))
+        self.stack.enter_context(mock.patch("admin_store.admin_runs_dir", return_value=self.runs))
+        self.stack.enter_context(mock.patch("socket.socket.connect", side_effect=AssertionError("HARNESS_NETWORK_FORBIDDEN")))
+        self.stack.enter_context(mock.patch("urllib.request.urlopen", side_effect=AssertionError("HARNESS_NETWORK_FORBIDDEN")))
+        self.result = OrchestrationResult(
+            decision=PublishingDecision(send_email=True, create_naver_draft=False,
+                auto_publish=False, require_review=True, suppress_external=False,
+                send_customer_email=False),
+            reason_summary="offline fixture", response_status=200, mode="today_genie",
+            response_data={"type":"today_genie", "validation_result":"pass",
+                "workflow_status":"validated", "runtime_input":{"target_date":"2026-10-23"},
+                "data":{"title":"Binding harness", "summary":"Original fixture claim",
+                    "channel_drafts":{"email_subject":"Offline owner review"}}},
+        )
+        parts = []
+        for role in ("top", "bottom"):
+            path = self.root / (role + ".jpg")
+            path.write_bytes(b"offline image fixture " + role.encode())
+            parts.append((str(path), "genie.today." + role + "@genie-email.local", path.name))
+        self.images = TodayGenieOrchestratorImageResult(
+            inline_parts=parts, image_source="generated", image_generation_status="generated",
+            generated_image_paths={role:parts[i][0] for i,role in enumerate(("top","bottom"))},
+        )
+        self.model = self.stack.enter_context(mock.patch("orchestrator.run_genie_job", side_effect=lambda *a, **k:self.result))
+        self.image_api = self.stack.enter_context(mock.patch("today_genie_orchestrator_images.generate_today_genie_orchestrator_images", return_value=self.images))
+        self.clock = self.stack.enter_context(mock.patch("main.datetime"))
+        self.clock.now.side_effect = lambda zone: datetime(2026,10,23,6,31,11,tzinfo=zone) + timedelta(seconds=self.clock.now.call_count)
+        self.outbound = []
+        self.smtp_ok = True
+
+        def owner_smtp(html, subject, **kwargs):
+            from email_sender import _build_mime_multipart_inline_and_attach
+            from smtplib import _fix_eols
+
+            message = _build_mime_multipart_inline_and_attach(
+                html, "offline-sender@example.test", ["offline-owner@example.test"],
+                subject, kwargs.get("inline_jpeg_parts") or [], [],
+            )
+            message["Message-ID"] = "<offline-owner@example.test>"
+            # Production serializes this legacy MIME tree with as_string(),
+            # then smtplib normalizes SMTP framing. Do not substitute the newer
+            # EmailMessage/SMTP serializer and introduce unrelated body drift.
+            raw = _fix_eols(message.as_string()).encode("ascii")
+            parsed = BytesParser(policy=policy.default).parsebytes(raw)
+            received = next(p.get_content() for p in parsed.walk() if p.get_content_type()=="text/html")
+            cids = {str(p.get("Content-ID") or "").strip("<>"):p.get_payload(decode=True)
+                for p in parsed.walk() if p.get_content_maintype()=="image"}
+            self.outbound.append({"html":html, "received":received, "raw":raw, "inline":kwargs.get("inline_jpeg_parts"), "cid_bytes":cids})
+            return self.smtp_ok
+
+        self.smtp = self.stack.enter_context(mock.patch("orchestrator.send_genie_email", side_effect=owner_smtp))
+
+    def _execute(self, **kwargs):
+        from orchestrator import execute_orchestrator_run
+        from admin_store import load_run_artifact, load_run_email_html
+        rid, _, sent = execute_orchestrator_run("today_genie",
+            trigger_source="scheduled_owner_review", execution_class="natural_scheduled",
+            scheduled_slot="06:30", schedule_now=datetime(2026,10,23,6,30,tzinfo=KST), **kwargs)
+        return rid, sent, load_run_artifact(rid), load_run_email_html(rid)
+
+    def _assert_bound(self, saved):
+        from delegated_gate import verify_received_html_transport
+        self.assertEqual(self.outbound[-1]["html"], saved)
+        self.assertEqual(verify_received_html_transport(self.outbound[-1]["received"], saved), {"recognized_transport_suffix_count":0})
+
+    def test_natural_owner_send_persists_exact_attempted_html_across_second_boundary(self):
+        _, sent, meta, saved = self._execute()
+        self.assertTrue(sent)
+        self._assert_bound(saved)
+        self.assertEqual(self.clock.now.call_count, 1)
+        self.assertEqual(self.model.call_count, 1)
+        self.assertEqual(self.image_api.call_count, 1)
+        self.assertEqual(self.smtp.call_count, 1)
+        for path, cid, _ in self.images.inline_parts:
+            self.assertEqual(self.outbound[-1]["cid_bytes"][cid], Path(path).read_bytes())
+        self.assertEqual(meta["customer_delivery_status"], "not_sent")
+        self.assertEqual(meta["owner_review_status"], "pending_review")
+        self.assertEqual(meta["execution_class"], "natural_scheduled")
+
+    def test_owner_smtp_failure_persists_same_attempt_without_retry_or_customer_send(self):
+        self.smtp_ok = False
+        _, sent, meta, saved = self._execute()
+        self.assertFalse(sent)
+        self._assert_bound(saved)
+        self.assertEqual(self.smtp.call_count, 1)
+        self.assertEqual(self.clock.now.call_count, 1)
+        self.assertFalse(meta["email_sent"])
+        self.assertEqual(meta["customer_delivery_status"], "not_sent")
+
+    def test_no_send_still_stores_one_render_without_smtp(self):
+        _, sent, meta, saved = self._execute(send_owner_email=False)
+        self.assertFalse(sent)
+        self.assertTrue(saved)
+        self.assertEqual(self.clock.now.call_count, 1)
+        self.smtp.assert_not_called()
+        self.assertEqual(meta["verification_mode"], "no_send_verification")
+        self.assertEqual(meta["customer_delivery_status"], "not_sent")
+
+    def test_suppressed_policy_never_sends(self):
+        self.result.decision = replace(self.result.decision, suppress_external=True)
+        _, sent, meta, saved = self._execute()
+        self.assertFalse(sent)
+        self.smtp.assert_not_called()
+        self.assertTrue(saved)
+        self.assertEqual(self.clock.now.call_count, 1)
+        self.assertEqual(meta["customer_delivery_status"], "not_sent")
+
+    def test_owner_notice_is_identical_and_injected_once(self):
+        notice = "<!-- fixture-owner-notice --><p>Offline notice</p>"
+        _, _, _, saved = self._execute(owner_email_notice_html=notice)
+        self._assert_bound(saved)
+        self.assertEqual(saved.count(notice), 1)
+        self.assertEqual(self.clock.now.call_count, 1)
+
+    def test_customer_visible_tamper_still_fails_exact_binding(self):
+        from delegated_gate import GateError, verify_received_html_transport
+        _, _, _, saved = self._execute()
+        changed = saved.replace("Original fixture claim", "Altered fixture claim")
+        self.assertNotEqual(saved, changed)
+        with self.assertRaisesRegex(GateError, "RECEIVED_HTML_RUN_BINDING_MISMATCH"):
+            verify_received_html_transport(self.outbound[-1]["received"], changed)
+
+    def test_separate_natural_runs_do_not_reuse_prior_render(self):
+        first_id, _, _, first = self._execute()
+        second_id, _, _, second = self._execute()
+        self.assertNotEqual(first_id, second_id)
+        self.assertNotEqual(first, second)
+        self.assertIn(second_id, second)
+        self.assertNotIn(first_id, second)
+        self._assert_bound(second)
+        self.assertEqual(self.clock.now.call_count, 2)
+
+    def test_blocked_validation_never_sends_or_generates_images(self):
+        self.result.response_data["validation_result"] = "block"
+        self.result.decision = replace(self.result.decision, send_email=False, suppress_external=True)
+        _, sent, meta, _ = self._execute()
+        self.assertFalse(sent)
+        self.smtp.assert_not_called()
+        self.image_api.assert_not_called()
+        self.assertEqual(meta["customer_delivery_status"], "not_sent")
+
+    def test_empty_render_is_not_rerendered_or_submitted(self):
+        with mock.patch("main.build_today_genie_email_html_for_cid_mime_send", return_value="") as renderer:
+            _, sent, meta, saved = self._execute()
+        self.assertFalse(sent)
+        self.assertFalse(saved)
+        renderer.assert_called_once()
+        self.smtp.assert_not_called()
+        self.assertEqual(meta["customer_delivery_status"], "not_sent")
 
 
 if __name__ == "__main__":
