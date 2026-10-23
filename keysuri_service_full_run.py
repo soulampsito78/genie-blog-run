@@ -570,7 +570,9 @@ def inline_jpeg_parts_for_global_service_email(
 ) -> List[Tuple[str, str, str]]:
     """Single hero inline JPEG for Global service_full_run SMTP (Gmail-safe CID)."""
     cid_token = keysuri_global_service_email_cid_token(run_id)
-    fname = generated_image_path.name if generated_image_path.name else "keysuri_global_service.jpg"
+    # Instance-local basenames differ after GCS restoration. Keep the transport
+    # filename deterministic; frozen candidate/MIME guards still bind CID+bytes.
+    fname = f"{cid_token}.jpg"
     return [(str(generated_image_path.resolve()), cid_token, fname)]
 
 

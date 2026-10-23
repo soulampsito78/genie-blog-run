@@ -15,6 +15,74 @@ import delegated_delivery_safety as safety
 import delegated_gate as gate
 
 
+def test_global_warm_cold_restore_keeps_frozen_identity(tmp_path, monkeypatch):
+    """Real restore/renderer/freeze: paths are not payload identity."""
+    import hashlib
+    import socket
+    from pathlib import Path
+    import keysuri_customer_delivery as delivery
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("OFFLINE_ONLY")
+
+    monkeypatch.setattr(socket.socket, "connect", no_network)
+    meta, saved_html, plan = _case(tmp_path, "keysuri_global_tech")
+    top = Path(meta["generated_image_path"])
+    payload = top.read_bytes()
+    run_id = meta["run_id"]
+    cid = "keysuri_topshot_global_20260910"
+    meta.update(
+        generated_image_gcs_bucket="offline-artifacts",
+        top_image_gcs_object=f"admin_runs/{run_id}.images/global_top.jpg",
+        owner_email_inline_image_hashes=[{
+            "cid": cid, "filename": top.name,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }],
+    )
+    monkeypatch.setattr(delivery, "admin_artifact_bucket_name", lambda: "offline-artifacts")
+    monkeypatch.setattr(delivery, "_writable_keysuri_service_assets_dir", lambda: tmp_path)
+    downloads = []
+
+    def download(bucket, obj, dest):
+        assert bucket == "offline-artifacts"
+        assert obj == meta["top_image_gcs_object"]
+        downloads.append(str(dest))
+        dest.write_bytes(payload)
+
+    resolver = delivery.resolve_keysuri_inline_jpeg_parts
+    monkeypatch.setattr(delivery, "resolve_keysuri_inline_jpeg_parts",
+                        lambda html, meta: resolver(html, meta, download_fn=download))
+    warm = gate.freeze_candidate(meta=meta, saved_html=saved_html,
+                                 received_message=_receipt(), recipient_plan=plan)
+    assert downloads == []
+    top.rename(tmp_path / "preserved-original.jpg")
+    cold = gate.freeze_candidate(meta=meta, saved_html=saved_html,
+                                 received_message=_receipt(), recipient_plan=plan)
+    assert len(downloads) == 1
+    assert warm.images[0].content == cold.images[0].content == payload
+    assert warm.images[0].filename == cold.images[0].filename == f"{cid}.jpg"
+    assert warm.customer_html == cold.customer_html
+    assert warm.subject == cold.subject
+    assert warm.binding["artifact_sha256"] == cold.binding["artifact_sha256"]
+    assert warm.candidate_sha256 == cold.candidate_sha256
+    warm.assert_integrity()
+    cold.assert_integrity()
+
+
+def test_global_filename_canonicalization_does_not_ignore_changed_image(tmp_path):
+    """Stable transport names must never collapse distinct image content."""
+    from pathlib import Path
+    meta, saved_html, plan = _case(tmp_path, "keysuri_global_tech")
+    first = gate.freeze_candidate(meta=meta, saved_html=saved_html,
+                                  received_message=_receipt(), recipient_plan=plan)
+    Path(meta["generated_image_path"]).write_bytes(b"different synthetic image")
+    second = gate.freeze_candidate(meta=meta, saved_html=saved_html,
+                                   received_message=_receipt(), recipient_plan=plan)
+    assert first.images[0].filename == second.images[0].filename
+    assert first.images[0].content != second.images[0].content
+    assert first.candidate_sha256 != second.candidate_sha256
+
+
 NOW = datetime(2026, 9, 10, 7, 0, tzinfo=timezone.utc)
 HUMAN_COPY = "운영책임자의 직접 검수"
 
