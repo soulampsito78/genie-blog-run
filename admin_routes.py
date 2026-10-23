@@ -2595,6 +2595,76 @@ def admin_run_reopen(
     return RedirectResponse(url=f"/admin/runs/{run_id}", status_code=303)
 
 
+def _delegated_email_preview_target(run_id, meta, saved_html, *, now=None):
+    """Read-only display target, never a receipt, review or send authorization.
+
+    The expected digest pins fresh server artifacts and the current beta cohort.
+    No recipient plan, nonce, registry entry or delivery transition is created.
+    """
+    from datetime import datetime
+    from pathlib import Path
+    from zoneinfo import ZoneInfo
+    from admin_beta_delegation import load_active_admin_beta_delegation
+    from customer_review_confirmation import DELEGATED_WORK_REVIEW, DELEGATED_REVIEW_TEXT
+    from delegated_gate import digest
+    from admin_preview_assets import preview_assets_for_run
+
+    mode = str(meta.get("mode") or "")
+    if (not validate_run_id(run_id) or meta.get("run_id") != run_id
+            or mode not in {"today_genie", "keysuri_global_tech", "keysuri_korea_tech"}):
+        raise ValueError("DELEGATED_PREVIEW_UNSUPPORTED_TARGET")
+    instant = now or datetime.now(ZoneInfo("Asia/Seoul"))
+    if run_id[:8] != instant.astimezone(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d"):
+        raise ValueError("DELEGATED_PREVIEW_STALE_PUBLICATION")
+    if os.getenv("GENIE_RECIPIENT_AUTHORITY", "").strip() != "ADMIN_BETA_DELEGATION":
+        raise ValueError("DELEGATED_PREVIEW_AUTHORITY_UNAVAILABLE")
+    grant = load_active_admin_beta_delegation(reconcile_edits=False)
+    if mode not in grant["products"]:
+        raise ValueError("DELEGATED_PREVIEW_PRODUCT_NOT_AUTHORIZED")
+    if mode == "today_genie":
+        from today_geenee_customer_delivery import prepare_today_geenee_customer_delivery as prepare
+    else:
+        if mode == "keysuri_korea_tech":
+            from admin_store import _keysuri_korea_bottom_baseline_confirmed
+            ok, reason = _keysuri_korea_bottom_baseline_confirmed(meta)
+            if not ok:
+                raise ValueError(reason)
+        from keysuri_customer_delivery import prepare_keysuri_customer_delivery as prepare
+    prepared = prepare(saved_html, meta, recipients_override=grant["recipients"],
+                       approval_source=DELEGATED_WORK_REVIEW)
+    if not prepared.get("ok"):
+        raise ValueError(str(prepared.get("error") or "DELEGATED_PREVIEW_PREPARATION_FAILED"))
+    content = str(prepared["html_body"])
+    if "운영책임자의 직접 검수" in content or DELEGATED_REVIEW_TEXT not in content:
+        raise ValueError("DELEGATED_PREVIEW_DISPLAY_SOURCE_MISMATCH")
+    images = []
+    assets = preview_assets_for_run(run_id, meta)
+    for index, (path, cid, filename) in enumerate(prepared["inline_jpeg_parts"]):
+        payload = Path(path).read_bytes()
+        if not payload:
+            raise ValueError("DELEGATED_PREVIEW_IMAGE_UNAVAILABLE")
+        role = "top" if index == 0 else "bottom" if index == 1 else f"image_{index+1}"
+        if role not in assets or assets[role].cid != str(cid):
+            raise ValueError("DELEGATED_PREVIEW_CID_ASSET_MISMATCH")
+        images.append({"role": role,
+                       "cid": str(cid), "filename": Path(filename).name,
+                       "sha256": hashlib.sha256(payload).hexdigest()})
+    binding = {"run_id": run_id, "mode": mode,
+        "artifact_sha256": digest(meta),
+        "received_html_sha256": hashlib.sha256(saved_html.encode("utf-8")).hexdigest(),
+        "subject_sha256": hashlib.sha256(str(prepared["subject"]).encode("utf-8")).hexdigest(),
+        "body_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "image_identity": images,
+        "recipient_context": {"authority": "ADMIN_BETA_DELEGATION", "grant_id": grant["grant_id"],
+            "pointer_generation": grant["_pointer_generation"],
+            "configuration_version": grant["recipient_configuration_version"],
+            "configuration_sha256": grant["recipient_configuration_hash"],
+            "recipients_sha256": digest(grant["recipients"])}}
+    if digest(grant) != digest(load_active_admin_beta_delegation(reconcile_edits=False)):
+        raise ValueError("DELEGATED_PREVIEW_RECIPIENT_CONTEXT_CHANGED")
+    return content, binding, digest(binding)
+
+
 @router.get("/admin/runs/{run_id}/email", response_class=HTMLResponse)
 def admin_run_email_preview(request: Request, run_id: str):
     need = _require_login(request)
@@ -2615,7 +2685,30 @@ def admin_run_email_preview(request: Request, run_id: str):
             status_code=404,
         )
     snapshot_id = str(request.query_params.get("approval_snapshot_id") or "").strip()
-    if snapshot_id:
+    preview_source = str(request.query_params.get("preview_source") or "").strip()
+    delegated_binding = None
+    if preview_source:
+        expected = str(request.query_params.get("target_sha256") or "")
+        if (preview_source != "DELEGATED_WORK_REVIEW" or snapshot_id
+                or len(request.query_params.getlist("preview_source")) != 1
+                or len(request.query_params.getlist("target_sha256")) != 1
+                or not re.fullmatch(r"[a-f0-9]{64}", expected)):
+            return HTMLResponse("<p>모호하거나 불완전한 검수 대상입니다.</p>", status_code=409,
+                                headers={"Cache-Control": "private, no-store"})
+        try:
+            content, delegated_binding, target_hash = _delegated_email_preview_target(run_id, meta, content)
+            if not hmac.compare_digest(expected, target_hash):
+                raise ValueError("DELEGATED_PREVIEW_TARGET_CHANGED")
+            from delegated_gate import digest
+            if (digest(load_run_artifact(run_id)) != delegated_binding["artifact_sha256"]
+                    or hashlib.sha256((load_run_email_html(run_id) or "").encode("utf-8")).hexdigest()
+                    != delegated_binding["received_html_sha256"]):
+                raise ValueError("DELEGATED_PREVIEW_ARTIFACT_CHANGED")
+        except Exception:
+            # No raw provider/store exception or private recipient data in HTML.
+            return HTMLResponse("<p>현재 위임 검수 대상과 결속되지 않은 미리보기입니다.</p>", status_code=409,
+                                headers={"Cache-Control": "private, no-store"})
+    elif snapshot_id:
         from admin_approval import ApprovalTargetError, verify_approval_snapshot
 
         try:
@@ -2641,7 +2734,14 @@ def admin_run_email_preview(request: Request, run_id: str):
     def observed_preview_stream():
         memory.record("after_template")
         try:
-            yield from stream_customer_html_for_admin_preview(run_id, meta, content)
+            for chunk in stream_customer_html_for_admin_preview(run_id, meta, content):
+                if delegated_binding is not None:
+                    for image in delegated_binding["image_identity"]:
+                        url = f"/admin/runs/{run_id}/preview-assets/{image['role']}"
+                        for quote in ('"', "'"):
+                            chunk = chunk.replace(url + quote,
+                                url + "?expected_sha256=" + image["sha256"] + quote)
+                yield chunk
         finally:
             memory.record("route_end")
 
@@ -2652,6 +2752,10 @@ def admin_run_email_preview(request: Request, run_id: str):
             "Cache-Control": "private, no-store",
             "Content-Security-Policy": "default-src 'none'; img-src 'self' data: https:; style-src 'unsafe-inline'",
             "X-Content-Type-Options": "nosniff",
+            **({"X-Genie-Preview-Target-SHA256": target_hash,
+                "X-Genie-Preview-Body-SHA256": delegated_binding["body_sha256"],
+                "X-Genie-Preview-Subject-SHA256": delegated_binding["subject_sha256"]}
+               if delegated_binding is not None else {}),
         },
     )
 
@@ -2706,12 +2810,19 @@ def admin_run_preview_asset(request: Request, run_id: str, slot: str):
         return response
     if not validate_run_id(run_id) or slot not in {"top", "bottom"}:
         return Response(status_code=404)
+    expected_sha = request.query_params.get("expected_sha256")
+    if expected_sha is not None and (
+            len(request.query_params.getlist("expected_sha256")) != 1
+            or not re.fullmatch(r"[a-f0-9]{64}", expected_sha)):
+        return Response(status_code=409, headers={"Cache-Control": "private, no-store"})
     meta = load_run_artifact(run_id)
     if not meta:
         return Response(status_code=404)
     payload, media_type = read_preview_asset(run_id, meta, slot)
     if payload is None or media_type is None:
         return Response(status_code=404)
+    if expected_sha is not None and not hmac.compare_digest(hashlib.sha256(payload).hexdigest(), expected_sha):
+        return Response(status_code=409, headers={"Cache-Control": "private, no-store"})
     memory.record("after_projection")
     memory.record("after_template")
     response = Response(
