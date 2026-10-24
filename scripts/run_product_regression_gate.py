@@ -28,6 +28,7 @@ TEST_MODULES = (
     "test_keysuri_briefing_body_ux_normalizer",
     "test_keysuri_frozen_parent_prompt_20260918",
     "test_service_full_run.KeysuriReissueTop5RepairTests",
+    "test_service_full_run.KeysuriTopImageGcsPersistenceTests",
     "test_reissue_selection_identity_guard",
     "test_reissue_evidence_separation",
     "test_keysuri_generation_prompt.KeysuriGlobalMaxTokensRecoveryTests",

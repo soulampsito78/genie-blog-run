@@ -1288,7 +1288,7 @@ class KeysuriTopImageGcsPersistenceTests(unittest.TestCase):
         self.assertTrue(fields.get("reissue_body_only_image_gcs_restore_attempted"))
         self.assertEqual(fields.get("reissue_body_only_image_gcs_restore_status"), "top_image_gcs_missing")
 
-    def test_body_only_live_send_succeeds_with_gcs_restored_image(self) -> None:
+    def _body_only_reused_image_persistence(self, *, upload_failure=False, send_owner_email=True) -> None:
         from keysuri_service_full_run import run_keysuri_text_only_reissue
 
         repo = Path(__file__).resolve().parents[1]
@@ -1328,6 +1328,13 @@ class KeysuriTopImageGcsPersistenceTests(unittest.TestCase):
             "exposure_log_read_count": 0,
         }
         send_fn = MagicMock(return_value=True)
+        uploads = []
+
+        def persist_reused_image(bucket, obj, source):
+            uploads.append((bucket, obj, Path(source).read_bytes()))
+            if upload_failure:
+                raise OSError("injected storage unavailable")
+
         restored_dest = repo / "output" / "admin_runs" / "keysuri_service_assets" / f"{parent_id}_restored_top.jpg"
         if restored_dest.exists():
             restored_dest.unlink()
@@ -1377,30 +1384,64 @@ class KeysuriTopImageGcsPersistenceTests(unittest.TestCase):
             "keysuri_service_full_run.email_sender.last_send_trace", return_value={}
         ), patch(
             "keysuri_service_full_run.email_sender.last_send_diagnostic", return_value=""
+        ), patch(
+            "keysuri_service_full_run.admin_artifact_bucket_name", return_value="test-bkt"
+        ), patch(
+            "keysuri_service_full_run._upload_keysuri_image", side_effect=persist_reused_image
         ):
             result = run_keysuri_text_only_reissue(
                 parent_id,
                 trigger_source="admin_text_only_reissue",
                 text_caller=MagicMock(return_value="RAW"),
-                send_owner_email=True,
+                send_owner_email=send_owner_email,
                 send_fn=send_fn,
                 smoke_runner=lambda **_kw: _live_smoke_result_for_pack(source_pack_path),
             )
 
         self.assertNotEqual(result.get("error"), "text_only_reissue_missing_saved_top_image")
         self.assertTrue(result.get("ok"), result)
-        self.assertTrue(result.get("email_sent"))
-        send_fn.assert_called_once()
-        inline_parts = send_fn.call_args.kwargs["inline_jpeg_parts"]
-        self.assertEqual(len(inline_parts), 1)
-        self.assertEqual(inline_parts[0][0], str(restored_dest.resolve()))
+        self.assertEqual(bool(result.get("email_sent")), send_owner_email)
+        if send_owner_email:
+            send_fn.assert_called_once()
+            inline_parts = send_fn.call_args.kwargs["inline_jpeg_parts"]
+            self.assertEqual(len(inline_parts), 1)
+            self.assertEqual(inline_parts[0][0], str(restored_dest.resolve()))
+        else:
+            send_fn.assert_not_called()
         child = load_run_artifact(child_id) or {}
+        self.assertEqual(uploads, [(
+            "test-bkt", f"admin_runs/{child_id}.images/global_top.jpg",
+            b"\xff\xd8\xffrestored-top",
+        )] if send_owner_email else [])
+        if send_owner_email and not upload_failure:
+            self.assertEqual(child.get("top_image_persistence_status"), "persisted")
+            self.assertEqual(child.get("top_image_gcs_object"), f"admin_runs/{child_id}.images/global_top.jpg")
+            self.assertEqual(child.get("generated_image_gcs_bucket"), "test-bkt")
+            self.assertEqual(child.get("generated_image_gcs_uri"), child.get("top_image_gcs_uri"))
+            self.assertEqual(child.get("generated_image_watermarked_gcs_uri"), child.get("top_image_gcs_uri"))
+            self.assertNotEqual(child.get("top_image_gcs_uri"), "gs://test-bkt/admin_runs/" + parent_id + ".images/global_top.jpg")
+        elif send_owner_email:
+            self.assertEqual(child.get("top_image_persistence_status"), "failed")
+            self.assertEqual(child.get("top_image_persistence_reason"), "gcs_upload_failed")
+            self.assertNotIn("top_image_gcs_uri", child)
+            self.assertNotIn("top_image_gcs_object", child)
+        else:
+            self.assertNotIn("top_image_persistence_status", child)
         self.assertTrue(child.get("reissue_body_only_image_gcs_restored"))
         self.assertTrue(child.get("reissue_body_only_image_local_file_present"))
-        self.assertTrue(child.get("email_sent"))
+        self.assertEqual(bool(child.get("email_sent")), send_owner_email)
         self.assertEqual(child.get("customer_delivery_status"), "not_sent")
         if restored_dest.exists():
             restored_dest.unlink()
+
+    def test_body_only_live_send_succeeds_with_gcs_restored_image(self) -> None:
+        self._body_only_reused_image_persistence()
+
+    def test_body_only_upload_failure_remains_failed_not_parent_persisted(self) -> None:
+        self._body_only_reused_image_persistence(upload_failure=True)
+
+    def test_body_only_no_send_does_not_upload_or_send(self) -> None:
+        self._body_only_reused_image_persistence(send_owner_email=False)
 
     def test_body_only_live_send_safe_fails_when_local_and_gcs_missing(self) -> None:
         from keysuri_service_full_run import run_keysuri_text_only_reissue

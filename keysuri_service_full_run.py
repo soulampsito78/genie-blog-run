@@ -4588,6 +4588,17 @@ def run_keysuri_text_only_reissue(
         if image_identity_error:
             return {"ok": False, "error": image_identity_error, "program_id": pid}
 
+    # Reusing the parent's pixels does not make its durable object child-bound.
+    # The customer renderer requires a Global object under this child's run ID,
+    # even after the generating instance (and this restored local file) is gone.
+    # Keep the existing helper's failed/local_only outcomes; never infer success
+    # or copy parent persistence metadata onto the child.
+    top_image_persist_fields: Dict[str, Any] = {}
+    if pid == PROGRAM_GLOBAL and send_owner_email:
+        top_image_persist_fields = _persist_global_generated_top_image(
+            child_run_id, top_image_path,
+        )
+
     contract_fixture_preview = _build_service_contract_fixture(
         pid,
         prompt_input=prompt_input,
@@ -4721,6 +4732,7 @@ def run_keysuri_text_only_reissue(
     meta.update(_post_render_qa_diagnostic_fields(post_render_qa))
     meta.update(_scope_delivery_reason_fields("body_only"))
     meta.update(top_image_reuse_fields)
+    meta.update(top_image_persist_fields)
     meta.update(
         {
             "regen_type": "body_only",
