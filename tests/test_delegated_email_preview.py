@@ -223,6 +223,10 @@ def test_today_production_shape_uses_saved_canonical_cids_and_run_bound_objects(
     assert meta == before and "top_image_cid" not in meta
     monkeypatch.setattr(routes, "load_run_artifact", lambda _: deepcopy(meta))
     monkeypatch.setattr(routes, "load_run_email_html", lambda _: html)
+    default_email = preview[0].get(f"/admin/runs/{meta['run_id']}/email")
+    assert default_email.status_code == 200
+    assert default_email.text.count("?expected_sha256=") == 0
+    assert f"/admin/runs/{meta['run_id']}/preview-assets/top" in default_email.text
     response = preview[0].get(f"/admin/runs/{meta['run_id']}/email", params={
         "preview_source": "DELEGATED_WORK_REVIEW", "target_sha256": target})
     assert response.status_code == 200
@@ -235,11 +239,15 @@ def test_today_production_shape_uses_saved_canonical_cids_and_run_bound_objects(
         return (top_bytes, "image/jpeg") if current.get("top_image_cid") == top_cid else (None, None)
     monkeypatch.setattr(routes, "read_preview_asset", read)
     asset_url = f"/admin/runs/{meta['run_id']}/preview-assets/top"
-    assert preview[0].get(asset_url).status_code == 404  # unchanged default projection
+    default_asset = preview[0].get(asset_url)
+    assert default_asset.status_code == 200 and default_asset.content == top_bytes
     response = preview[0].get(asset_url, params={"expected_sha256": hashlib.sha256(top_bytes).hexdigest()})
     assert response.status_code == 200 and response.content == top_bytes
-    assert "top_image_cid" not in seen[0] and seen[1]["top_image_cid"] == top_cid
-    assert meta == before and preview[6].call_count == 0
+    wrong_asset = preview[0].get(asset_url, params={"expected_sha256": hashlib.sha256(b"wrong-digest").hexdigest()})
+    assert wrong_asset.status_code == 409
+    assert seen[0]["top_image_cid"] == top_cid and seen[1]["top_image_cid"] == top_cid
+    assert all(s.get("top_image_cid") == top_cid for s in seen)
+    assert meta == before and "top_image_cid" not in meta and preview[6].call_count == 0
     # The existing exact-run object boundary still refuses a foreign object.
     foreign = deepcopy(meta)
     foreign["customer_image_gcs_objects"]["top"] = "admin_runs/foreign-run.images/top.jpg"

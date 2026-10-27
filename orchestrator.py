@@ -161,12 +161,38 @@ def _dedup_fields_from_api_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _validate_guidance_or_fail(
+    guidance: Any,
+    mode: str,
+    frozen_news: Any,
+    parent_run_id: Any,
+) -> str | None:
+    if guidance is None:
+        return None
+    if not isinstance(guidance, str) or isinstance(guidance, bool):
+        raise ValueError("correction_guidance must be a raw string")
+    stripped = guidance.strip()
+    if not stripped:
+        raise ValueError("correction_guidance cannot be empty")
+    if len(stripped) > 1000:
+        raise ValueError("correction_guidance exceeds maximum length (1000)")
+    if mode != "today_genie":
+        raise ValueError("correction_guidance is only allowed for today_genie")
+    if not frozen_news or not isinstance(frozen_news, list) or not all(isinstance(x, dict) and isinstance(x.get("headline"), str) and x["headline"].strip() for x in frozen_news):
+        raise ValueError("correction_guidance requires meaningful frozen_top_market_news")
+    import re
+    if not isinstance(parent_run_id, str) or not re.fullmatch(r"[0-9]{8}_[0-9]{6}_today_genie_[0-9a-f]{8}", parent_run_id):
+        raise ValueError("correction_guidance requires valid matching Today parent run id")
+    return stripped
+
+
 def run_genie_job(
     mode: str,
     *,
     frozen_top_market_news: list[dict] | None = None,
     frozen_parent_run_id: str | None = None,
     transport_retries: int | None = None,
+    correction_guidance: str | None = None,
 ) -> OrchestrationResult:
     """
     Call the Genie API for the given mode, then apply publishing policy.
@@ -186,9 +212,14 @@ def run_genie_job(
         payload["controlled_test_mode"] = True
         payload["controlled_test_target_date"] = controlled_target
         logger.info("controlled_test_mode active target_date=%s", controlled_target)
+    validated_guidance = _validate_guidance_or_fail(
+        correction_guidance, mode, frozen_top_market_news, frozen_parent_run_id
+    )
     if mode == "today_genie" and frozen_top_market_news:
         payload["frozen_top_market_news"] = list(frozen_top_market_news)
         payload["frozen_parent_run_id"] = frozen_parent_run_id or None
+        if validated_guidance:
+            payload["correction_guidance"] = validated_guidance
         logger.info(
             "today_genie frozen article selection: parent=%s count=%s",
             frozen_parent_run_id,
@@ -797,6 +828,7 @@ def execute_orchestrator_run(
     original_incident_id: str | None = None,
     owner_email_notice_html: str | None = None,
     frozen_top_market_news: list[dict] | None = None,
+    correction_guidance: str | None = None,
 ) -> tuple[str, OrchestrationResult, bool]:
     """
     Run Genie job, attempt owner-review email, persist admin artifact.
@@ -807,6 +839,10 @@ def execute_orchestrator_run(
     today_image_result_override to reuse already-resolved images instead of
     generating new ones (today_genie body_only reissue: image generation count 0).
     """
+    validated_guidance = _validate_guidance_or_fail(
+        correction_guidance, mode, frozen_top_market_news, parent_run_id
+    )
+
     if str(mode or "").strip() == "today_genie":
         skip_payload = today_genie_weekend_skip_payload(
             trigger_source=trigger_source,
@@ -825,10 +861,15 @@ def execute_orchestrator_run(
         # Natural runs keep the plain call; the frozen-selection kwargs appear
         # only for a body_only replay that actually has a parent selection.
         if frozen_top_market_news:
+            job_kwargs: Dict[str, Any] = {
+                "frozen_top_market_news": frozen_top_market_news,
+                "frozen_parent_run_id": parent_run_id,
+            }
+            if validated_guidance:
+                job_kwargs["correction_guidance"] = validated_guidance
             result = run_genie_job(
                 mode,
-                frozen_top_market_news=frozen_top_market_news,
-                frozen_parent_run_id=parent_run_id,
+                **job_kwargs,
             )
         elif execution_class == "recovery":
             # A lost response cannot authorize a second paid generation.

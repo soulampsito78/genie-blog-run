@@ -227,18 +227,28 @@ def run_today_body_only_reissue(
 
         runner = execute_orchestrator_run
 
+    runner_kwargs: Dict[str, Any] = {
+        "parent_run_id": parent_run_id,
+        "reissue_reason": reason or None,
+        "admin_reissue": True,
+        "trigger_source": trigger_source,
+        "send_owner_email": send_owner_email,
+        "reissue_scope": "body_only",
+        "today_image_result_override": image_result,
+        "owner_email_notice_html": owner_email_notice_html,
+        "frozen_top_market_news": frozen_news,
+    }
+    if reissue_reason_note is not None and reissue_reason_note != "":
+        runner_kwargs["correction_guidance"] = (
+            reissue_reason_note.strip()
+            if isinstance(reissue_reason_note, str)
+            else reissue_reason_note
+        )
+
     try:
         child_run_id, result, email_sent = runner(
             TODAY_MODE,
-            parent_run_id=parent_run_id,
-            reissue_reason=reason or None,
-            admin_reissue=True,
-            trigger_source=trigger_source,
-            send_owner_email=send_owner_email,
-            reissue_scope="body_only",
-            today_image_result_override=image_result,
-            owner_email_notice_html=owner_email_notice_html,
-            frozen_top_market_news=frozen_news,
+            **runner_kwargs,
         )
     except Exception:  # noqa: BLE001 - caller renders a safe failure page
         logger.exception("today body_only reissue pipeline failed parent_run_id=%s", parent_run_id)

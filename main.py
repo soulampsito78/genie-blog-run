@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, root_validator, validator
 
 from prompts import (
     build_full_prompt,
@@ -311,6 +311,38 @@ class JobRequest(BaseModel):
         None,
         description="Run whose article selection is being replayed.",
     )
+    correction_guidance: Optional[str] = Field(
+        None,
+        description="Parent body-only correction guidance; bound to frozen selection.",
+    )
+
+    @validator("correction_guidance", pre=True)
+    def _validate_raw_guidance_string(cls, v):
+        if v is None:
+            return None
+        if not isinstance(v, str) or isinstance(v, bool):
+            raise ValueError("correction_guidance must be a raw string")
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("correction_guidance cannot be empty")
+        if len(stripped) > 1000:
+            raise ValueError("correction_guidance exceeds maximum length (1000)")
+        return stripped
+
+    @root_validator(skip_on_failure=True)
+    def _validate_guidance_binding(cls, values):
+        guidance = values.get("correction_guidance")
+        if guidance is not None:
+            if values.get("type") != "today_genie":
+                raise ValueError("correction_guidance is only allowed for today_genie")
+            frozen_news = values.get("frozen_top_market_news")
+            if not frozen_news or not isinstance(frozen_news, list) or not all(isinstance(x, dict) and isinstance(x.get("headline"), str) and x["headline"].strip() for x in frozen_news):
+                raise ValueError("correction_guidance requires meaningful frozen_top_market_news")
+            parent_id = values.get("frozen_parent_run_id")
+            import re
+            if not isinstance(parent_id, str) or not re.fullmatch(r"[0-9]{8}_[0-9]{6}_today_genie_[0-9a-f]{8}", parent_id):
+                raise ValueError("correction_guidance requires valid matching Today parent run id")
+        return values
 
 
 def init_vertex() -> None:
@@ -1582,6 +1614,7 @@ def _apply_frozen_today_news_selection(
     frozen_news: List[Dict[str, Any]],
     *,
     parent_run_id: str = "",
+    correction_guidance: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Replay a settled selection: no fresh collection, no reselection, same order.
 
@@ -1593,6 +1626,8 @@ def _apply_frozen_today_news_selection(
     out["top_market_news"] = frozen_news
     out["today_news_selection_frozen"] = True
     out["today_news_selection_frozen_parent_run_id"] = parent_run_id or None
+    if correction_guidance:
+        out["correction_guidance"] = str(correction_guidance).strip()
     # Same shape metadata_from_gate_result returns, so the artifact keeps its
     # selection evidence: a child with no selected_items cannot itself be
     # body_only-remediated, which would break the chain one run later.
@@ -2763,6 +2798,7 @@ def _generate_impl(job: JobRequest) -> Dict[str, Any]:
                 runtime_input,
                 frozen_news,
                 parent_run_id=str(getattr(job, "frozen_parent_run_id", "") or ""),
+                correction_guidance=getattr(job, "correction_guidance", None),
             )
         else:
             runtime_input = apply_today_genie_sent_news_dedup(runtime_input)

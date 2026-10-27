@@ -2753,6 +2753,19 @@ def admin_run_email_preview(request: Request, run_id: str):
                 status_code=409,
             )
         content = prepared.customer_html
+        if meta.get("mode") == "today_genie":
+            try:
+                preview_meta = _delegated_preview_asset_meta(meta, content)
+            except ValueError:
+                return HTMLResponse("<p>저장된 이미지 식별자가 일치하지 않는 승인 대상 미리보기입니다.</p>", status_code=409,
+                                    headers={"Cache-Control": "private, no-store"})
+    else:
+        if meta.get("mode") == "today_genie":
+            try:
+                preview_meta = _delegated_preview_asset_meta(meta, content)
+            except ValueError:
+                return HTMLResponse("<p>저장된 이미지 식별자가 일치하지 않는 미리보기입니다.</p>", status_code=409,
+                                    headers={"Cache-Control": "private, no-store"})
     memory.record("after_projection")
 
     def observed_preview_stream():
@@ -2842,7 +2855,7 @@ def admin_run_preview_asset(request: Request, run_id: str, slot: str):
     meta = load_run_artifact(run_id)
     if not meta:
         return Response(status_code=404)
-    if expected_sha is not None and meta.get("mode") == "today_genie":
+    if meta.get("mode") == "today_genie":
         try:
             meta = _delegated_preview_asset_meta(meta, load_run_email_html(run_id) or "")
         except ValueError:
