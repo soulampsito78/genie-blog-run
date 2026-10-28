@@ -603,6 +603,26 @@ _DELIVERY_SUBMITTED_LABELS = frozenset(
 )
 
 
+def run_submission_disposition(meta: Mapping[str, Any]) -> tuple[bool, bool, str]:
+    """Determine if a run's OWN publication has crossed the canonical submission boundary.
+
+    Returns:
+        (is_submitted, is_accepted, disposition_type)
+        where disposition_type is:
+        - "accepted": Authoritatively accepted by SMTP (SMTP SUBMITTED).
+        - "reconciliation": Crossed submission boundary into partial/refused/unknown/pending delivery.
+        - "unsubmitted": Not sent, failed, or only target/approval recorded without delivery attempt.
+    """
+    delivery = delivery_projection(meta)
+    label = delivery.get("label")
+    if label == "SMTP SUBMITTED":
+        return True, True, "accepted"
+    if label in _DELIVERY_SUBMITTED_LABELS:
+        return True, False, "reconciliation"
+    return False, False, "unsubmitted"
+
+
+
 def latest_by_program(runs: Iterable[Mapping[str, Any]]) -> Dict[str, Mapping[str, Any]]:
     latest: Dict[str, Mapping[str, Any]] = {}
     sorted_runs = _sort_newest(runs)

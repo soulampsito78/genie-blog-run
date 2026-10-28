@@ -2109,6 +2109,19 @@ def can_approve_customer_send(
     is_superseded, parent_id, parent_meta, superseded_reason = superseded_child_check(meta)
     if is_superseded:
         return False, superseded_reason
+    from admin_view_models import delivery_projection
+    d_proj = delivery_projection(meta)
+    d_label = d_proj.get("label")
+    if d_label == "RESULT UNKNOWN":
+        return False, "delivery_outcome_unknown"
+    if d_label == "SEND PENDING":
+        return False, "delivery_submission_pending"
+    if d_label == "PARTIAL DELIVERY":
+        return False, "delivery_partial_refusal"
+    if d_label == "REFUSED ALL":
+        return False, "delivery_refused_all"
+    if d_label == "SMTP SUBMITTED":
+        return False, "customer_already_sent"
     owner_status = str(meta.get("owner_review_status") or "pending_review")
     if owner_status == "held":
         return False, "review_held"
