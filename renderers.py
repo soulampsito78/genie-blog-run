@@ -935,7 +935,8 @@ def _today_snapshot_grouped_html(snapshot: Any) -> str:
         return ""
 
     domestic_order = ("코스피", "코스닥")
-    global_order = ("S&P 500", "나스닥", "니케이", "다우존스")
+    japan_order = ("니케이",)
+    us_order = ("S&P 500", "나스닥", "다우존스")
 
     by_label = {
         r["label_raw"]: (r["label_html"], r["index_value"], r["change_pct"])
@@ -970,8 +971,9 @@ def _today_snapshot_grouped_html(snapshot: Any) -> str:
         )
 
     domestic_html = render_group("전일 국내 마감", domestic_order)
-    global_html = render_group("밤사이 해외 마감", global_order)
-    return f"{domestic_html}{global_html}".strip()
+    japan_html = render_group("전일 일본 마감", japan_order)
+    us_html = render_group("밤사이 미국 마감", us_order)
+    return f"{domestic_html}{japan_html}{us_html}".strip()
 
 
 _EMAIL_META_LEAD_PATTERNS = (

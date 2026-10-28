@@ -23,6 +23,7 @@ TEST_MODULES = (
     "test_today_copy_diagnostics_20261028",
     "test_today_briefing_cue_regression",
     "test_today_genie_email_render_quality",
+    "test_today_genie_snapshot_table_render",
     "test_keysuri_news_contract",
     "test_keysuri_visible_text_quality",
     "test_keysuri_briefing_content_quality",
