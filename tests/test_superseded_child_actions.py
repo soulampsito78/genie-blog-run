@@ -53,7 +53,12 @@ from admin_store import (
     save_run_artifact,
     superseded_child_check,
 )
-from admin_view_models import is_child_run, owner_state, run_projection
+from admin_view_models import (
+    is_child_run,
+    owner_state,
+    run_projection,
+    run_submission_disposition,
+)
 from delegated_delivery_safety import PRODUCTS, _digest
 from main import app
 
@@ -618,6 +623,202 @@ class SupersededChildActionsTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("다시 검수하기", resp.text)
         self.assertIn("보류된 검수입니다. 다시 검수하기로 전환한 뒤 승인하세요.", resp.text)
+
+    def test_published_original_natural_run_detail_shows_historical_advice_and_truthful_preview(self) -> None:
+        """Natural original run with accepted delivery shows historical advice and truthful preview form."""
+        parent_id = "20261028_123001_keysuri_global_tech_d26e88e2"
+        child_id = "20261028_124632_keysuri_global_tech_acf60d79"
+        parent_meta = {
+            "run_id": parent_id,
+            "mode": "keysuri_global_tech",
+            "program_id": "keysuri_global_tech",
+            "automatic_remediation_parent_run_id": parent_id,
+            "automatic_remediation_triggered": True,
+            "automatic_remediation_result": "child_still_reviewable",
+            "automatic_remediation_child_run_id": child_id,
+            "automatic_remediation_scope": "body_only",
+            "automatic_remediation_original_issue_codes": ["keysuri_korean_repeated_token_repaired"],
+            "owner_review_status": "approved",
+            "validation_result": "pass",
+            "safety_verdict": "SAFE",
+            "editorial_verdict": "REVIEW",
+            "reader_surface_enforced": True,
+            "reader_surface_complete": True,
+            "customer_delivery_status": "smtp_accepted",
+            "customer_email_delivery_status": "smtp_accepted",
+            "smtp_accepted_recipient_count": 14,
+            "customer_delivery_accepted_count": 14,
+            "smtp_refused_recipient_count": 0,
+            "customer_email_recipient_count": 14,
+        }
+        self._save_run(parent_meta)
+
+        # 1. Authoritative submission disposition
+        is_sub, is_acc, disp = run_submission_disposition(parent_meta)
+        self.assertTrue(is_sub)
+        self.assertTrue(is_acc)
+        self.assertEqual(disp, "accepted")
+
+        # 2. Detail rendering
+        self._login()
+        resp = self.client.get(f"/admin/runs/{parent_id}")
+        self.assertEqual(resp.status_code, 200)
+        html = resp.text
+
+        # Delivery 14 remains
+        self.assertIn("14", html)
+        self.assertIn("SMTP 접수", html)
+        self.assertIn("SMTP SUBMITTED", html)
+
+        # Absent fresh review/approval advice
+        self.assertNotIn("고객 발송 전 확인하거나 수정을 요청하세요", html)
+        self.assertNotIn("경고 확인 후 승인 가능", html)
+        self.assertNotIn("수정 요청, 거절, 또는 경고 확인 후 승인을 선택할 수 있습니다.", html)
+        self.assertNotIn("새 교정본 열기 →", html)
+        self.assertNotIn("고객 발송: 운영자 승인 필요", html)
+
+        # Historical advice & quality facts preserved
+        self.assertIn("과거 검수 이력", html)
+        self.assertIn("안전성: 안전", html)
+        self.assertIn("편집 품질: 검토 필요", html)
+        self.assertIn("과거 검수 이력 (새 발송 차단)", html)
+        self.assertIn("과거 자동 교정 이력 (참고용)", html)
+        self.assertIn("교정 수행 결과: 자동 교정본을 만들었지만 아직 검수가 필요합니다.", html)
+        self.assertIn("과거 교정본 열기 (참고용) →", html)
+        self.assertIn(f"/admin/runs/{child_id}", html)
+
+        # Truthful operator preview form
+        self.assertIn(f'action="/admin/runs/{parent_id}/reissue"', html)
+        self.assertIn("운영자 참고용 미리보기 생성", html)
+        self.assertIn("참고용 미리보기 생성", html)
+        self.assertIn("생성본을 승인하더라도 이미 발송된 고객 에디션은 재전송되지 않습니다", html)
+        self.assertNotIn("재발행 불가", html)
+
+    def test_submission_disposition_distinguishes_reconciliation_and_unsubmitted(self) -> None:
+        """Outcome unknown/refused stay reconciliation; approval-only/target-only remain unsubmitted."""
+        # Unknown delivery
+        meta_unknown = {
+            "run_id": "20261028_123001_keysuri_global_tech_11111111",
+            "mode": "keysuri_global_tech",
+            "customer_delivery_status": "outcome_unknown",
+        }
+        is_sub, is_acc, disp = run_submission_disposition(meta_unknown)
+        self.assertTrue(is_sub)
+        self.assertFalse(is_acc)
+        self.assertEqual(disp, "reconciliation")
+
+        # Refused all delivery
+        meta_refused = {
+            "run_id": "20261028_123001_keysuri_global_tech_22222222",
+            "mode": "keysuri_global_tech",
+            "customer_delivery_status": "refused_all",
+            "smtp_refused_recipient_count": 14,
+        }
+        is_sub, is_acc, disp = run_submission_disposition(meta_refused)
+        self.assertTrue(is_sub)
+        self.assertFalse(is_acc)
+        self.assertEqual(disp, "reconciliation")
+
+        # Partial refusal delivery
+        meta_partial = {
+            "run_id": "20261028_123001_keysuri_global_tech_33333333",
+            "mode": "keysuri_global_tech",
+            "customer_delivery_status": "partial_refusal",
+            "smtp_accepted_recipient_count": 10,
+            "smtp_refused_recipient_count": 4,
+        }
+        is_sub, is_acc, disp = run_submission_disposition(meta_partial)
+        self.assertTrue(is_sub)
+        self.assertFalse(is_acc)
+        self.assertEqual(disp, "reconciliation")
+
+        # Approval-only (not_sent)
+        meta_appr_only = {
+            "run_id": "20261028_123001_keysuri_global_tech_44444444",
+            "mode": "keysuri_global_tech",
+            "owner_review_status": "approved",
+            "customer_delivery_status": "not_sent",
+        }
+        is_sub, is_acc, disp = run_submission_disposition(meta_appr_only)
+        self.assertFalse(is_sub)
+        self.assertFalse(is_acc)
+        self.assertEqual(disp, "unsubmitted")
+
+        # Target-only (not_sent)
+        meta_target_only = {
+            "run_id": "20261028_123001_keysuri_global_tech_55555555",
+            "mode": "keysuri_global_tech",
+            "customer_email_recipient_count": 14,
+            "customer_delivery_status": "not_sent",
+        }
+        is_sub, is_acc, disp = run_submission_disposition(meta_target_only)
+        self.assertFalse(is_sub)
+        self.assertFalse(is_acc)
+        self.assertEqual(disp, "unsubmitted")
+
+    @patch("admin_routes._verify_csrf", return_value=True)
+    @patch("admin_approval.create_approval_snapshot")
+    @patch("email_sender.send_genie_email")
+    def test_natural_mismatched_alias_regression_fails_closed_zero_effects(
+        self,
+        mock_sender: MagicMock,
+        mock_snapshot: MagicMock,
+        mock_csrf: MagicMock,
+    ) -> None:
+        """Natural run with canonical outcome unknown alias fails closed with zero send effects."""
+        natural_id = "20261028_123001_keysuri_global_tech_d26e88e2"
+        meta = {
+            "run_id": natural_id,
+            "mode": "keysuri_global_tech",
+            "program_id": "keysuri_global_tech",
+            "automatic_remediation_parent_run_id": natural_id,
+            "validation_result": "pass",
+            "safety_verdict": "SAFE",
+            "editorial_verdict": "READY",
+            "reader_surface_enforced": True,
+            "reader_surface_complete": True,
+            "customer_delivery_status": "not_sent",
+            "customer_email_delivery_status": "outcome_unknown",
+            "owner_review_status": "pending_review",
+        }
+        self._save_run(meta)
+
+        # 1. can_approve_customer_send fails closed to delivery_outcome_unknown
+        can_appr, reason = can_approve_customer_send(meta, has_email_html=True)
+        self.assertFalse(can_appr)
+        self.assertEqual(reason, "delivery_outcome_unknown")
+
+        # 2. Direct GET /approve-confirm returns 400 with exact reason-specific Korean message
+        self._login()
+        resp_confirm = self.client.get(f"/admin/runs/{natural_id}/approve-confirm")
+        self.assertEqual(resp_confirm.status_code, 400)
+        self.assertIn("Approve blocked", resp_confirm.text)
+        self.assertIn("SMTP 제출 후 결과를 확정하지 못했습니다. 중복 위험 때문에 새 발송을 차단합니다.", resp_confirm.text)
+        mock_snapshot.assert_not_called()
+
+        # 3. Direct POST /approve redirects 303 with exact approve_error=delivery_outcome_unknown
+        resp_post = self.client.post(
+            f"/admin/runs/{natural_id}/approve",
+            data={
+                "csrf_token": "valid",
+                "customer_send_confirm": "1",
+                "approve_nonce": "n" * 32,
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(resp_post.status_code, 303)
+        self.assertIn("approve_error=delivery_outcome_unknown", resp_post.headers.get("location", ""))
+        mock_snapshot.assert_not_called()
+        mock_sender.assert_not_called()
+
+        # 4. Artifact remains unchanged
+        loaded = load_run_artifact(natural_id)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.get("customer_delivery_status"), "not_sent")
+        self.assertEqual(loaded.get("customer_email_delivery_status"), "outcome_unknown")
+        self.assertNotIn("delivery_attempted", loaded or {})
+        self.assertNotIn("customer_delivery_events", loaded or {})
+
 
 
 if __name__ == "__main__":

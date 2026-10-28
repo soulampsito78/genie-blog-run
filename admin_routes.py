@@ -41,6 +41,7 @@ from admin_view_models import (
     needs_review,
     preflight_projection,
     run_projection,
+    run_submission_disposition,
     review_actionability_projection,
     scheduler_label,
 )
@@ -729,7 +730,14 @@ _AUTO_REMEDIATION_RESULT_LABELS_KO = {
 }
 
 
-def _render_auto_remediation_panel(meta: dict, *, is_superseded: bool = False, superseded_reason: str = "") -> str:
+def _render_auto_remediation_panel(
+    meta: dict,
+    *,
+    is_superseded: bool = False,
+    superseded_reason: str = "",
+    is_own_submitted: bool = False,
+    own_submission_disp: str = "",
+) -> str:
     """What the system already did about this run, before asking the owner to act.
 
     A run the system remediated by itself must not greet the owner with
@@ -772,6 +780,31 @@ def _render_auto_remediation_panel(meta: dict, *, is_superseded: bool = False, s
             f"{detail}"
             f"{hist_text}"
         )
+        return f'<div class="notice">{body}</div>'
+
+    if is_own_submitted:
+        hist_label = _AUTO_REMEDIATION_RESULT_LABELS_KO.get(result, result) if (triggered and result) else ""
+        if own_submission_disp == "reconciliation":
+            heading = "과거 자동 교정 이력 (정합성 확인)"
+            advice = "발송 결과 또는 원장 정합성 확인이 필요한 실행입니다. 자동 교정 기록은 참고용으로 보존됩니다."
+        else:
+            heading = "과거 자동 교정 이력 (참고용)"
+            advice = "이미 고객 발송이 접수되어 자동 교정본에 대한 추가 검수를 요구하지 않습니다. 기록 참고용으로 보존됩니다."
+        hist_text = f'<p style="margin:8px 0 0 0;font-size:12px;color:var(--muted);">교정 수행 결과: {_esc(hist_label)}</p>' if hist_label else ""
+        if stop_reason:
+            hist_text += f'<p style="margin:8px 0 0 0;font-size:12px;color:var(--muted);">교정 중단 사유: {_esc(stop_reason)}</p>'
+        body = (
+            f'<p style="margin:0;font-weight:700;">{_esc(heading)}</p>'
+            f'<p style="margin:8px 0 0 0;">{_esc(advice)}</p>'
+            f"{detail}"
+            f"{hist_text}"
+        )
+        if child_run_id:
+            body += (
+                f'<div class="form-actions" style="margin-top:12px;">'
+                f'<a class="btn btn--block" href="/admin/runs/{_esc(child_run_id)}">'
+                f"과거 교정본 열기 (참고용) →</a></div>"
+            )
         return f'<div class="notice">{body}</div>'
 
     if triggered and result in ("succeeded", "child_still_reviewable", "in_progress"):
@@ -2285,7 +2318,14 @@ def admin_cost_ledger_csv(request: Request, month: str = "") -> Response:
     )
 
 
-def _render_keysuri_graded_quality_panel(meta: Mapping[str, Any], *, is_superseded: bool = False, superseded_reason: str = "") -> str:
+def _render_keysuri_graded_quality_panel(
+    meta: Mapping[str, Any],
+    *,
+    is_superseded: bool = False,
+    superseded_reason: str = "",
+    is_own_submitted: bool = False,
+    own_submission_disp: str = "",
+) -> str:
     mode = str(meta.get("mode") or meta.get("program_id") or "")
     if mode not in {"keysuri_global_tech", "keysuri_korea_tech"}:
         return ""
@@ -2342,6 +2382,17 @@ def _render_keysuri_graded_quality_panel(meta: Mapping[str, Any], *, is_supersed
             review_help = (
                 '<div class="notice"><strong>참고용 보존 실행</strong>'
                 '<p>동일 발행일의 원본 실행이 이미 처리되어 추가 승인이나 재발행을 요구하지 않습니다.</p></div>'
+            )
+    elif is_own_submitted:
+        if own_submission_disp == "reconciliation":
+            review_help = (
+                '<div class="notice"><strong>과거 검수 이력 · 정합성 확인 필요</strong>'
+                '<p>발송 결과 또는 원장 정합성 확인이 필요하여 추가 승인이나 고객 재전송을 차단했습니다.</p></div>'
+            )
+        else:
+            review_help = (
+                '<div class="notice"><strong>과거 검수 이력 (발송 접수 완료)</strong>'
+                '<p>이미 고객 발송이 접수된 실행입니다. 추가 승인이나 고객 재전송을 요구하지 않으며 검수 결과는 이력으로 보존됩니다.</p></div>'
             )
     elif safety == "SAFE" and editorial == "REVIEW":
         review_help = (
@@ -2476,7 +2527,14 @@ def admin_run_detail(request: Request, run_id: str):
             f"장애 보고 / 재실행 승인 ({_esc(linked_incident_id)})</a></p>"
         )
     scope_field = _render_reissue_scope_field(mode, meta)
-    auto_remediation_panel = _render_auto_remediation_panel(meta, is_superseded=is_superseded, superseded_reason=superseded_reason)
+    is_own_submitted, is_own_accepted, own_submission_disp = run_submission_disposition(meta)
+    auto_remediation_panel = _render_auto_remediation_panel(
+        meta,
+        is_superseded=is_superseded,
+        superseded_reason=superseded_reason,
+        is_own_submitted=is_own_submitted,
+        own_submission_disp=own_submission_disp,
+    )
     # The remediation instruction on the blocked-send panel promises a reissue.
     # Ask the same authority the reissue POST will ask, so this page can never
     # tell the owner to reissue a run it would then refuse (2026-09-09 deadlock).
@@ -2489,7 +2547,23 @@ def admin_run_detail(request: Request, run_id: str):
         if is_superseded and parent_id:
             reissue_body += f'<p class="hint">원본 실행: <a href="/admin/runs/{_esc(parent_id)}">{_esc(parent_id)}</a></p>'
     else:
-        reissue_body = f'''<p class="notice">재발행 결과는 운영자 검토용으로만 생성됩니다. 고객에게 자동 발송되지 않습니다.</p>
+        if is_own_submitted:
+            if own_submission_disp == "accepted":
+                notice_text = (
+                    "이미 고객 발송이 접수된 실행입니다. 생성되는 결과는 운영자 참고용 미리보기이며, "
+                    "생성본을 승인하더라도 이미 발송된 고객 에디션은 재전송되지 않습니다. "
+                    "고객 정정 안내는 고객 공지 메일 기능을 이용하세요."
+                )
+            else:
+                notice_text = (
+                    "발송 결과 정합성 확인이 필요한 실행입니다. 생성되는 결과는 운영자 참고용 미리보기이며, "
+                    "생성본으로 고객 발송을 재시도하지 않습니다."
+                )
+            btn_text = "참고용 미리보기 생성"
+        else:
+            notice_text = "재발행 결과는 운영자 검토용으로만 생성됩니다. 고객에게 자동 발송되지 않습니다."
+            btn_text = "재발행 실행"
+        reissue_body = f'''<p class="notice">{_esc(notice_text)}</p>
 <form method="post" action="/admin/runs/{_esc(run_id)}/reissue">
 {_csrf_field(request, f'reissue:{run_id}')}
 <label>재발행 범위<br>
@@ -2502,7 +2576,7 @@ def admin_run_detail(request: Request, run_id: str):
 <input type="text" name="reason_note" maxlength="500" placeholder="선택 사유 보완">
 </label><br><br>
 {_render_reissue_dry_run_field(mode)}
-<div class="form-actions"><button class="btn" type="submit">재발행 실행</button></div>
+<div class="form-actions"><button class="btn" type="submit">{btn_text}</button></div>
 </form>'''
     view = run_projection(meta, current_recipient_count=recipient_count)
     validation = view["validation"]
@@ -2545,12 +2619,57 @@ def admin_run_detail(request: Request, run_id: str):
             "summary": val_summary,
             "checks": val_checks,
         }
+    elif is_own_submitted:
+        safety = str(meta.get("safety_verdict") or "")
+        editorial = str(meta.get("editorial_verdict") or "")
+        if own_submission_disp == "reconciliation":
+            val_label = "정합성 확인 필요"
+            val_tone = "warn"
+            val_summary = "발송 결과 또는 원장 정합성 확인이 필요한 기록입니다. 추가 고객 발송이나 수정을 진행하지 않습니다."
+        else:
+            val_label = "과거 검수 이력"
+            val_tone = "neutral"
+            if safety == "SAFE" and editorial == "REVIEW":
+                val_summary = "안전성 통과 및 편집 주의 이력이 보존된 기록입니다. 이미 고객 발송이 접수되어 추가 발송이나 수정을 요구하지 않습니다."
+            elif safety == "SAFE" and editorial == "READY":
+                val_summary = "안전성 통과 및 편집 완료 이력이 보존된 기록입니다. 이미 고객 발송이 접수되어 추가 고객 발송을 진행하지 않습니다."
+            elif safety == "SAFE" and editorial == "POOR":
+                val_summary = "안전성 확인 및 편집 품질 미달 이력이 보존된 기록입니다. 이미 고객 발송이 접수되어 추가 고객 발송을 진행하지 않습니다."
+            elif str(meta.get("validation_result") or "") == "pass":
+                val_summary = "과거 검수 통과 이력이 보존된 기록입니다. 이미 고객 발송이 접수되어 추가 고객 발송을 진행하지 않습니다."
+            else:
+                val_summary = "과거 검수 이력이 보존된 기록입니다. 이미 고객 발송이 접수되어 참고용으로 보존된 기록입니다."
+
+        val_checks = []
+        for item in validation.get("checks") or []:
+            lbl = item.get("label", "")
+            if any(kw in lbl for kw in ("승인 가능", "승인 필요", "수정 요청", "다시 만들기")):
+                continue
+            val_checks.append(item)
+        if own_submission_disp == "reconciliation":
+            val_checks.append({"label": "정합성 확인 필요 (새 발송 차단)", "tone": "warn"})
+        else:
+            val_checks.append({"label": "과거 검수 이력 (새 발송 차단)", "tone": "neutral"})
+
+        validation = {
+            **validation,
+            "label": val_label,
+            "tone": val_tone,
+            "summary": val_summary,
+            "checks": val_checks,
+        }
     delivery = view["delivery"]
     validation_items = "".join(
         f'<li class="is-{_esc(item["tone"])}"><span class="marker"></span><span>{_esc(item["label"])}</span></li>'
         for item in validation["checks"]
     )
-    graded_panel = _render_keysuri_graded_quality_panel(meta, is_superseded=is_superseded, superseded_reason=superseded_reason)
+    graded_panel = _render_keysuri_graded_quality_panel(
+        meta,
+        is_superseded=is_superseded,
+        superseded_reason=superseded_reason,
+        is_own_submitted=is_own_submitted,
+        own_submission_disp=own_submission_disp,
+    )
     accepted = delivery.get("accepted")
     refused = delivery.get("refused")
     # The send wording belongs on the tappable control, never on this heading:
@@ -2567,6 +2686,12 @@ def admin_run_detail(request: Request, run_id: str):
         approval_explanation = (
             "승인은 되돌릴 수 없습니다. 실제 발송은 기존 nonce와 확인 체크가 있는 별도 최종 확인 화면에서만 실행됩니다."
         )
+    elif is_own_submitted:
+        approval_explanation = (
+            "발송 결과 또는 원장 정합성 확인이 필요하여 추가 발송을 시작할 수 없습니다. 차단 사유를 확인하세요."
+            if own_submission_disp == "reconciliation"
+            else "이미 고객 발송이 접수되어 추가 고객 발송을 시작할 수 없습니다. 차단 사유를 확인하세요."
+        )
     else:
         approval_explanation = (
             "현재 근거로는 새 고객 발송을 시작할 수 없습니다. 차단 사유를 확인하세요."
@@ -2576,7 +2701,7 @@ def admin_run_detail(request: Request, run_id: str):
         legacy_delivery_note = "legacy artifact label: PASS / 발송 접수 완료 (owner 표시는 접수·거절 근거를 우선함)"
     elif str(meta.get("customer_delivery_status") or "") == "failed":
         legacy_delivery_note = f"FAIL / {meta.get('customer_delivery_error_code') or 'send_failed'}"
-    if view["already_sent"]:
+    if is_own_submitted:
         legacy_delivery_note += " / 재발송 차단"
     delivery_metrics = "".join(
         (
@@ -2587,7 +2712,7 @@ def admin_run_detail(request: Request, run_id: str):
         )
     )
     owner_status = str(meta.get("owner_review_status") or "pending_review")
-    if is_superseded:
+    if is_superseded or is_own_submitted:
         hold_control = ""
     elif owner_status == "held":
         hold_control = f'''
@@ -2596,7 +2721,7 @@ def admin_run_detail(request: Request, run_id: str):
 {_csrf_field(request, f'reopen:{run_id}')}
 <div class="form-actions"><button class="btn btn--secondary" type="submit">다시 검수하기</button></div>
 </form>'''
-    elif not view["already_sent"]:
+    elif owner_status != "approved":
         hold_control = f'''
 <form method="post" action="/admin/runs/{_esc(run_id)}/hold">
 {_csrf_field(request, f'hold:{run_id}')}
@@ -2611,6 +2736,8 @@ def admin_run_detail(request: Request, run_id: str):
             if superseded_reason == "parent_reconciliation_required"
             else "과거 교정 이력 (참고용)"
         )
+    elif is_own_submitted:
+        reissue_heading = "운영자 참고용 미리보기 생성"
     elif str(meta.get("editorial_verdict") or "") in {"REVIEW", "POOR"}:
         reissue_heading = "수정 요청"
     else:
@@ -3149,6 +3276,19 @@ def admin_run_approve(
     is_superseded, parent_id, parent_meta, superseded_reason = superseded_child_check(meta)
     if is_superseded:
         return _reject(superseded_reason)
+
+    d_proj = delivery_projection(meta)
+    d_label = d_proj.get("label")
+    if d_label == "RESULT UNKNOWN":
+        return _reject("delivery_outcome_unknown")
+    if d_label == "SEND PENDING":
+        return _reject("delivery_submission_pending")
+    if d_label == "PARTIAL DELIVERY":
+        return _reject("delivery_partial_refusal")
+    if d_label == "REFUSED ALL":
+        return _reject("delivery_refused_all")
+    if d_label == "SMTP SUBMITTED":
+        return _reject("customer_already_sent")
 
     if not str(customer_send_confirm or "").strip():
         return _reject("missing_customer_send_confirm", consume_nonce=False)
