@@ -130,7 +130,7 @@ def test_generate_impl_runtime_binding():
     def fake_pipe(rt, *a, **k):
         raise SentinelPipe(rt)
 
-    with patch("main.build_runtime_input", return_value={"briefing_type": "today_genie"}), \
+    with patch("main.build_runtime_input", return_value={"briefing_type": "today_genie", "target_date": "2026-10-27", "briefing_generated_at_kst": "2026-10-27T11:00:00+09:00"}), \
          patch("main.record_memory_stage", lambda *a, **k: None), \
          patch("main.run_today_genie_text_pipeline", side_effect=fake_pipe):
         with pytest.raises(SentinelPipe) as exc_info:

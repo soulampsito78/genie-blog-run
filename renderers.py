@@ -112,7 +112,8 @@ def _headline_to_hashtag(headline: str, max_body: int = 10) -> str:
 
 
 def _market_slot_tags(runtime_input: Dict[str, Any], data: Dict[str, Any]) -> tuple[str, str]:
-    first = "#장전브리핑"
+    from today_genie_replay_context import is_today_replay
+    first = "#재발행브리핑" if is_today_replay(runtime_input) or is_today_replay(data) else "#장전브리핑"
     title_l = str(data.get("title") or "").lower()
     summary_l = str(data.get("summary") or "").lower()
     blob = title_l + " " + summary_l
@@ -158,6 +159,8 @@ def finalize_today_genie_hashtag_list(
     runtime_input: Dict[str, Any],
 ) -> List[str]:
     """Deterministic exactly-7 hashtags: brand + 2 market + 2 topic + risk + utility."""
+    from today_genie_replay_context import is_today_replay
+    replay = is_today_replay(runtime_input) or is_today_replay(data)
     m1, m2 = _market_slot_tags(runtime_input, data)
     wps = [w for w in (data.get("key_watchpoints") or []) if isinstance(w, dict)]
     t1 = (
@@ -181,6 +184,8 @@ def finalize_today_genie_hashtag_list(
             if not isinstance(item, str):
                 continue
             tag = _with_hash(item)
+            if replay and any(word in tag for word in ("장전", "오프닝", "아침", "모닝")):
+                continue
             if len(_tag_body(tag)) < 2:
                 continue
             if _is_generic_hashtag(tag):
@@ -208,7 +213,7 @@ def finalize_today_genie_hashtag_list(
             k in b for k in ("장전", "브리핑", "오프닝", "아침", "모닝", "증시체크")
         )
     )
-    merged[1] = m1p or m1
+    merged[1] = m1 if replay else m1p or m1
     m2p = take_from_pool(
         lambda b, _: any(
             k in b
@@ -381,6 +386,18 @@ def _market_setup_html(text: Any) -> str:
     )
 
 
+def _today_replay_notice_html(data: Dict[str, Any]) -> str:
+    from today_genie_replay_context import CONTEXT_KEY, is_today_replay, replay_prepared_label
+    if not is_today_replay(data):
+        return ""
+    return f"<p>[재발행 브리핑] · 작성 기준 {_safe(replay_prepared_label(data[CONTEXT_KEY]))}</p>"
+
+
+def _today_render_hashtags(data: Dict[str, Any]) -> Any:
+    from today_genie_replay_context import is_today_replay
+    return finalize_today_genie_hashtag_list(data, {}) if is_today_replay(data) else data.get("hashtags", [])
+
+
 def render_web_html(mode: str, data: Dict[str, Any]) -> str:
     title = _safe(data.get("title", ""))
     summary = _safe(data.get("summary", ""))
@@ -420,7 +437,7 @@ def render_web_html(mode: str, data: Dict[str, Any]) -> str:
             numbers_block += f"<h3>오늘의 시장 관점</h3><ul>{opportunities}</ul>"
         if not numbers_block:
             numbers_block = "<p>(작성된 숫자·맥락 블록이 없습니다.)</p>"
-        hashtags_section = _hashtags_block_html("today_genie", data.get("hashtags", []))
+        hashtags_section = _hashtags_block_html("today_genie", _today_render_hashtags(data))
 
         return f"""<!doctype html>
 <html lang="ko">
@@ -431,6 +448,7 @@ def render_web_html(mode: str, data: Dict[str, Any]) -> str:
 </head>
 <body>
   <main>
+    {_today_replay_notice_html(data)}
     <h1>{title}</h1>
     <section>
       <h2>오늘의 핵심 요약</h2>
@@ -571,17 +589,21 @@ def email_image_slots_html(
     mode: str,
     public_base_url: str,
     inline_cid_pair: Optional[Tuple[str, str]] = None,
+    *,
+    replay_context: Optional[Dict[str, Any]] = None,
 ) -> tuple[str, str]:
     """
     Email-purpose images: either absolute HTTP URLs (public_base_url) or inline cid:… references.
     today_genie: separate top/bottom assets; tomorrow_genie: same ref file, distinct alts.
     When inline_cid_pair is set, returns CID-based img blocks (no URL / no local path dependence).
     """
+    from today_genie_replay_context import replay_context_valid
+    edition = "재발행 브리핑" if replay_context_valid(replay_context) else "장전 브리핑"
     if inline_cid_pair and len(inline_cid_pair) == 2:
         top_cid, bot_cid = inline_cid_pair[0].strip(), inline_cid_pair[1].strip()
         if mode == "today_genie" and top_cid and bot_cid:
-            top_alt = "Genie — 스튜디오 인사 컷 (장전 브리핑)"
-            bot_alt = "Genie — 야외 편안한 휴식 컷 (장전 브리핑, 동일 인물)"
+            top_alt = f"Genie — 스튜디오 인사 컷 ({edition})"
+            bot_alt = f"Genie — 야외 편안한 휴식 컷 ({edition}, 동일 인물)"
             return _email_img_block_cid(top_cid, top_alt), _email_img_block_cid(bot_cid, bot_alt)
         if mode != "today_genie" and top_cid:
             top_alt = "Genie — 스튜디오 인사 컷 (내일 준비)"
@@ -596,8 +618,8 @@ def email_image_slots_html(
     if mode == "today_genie":
         top_path = "static/email/GENIE_EMAIL_today_genie_top_latest.jpg"
         bot_path = "static/email/GENIE_EMAIL_today_genie_bottom_latest.jpg"
-        top_alt = "Genie — 스튜디오 인사 컷 (장전 브리핑)"
-        bot_alt = "Genie — 야외 편안한 휴식 컷 (장전 브리핑, 동일 인물)"
+        top_alt = f"Genie — 스튜디오 인사 컷 ({edition})"
+        bot_alt = f"Genie — 야외 편안한 휴식 컷 ({edition}, 동일 인물)"
         return (
             _email_img_block(f"{base}/{top_path}", top_alt),
             _email_img_block(f"{base}/{bot_path}", bot_alt),
@@ -1028,6 +1050,8 @@ def _today_news_source_link_html(item: Dict[str, Any]) -> str:
 
 def _build_today_genie_email_editorial_html(data: Dict[str, Any]) -> str:
     """today_genie email body only (no image slots); use email-safe block tags (div/p/ul/li)."""
+    from today_genie_replay_context import CONTEXT_KEY, is_today_replay, replay_prepared_label
+    replay = is_today_replay(data)
     title = _safe(data.get("title", ""))
     summary_plain = _normalize_plain_text(data.get("summary", ""))
     greeting_plain = _normalize_plain_text(data.get("greeting", ""))
@@ -1037,9 +1061,16 @@ def _build_today_genie_email_editorial_html(data: Dict[str, Any]) -> str:
         for p in paras
     )
     closing = _safe(data.get("closing_message", ""))
+    edition = "재발행 브리핑" if replay else "장전 브리핑"
+    prepared = ""
+    if replay:
+        prepared = f" · 작성 기준 {_safe(replay_prepared_label(data[CONTEXT_KEY]))}"
     header_label = (
-        '<p style="margin:0 0 10px 0;font-size:12px;line-height:1.6;color:#666;"><strong>[장전 브리핑]</strong></p>'
+        '<p style="margin:0 0 10px 0;font-size:12px;line-height:1.6;color:#666;">'
+        f'<strong>[{edition}]</strong>{prepared}</p>'
     )
+    anticipation = ("마감 세션과 원문 기사를 기준으로 정리한 3가지 핵심 이슈입니다. 계속 읽기 ↓"
+                    if replay else TODAY_GENIE_ANTICIPATION_CUE)
     h2 = 'style="margin:36px 0 14px 0;font-size:20px;line-height:1.4;font-weight:700;color:#1a1a1a;"'
     h3 = 'style="margin:28px 0 10px 0;font-size:17px;line-height:1.4;font-weight:700;color:#1a1a1a;"'
     watch_items = "".join(
@@ -1088,7 +1119,7 @@ def _build_today_genie_email_editorial_html(data: Dict[str, Any]) -> str:
             '<p style="margin:0 0 14px 0;font-size:15px;line-height:1.75;color:#1a1a1a;">'
             "(작성된 숫자·맥락 블록이 없습니다.)</p>"
         )
-    hashtags_html = _hashtags_block_html("today_genie", data.get("hashtags", []))
+    hashtags_html = _hashtags_block_html("today_genie", _today_render_hashtags(data))
     return f"""
 {header_label}
 <div style="margin:0 0 16px 0;font-size:28px;line-height:1.35;font-weight:700;color:#1a1a1a;">{title}</div>
@@ -1097,7 +1128,7 @@ def _build_today_genie_email_editorial_html(data: Dict[str, Any]) -> str:
   {summary_html}
 </div>
 <div style="margin:8px 0 18px 0;padding:10px 12px;border-left:3px solid #334155;background:#f8fafc;">
-  <p style="margin:0;font-size:14px;line-height:1.65;color:#334155;font-weight:700;">{_safe(TODAY_GENIE_ANTICIPATION_CUE)}</p>
+  <p style="margin:0;font-size:14px;line-height:1.65;color:#334155;font-weight:700;">{_safe(anticipation)}</p>
 </div>
 <div style="display:block;">
   <p {h2}>오늘의 TOP 3 뉴스 브리핑</p>
@@ -1190,7 +1221,8 @@ def render_email_html(
 """.strip()
 
     top_img, bottom_img = email_image_slots_html(
-        mode, email_asset_base_url, inline_cid_pair=email_inline_cid_pair
+        mode, email_asset_base_url, inline_cid_pair=email_inline_cid_pair,
+        replay_context=data.get("today_replay_context") if mode == "today_genie" else None,
     )
     op_block = (
         render_email_operational_box(operational_meta) if operational_meta else ""
@@ -1239,9 +1271,10 @@ def render_naver_body_html(mode: str, data: Dict[str, Any]) -> str:
             numbers_block += f"<h3>오늘의 시장 관점</h3><ul>{opportunities}</ul>"
         if not numbers_block:
             numbers_block = "<p>(작성된 숫자·맥락 블록이 없습니다.)</p>"
-        hashtag_lines = _build_email_hashtags("today_genie", data.get("hashtags", []))
+        hashtag_lines = _build_email_hashtags("today_genie", _today_render_hashtags(data))
         ht_block = "".join(f"<p>{_safe(ht)}</p>" for ht in hashtag_lines)
         return f"""
+{_today_replay_notice_html(data)}
 <h2>{title}</h2>
 <section>
 <h3>오늘의 핵심 요약</h3>

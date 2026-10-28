@@ -63,6 +63,7 @@ from product_surface_contract import (
     runtime_safety_status,
 )
 from temporal_context_diagnostic import fetch_current_role_evidence
+from today_genie_replay_context import CONTEXT_KEY, build_today_replay_context, is_today_replay
 from memory_observability import memory_evidence_scope, record_memory_stage
 
 
@@ -1491,6 +1492,7 @@ def build_runtime_input(mode: str, controlled_test_target_date: Optional[str] = 
             # Missing/expired dates produce None and remain fail-closed.
             "current_role_evidence": fetch_current_role_evidence(today_date),
             "briefing_time_kst": "06:30",
+            "briefing_generated_at_kst": now_kst,
             "purpose": "장전 금융 브리핑",
             "overnight_us_market": overnight_us_market,
             "macro_indicators": macro_indicators,
@@ -2320,9 +2322,9 @@ def _today_genie_risk_fallbacks_from_feeds(runtime_input: Dict[str, Any]) -> Lis
 
 
 _VAGUE_PHRASE_REPLACEMENTS = (
-    ("방향성을 가늠", "우선 확인할 변수는 금리·환율·수급 흐름"),
-    ("가늠해야 합니다", "우선 확인할 필요가 있습니다"),
-    ("가늠해야 할", "우선 확인할"),
+    ("방향성을 가늠", "흐름을 확인"),
+    ("가늠해야 합니다", "확인해야 합니다"),
+    ("가늠해야 할", "확인해야 할"),
 )
 
 
@@ -2336,23 +2338,35 @@ def _scrub_vague_phrases(text: str) -> str:
 def stabilize_today_genie_vague_phrases(data: Dict[str, Any]) -> Dict[str, Any]:
     """Deterministic cleanup for validator-blocked vague meta phrases."""
     normalized = dict(data)
-    for field in ("summary", "market_setup"):
+    for field in ("title", "greeting", "summary", "market_setup", "closing_message"):
         val = normalized.get(field)
         if isinstance(val, str) and val.strip():
             normalized[field] = _scrub_vague_phrases(val)
-    wps = normalized.get("key_watchpoints")
-    if isinstance(wps, list):
-        patched: List[Any] = []
-        for wp in wps:
-            if not isinstance(wp, dict):
-                patched.append(wp)
-                continue
-            wp2 = dict(wp)
-            for key in ("headline", "detail"):
-                if isinstance(wp2.get(key), str):
-                    wp2[key] = _scrub_vague_phrases(wp2[key])
-            patched.append(wp2)
-        normalized["key_watchpoints"] = patched
+    drafts = normalized.get("channel_drafts")
+    if isinstance(drafts, dict):
+        drafts = dict(drafts)
+        for key in ("email_subject", "naver_blog_title"):
+            if isinstance(drafts.get(key), str):
+                drafts[key] = _scrub_vague_phrases(drafts[key])
+        normalized["channel_drafts"] = drafts
+    for collection, fields in (
+        ("key_watchpoints", ("headline", "detail", "what_happened", "why_it_matters_today", "what_to_watch_in_korea")),
+        ("risk_check", ("risk", "detail")),
+        ("opportunities", ("theme", "reason")),
+    ):
+        rows = normalized.get(collection)
+        if isinstance(rows, list):
+            patched: List[Any] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    patched.append(row)
+                    continue
+                updated = dict(row)
+                for key in fields:
+                    if isinstance(updated.get(key), str):
+                        updated[key] = _scrub_vague_phrases(updated[key])
+                patched.append(updated)
+            normalized[collection] = patched
     return normalized
 
 
@@ -2478,7 +2492,10 @@ def stabilize_today_genie_market_narrative(
 
     out = dict(data)
     summary = clean(data.get("summary"))
-    out["summary"] = summary or canonical + " 오늘 장전에는 금리·환율과 외국인 수급을 함께 확인합니다."
+    tail = (" 금리·환율과 외국인 수급은 입력의 관측 기준에 맞춰 함께 확인합니다."
+            if is_today_replay(runtime_input)
+            else " 오늘 장전에는 금리·환율과 외국인 수급을 함께 확인합니다.")
+    out["summary"] = summary or canonical + tail
     market_setup = (canonical + " " + clean(data.get("market_setup"))).strip()
     if len(market_setup) < 260:
         market_setup += (
@@ -2510,7 +2527,7 @@ def stabilize_today_genie_validation_fields(
     normalized = stabilize_today_genie_image_prompt_anchors(normalized, runtime_input)
 
     risk_rows: List[Dict[str, str]] = []
-    source_risks = data.get("risk_check")
+    source_risks = normalized.get("risk_check")
     if isinstance(source_risks, list):
         for item in source_risks[:4]:
             if not isinstance(item, dict):
@@ -2800,6 +2817,12 @@ def _generate_impl(job: JobRequest) -> Dict[str, Any]:
                 parent_run_id=str(getattr(job, "frozen_parent_run_id", "") or ""),
                 correction_guidance=getattr(job, "correction_guidance", None),
             )
+            try:
+                runtime_input[CONTEXT_KEY] = build_today_replay_context(
+                    runtime_input, str(getattr(job, "frozen_parent_run_id", "") or "")
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail={"reason": str(exc)}) from exc
         else:
             runtime_input = apply_today_genie_sent_news_dedup(runtime_input)
         runtime_input = ensure_canonical_news_identity(runtime_input)
@@ -2824,6 +2847,11 @@ def _generate_impl(job: JobRequest) -> Dict[str, Any]:
                 raise
     record_memory_stage("after_model_generation")
     if mode == "today_genie":
+        # Only the server runtime may bind a replay edition. Never trust a
+        # model-authored context or let a natural generation claim this mode.
+        data.pop(CONTEXT_KEY, None)
+        if is_today_replay(runtime_input):
+            data[CONTEXT_KEY] = dict(runtime_input[CONTEXT_KEY])
         data["hashtags"] = finalize_today_genie_hashtag_list(data, runtime_input)
         data = enforce_today_genie_market_snapshot_from_feeds(data, runtime_input)
         data = stabilize_today_genie_validation_fields(data, runtime_input)
