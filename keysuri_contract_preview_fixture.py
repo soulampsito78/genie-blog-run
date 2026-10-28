@@ -392,10 +392,12 @@ def build_contract_preview_fixture_from_generated(
             continue
         sid = str(entry.get("source_id") or "").strip()
         src = src_map.get(sid, {})
+        canonical_url = str(src.get("source_url") or "").strip()
+        canonical_name = str(src.get("source_name") or entry.get("label") or entry.get("source_name") or sid).strip()
         source_list.append(
             {
-                "source_name": str(entry.get("label") or entry.get("source_name") or src.get("source_name") or sid),
-                "source_url": str(entry.get("url") or entry.get("source_url") or src.get("source_url") or ""),
+                "source_name": canonical_name or sid,
+                "source_url": canonical_url,
                 "fetched_at": str(src.get("fetched_at") or source_pack.get("generated_at") or ""),
                 "verification_status": LIVE_VERIFICATION_STATUS,
             }

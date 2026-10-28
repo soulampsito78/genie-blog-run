@@ -41,6 +41,10 @@ TEST_MODULES = (
     "test_keysuri_global_20260911_reader_surface_incident",
     "test_natural_run_preflight_isolation",
     "test_keysuri_korea_20260814_1830_slash_label_harness",
+    "test_auto_remediation_postsend_boundary",
+    "test_auto_remediation_independent_postsend",
+    "test_operations_selection_and_footer_source",
+    "test_global_postsend_final_independent",
 )
 
 

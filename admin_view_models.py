@@ -479,6 +479,13 @@ def owner_state(meta: Mapping[str, Any]) -> Dict[str, str]:
             "impact": delivery["summary"],
             "action": "발송 근거 확인",
         }
+    if delivery["label"] == "SEND PENDING":
+        return {
+            "label": "발송 결과 확인 중",
+            "tone": "warn",
+            "impact": delivery["summary"],
+            "action": "발송 상태 확인",
+        }
     if delivery["label"] == "SMTP SUBMITTED":
         return {
             "label": "SMTP 접수 완료",
@@ -548,14 +555,55 @@ def run_projection(meta: Mapping[str, Any], *, current_recipient_count: Optional
     }
 
 
+def is_child_run(meta: Mapping[str, Any]) -> bool:
+    meta_run_id = str(meta.get("run_id") or "").strip()
+    auto_parent_id = str(meta.get("automatic_remediation_parent_run_id") or "").strip()
+    is_auto_child = bool(auto_parent_id and auto_parent_id != meta_run_id)
+    return bool(
+        str(meta.get("parent_run_id") or "").strip()
+        or str(meta.get("regen_parent_run_id") or "").strip()
+        or is_auto_child
+        or bool(meta.get("automatic_remediation_is_child"))
+    )
+
+
+_DELIVERY_SUBMITTED_LABELS = frozenset(
+    {
+        "SMTP SUBMITTED",
+        "PARTIAL DELIVERY",
+        "REFUSED ALL",
+        "RESULT UNKNOWN",
+        "SEND PENDING",
+    }
+)
+
+
 def latest_by_program(runs: Iterable[Mapping[str, Any]]) -> Dict[str, Mapping[str, Any]]:
     latest: Dict[str, Mapping[str, Any]] = {}
-    # GCS listing order is object-update order, not necessarily execution order:
-    # a late-written historical recovery must not become the apparent latest run.
-    for meta in _sort_newest(runs):
+    sorted_runs = _sort_newest(runs)
+    by_prog: dict[str, list[Mapping[str, Any]]] = {}
+    for meta in sorted_runs:
         pid = program_id(meta)
-        if pid in ACTIVE_PROGRAM_IDS and pid not in latest:
-            latest[pid] = meta
+        if pid in ACTIVE_PROGRAM_IDS:
+            by_prog.setdefault(pid, []).append(meta)
+
+    for pid, p_runs in by_prog.items():
+        if not p_runs:
+            continue
+        newest_date = run_kst_date(p_runs[0])
+        same_date_runs = [r for r in p_runs if run_kst_date(r) == newest_date] if newest_date else [p_runs[0]]
+
+        # Prefer an already submitted natural scheduled parent on the same publication date
+        # over a newer optional remediation child, preventing an unsent child from falsely
+        # marking an already sent program slot as "waiting to send".
+        selected = same_date_runs[0]
+        for r in same_date_runs:
+            if not is_child_run(r):
+                d_label = delivery_projection(r).get("label")
+                if d_label in _DELIVERY_SUBMITTED_LABELS:
+                    selected = r
+                    break
+        latest[pid] = selected
     return latest
 
 
@@ -569,7 +617,9 @@ def needs_review(meta: Mapping[str, Any]) -> bool:
     return owner not in {"approved", "dismissed", "held"} and validation_is_pass(meta)
 
 
-_DELIVERY_ATTENTION = frozenset({"PARTIAL DELIVERY", "REFUSED ALL", "RESULT UNKNOWN"})
+_DELIVERY_ATTENTION = frozenset(
+    {"PARTIAL DELIVERY", "REFUSED ALL", "RESULT UNKNOWN", "SEND PENDING"}
+)
 
 
 def _sort_newest(runs: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -599,13 +649,21 @@ def review_actionability_projection(
     by_id = {str(item.get("run_id") or ""): item for item in active}
     children: dict[str, list[Mapping[str, Any]]] = {}
     for item in active:
-        parent = str(item.get("parent_run_id") or "").strip()
+        parent = str(
+            item.get("parent_run_id")
+            or item.get("regen_parent_run_id")
+            or ""
+        ).strip()
+        if not parent:
+            auto_p = str(item.get("automatic_remediation_parent_run_id") or "").strip()
+            if auto_p and auto_p != str(item.get("run_id") or "").strip():
+                parent = auto_p
         if parent and parent in by_id:
             children.setdefault(parent, []).append(item)
     terminal_by_key: set[tuple[str, str]] = set()
     for item in active:
         delivery = delivery_projection(item)["label"]
-        if delivery in {"SMTP SUBMITTED", "PARTIAL DELIVERY", "REFUSED ALL", "RESULT UNKNOWN"}:
+        if delivery in _DELIVERY_SUBMITTED_LABELS:
             key = _logical_publication_key(item)
             if all(key):
                 terminal_by_key.add(key)
