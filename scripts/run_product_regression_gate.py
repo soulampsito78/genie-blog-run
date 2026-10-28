@@ -45,6 +45,7 @@ TEST_MODULES = (
     "test_auto_remediation_independent_postsend",
     "test_operations_selection_and_footer_source",
     "test_global_postsend_final_independent",
+    "test_superseded_child_actions",
 )
 
 
