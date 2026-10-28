@@ -45,6 +45,8 @@ _TODAY_GENIE_HARD_FAIL_CODES = frozenset(
         "invalid_watchpoints",
         "invalid_opportunities",
         "invalid_risk_check",
+        "today_replay_context_unavailable",
+        "today_replay_context_mismatch",
     }
 )
 _TODAY_GENIE_HARD_FAIL_PREFIXES = ("security_", "privacy_", "secret_")
@@ -2236,12 +2238,31 @@ def _korean_surface_issues_today_genie(data: Dict[str, Any]) -> List[ValidationI
     return issues
 
 
+def _today_replay_copy_issues(data: Dict[str, Any], runtime_input: Dict[str, Any]) -> List[ValidationIssue]:
+    from today_genie_replay_context import CONTEXT_KEY, is_today_replay, replay_temporal_conflicts
+    if not runtime_input.get("today_news_selection_frozen"):
+        if CONTEXT_KEY in data or CONTEXT_KEY in runtime_input:
+            return [ValidationIssue("today_replay_context_mismatch", "재발행 문맥이 frozen 부모에 결속되지 않았습니다.", "error")]
+        return []
+    if not is_today_replay(runtime_input):
+        return [ValidationIssue("today_replay_context_unavailable", "재발행 작성시각·발행일·부모 결속이 미확인입니다.", "error")]
+    if data.get(CONTEXT_KEY) != runtime_input[CONTEXT_KEY]:
+        return [ValidationIssue("today_replay_context_mismatch", "고객 본문과 서버 재발행 문맥이 일치하지 않습니다.", "error")]
+    return [ValidationIssue("today_replay_temporal_conflict", f"재발행 시점과 맞지 않는 개장 전 지시: {field}", "error")
+            for field in replay_temporal_conflicts(data)]
+
+
 def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) -> ValidationResult:
     common = validate_common_structure(data, "today_genie")
     if common.result == "block":
         return common
 
     issues = list(common.issues)
+    issues.extend(_today_replay_copy_issues(data, runtime_input))
+    from today_genie_replay_context import known_copy_grammar_conflicts
+    issues.extend(ValidationIssue(
+        "today_copy_malformed_grammar", f"{path}: 수급 흐름 뒤 동사 활용이 잘못 결합된 문장입니다.", "error"
+    ) for path in known_copy_grammar_conflicts(data))
 
     tags = data.get("hashtags")
     if not isinstance(tags, list) or len(tags) != TODAY_GENIE_HASHTAG_COUNT:

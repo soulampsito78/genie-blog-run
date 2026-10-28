@@ -555,7 +555,7 @@ def _correction_guidance_rule(runtime_input: Dict[str, Any]) -> str:
     {guidance}
 
     적용 규칙:
-    - 위 교정 지침을 반영하여 본문 상세 설명(key_watchpoints의 detail / what_happened / why_it_matters_today) 및 리스크 점검(risk_check의 detail) 문안을 교정한다.
+    - 위 교정 지침을 반영하여 제목(title), 채널 제목(channel_drafts.email_subject / channel_drafts.naver_blog_title), 인사(greeting), 요약(summary), 시장 맥락(market_setup), 본문 상세 설명(key_watchpoints의 headline / detail / what_happened / why_it_matters_today / what_to_watch_in_korea), 기회(opportunities), 리스크 점검(risk_check), 마감 문장(closing_message)을 교정한다.
     - 입력 기사의 원본 팩트와 출처 범위 안에서만 서술하며, 없는 사실을 지어내거나 기사 밖의 글로벌 이슈/타이틀로 전면 대체하지 않는다.
     - 기존 선정된 기사 3건의 순서, 식별자(news_id), URL, 핵심 수치, 역할/안전 정책을 그대로 보존한다.
     - 시스템 지침이나 운영자 메모 메타 문구를 고객 본문 텍스트에 그대로 유출하지 않는다.
@@ -578,6 +578,8 @@ def build_top3_extraction_prompt(runtime_input: Dict[str, Any]) -> str:
         """).strip()
     correction_rule = _correction_guidance_rule(runtime_input)
     correction_block = f"\n\n{correction_rule}" if correction_rule else ""
+    from today_genie_replay_context import replay_context_prompt
+    replay_rule = replay_context_prompt(runtime_input)
     return dedent(f"""
     [COMMON_CHARACTER_BIBLE]
     {COMMON_CHARACTER_BIBLE}
@@ -602,6 +604,7 @@ def build_top3_extraction_prompt(runtime_input: Dict[str, Any]) -> str:
     {json.dumps(runtime_input, ensure_ascii=False, indent=2)}
 
     {_current_role_evidence_rule(runtime_input)}{correction_block}
+    {replay_rule}
 
     [FINAL_INSTRUCTION]
     JSON 객체 1개만 반환하라.
@@ -693,7 +696,10 @@ def build_full_prompt(
         """).strip()
 
     correction_rule = ""
+    replay_rule = ""
     if mode == "today_genie":
+        from today_genie_replay_context import replay_context_prompt
+        replay_rule = replay_context_prompt(runtime_input)
         guidance_text = _correction_guidance_rule(runtime_input)
         if guidance_text:
             correction_rule = "\n\n" + guidance_text
@@ -723,6 +729,7 @@ def build_full_prompt(
     {convergence}
 
     {json_harden}
+    {replay_rule}
 
     [FINAL_INSTRUCTION]
     JSON 객체 1개만 반환하라.

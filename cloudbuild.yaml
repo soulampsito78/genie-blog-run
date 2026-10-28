@@ -82,6 +82,8 @@ steps:
       - tests/test_admin_routes.py
       - tests/test_delegated_real_customer_renderer_gate.py
       - tests/test_delegated_email_preview.py
+      - tests/test_today_replay_incident_20261028.py
+      - tests/test_today_bounded_correction_and_preview.py
 
   - name: gcr.io/cloud-builders/docker
     id: Push

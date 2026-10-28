@@ -584,6 +584,18 @@ def evaluate_product_surface(
     today_items = _surface_items(mode, structured_output) if mode == "today_genie" else []
     findings: List[ProductSurfaceFinding] = []
 
+    if mode == "today_genie":
+        from today_genie_replay_context import (
+            CONTEXT_KEY, known_copy_grammar_conflicts, replay_temporal_conflicts,
+        )
+        findings.extend(ProductSurfaceFinding(
+            "today_copy_malformed_grammar", path, "문장의 명사와 동사 활용이 잘못 결합됐습니다.", ()
+        ) for path in known_copy_grammar_conflicts(structured_output))
+        if CONTEXT_KEY in structured_output:
+            findings.extend(ProductSurfaceFinding(
+                "today_replay_temporal_conflict", path, "재발행 시점에 맞는 문장인지 검토해야 합니다.", ()
+            ) for path in replay_temporal_conflicts(structured_output))
+
     for field in fields:
         field_source_titles = source_titles
         if mode == "today_genie" and field.card_index > 0 and field.card_index <= len(today_items):
