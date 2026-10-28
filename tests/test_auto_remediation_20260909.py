@@ -100,7 +100,16 @@ class _StoreBase(unittest.TestCase):
         patcher = patch("admin_store.admin_runs_dir", return_value=runs)
         patcher.start()
         self.addCleanup(patcher.stop)
-        self._env = patch.dict(os.environ, {"GENIE_AUTO_REMEDIATION": "1"}, clear=False)
+        safety = Path(self._tmp.name) / "admin_safety"
+        safety.mkdir(parents=True, exist_ok=True)
+        self._env = patch.dict(
+            os.environ,
+            {
+                "GENIE_AUTO_REMEDIATION": "1",
+                "GENIE_ADMIN_SAFETY_LOCAL_DIR": str(safety),
+            },
+            clear=False,
+        )
         self._env.start()
         self.addCleanup(self._env.stop)
         self.reports: List[Dict[str, Any]] = []
@@ -587,19 +596,13 @@ class CustomerSafetyTests(_StoreBase):
         self.assertEqual(child.get("customer_delivery_status"), "not_sent")
 
     def test_parent_approval_never_carries_to_the_child(self) -> None:
-        run_id = self._save(
-            today_meta(
-                owner_review_status="approved",
-                approved_by="owner_admin",
-                approved_at="2026-09-09T07:00:00+09:00",
-                approval_snapshot_id="aps_parent_should_not_transfer",
-            )
-        )
-        # An approved parent carries its own approval; the child must not.
+        run_id = self._save(today_meta())
+        # A runner attempting to return approval on child must not transfer.
         runner = self._runner(
             child_overrides={
                 "owner_review_status": "approved",
                 "approved_by": "owner_admin",
+                "approved_at": "2026-09-09T07:00:00+09:00",
                 "approval_snapshot_id": "aps_parent_should_not_transfer",
             }
         )
@@ -611,6 +614,23 @@ class CustomerSafetyTests(_StoreBase):
         self.assertIsNone(child.get("approved_by"))
         self.assertIsNone(child.get("approved_at"))
         self.assertIsNone(child.get("approval_snapshot_id"))
+
+    def test_approved_parent_is_not_eligible_for_auto_remediation(self) -> None:
+        run_id = self._save(
+            today_meta(
+                owner_review_status="approved",
+                approved_by="owner_admin",
+                approved_at="2026-09-09T07:00:00+09:00",
+                approval_snapshot_id="aps_parent_should_not_transfer",
+            )
+        )
+        summary = run_auto_remediation(
+            run_id, runners=self._runners(self._runner()), report_fn=self._report_fn
+        )
+        self.assertFalse(summary["automatic_remediation_triggered"])
+        self.assertEqual(summary["stop_reason"], "human_approval_present")
+        self.assertEqual(len(self.runner_calls), 0)
+        self.assertEqual(self.reports, [])
 
     def test_child_requires_a_fresh_owner_approval_target(self) -> None:
         run_id = self._save(today_meta())

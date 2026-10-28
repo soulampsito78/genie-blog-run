@@ -21,9 +21,10 @@ Three invariants hold no matter what happens here:
 """
 from __future__ import annotations
 
-import html
-import hashlib
 import copy
+import hashlib
+import html
+import json
 import logging
 import os
 import re
@@ -318,6 +319,174 @@ def _delegated_review_repair_boundary(meta: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _parse_strict_positive_count(val: Any) -> Optional[int]:
+    """Strictly parse integer count >= 0; booleans, floats, negatives, and non-digits raise ValueError."""
+    if val in (None, "", False):
+        return None
+    if isinstance(val, bool):
+        raise ValueError("boolean is not a count")
+    if isinstance(val, (int, str)):
+        s = str(val).strip()
+        if not s.isdigit():
+            raise ValueError(f"malformed count: {val!r}")
+        n = int(s)
+        return n if n > 0 else 0
+    raise ValueError(f"malformed count type: {type(val)!r}")
+
+
+def _durable_delivery_and_approval_boundaries(meta: Dict[str, Any]) -> Optional[str]:
+    """Check approval, received binding, delivery claims, and publication boundaries.
+
+    Authoritative boundaries fail closed on read errors, distinguish absent
+    objects, and stop stale passed-in metadata from triggering remediation.
+    """
+    # 1. Lineage check: parent_run_id, regen_parent_run_id, automatic_remediation_parent_run_id, and automatic_remediation_is_child
+    meta_run_id = str(meta.get("run_id") or "").strip()
+    auto_parent_id = str(meta.get("automatic_remediation_parent_run_id") or "").strip()
+    is_auto_child = bool(auto_parent_id and auto_parent_id != meta_run_id)
+    if (
+        str(meta.get("parent_run_id") or "").strip()
+        or str(meta.get("regen_parent_run_id") or "").strip()
+        or is_auto_child
+        or bool(meta.get("automatic_remediation_is_child"))
+    ):
+        return "already_a_remediation_child"
+
+    # 2. Human approval present on artifact or safety snapshot
+    owner_status = str(meta.get("owner_review_status") or "").strip().lower()
+    if (
+        owner_status == "approved"
+        or meta.get("approved_at")
+        or meta.get("approved_by")
+        or meta.get("approval_snapshot_id")
+    ):
+        return "human_approval_present"
+
+    # 3. Delegated review and received mail binding
+    delegated_boundary = _delegated_review_repair_boundary(meta)
+    if delegated_boundary:
+        return delegated_boundary
+
+    run_id = str(meta.get("run_id") or "").strip()
+    if not run_id:
+        return None
+
+    try:
+        import admin_safety_store as store
+
+        def _exists(key: str) -> bool:
+            if store._uses_gcs_backend():
+                return store._get_gcs_bucket().blob(f"{store.SAFETY_PREFIX}/{key}").exists()
+            return store._local_path(key).is_file()
+
+        # 4. Delivery run claims and delivery commands
+        run_claim_key = f"delivery_run_claims/{hashlib.sha256(run_id.encode('utf-8')).hexdigest()}.json"
+        if _exists(run_claim_key):
+            return "delivery_command_already_claimed"
+
+        cmd_id = str(meta.get("delivery_command_id") or "").strip()
+        if cmd_id and _exists(f"delivery_commands/{cmd_id}.json"):
+            return "delivery_command_already_claimed"
+
+        # 5. Durable publication reservation / outcome / reconciliation
+        mode = str(meta.get("mode") or meta.get("program_id") or "").strip()
+        from delegated_delivery_safety import PRODUCTS, _digest
+        product = PRODUCTS.get(mode)
+        if product and len(run_id) >= 8 and run_id[:8].isdigit():
+            day = f"{run_id[:4]}-{run_id[4:6]}-{run_id[6:8]}"
+            attempt_id = "publication_" + _digest([product, day])
+            attempt_key = f"publication_attempts/{attempt_id}.json"
+            outcome_key = f"publication_outcomes/{attempt_id}.json"
+            reconcil_key = f"publication_reconciliation/{_digest([product, day])}.json"
+            if _exists(attempt_key) or _exists(outcome_key) or _exists(reconcil_key):
+                return "publication_already_reserved_or_accepted"
+
+        # 6. Delivery transition journal
+        journal_key = f"run_delivery_transitions/{hashlib.sha256(run_id.encode()).hexdigest()}/000.json"
+        if _exists(journal_key):
+            try:
+                from admin_store import run_delivery_transition
+                transition = run_delivery_transition(run_id, action="READ")
+                if not transition.get("allowed") or transition.get("state") == "SUBMITTED":
+                    return "delivery_handoff_already_claimed"
+            except Exception:
+                return "delegated_review_boundary_unavailable"
+
+    except Exception:
+        logger.exception("auto_remediation: durable boundary check failed run_id=%s", run_id)
+        return "delegated_review_boundary_unavailable"
+
+    # 7. Customer delivery status, counts, and attempted flags on artifact
+    delivery_statuses = {
+        str(meta.get("customer_delivery_status") or "").strip().lower(),
+        str(meta.get("customer_email_delivery_status") or "").strip().lower(),
+    } - {"", "not_sent"}
+    attempted_statuses = {
+        "smtp_accepted",
+        "sent_after_approval",
+        "approved",
+        "submitted",
+        "accepted_all",
+        "partial_refusal",
+        "refused_all",
+        "outcome_unknown",
+        "send_attempted",
+        "sending",
+        "pending",
+        "customer_sent_after_approval",
+        "sent_after_owner_approval",
+    }
+    if delivery_statuses & attempted_statuses:
+        return "customer_delivery_already_attempted"
+
+    if (
+        bool(meta.get("customer_email_smtp_attempted"))
+        or bool(meta.get("smtp_attempted"))
+        or bool(meta.get("customer_email_delivery_attempted"))
+        or bool(meta.get("customer_delivery_attempted"))
+    ):
+        return "customer_delivery_already_attempted"
+
+    for count_key in (
+        "customer_delivery_accepted_count",
+        "smtp_accepted_recipient_count",
+        "customer_delivery_refused_count",
+        "smtp_refused_recipient_count",
+        "customer_delivery_unknown_count",
+        "smtp_unknown_recipient_count",
+        "customer_delivered_count",
+        "delivered_count",
+        "customer_delivery_recipient_count",
+    ):
+        raw_val = meta.get(count_key)
+        if raw_val not in (None, "", False):
+            try:
+                c = _parse_strict_positive_count(raw_val)
+                if c is not None and c > 0:
+                    return "customer_delivery_already_attempted"
+            except (TypeError, ValueError):
+                # Malformed numeric value fails closed
+                return "customer_delivery_already_attempted"
+
+    return None
+
+
+ALREADY_SETTLED_STOP_REASONS = frozenset({
+    "human_approval_present",
+    "delegated_review_requires_manual_recovery",
+    "delegated_candidate_frozen_manual_recovery_required",
+    "delivery_command_already_claimed",
+    "delivery_handoff_already_claimed",
+    "publication_already_reserved_or_accepted",
+    "customer_delivery_already_attempted",
+    "run_passed",
+    "already_a_remediation_child",
+    "not_a_natural_scheduled_run",
+    "no_send_verification_run",
+    "dry_run_artifact",
+})
+
+
 def plan_auto_remediation(meta: Optional[Dict[str, Any]]) -> AutoRemediationPlan:
     """Decide whether this artifact earns exactly one automatic remediation."""
     if not isinstance(meta, dict):
@@ -329,7 +498,8 @@ def plan_auto_remediation(meta: Optional[Dict[str, Any]]) -> AutoRemediationPlan
     if mode != TODAY_MODE and mode not in KEYSURI_MODES:
         return AutoRemediationPlan(False, stop_reason="unsupported_mode")
 
-    boundary = _delegated_review_repair_boundary(meta)
+    # Authoritative boundaries: approval, received bindings, delivery claims, publication
+    boundary = _durable_delivery_and_approval_boundaries(meta)
     if boundary:
         return AutoRemediationPlan(False, stop_reason=boundary)
 
@@ -343,7 +513,11 @@ def plan_auto_remediation(meta: Optional[Dict[str, Any]]) -> AutoRemediationPlan
         return AutoRemediationPlan(False, stop_reason="dry_run_artifact")
 
     # A child is never auto-remediated: that is what forbids child-of-child (§3).
-    if str(meta.get("parent_run_id") or "").strip():
+    if (
+        str(meta.get("parent_run_id") or "").strip()
+        or str(meta.get("regen_parent_run_id") or "").strip()
+        or bool(meta.get("automatic_remediation_is_child"))
+    ):
         return AutoRemediationPlan(False, stop_reason="already_a_remediation_child")
     if int(meta.get("automatic_remediation_attempt_count") or 0) >= AUTO_REMEDIATION_MAX_ATTEMPTS:
         return AutoRemediationPlan(False, stop_reason="attempt_budget_exhausted")
@@ -541,7 +715,33 @@ def run_auto_remediation(
     Returns a JSON-safe summary. Never raises: a natural run must not fail
     because its optional self-repair could not start.
     """
-    parent = meta if isinstance(meta, dict) else load_run_artifact(run_id)
+    authoritative = None
+    try:
+        authoritative = load_run_artifact(run_id)
+    except Exception:
+        logger.exception("auto_remediation: artifact load error run_id=%s", run_id)
+        return {
+            "automatic_remediation_triggered": False,
+            "automatic_remediation_scope": None,
+            "automatic_remediation_attempt_count": 0,
+            "automatic_remediation_parent_run_id": run_id,
+            "automatic_remediation_child_run_id": None,
+            "automatic_remediation_result": RESULT_SKIPPED,
+            "stop_reason": "artifact_read_error",
+            "review_class": "hard_fail",
+        }
+    if not isinstance(authoritative, dict):
+        return {
+            "automatic_remediation_triggered": False,
+            "automatic_remediation_scope": None,
+            "automatic_remediation_attempt_count": 0,
+            "automatic_remediation_parent_run_id": run_id,
+            "automatic_remediation_child_run_id": None,
+            "automatic_remediation_result": RESULT_SKIPPED,
+            "stop_reason": "artifact_not_found",
+            "review_class": "hard_fail",
+        }
+    parent = authoritative
     plan = plan_auto_remediation(parent)
     summary: Dict[str, Any] = {
         "automatic_remediation_triggered": False,
@@ -571,15 +771,16 @@ def run_auto_remediation(
                     ],
                 },
             )
-            _send_remediation_report(
-                parent_run_id=run_id,
-                child_run_id=None,
-                scope=None,
-                attempted=False,
-                stop_reason=plan.stop_reason or "not_eligible",
-                remaining_issue_codes=plan.issue_codes,
-                report_fn=report_fn,
-            )
+            if plan.stop_reason not in ALREADY_SETTLED_STOP_REASONS:
+                _send_remediation_report(
+                    parent_run_id=run_id,
+                    child_run_id=None,
+                    scope=None,
+                    attempted=False,
+                    stop_reason=plan.stop_reason or "not_eligible",
+                    remaining_issue_codes=plan.issue_codes,
+                    report_fn=report_fn,
+                )
         logger.info(
             "auto_remediation: skipped run_id=%s reason=%s review_class=%s",
             run_id,
@@ -611,6 +812,43 @@ def run_auto_remediation(
             remaining_issue_codes=plan.issue_codes,
             report_fn=report_fn,
         )
+        return summary
+
+    # Recheck authoritative parent before spending the attempt
+    fresh_parent = None
+    try:
+        fresh_parent = load_run_artifact(run_id)
+    except Exception:
+        fresh_parent = None
+    if not isinstance(fresh_parent, dict):
+        summary["stop_reason"] = "artifact_not_found"
+        return summary
+    recheck_parent = fresh_parent
+    recheck_plan = plan_auto_remediation(recheck_parent)
+    if not recheck_plan.eligible:
+        summary["stop_reason"] = recheck_plan.stop_reason
+        summary["review_class"] = recheck_plan.review_class
+        _stamp(
+            run_id,
+            {
+                "automatic_remediation_triggered": False,
+                "automatic_remediation_result": RESULT_SKIPPED,
+                "automatic_remediation_stop_reason": recheck_plan.stop_reason,
+                "automatic_remediation_attempt_count": summary[
+                    "automatic_remediation_attempt_count"
+                ],
+            },
+        )
+        if recheck_plan.stop_reason not in ALREADY_SETTLED_STOP_REASONS:
+            _send_remediation_report(
+                parent_run_id=run_id,
+                child_run_id=None,
+                scope=None,
+                attempted=False,
+                stop_reason=recheck_plan.stop_reason or "not_eligible",
+                remaining_issue_codes=recheck_plan.issue_codes,
+                report_fn=report_fn,
+            )
         return summary
 
     # Spend the single attempt BEFORE invoking the runner. A crash inside
@@ -652,6 +890,31 @@ def run_auto_remediation(
         # §4: never recollect news for a body-only defect when the parent's
         # own source snapshot is intact.
         kwargs["frozen_parent"] = True
+
+    # Recheck fresh authoritative parent immediately before runner
+    runner_preflight_parent = None
+    try:
+        runner_preflight_parent = load_run_artifact(run_id)
+    except Exception:
+        runner_preflight_parent = None
+    if not isinstance(runner_preflight_parent, dict):
+        summary["automatic_remediation_result"] = RESULT_SKIPPED
+        summary["stop_reason"] = "artifact_not_found"
+        return summary
+    runner_parent = runner_preflight_parent
+    final_boundary = _durable_delivery_and_approval_boundaries(runner_parent)
+    if final_boundary:
+        _stamp(
+            run_id,
+            {
+                "automatic_remediation_result": RESULT_SKIPPED,
+                "automatic_remediation_stop_reason": final_boundary,
+                "automatic_remediation_completed_at": now_kst_iso(),
+            },
+        )
+        summary["automatic_remediation_result"] = RESULT_SKIPPED
+        summary["stop_reason"] = final_boundary
+        return summary
 
     try:
         result = runner(run_id, **kwargs)
@@ -698,14 +961,25 @@ def run_auto_remediation(
         summary["automatic_remediation_child_run_id"] = child_run_id or None
         summary["automatic_remediation_result"] = RESULT_FAILED
         summary["stop_reason"] = runner_error or "remediation_failed"
+
+        (
+            parent_already_accepted,
+            parent_partial_or_unknown,
+            parent_approved,
+            stop_reason_report,
+        ) = _evaluate_parent_for_remediation_report(run_id, summary["stop_reason"])
+
         _send_remediation_report(
             parent_run_id=run_id,
             child_run_id=child_run_id or None,
             scope=scope,
             attempted=True,
-            stop_reason=runner_error or "remediation_failed",
+            stop_reason=stop_reason_report,
             remaining_issue_codes=artifact_issue_codes(child_meta or {}) or plan.issue_codes,
             report_fn=report_fn,
+            parent_already_accepted=parent_already_accepted,
+            parent_partial_or_unknown=parent_partial_or_unknown,
+            parent_approved=parent_approved,
         )
         return summary
 
@@ -749,14 +1023,25 @@ def run_auto_remediation(
 
     if outcome != RESULT_SUCCEEDED:
         # STOP: no second automatic attempt, owner gets the report instead (§3).
+        (
+            parent_already_accepted,
+            parent_partial_or_unknown,
+            parent_approved,
+            stop_reason_report,
+        ) = _evaluate_parent_for_remediation_report(run_id, f"child_{current_label.lower()}")
+
         _send_remediation_report(
             parent_run_id=run_id,
             child_run_id=child_run_id,
             scope=scope,
             attempted=True,
-            stop_reason=f"child_{current_label.lower()}",
+            stop_reason=stop_reason_report,
             remaining_issue_codes=remaining,
             report_fn=report_fn,
+            child_review_state=(outcome == RESULT_CHILD_STILL_REVIEWABLE),
+            parent_already_accepted=parent_already_accepted,
+            parent_partial_or_unknown=parent_partial_or_unknown,
+            parent_approved=parent_approved,
         )
     logger.info(
         "auto_remediation: run_id=%s scope=%s child=%s result=%s remaining=%s",
@@ -769,6 +1054,232 @@ def run_auto_remediation(
     return summary
 
 
+def _evaluate_parent_for_remediation_report(
+    run_id: str,
+    stop_reason_default: str,
+) -> Tuple[bool, bool, bool, str]:
+    """Inspect authoritative parent and durable publication outcomes for report notice.
+
+    Returns (parent_already_accepted, parent_partial_or_unknown, parent_approved, stop_reason_report)
+    """
+    racing_parent = None
+    authoritative_read_error = False
+    try:
+        racing_parent = load_run_artifact(run_id)
+        if racing_parent is None:
+            authoritative_read_error = True
+    except Exception:
+        racing_parent = None
+        authoritative_read_error = True
+
+    if authoritative_read_error:
+        return (
+            False,
+            True,
+            False,
+            "authoritative_verification_unavailable_reconciliation_required",
+        )
+
+    racing_meta = racing_parent or {}
+    owner_status = str(racing_meta.get("owner_review_status") or "").strip().lower()
+    parent_approved = bool(
+        owner_status == "approved"
+        or racing_meta.get("approved_at")
+        or racing_meta.get("approved_by")
+    )
+
+    parent_delivery_statuses = {
+        str(racing_meta.get("customer_delivery_status") or "").strip().lower(),
+        str(racing_meta.get("customer_email_delivery_status") or "").strip().lower(),
+    } - {"", "not_sent"}
+
+    accepted_statuses = {
+        "smtp_accepted",
+        "sent_after_approval",
+        "accepted_all",
+        "customer_sent_after_approval",
+        "sent_after_owner_approval",
+    }
+    parent_accepted_status = bool(parent_delivery_statuses & accepted_statuses)
+
+    partial_or_unknown_statuses = {
+        "partial_refusal",
+        "outcome_unknown",
+        "unknown",
+        "refused_all",
+        "submitted",
+        "send_attempted",
+        "sending",
+        "pending",
+    }
+    parent_partial_status = bool(parent_delivery_statuses & partial_or_unknown_statuses)
+
+    has_smtp_attempt_flag = (
+        bool(racing_meta.get("customer_email_smtp_attempted"))
+        or bool(racing_meta.get("smtp_attempted"))
+        or bool(racing_meta.get("customer_email_delivery_attempted"))
+        or bool(racing_meta.get("customer_delivery_attempted"))
+    )
+
+    has_false_smtp_boolean = (
+        racing_meta.get("customer_email_smtp_attempted") is False
+        or racing_meta.get("smtp_attempted") is False
+    )
+    conflict = False
+    try:
+        from admin_store import customer_delivery_evidence_conflict
+        if customer_delivery_evidence_conflict(racing_meta):
+            conflict = True
+    except Exception:
+        pass
+    contradictory_evidence = (has_false_smtp_boolean and parent_accepted_status) or conflict
+
+    pos_accepted_count = False
+    pos_refused_count = False
+    pos_unknown_count = False
+    malformed_count = False
+
+    for count_key in (
+        "customer_delivery_accepted_count",
+        "smtp_accepted_recipient_count",
+        "customer_delivered_count",
+        "delivered_count",
+    ):
+        raw_c = racing_meta.get(count_key)
+        if raw_c not in (None, "", False):
+            try:
+                c = _parse_strict_positive_count(raw_c)
+                if c is not None and c > 0:
+                    pos_accepted_count = True
+            except (TypeError, ValueError):
+                malformed_count = True
+
+    for count_key in ("customer_delivery_refused_count", "smtp_refused_recipient_count"):
+        raw_c = racing_meta.get(count_key)
+        if raw_c not in (None, "", False):
+            try:
+                c = _parse_strict_positive_count(raw_c)
+                if c is not None and c > 0:
+                    pos_refused_count = True
+            except (TypeError, ValueError):
+                malformed_count = True
+
+    for count_key in ("customer_delivery_unknown_count", "smtp_unknown_recipient_count"):
+        raw_c = racing_meta.get(count_key)
+        if raw_c not in (None, "", False):
+            try:
+                c = _parse_strict_positive_count(raw_c)
+                if c is not None and c > 0:
+                    pos_unknown_count = True
+            except (TypeError, ValueError):
+                malformed_count = True
+
+    outcome_accepted = False
+    outcome_unknown_or_refused = False
+    durable_store_error = False
+    try:
+        import admin_safety_store as s_store
+        from delegated_delivery_safety import PRODUCTS, _digest
+        s_mode = str(racing_meta.get("mode") or racing_meta.get("program_id") or "").strip()
+        s_product = PRODUCTS.get(s_mode)
+        if s_product and len(run_id) >= 8 and run_id[:8].isdigit():
+            s_day = f"{run_id[:4]}-{run_id[4:6]}-{run_id[6:8]}"
+            s_att = "publication_" + _digest([s_product, s_day])
+            def _s_exists(k: str) -> bool:
+                if s_store._uses_gcs_backend():
+                    return s_store._get_gcs_bucket().blob(f"{s_store.SAFETY_PREFIX}/{k}").exists()
+                return s_store._local_path(k).is_file()
+
+            outcome_key = f"publication_outcomes/{s_att}.json"
+            attempt_key = f"publication_attempts/{s_att}.json"
+            reconcil_key = f"publication_reconciliation/{_digest([s_product, s_day])}.json"
+
+            if _s_exists(outcome_key):
+                try:
+                    if s_store._uses_gcs_backend():
+                        raw_bytes = s_store._get_gcs_bucket().blob(f"{s_store.SAFETY_PREFIX}/{outcome_key}").download_as_text()
+                    else:
+                        raw_bytes = s_store._local_path(outcome_key).read_text(encoding="utf-8")
+                    data = json.loads(raw_bytes)
+                    if isinstance(data, dict):
+                        data_att = str(data.get("attempt_id") or "").strip()
+                        o_outcome = str(data.get("outcome") or data.get("status") or "").strip().upper()
+                        o_deliv = str(data.get("customer_delivery_status") or "").strip().lower()
+                        # Strict attempt_id match: cannot be missing or different
+                        if not data_att or data_att != s_att:
+                            outcome_unknown_or_refused = True
+                        elif o_outcome in {"UNKNOWN_AFTER_SUBMIT", "UNKNOWN", "PROVIDER_REJECTED", "REFUSED_ALL", "NOT_SUBMITTED_FINAL_GUARD_BLOCKED"}:
+                            outcome_unknown_or_refused = True
+                        elif o_outcome == "PROVIDER_ACCEPTED":
+                            # Verify attempt binding: publication_attempts/{s_att}.json must exist and match this run_id
+                            attempt_matches_this_run = False
+                            if _s_exists(attempt_key):
+                                try:
+                                    if s_store._uses_gcs_backend():
+                                        att_bytes = s_store._get_gcs_bucket().blob(f"{s_store.SAFETY_PREFIX}/{attempt_key}").download_as_text()
+                                    else:
+                                        att_bytes = s_store._local_path(attempt_key).read_text(encoding="utf-8")
+                                    att_data = json.loads(att_bytes)
+                                    if (
+                                        isinstance(att_data, dict)
+                                        and str(att_data.get("run_id") or "").strip() == run_id
+                                        and str(att_data.get("product_code") or "").strip() == s_product
+                                        and str(att_data.get("publication_date") or "").strip() == s_day
+                                    ):
+                                        attempt_matches_this_run = True
+                                except Exception:
+                                    attempt_matches_this_run = False
+                            if attempt_matches_this_run and o_deliv not in {"partial_refusal", "refused_all", "outcome_unknown", "unknown", "not_sent"}:
+                                outcome_accepted = True
+                            else:
+                                outcome_unknown_or_refused = True
+                        else:
+                            outcome_unknown_or_refused = True
+                    else:
+                        outcome_unknown_or_refused = True
+                except Exception:
+                    outcome_unknown_or_refused = True
+            elif _s_exists(reconcil_key) or _s_exists(attempt_key):
+                outcome_unknown_or_refused = True
+    except Exception:
+        durable_store_error = True
+
+    parent_refused_or_unknown_status = bool(
+        parent_delivery_statuses & {"partial_refusal", "outcome_unknown", "unknown", "refused_all"}
+    )
+    if (
+        durable_store_error
+        or malformed_count
+        or pos_refused_count
+        or pos_unknown_count
+        or outcome_unknown_or_refused
+        or contradictory_evidence
+        or (has_false_smtp_boolean and outcome_accepted)
+        or parent_refused_or_unknown_status
+        or (pos_accepted_count and pos_refused_count)
+    ):
+        parent_partial_or_unknown = True
+        parent_already_accepted = False
+        if durable_store_error:
+            stop_reason_default = "authoritative_verification_unavailable_reconciliation_required"
+    elif (parent_accepted_status or pos_accepted_count or outcome_accepted) and not has_false_smtp_boolean:
+        parent_already_accepted = True
+        parent_partial_or_unknown = False
+    elif parent_partial_status or has_smtp_attempt_flag:
+        parent_partial_or_unknown = True
+        parent_already_accepted = False
+    else:
+        parent_already_accepted = False
+        parent_partial_or_unknown = False
+
+    return (
+        parent_already_accepted,
+        parent_partial_or_unknown,
+        parent_approved,
+        stop_reason_default,
+    )
+
+
 def build_remediation_report_html(
     *,
     parent_run_id: str,
@@ -777,8 +1288,12 @@ def build_remediation_report_html(
     attempted: bool,
     stop_reason: str,
     remaining_issue_codes: Sequence[str],
+    child_review_state: bool = False,
+    parent_already_accepted: bool = False,
+    parent_partial_or_unknown: bool = False,
+    parent_approved: bool = False,
 ) -> str:
-    """Owner-facing incident report for a remediation that did not finish (§3)."""
+    """Owner-facing incident/status report for a remediation that did not finish (§3)."""
     codes = ", ".join(str(c) for c in remaining_issue_codes if str(c or "").strip()) or "없음"
     parent_url = build_owner_review_admin_url(parent_run_id) or ""
     child_url = build_owner_review_admin_url(child_run_id) if child_run_id else ""
@@ -798,14 +1313,54 @@ def build_remediation_report_html(
             f'<p style="margin:6px 0 0 0;font-size:13px;">'
             f'<a href="{_esc(child_url)}" style="color:#2563eb;">교정본 열기</a></p>'
         )
+
+    if parent_partial_or_unknown:
+        title = "자동 교정 안내"
+        color = "#1e293b"
+        status_label = "Status note"
+        lead_msg = (
+            "원본 실행의 고객 발송 상태(시도/부분 거부/상태 불명 또는 원장 확인 불가)가 확인되었습니다. "
+            "중복 발송 위험이 있으므로 즉각적인 수동 재발행을 하지 마시고, 발송 원장 상태를 먼저 확인하세요."
+        )
+    elif parent_already_accepted:
+        title = "자동 교정 안내"
+        color = "#1e293b"
+        status_label = "Status note"
+        lead_msg = (
+            "원본 실행은 이미 고객에게 발송(SMTP 접수)되었거나 확정되었습니다. "
+            "자동 교정 결과는 참고용이며, 추가 발송이나 재발행은 불필요합니다."
+        )
+    elif parent_approved:
+        title = "자동 교정 안내"
+        color = "#1e293b"
+        status_label = "Status note"
+        lead_msg = (
+            "원본 실행은 이미 승인(검수 완료)되었습니다. "
+            "교정본 생성 결과는 참고용이며, 추가적인 수동 재발행은 불필요합니다."
+        )
+    elif child_review_state:
+        title = "자동 교정 검토 필요"
+        color = "#b45309"
+        status_label = "Review verdict / note"
+        lead_msg = (
+            "교정본이 생성되었으나 추가 운영자 검토가 필요합니다 (SAFE+REVIEW 권고). "
+            "자동 교정은 실행당 1회만 수행되며 추가 자동 재시도는 하지 않습니다."
+        )
+    else:
+        title = "자동 교정 실패"
+        color = "#b91c1c"
+        status_label = "Why not customer-ready"
+        lead_msg = (
+            "이 실행은 고객 발송 가능 상태에 도달하지 못했습니다. 자동 교정은 실행당 1회만 "
+            "수행되며, 추가 자동 재시도는 하지 않습니다. 필요하면 Admin에서 수동 재발행을 "
+            "사용하세요."
+        )
+
     return (
         '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;'
         'padding:20px;background:#ffffff;">'
-        '<h1 style="margin:0 0 14px 0;font-size:18px;color:#b91c1c;">자동 교정 실패</h1>'
-        '<p style="margin:0 0 14px 0;font-size:13px;line-height:1.7;color:#334155;">'
-        "이 실행은 고객 발송 가능 상태에 도달하지 못했습니다. 자동 교정은 실행당 1회만 "
-        "수행되며, 추가 자동 재시도는 하지 않습니다. 필요하면 Admin에서 수동 재발행을 "
-        "사용하세요.</p>"
+        f'<h1 style="margin:0 0 14px 0;font-size:18px;color:{color};">{title}</h1>'
+        f'<p style="margin:0 0 14px 0;font-size:13px;line-height:1.7;color:#334155;">{lead_msg}</p>'
         + row.format(label="Parent run", value=_esc(parent_run_id))
         + row.format(label="Child run", value=_esc(child_run_id or "생성되지 않음"))
         + row.format(
@@ -814,7 +1369,7 @@ def build_remediation_report_html(
         )
         + row.format(label="Attempted", value="예" if attempted else "아니오")
         + row.format(label="Remaining issue codes", value=_esc(codes))
-        + row.format(label="Why not customer-ready", value=_esc(stop_reason))
+        + row.format(label=status_label, value=_esc(stop_reason))
         + links
         + "</div>"
     )
@@ -829,6 +1384,10 @@ def _send_remediation_report(
     stop_reason: str,
     remaining_issue_codes: Sequence[str],
     report_fn: Optional[Callable[..., bool]] = None,
+    child_review_state: bool = False,
+    parent_already_accepted: bool = False,
+    parent_partial_or_unknown: bool = False,
+    parent_approved: bool = False,
 ) -> bool:
     """Email the owner-facing remediation report. Owner recipients only."""
     html_body = build_remediation_report_html(
@@ -838,8 +1397,17 @@ def _send_remediation_report(
         attempted=attempted,
         stop_reason=stop_reason,
         remaining_issue_codes=remaining_issue_codes,
+        child_review_state=child_review_state,
+        parent_already_accepted=parent_already_accepted,
+        parent_partial_or_unknown=parent_partial_or_unknown,
+        parent_approved=parent_approved,
     )
-    subject = f"[자동 교정 실패] {parent_run_id}"
+    if parent_already_accepted or parent_partial_or_unknown or parent_approved:
+        subject = f"[자동 교정 안내] {parent_run_id}"
+    elif child_review_state:
+        subject = f"[자동 교정 검토 필요] {parent_run_id}"
+    else:
+        subject = f"[자동 교정 실패] {parent_run_id}"
     sender = report_fn
     if sender is None:
         from email_sender import send_genie_email
@@ -892,7 +1460,15 @@ def _sweep_shortlist(summaries: Sequence[Dict[str, Any]], prefixes: Sequence[str
             continue
         if str(raw.get("execution_class") or "").strip() != "natural_scheduled":
             continue
-        if str(raw.get("parent_run_id") or "").strip():
+        meta_run_id = str(raw.get("run_id") or "").strip()
+        auto_parent_id = str(raw.get("automatic_remediation_parent_run_id") or "").strip()
+        is_auto_child = bool(auto_parent_id and auto_parent_id != meta_run_id)
+        if (
+            str(raw.get("parent_run_id") or "").strip()
+            or str(raw.get("regen_parent_run_id") or "").strip()
+            or is_auto_child
+            or bool(raw.get("automatic_remediation_is_child"))
+        ):
             continue
         if int(raw.get("automatic_remediation_attempt_count") or 0) >= AUTO_REMEDIATION_MAX_ATTEMPTS:
             continue

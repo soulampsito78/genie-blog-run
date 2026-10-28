@@ -1,6 +1,8 @@
 """A runtime PASS with graded editorial REVIEW must not be mistaken for ready."""
 from __future__ import annotations
 
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -34,6 +36,16 @@ def _global_meta(**overrides):
 
 
 class EditorialReviewRemediationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._env = patch.dict(
+            os.environ,
+            {"GENIE_ADMIN_SAFETY_LOCAL_DIR": self._tmp.name},
+            clear=False,
+        )
+        self._env.start()
+        self.addCleanup(self._env.stop)
     def test_exact_issue_code_is_body_only_but_unknown_stays_blocked(self):
         self.assertEqual(
             classify_issue_codes([_CODE, "keysuri_korean_repeated_token_repaired"]),
