@@ -12,7 +12,7 @@ import threading
 from calendar import monthrange
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 from zoneinfo import ZoneInfo
 
 from delivery_trace import (
@@ -221,6 +221,8 @@ REISSUE_PARENT_BLOCK_REASONS = frozenset(
         "parent_artifact_unusable",
         "parent_missing_image_evidence",
         "parent_missing_body_evidence",
+        "superseded_child_reference_only",
+        "parent_reconciliation_required",
     }
 )
 
@@ -373,6 +375,10 @@ def reissue_parent_block_reason(
         return "parent_artifact_unusable"
     if _reissue_parent_artifact_unusable(parent):
         return "parent_artifact_unusable"
+
+    is_superseded, parent_id, parent_meta, superseded_reason = superseded_child_check(parent)
+    if is_superseded:
+        return superseded_reason
 
     review_class = reissue_parent_review_class(parent)
     if review_class in ("hard_fail", "unclassified"):
@@ -1852,6 +1858,245 @@ def _keysuri_korea_bottom_baseline_confirmed(meta: Dict[str, Any]) -> tuple[bool
     return True, "ok"
 
 
+def _parse_delivery_count(val: Any) -> tuple[Optional[int], bool]:
+    """Parse delivery count strictly.
+
+    Returns:
+        (parsed_count_or_None, is_malformed)
+    """
+    if val is None or val == "":
+        return None, False
+    if isinstance(val, bool):
+        return None, True
+    if isinstance(val, int):
+        if val < 0:
+            return None, True
+        return val, False
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return None, False
+        if s.isdigit():
+            return int(s), False
+        return None, True
+    return None, True
+
+
+def extract_parent_lineage(
+    meta: Mapping[str, Any],
+) -> tuple[bool, Optional[str], bool]:
+    """Extract parent identity and detect cyclic or conflicting lineage.
+
+    Returns:
+        (is_child, parent_run_id, has_conflict)
+    """
+    if not isinstance(meta, (dict, Mapping)):
+        return False, None, False
+
+    meta_run_id = str(meta.get("run_id") or "").strip()
+    raw_p = str(meta.get("parent_run_id") or "").strip()
+    raw_regen = str(meta.get("regen_parent_run_id") or "").strip()
+    raw_auto = str(meta.get("automatic_remediation_parent_run_id") or "").strip()
+    is_auto_flag = bool(meta.get("automatic_remediation_is_child"))
+
+    # parent_run_id=self or regen_parent_run_id=self is invalid/cyclic lineage and must fail closed,
+    # including when combined with a different alias.
+    if meta_run_id and ((raw_p and raw_p == meta_run_id) or (raw_regen and raw_regen == meta_run_id)):
+        return True, None, True
+
+    distinct_parents = set()
+    if raw_p:
+        distinct_parents.add(raw_p)
+    if raw_regen:
+        distinct_parents.add(raw_regen)
+    # only automatic_remediation_parent_run_id=self is an ignorable tracking stamp
+    if raw_auto and raw_auto != meta_run_id:
+        distinct_parents.add(raw_auto)
+
+    if len(distinct_parents) > 1:
+        return True, None, True
+    if distinct_parents:
+        return True, next(iter(distinct_parents)), False
+    if is_auto_flag:
+        return True, None, True
+    return False, None, False
+
+
+def extract_parent_run_id(meta: Mapping[str, Any]) -> str:
+    """Return single authoritative parent run ID, or empty string if none or conflicted."""
+    _, parent_id, has_conflict = extract_parent_lineage(meta)
+    return parent_id or ""
+
+
+def superseded_child_check(
+    meta: Mapping[str, Any],
+) -> tuple[bool, Optional[str], Optional[Dict[str, Any]], str]:
+    """Check if this run is a superseded child of an already-submitted/processed parent.
+
+    Returns:
+        (is_superseded, parent_run_id, parent_meta, block_reason)
+    """
+    if not isinstance(meta, (dict, Mapping)):
+        return False, None, None, ""
+
+    is_child, parent_id, has_conflict = extract_parent_lineage(meta)
+    if not is_child:
+        return False, None, None, ""
+
+    if has_conflict or not parent_id:
+        return True, None, None, "parent_reconciliation_required"
+
+    child_run_id = str(meta.get("run_id") or "").strip()
+    if not child_run_id:
+        return True, parent_id, None, "parent_reconciliation_required"
+
+    m_child = _RUN_ID_RE.match(child_run_id)
+    m_parent = _RUN_ID_RE.match(parent_id)
+    if not m_child or not m_parent:
+        return True, parent_id, None, "parent_reconciliation_required"
+
+    id_child_mode = m_child.group(1)
+    id_parent_mode = m_parent.group(1)
+    if id_child_mode != id_parent_mode or id_child_mode not in _RUN_ID_MODES:
+        return True, parent_id, None, "parent_reconciliation_required"
+
+    child_meta_mode = str(meta.get("mode") or meta.get("program_id") or "").strip()
+    if child_meta_mode != id_child_mode:
+        return True, parent_id, None, "parent_reconciliation_required"
+
+    if child_run_id[:8] != parent_id[:8]:
+        return True, parent_id, None, "parent_reconciliation_required"
+
+    try:
+        parent_meta = load_run_artifact(parent_id)
+    except Exception:
+        return True, parent_id, None, "parent_reconciliation_required"
+
+    if not isinstance(parent_meta, dict):
+        return True, parent_id, None, "parent_reconciliation_required"
+
+    loaded_parent_id = str(parent_meta.get("run_id") or "").strip()
+    if loaded_parent_id != parent_id:
+        return True, parent_id, parent_meta, "parent_reconciliation_required"
+
+    parent_meta_mode = str(parent_meta.get("mode") or parent_meta.get("program_id") or "").strip()
+    if parent_meta_mode != id_parent_mode:
+        return True, parent_id, parent_meta, "parent_reconciliation_required"
+
+    from admin_view_models import delivery_projection, _DELIVERY_SUBMITTED_LABELS
+
+    try:
+        parent_delivery = delivery_projection(parent_meta)
+    except Exception:
+        return True, parent_id, parent_meta, "parent_reconciliation_required"
+
+    if not isinstance(parent_delivery, dict):
+        return True, parent_id, parent_meta, "parent_reconciliation_required"
+
+    parent_delivery_label = str(parent_delivery.get("label") or "").strip()
+
+    count_fields = (
+        "smtp_accepted_recipient_count",
+        "customer_delivery_accepted_count",
+        "smtp_refused_recipient_count",
+        "customer_delivery_refused_count",
+        "customer_delivery_unknown_count",
+        "smtp_unknown_recipient_count",
+    )
+    is_parent_submitted = False
+    for cf in count_fields:
+        c_val = parent_meta.get(cf)
+        p_cnt, is_malformed = _parse_delivery_count(c_val)
+        if is_malformed:
+            return True, parent_id, parent_meta, "parent_reconciliation_required"
+        if p_cnt is not None and p_cnt > 0:
+            is_parent_submitted = True
+
+    masked_refused = parent_meta.get("smtp_refused_recipients_masked")
+    if masked_refused is not None:
+        if isinstance(masked_refused, list):
+            if len(masked_refused) > 0:
+                is_parent_submitted = True
+        else:
+            return True, parent_id, parent_meta, "parent_reconciliation_required"
+
+    att_cnt_val = parent_meta.get("customer_delivery_attempt_count")
+    p_att_cnt, att_malformed = _parse_delivery_count(att_cnt_val)
+    if att_malformed:
+        return True, parent_id, parent_meta, "parent_reconciliation_required"
+    if p_att_cnt is not None and p_att_cnt > 0:
+        is_parent_submitted = True
+
+    if (
+        parent_meta.get("customer_delivery_attempted") is True
+        or parent_meta.get("delivery_attempted") is True
+        or parent_meta.get("send_attempted") is True
+        or parent_meta.get("customer_email_smtp_attempted") is True
+        or parent_meta.get("smtp_attempted") is True
+        or parent_meta.get("customer_email_delivery_attempted") is True
+        or bool(str(parent_meta.get("customer_delivery_attempted_at") or "").strip())
+        or bool(str(parent_meta.get("customer_email_sent_at_kst") or "").strip())
+        or bool(str(parent_meta.get("customer_sent_at") or "").strip())
+        or bool(str(parent_meta.get("customer_delivery_completed_at") or "").strip())
+    ):
+        is_parent_submitted = True
+
+    p_status_1 = str(parent_meta.get("customer_email_delivery_status") or "").strip().lower()
+    p_status_2 = str(parent_meta.get("customer_delivery_status") or "").strip().lower()
+    parent_statuses = {s for s in (p_status_1, p_status_2) if s}
+
+    canonical_submitted_statuses = {
+        "submitted",
+        "send_attempted",
+        "sending",
+        "pending",
+        "smtp_accepted",
+        "sent_after_approval",
+        "accepted_all",
+        "customer_sent_after_approval",
+        "sent_after_owner_approval",
+        "partial_refusal",
+        "refused_all",
+        "outcome_unknown",
+        "unknown",
+    }
+    if any(st in canonical_submitted_statuses for st in parent_statuses):
+        is_parent_submitted = True
+
+    if parent_delivery_label in _DELIVERY_SUBMITTED_LABELS:
+        is_parent_submitted = True
+
+    if not is_parent_submitted:
+        try:
+            import admin_safety_store as s_store
+            from delegated_delivery_safety import PRODUCTS, _digest
+
+            s_product = PRODUCTS.get(id_parent_mode)
+            if s_product and len(parent_id) >= 8 and parent_id[:8].isdigit():
+                s_day = f"{parent_id[:4]}-{parent_id[4:6]}-{parent_id[6:8]}"
+                s_att = "publication_" + _digest([s_product, s_day])
+                s_reconcil = _digest([s_product, s_day])
+
+                def _s_exists(k: str) -> bool:
+                    if s_store._uses_gcs_backend():
+                        return s_store._get_gcs_bucket().blob(f"{s_store.SAFETY_PREFIX}/{k}").exists()
+                    return s_store._local_path(k).is_file()
+
+                attempt_key = f"publication_attempts/{s_att}.json"
+                outcome_key = f"publication_outcomes/{s_att}.json"
+                reconcil_key = f"publication_reconciliation/{s_reconcil}.json"
+
+                if _s_exists(attempt_key) or _s_exists(outcome_key) or _s_exists(reconcil_key):
+                    is_parent_submitted = True
+        except Exception:
+            return True, parent_id, parent_meta, "parent_reconciliation_required"
+
+    if is_parent_submitted:
+        return True, parent_id, parent_meta, "superseded_child_reference_only"
+
+    return False, parent_id, parent_meta, ""
+
+
 def can_approve_customer_send(
     meta: Dict[str, Any], *, has_email_html: bool,
     allow_manual_quality_warning: bool = False,
@@ -1864,6 +2109,9 @@ def can_approve_customer_send(
     owner_status = str(meta.get("owner_review_status") or "pending_review")
     if owner_status == "held":
         return False, "review_held"
+    is_superseded, parent_id, parent_meta, superseded_reason = superseded_child_check(meta)
+    if is_superseded:
+        return False, superseded_reason
     delivery = str(meta.get("customer_delivery_status") or "not_sent")
     if delivery in LEGACY_CUSTOMER_DELIVERY_STATUSES:
         return False, "legacy_timeout_sent"
@@ -2968,6 +3216,9 @@ def hold_run(run_id: str, *, note: str = "", operator_id: str = "owner_admin") -
     meta = load_run_artifact(run_id)
     if not meta:
         return None, "not_found"
+    is_superseded, parent_id, parent_meta, superseded_reason = superseded_child_check(meta)
+    if is_superseded:
+        return None, superseded_reason
     owner_status = str(meta.get("owner_review_status") or "pending_review")
     if owner_status == "held":
         return None, "already_held"
@@ -2995,6 +3246,9 @@ def reopen_held_run(run_id: str, *, operator_id: str = "owner_admin") -> tuple[O
     meta = load_run_artifact(run_id)
     if not meta:
         return None, "not_found"
+    is_superseded, parent_id, parent_meta, superseded_reason = superseded_child_check(meta)
+    if is_superseded:
+        return None, superseded_reason
     if str(meta.get("owner_review_status") or "") != "held":
         return None, "not_held"
     transition = run_delivery_transition(run_id, action="REOPEN", authority="HUMAN_OWNER")

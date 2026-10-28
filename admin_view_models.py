@@ -500,6 +500,23 @@ def owner_state(meta: Mapping[str, Any]) -> Dict[str, str]:
             "impact": "고객 발송이 차단되었습니다.",
             "action": "장애 확인",
         }
+    if is_child_run(meta):
+        from admin_store import superseded_child_check
+        is_superseded, parent_id, parent_meta, reason = superseded_child_check(dict(meta))
+        if is_superseded:
+            if reason == "superseded_child_reference_only":
+                return {
+                    "label": "대체된 교정본",
+                    "tone": "neutral",
+                    "impact": "원본 실행이 이미 처리되어 참고용으로 보존된 기록입니다.",
+                    "action": "원본 실행 보기",
+                }
+            return {
+                "label": "정합성 확인 필요",
+                "tone": "warn",
+                "impact": "원본 실행과의 정합성 확인이 필요한 기록입니다.",
+                "action": "정합성 확인",
+            }
     owner = str(meta.get("owner_review_status") or meta.get("workflow_status") or "").lower()
     if owner == "held":
         return {
@@ -521,6 +538,14 @@ def owner_state(meta: Mapping[str, Any]) -> Dict[str, str]:
         "impact": "최근 실행 근거를 확인하세요.",
         "action": "상태 보기",
     }
+
+
+def _resolve_parent_run_id(meta: Mapping[str, Any]) -> str:
+    try:
+        from admin_store import extract_parent_run_id
+        return extract_parent_run_id(meta)
+    except Exception:
+        return ""
 
 
 def run_projection(meta: Mapping[str, Any], *, current_recipient_count: Optional[int] = None) -> Dict[str, Any]:
@@ -549,7 +574,7 @@ def run_projection(meta: Mapping[str, Any], *, current_recipient_count: Optional
         "state": state,
         "recipient_count": recipient_count,
         "already_sent": already_sent,
-        "parent_run_id": meta.get("parent_run_id") or "",
+        "parent_run_id": _resolve_parent_run_id(meta),
         "incident_id": meta.get("original_incident_id") or meta.get("incident_id") or "",
         "revision": meta.get("deployed_revision") or meta.get("revision") or meta.get("runtime_revision") or "",
     }

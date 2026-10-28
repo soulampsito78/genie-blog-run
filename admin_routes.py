@@ -253,6 +253,12 @@ _REISSUE_PARENT_BLOCK_MESSAGES = {
     "parent_artifact_unusable": (
         "원본 실행 기록이 손상되어 재발행 원본으로 사용할 수 없습니다."
     ),
+    "superseded_child_reference_only": (
+        "동일 발행일의 원본 실행이 이미 처리되어 추가 재발행을 차단했습니다 (참고용 보존)."
+    ),
+    "parent_reconciliation_required": (
+        "원본 실행과의 계보 또는 발송 상태 정합성 확인이 필요하여 재발행을 차단했습니다."
+    ),
     "parent_missing_image_evidence": (
         "본문 재발행은 원본 실행의 이미지를 그대로 사용합니다. "
         "원본 이미지 근거가 남아 있지 않아 차단했습니다. 본문·이미지 재발행을 사용하세요."
@@ -430,6 +436,8 @@ _APPROVE_ERROR_MESSAGES = {
     "delivery_refused_all": "모든 수신자가 즉시 거절된 기록입니다. 원인을 확인하기 전 새 발송을 차단합니다.",
     "delivery_outcome_unknown": "SMTP 제출 후 결과를 확정하지 못했습니다. 중복 위험 때문에 새 발송을 차단합니다.",
     "legacy_timeout_sent": "과거 타임아웃 자동 발송 기록입니다. 새 승인 발송은 불가합니다.",
+    "superseded_child_reference_only": "동일 발행일의 원본 실행이 이미 처리되어 교정본 발송이 차단되었습니다 (참고용 보존).",
+    "parent_reconciliation_required": "원본 실행과의 계보 또는 발송 상태 정합성 확인이 필요하여 발송이 차단되었습니다.",
     "missing_customer_to": "GENIE_CUSTOMER_EMAIL_TO가 설정되지 않았습니다.",
     "missing_email_html": "저장된 이메일 HTML이 없습니다.",
     "missing_smtp": "SMTP 설정이 없습니다.",
@@ -721,7 +729,7 @@ _AUTO_REMEDIATION_RESULT_LABELS_KO = {
 }
 
 
-def _render_auto_remediation_panel(meta: dict) -> str:
+def _render_auto_remediation_panel(meta: dict, *, is_superseded: bool = False, superseded_reason: str = "") -> str:
     """What the system already did about this run, before asking the owner to act.
 
     A run the system remediated by itself must not greet the owner with
@@ -746,6 +754,26 @@ def _render_auto_remediation_panel(meta: dict) -> str:
         f"교정 범위: {_esc(scope_label)} · 원본 이슈: {_esc(codes_text)}</p>"
     )
 
+    if is_superseded:
+        remed_advice = (
+            "원본 실행과의 계보 또는 발송 상태 정합성 확인이 필요합니다."
+            if superseded_reason == "parent_reconciliation_required"
+            else "원본 실행이 이미 처리되어 추가 수동 재발행은 하지 않습니다."
+        )
+        hist_text = ""
+        if triggered and result:
+            hist_label = _AUTO_REMEDIATION_RESULT_LABELS_KO.get(result, result)
+            hist_text = f'<p style="margin:8px 0 0 0;font-size:12px;color:var(--muted);">기존 자동 교정 이력: {_esc(hist_label)}</p>'
+        elif stop_reason:
+            hist_text = f'<p style="margin:8px 0 0 0;font-size:12px;color:var(--muted);">기존 자동 교정 중단 사유: {_esc(stop_reason)}</p>'
+        body = (
+            f'<p style="margin:0;font-weight:700;">참고용 보존 실행</p>'
+            f'<p style="margin:8px 0 0 0;">{_esc(remed_advice)}</p>'
+            f"{detail}"
+            f"{hist_text}"
+        )
+        return f'<div class="notice">{body}</div>'
+
     if triggered and result in ("succeeded", "child_still_reviewable", "in_progress"):
         body = (
             f'<p style="margin:0;font-weight:700;">자동 교정을 수행했습니다.</p>'
@@ -761,6 +789,8 @@ def _render_auto_remediation_panel(meta: dict) -> str:
             )
         return f'<div class="notice">{body}</div>'
 
+    remed_advice = "자동 재시도는 하지 않습니다. 아래에서 수동 재발행을 사용할 수 있습니다."
+
     reason = stop_reason or result or "unknown"
     return (
         f'<div class="warn"><p style="margin:0;font-weight:700;">자동 교정 실패</p>'
@@ -772,8 +802,7 @@ def _render_auto_remediation_panel(meta: dict) -> str:
             else ""
         )
         + f"{detail}"
-        '<p style="margin:8px 0 0 0;font-size:12px;">자동 재시도는 하지 않습니다. '
-        "아래에서 수동 재발행을 사용할 수 있습니다.</p></div>"
+        f'<p style="margin:8px 0 0 0;font-size:12px;">{_esc(remed_advice)}</p></div>'
     )
 
 
@@ -2256,7 +2285,7 @@ def admin_cost_ledger_csv(request: Request, month: str = "") -> Response:
     )
 
 
-def _render_keysuri_graded_quality_panel(meta: Mapping[str, Any]) -> str:
+def _render_keysuri_graded_quality_panel(meta: Mapping[str, Any], *, is_superseded: bool = False, superseded_reason: str = "") -> str:
     mode = str(meta.get("mode") or meta.get("program_id") or "")
     if mode not in {"keysuri_global_tech", "keysuri_korea_tech"}:
         return ""
@@ -2303,7 +2332,18 @@ def _render_keysuri_graded_quality_panel(meta: Mapping[str, Any]) -> str:
         )
     finding_html = "".join(rows) or "<li>추가 품질 항목 없음</li>"
     review_help = ""
-    if safety == "SAFE" and editorial == "REVIEW":
+    if is_superseded:
+        if superseded_reason == "parent_reconciliation_required":
+            review_help = (
+                '<div class="notice"><strong>참고용 보존 실행 · 정합성 확인 필요</strong>'
+                '<p>원본 실행과의 계보 또는 발송 상태 확인이 필요하여 추가 승인이나 재발행을 차단했습니다.</p></div>'
+            )
+        else:
+            review_help = (
+                '<div class="notice"><strong>참고용 보존 실행</strong>'
+                '<p>동일 발행일의 원본 실행이 이미 처리되어 추가 승인이나 재발행을 요구하지 않습니다.</p></div>'
+            )
+    elif safety == "SAFE" and editorial == "REVIEW":
         review_help = (
             '<div class="notice"><strong>검토 필요 · 고객 발송 전 확인</strong>'
             '<p>수정 요청, 거절, 또는 경고 확인 후 승인을 선택할 수 있습니다.</p></div>'
@@ -2365,6 +2405,22 @@ def admin_run_detail(request: Request, run_id: str):
         )
     has_email = run_email_html_exists(run_id)
     email_link = f'<a href="/admin/runs/{_esc(run_id)}/email" target="_blank">이메일 HTML 미리보기</a>' if has_email else "<em>저장된 이메일 HTML 없음</em>"
+    from admin_store import superseded_child_check
+    is_superseded, parent_id, parent_meta, superseded_reason = superseded_child_check(meta)
+    if is_superseded:
+        parent_link_html = f'<a href="/admin/runs/{_esc(parent_id)}">{_esc(parent_id)}</a>' if parent_id else "확인 불가"
+        if superseded_reason == "superseded_child_reference_only":
+            warn += (
+                f'<div class="notice"><strong>참고용 보존 실행</strong>'
+                f'<p>동일 발행일의 원본 실행({parent_link_html})이 이미 처리되었습니다. '
+                f'이 실행은 검토 및 기록 참고용으로 보존되며, 고객 발송 승인·재발행·보류 변경은 차단됩니다.</p></div>'
+            )
+        else:
+            warn += (
+                f'<div class="warn"><strong>계보/발송 상태 정합성 확인 필요</strong>'
+                f'<p>원본 실행({parent_link_html})과의 계보 또는 발송 상태 정합성 확인이 필요합니다. '
+                f'중복 위험 및 안전을 위해 새 고객 발송과 재발행이 차단됩니다.</p></div>'
+            )
     # This route has required the current authenticated Admin session.
     can_approve, approve_err = can_approve_customer_send(
         meta, has_email_html=has_email, allow_manual_quality_warning=True,
@@ -2396,6 +2452,8 @@ def admin_run_detail(request: Request, run_id: str):
         approve_block = (
             f'<p class="warn">승인 발송 불가: {_esc(_APPROVE_ERROR_MESSAGES.get(approve_err, approve_err))}</p>'
         )
+        if is_superseded and parent_id:
+            approve_block += f'<p class="hint">원본 실행: <a href="/admin/runs/{_esc(parent_id)}">{_esc(parent_id)}</a></p>'
     if request.query_params.get("approve_error"):
         err_code = request.query_params.get("approve_error", "")
         warn += (
@@ -2418,7 +2476,7 @@ def admin_run_detail(request: Request, run_id: str):
             f"장애 보고 / 재실행 승인 ({_esc(linked_incident_id)})</a></p>"
         )
     scope_field = _render_reissue_scope_field(mode, meta)
-    auto_remediation_panel = _render_auto_remediation_panel(meta)
+    auto_remediation_panel = _render_auto_remediation_panel(meta, is_superseded=is_superseded, superseded_reason=superseded_reason)
     # The remediation instruction on the blocked-send panel promises a reissue.
     # Ask the same authority the reissue POST will ask, so this page can never
     # tell the owner to reissue a run it would then refuse (2026-09-09 deadlock).
@@ -2428,6 +2486,8 @@ def admin_run_detail(request: Request, run_id: str):
             f'<p class="warn">재발행 불가: '
             f'{_esc(_REISSUE_PARENT_BLOCK_MESSAGES[reissue_parent_block])}</p>'
         )
+        if is_superseded and parent_id:
+            reissue_body += f'<p class="hint">원본 실행: <a href="/admin/runs/{_esc(parent_id)}">{_esc(parent_id)}</a></p>'
     else:
         reissue_body = f'''<p class="notice">재발행 결과는 운영자 검토용으로만 생성됩니다. 고객에게 자동 발송되지 않습니다.</p>
 <form method="post" action="/admin/runs/{_esc(run_id)}/reissue">
@@ -2451,7 +2511,7 @@ def admin_run_detail(request: Request, run_id: str):
         f'<li class="is-{_esc(item["tone"])}"><span class="marker"></span><span>{_esc(item["label"])}</span></li>'
         for item in validation["checks"]
     )
-    graded_panel = _render_keysuri_graded_quality_panel(meta)
+    graded_panel = _render_keysuri_graded_quality_panel(meta, is_superseded=is_superseded, superseded_reason=superseded_reason)
     accepted = delivery.get("accepted")
     refused = delivery.get("refused")
     # The send wording belongs on the tappable control, never on this heading:
@@ -2479,7 +2539,9 @@ def admin_run_detail(request: Request, run_id: str):
         )
     )
     owner_status = str(meta.get("owner_review_status") or "pending_review")
-    if owner_status == "held":
+    if is_superseded:
+        hold_control = ""
+    elif owner_status == "held":
         hold_control = f'''
 <div class="notice"><strong>보류 중</strong><p>운영자가 고객 발송을 보류했습니다. 다시 검수하기 전에는 발송이 차단됩니다. 콘텐츠는 새로 생성되지 않았습니다.</p></div>
 <form method="post" action="/admin/runs/{_esc(run_id)}/reopen">
@@ -3012,6 +3074,10 @@ def admin_run_approve(
     if not _verify_csrf(request, f"approve:{run_id}", csrf_token):
         return _csrf_rejected()
 
+    meta = load_run_artifact(run_id)
+    if not meta:
+        return HTMLResponse(_layout("Not found", "<p>실행 기록을 찾을 수 없습니다.</p>"), status_code=404)
+
     def _reject(code: str, *, consume_nonce: bool = True) -> RedirectResponse:
         resp = RedirectResponse(
             url=f"/admin/runs/{run_id}?approve_error={code}",
@@ -3020,6 +3086,11 @@ def admin_run_approve(
         if consume_nonce:
             _clear_approval_nonce_cookie(resp)
         return resp
+
+    from admin_store import superseded_child_check
+    is_superseded, parent_id, parent_meta, superseded_reason = superseded_child_check(meta)
+    if is_superseded:
+        return _reject(superseded_reason)
 
     if not str(customer_send_confirm or "").strip():
         return _reject("missing_customer_send_confirm", consume_nonce=False)
