@@ -173,6 +173,16 @@ class SupersededChildActionsTests(unittest.TestCase):
         # 6. Graded quality panel does NOT instruct to approve or reissue
         self.assertNotIn("수정 요청, 거절, 또는 경고 확인 후 승인을 선택할 수 있습니다.", html)
 
+        # 7. Main validation panel is reference-only without fresh approval/reissue advice
+        self.assertNotIn("고객 발송 전 확인하거나 수정을 요청하세요", html)
+        self.assertNotIn("경고 확인 후 승인 가능", html)
+        self.assertNotIn("보류된 검수입니다. 다시 검수하기로 전환한 뒤 승인하세요.", html)
+        self.assertIn("참고용 보존", html)
+        self.assertIn("안전성: 안전", html)
+        self.assertIn("편집 품질: 검토 필요", html)
+        self.assertIn("참고용 보존 (새 발송 차단)", html)
+        self.assertIn("과거 교정 이력 (참고용)", html)
+
     @patch("admin_routes._verify_csrf", return_value=True)
     @patch("admin_approval.create_approval_snapshot")
     @patch("email_sender.send_genie_email")
@@ -501,6 +511,82 @@ class SupersededChildActionsTests(unittest.TestCase):
         self.assertFalse(is_child_run(meta))
         self.assertFalse(superseded_child_check(meta)[0])
 
+    def test_held_superseded_child_detail_and_can_approve_reason(self) -> None:
+        """Held child with accepted parent (real production shape of acf60d79).
+
+        can_approve_customer_send returns superseded_child_reference_only (not review_held).
+        GET /approve-confirm returns 400 with superseded_child_reference_only error.
+        Detail page renders reference-only copy with NO held advice or validation approval prompts.
+        """
+        parent_id = "20261028_123001_keysuri_global_tech_d26e88e2"
+        child_id = "20261028_124632_keysuri_global_tech_acf60d79"
+
+        parent_meta = {
+            "run_id": parent_id,
+            "mode": "keysuri_global_tech",
+            "program_id": "keysuri_global_tech",
+            "validation_result": "pass",
+            "customer_delivery_status": "smtp_accepted",
+            "customer_email_delivery_status": "smtp_accepted",
+            "smtp_accepted_recipient_count": 10,
+            "customer_delivery_accepted_count": 10,
+            "smtp_refused_recipient_count": 0,
+        }
+        child_meta = {
+            "run_id": child_id,
+            "mode": "keysuri_global_tech",
+            "program_id": "keysuri_global_tech",
+            "regen_parent_run_id": parent_id,
+            "automatic_remediation_parent_run_id": parent_id,
+            "automatic_remediation_triggered": True,
+            "automatic_remediation_result": "child_still_reviewable",
+            "automatic_remediation_child_run_id": child_id,
+            "validation_result": "pass",
+            "customer_delivery_status": "not_sent",
+            "customer_email_delivery_status": "not_sent",
+            "owner_review_status": "held",
+            "safety_verdict": "SAFE",
+            "editorial_verdict": "REVIEW",
+            "reader_surface_enforced": True,
+            "reader_surface_complete": True,
+        }
+        self._save_run(parent_meta)
+        self._save_run(child_meta)
+
+        # 1. can_approve_customer_send precedence (superseded over review_held)
+        can_appr, reason = can_approve_customer_send(child_meta, has_email_html=True, allow_manual_quality_warning=True)
+        self.assertFalse(can_appr)
+        self.assertEqual(reason, "superseded_child_reference_only")
+
+        # 2. Direct approve-confirm route returns 400 with superseded error
+        self._login()
+        resp_confirm = self.client.get(f"/admin/runs/{child_id}/approve-confirm")
+        self.assertEqual(resp_confirm.status_code, 400)
+        self.assertIn("Approve blocked", resp_confirm.text)
+        self.assertIn("동일 발행일의 원본 실행이 이미 처리되어 교정본 발송이 차단되었습니다 (참고용 보존).", resp_confirm.text)
+        self.assertNotIn("보류된 검수입니다. 다시 검수하기로 전환한 뒤 승인하세요.", resp_confirm.text)
+
+        # 3. Detail page inspection
+        resp = self.client.get(f"/admin/runs/{child_id}")
+        self.assertEqual(resp.status_code, 200)
+        html = resp.text
+
+        # Absent misleading phrases
+        self.assertNotIn("고객 발송 전 확인하거나 수정을 요청하세요", html)
+        self.assertNotIn("경고 확인 후 승인 가능", html)
+        self.assertNotIn("보류된 검수입니다. 다시 검수하기로 전환한 뒤 승인하세요.", html)
+        self.assertNotIn("다시 검수하기", html)
+        self.assertNotIn("고객 발송 보류", html)
+
+        # Present truthful reference-only phrases
+        self.assertIn("참고용 보존 실행", html)
+        self.assertIn(f"/admin/runs/{parent_id}", html)
+        self.assertIn("안전성: 안전", html)
+        self.assertIn("편집 품질: 검토 필요", html)
+        self.assertIn("참고용 보존 (새 발송 차단)", html)
+        self.assertIn("과거 교정 이력 (참고용)", html)
+        self.assertIn("동일 발행일의 원본 실행이 이미 처리되어 교정본 발송이 차단되었습니다 (참고용 보존).", html)
+
     def test_future_day_and_held_controls_preserved(self) -> None:
         """Future-day natural runs and held Today controls remain properly handled."""
         future_id = "20261029_063000_today_genie_11223344"
@@ -526,6 +612,12 @@ class SupersededChildActionsTests(unittest.TestCase):
         can_appr, reason = can_approve_customer_send(held_meta, has_email_html=True)
         self.assertFalse(can_appr)
         self.assertEqual(reason, "review_held")
+
+        self._login()
+        resp = self.client.get(f"/admin/runs/{held_id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("다시 검수하기", resp.text)
+        self.assertIn("보류된 검수입니다. 다시 검수하기로 전환한 뒤 승인하세요.", resp.text)
 
 
 if __name__ == "__main__":

@@ -2506,6 +2506,45 @@ def admin_run_detail(request: Request, run_id: str):
 </form>'''
     view = run_projection(meta, current_recipient_count=recipient_count)
     validation = view["validation"]
+    if is_superseded:
+        safety = str(meta.get("safety_verdict") or "")
+        editorial = str(meta.get("editorial_verdict") or "")
+        if superseded_reason == "parent_reconciliation_required":
+            val_label = "정합성 확인 필요"
+            val_tone = "warn"
+            val_summary = "원본 실행과의 계보 또는 발송 상태 정합성 확인이 필요한 기록입니다. 추가 고객 발송이나 수정을 진행하지 않습니다."
+        else:
+            val_label = "참고용 보존"
+            val_tone = "neutral"
+            if safety == "SAFE" and editorial == "REVIEW":
+                val_summary = "안전성 통과 및 편집 주의 이력이 보존된 초안입니다. 원본 실행이 이미 처리되어 추가 발송이나 수정을 요구하지 않습니다."
+            elif safety == "SAFE" and editorial == "READY":
+                val_summary = "안전성 통과 및 편집 완료 이력이 보존된 초안입니다. 원본 실행이 이미 처리되어 추가 고객 발송을 진행하지 않습니다."
+            elif safety == "SAFE" and editorial == "POOR":
+                val_summary = "안전성 확인 및 편집 품질 미달 이력이 보존된 초안입니다. 원본 실행이 이미 처리되어 추가 고객 발송을 진행하지 않습니다."
+            elif str(meta.get("validation_result") or "") == "pass":
+                val_summary = "과거 검수 통과 이력이 보존된 초안입니다. 원본 실행이 이미 처리되어 추가 고객 발송을 진행하지 않습니다."
+            else:
+                val_summary = "과거 검수 이력이 보존된 초안입니다. 원본 실행이 이미 처리되어 참고용으로 보존된 기록입니다."
+
+        val_checks = []
+        for item in validation.get("checks") or []:
+            lbl = item.get("label", "")
+            if any(kw in lbl for kw in ("승인 가능", "승인 필요", "수정 요청", "다시 만들기")):
+                continue
+            val_checks.append(item)
+        if superseded_reason == "parent_reconciliation_required":
+            val_checks.append({"label": "정합성 확인 필요 (새 발송 차단)", "tone": "warn"})
+        else:
+            val_checks.append({"label": "참고용 보존 (새 발송 차단)", "tone": "neutral"})
+
+        validation = {
+            **validation,
+            "label": val_label,
+            "tone": val_tone,
+            "summary": val_summary,
+            "checks": val_checks,
+        }
     delivery = view["delivery"]
     validation_items = "".join(
         f'<li class="is-{_esc(item["tone"])}"><span class="marker"></span><span>{_esc(item["label"])}</span></li>'
@@ -2518,11 +2557,20 @@ def admin_run_detail(request: Request, run_id: str):
     # a <strong> reading "승인하고 N명에게 발송" is inert, and tapping it produced
     # no request and no error at all (2026-09-07 owner report on iPhone).
     approval_heading = "고객 발송 승인" if can_approve else "고객 발송 차단"
-    approval_explanation = (
-        "승인은 되돌릴 수 없습니다. 실제 발송은 기존 nonce와 확인 체크가 있는 별도 최종 확인 화면에서만 실행됩니다."
-        if can_approve
-        else "현재 근거로는 새 고객 발송을 시작할 수 없습니다. 차단 사유를 확인하세요."
-    )
+    if is_superseded:
+        approval_explanation = (
+            "원본 실행과의 계보 또는 발송 상태 정합성 확인이 필요하여 추가 발송을 시작할 수 없습니다. 차단 사유를 확인하세요."
+            if superseded_reason == "parent_reconciliation_required"
+            else "동일 발행일의 원본 실행이 이미 처리되어 추가 고객 발송을 시작할 수 없습니다. 차단 사유를 확인하세요."
+        )
+    elif can_approve:
+        approval_explanation = (
+            "승인은 되돌릴 수 없습니다. 실제 발송은 기존 nonce와 확인 체크가 있는 별도 최종 확인 화면에서만 실행됩니다."
+        )
+    else:
+        approval_explanation = (
+            "현재 근거로는 새 고객 발송을 시작할 수 없습니다. 차단 사유를 확인하세요."
+        )
     legacy_delivery_note = ""
     if str(meta.get("customer_delivery_status") or "") == "smtp_accepted":
         legacy_delivery_note = "legacy artifact label: PASS / 발송 접수 완료 (owner 표시는 접수·거절 근거를 우선함)"
@@ -2557,6 +2605,16 @@ def admin_run_detail(request: Request, run_id: str):
 </form>'''
     else:
         hold_control = ""
+    if is_superseded:
+        reissue_heading = (
+            "과거 교정 이력 (정합성 확인)"
+            if superseded_reason == "parent_reconciliation_required"
+            else "과거 교정 이력 (참고용)"
+        )
+    elif str(meta.get("editorial_verdict") or "") in {"REVIEW", "POOR"}:
+        reissue_heading = "수정 요청"
+    else:
+        reissue_heading = "다시 만들기"
     technical = _ui_technical_details(
         meta,
         (
@@ -2595,7 +2653,7 @@ def admin_run_detail(request: Request, run_id: str):
   <div class="danger-zone" style="margin-top:14px;"><strong>{approval_heading}</strong><p>{approval_explanation}</p>{approve_block}</div>
 </section>
 <section class="surface" style="margin-top:14px;">
-  <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">REISSUE</p><h2>{'수정 요청' if str(meta.get('editorial_verdict') or '') in {'REVIEW', 'POOR'} else '다시 만들기'}</h2></div></div>
+  <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">REISSUE</p><h2>{_esc(reissue_heading)}</h2></div></div>
 {auto_remediation_panel}
 {reissue_body}
 </section>

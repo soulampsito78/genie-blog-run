@@ -2106,12 +2106,12 @@ def can_approve_customer_send(
         return False, "unsupported_mode"
     if _is_legacy_timeout_artifact(meta):
         return False, "legacy_timeout_sent"
-    owner_status = str(meta.get("owner_review_status") or "pending_review")
-    if owner_status == "held":
-        return False, "review_held"
     is_superseded, parent_id, parent_meta, superseded_reason = superseded_child_check(meta)
     if is_superseded:
         return False, superseded_reason
+    owner_status = str(meta.get("owner_review_status") or "pending_review")
+    if owner_status == "held":
+        return False, "review_held"
     delivery = str(meta.get("customer_delivery_status") or "not_sent")
     if delivery in LEGACY_CUSTOMER_DELIVERY_STATUSES:
         return False, "legacy_timeout_sent"
