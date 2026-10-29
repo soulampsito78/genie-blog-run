@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 TEST_MODULES = (
+    "test_today_genie_orchestrator_images",
     "test_product_surface_contract",
     "test_today_role_evidence_integration",
     "test_admin_routes.CustomerDeliveryAdminPanelTests.test_conflicting_canonical_delivery_status_aliases_never_project_success",

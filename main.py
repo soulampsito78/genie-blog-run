@@ -2744,10 +2744,13 @@ def build_today_genie_email_html_for_cid_mime_send(
     validation_result: str = "pass",
     *,
     run_id: Optional[str] = None,
+    images_available: bool = True,
 ) -> str:
     """
     today_genie HTML for SMTP MIME sends: top/bottom slots use cid:… references
     so the message does not depend on public base URLs or local static paths for images.
+    When images_available is False (images were not generated for this run), cid references
+    are omitted so misleading CID image tags are not rendered in the draft preview.
     """
     from admin_urls import build_owner_review_admin_url
 
@@ -2767,7 +2770,7 @@ def build_today_genie_email_html_for_cid_mime_send(
         data,
         op_meta,
         email_asset_base_url="",
-        email_inline_cid_pair=today_genie_email_inline_cid_pair(),
+        email_inline_cid_pair=today_genie_email_inline_cid_pair() if images_available else None,
     )
 
 
