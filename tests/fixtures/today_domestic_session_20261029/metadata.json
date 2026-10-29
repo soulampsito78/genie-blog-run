@@ -1,0 +1,19 @@
+{
+  "description": "Exact public Naver domestic daily index price fixtures observed 2026-10-29 08:04 KST",
+  "files": {
+    "KOSPI.json": {
+      "source_url": "https://m.stock.naver.com/api/index/KOSPI/price?pageSize=10&page=1",
+      "sha256": "93e105ff8e6d787551c084af0edd78f40db8ef88a876b3ef75bf817baaa1b326",
+      "latest_completed_session": "2026-10-28",
+      "close": 6012.44,
+      "change_pct": 6.63
+    },
+    "KOSDAQ.json": {
+      "source_url": "https://m.stock.naver.com/api/index/KOSDAQ/price?pageSize=10&page=1",
+      "sha256": "2d73d73cd4ff7b33d908102baa3c473224bd770c331edd487d6c7dc5a8ce13b6",
+      "latest_completed_session": "2026-10-28",
+      "close": 771.28,
+      "change_pct": 3.69
+    }
+  }
+}
