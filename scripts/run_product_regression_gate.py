@@ -47,6 +47,7 @@ TEST_MODULES = (
     "test_operations_selection_and_footer_source",
     "test_global_postsend_final_independent",
     "test_superseded_child_actions",
+    "test_today_domestic_session_freshness_20261029",
 )
 
 

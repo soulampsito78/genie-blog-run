@@ -664,6 +664,34 @@ def _today_feed_payload_freshness(
         if age_days > TODAY_GENIE_MAX_FEED_STALE_DAYS:
             stale = True
             reason = "as_of_older_than_7_days"
+    if source_id == "korea_japan_indices" and not stale:
+        from market_observation import DOMESTIC_KRX_INSTRUMENTS, latest_completed_krx_session
+
+        expected_krx = latest_completed_krx_session(target_date)
+        if expected_krx is None:
+            stale = True
+            reason = "unknown_krx_calendar_coverage"
+        else:
+            indices = payload.get("indices") if isinstance(payload, dict) else {}
+            for code in sorted(DOMESTIC_KRX_INSTRUMENTS):
+                slot = indices.get(code) if isinstance(indices, dict) else None
+                if not isinstance(slot, dict):
+                    stale = True
+                    reason = f"{code.lower()}_row_missing"
+                    break
+                domestic_date = _parse_feed_date(slot.get("market_date") or slot.get("as_of"))
+                if domestic_date is None:
+                    stale = True
+                    reason = f"{code.lower()}_missing_market_date"
+                    break
+                if domestic_date != expected_krx:
+                    stale = True
+                    reason = (
+                        f"{code.lower()}_session_stale:"
+                        f"observed={domestic_date.isoformat()}:"
+                        f"expected={expected_krx.isoformat()}"
+                    )
+                    break
     return {
         "fresh": not stale,
         "stale": stale,

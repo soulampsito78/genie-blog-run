@@ -21,8 +21,17 @@ distinction explicit and checkable:
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from korea_public_holidays import (
+    COVERAGE_END_YEAR,
+    COVERAGE_START_YEAR,
+    KOREA_EXTRA_NON_PUBLISHING_DAYS,
+    KOREA_PUBLIC_HOLIDAYS,
+)
+
+DOMESTIC_KRX_INSTRUMENTS = frozenset({"KOSPI", "KOSDAQ"})
 
 # Status values. Only SETTLED may reach a reader as a number.
 SETTLED = "settled"
@@ -104,6 +113,70 @@ def _iso_date(raw: Any) -> Optional[date]:
         return None
 
 
+def krx_year_end_closure(year: int) -> date:
+    """12월 31일(공휴일 또는 토요일인 경우에는 직전의 매매거래일)."""
+    cur = date(year, 12, 31)
+    while (
+        cur.weekday() >= 5
+        or cur.isoformat() in KOREA_PUBLIC_HOLIDAYS
+        or cur.isoformat() in KOREA_EXTRA_NON_PUBLISHING_DAYS
+        or (cur.month == 5 and cur.day == 1)
+    ):
+        cur -= timedelta(days=1)
+    return cur
+
+
+def is_krx_trading_day(value: Any) -> Optional[bool]:
+    """True when value is a valid, open KRX trading day.
+
+    Mon-Fri excluding statutory public holidays, Labor Day (May 1),
+    and exchange year-end closure (Dec 31 or preceding trading day if holiday/Sat/Sun).
+    Returns None if date is outside curated calendar coverage (fail-closed).
+    These checks reflect curated public holidays and known official exchange rules,
+    not proof of every future ad-hoc exchange closure.
+    """
+    d = _iso_date(value)
+    if d is None:
+        return None
+    if not (COVERAGE_START_YEAR <= d.year <= COVERAGE_END_YEAR):
+        return None
+    if d.weekday() >= 5:
+        return False
+    iso = d.isoformat()
+    if iso in KOREA_PUBLIC_HOLIDAYS or iso in KOREA_EXTRA_NON_PUBLISHING_DAYS:
+        return False
+    if d.month == 5 and d.day == 1:
+        return False
+    if d == krx_year_end_closure(d.year):
+        return False
+    return True
+
+
+def latest_completed_krx_session(target_date: Any, *, max_lookback_days: int = 15) -> Optional[date]:
+    """The latest completed KRX trading session strictly before target_date.
+
+    Target date year must fall within curated calendar coverage (COVERAGE_START_YEAR..COVERAGE_END_YEAR).
+    Cross-year lookup also fails if prior-year coverage is unavailable.
+    These checks combine curated statutory holiday data with known official KRX rules
+    (Labor Day May 1 and year-end closure), not proof that every future ad-hoc KRX closure
+    has been fetched. Fails closed (returns None) on unknown coverage or when no session can be proven.
+    """
+    target = _iso_date(target_date)
+    if target is None:
+        return None
+    if not (COVERAGE_START_YEAR <= target.year <= COVERAGE_END_YEAR):
+        return None
+    cur = target - timedelta(days=1)
+    for _ in range(max_lookback_days):
+        status = is_krx_trading_day(cur)
+        if status is None:
+            return None
+        if status is True:
+            return cur
+        cur -= timedelta(days=1)
+    return None
+
+
 def _session_state(slot: Dict[str, Any]) -> Optional[str]:
     """'live' / 'closed' / None from whatever session marker the source supplies."""
     for key in ("session_state", "market_status", "curmktstatus", "quote_status"):
@@ -179,6 +252,9 @@ def normalize_market_observation(
     market_date = _iso_date(slot.get("market_date") or slot.get("as_of"))
     inherited = False
     if market_date is None:
+        if instrument in DOMESTIC_KRX_INSTRUMENTS:
+            result["observation_reason"] = "domestic_market_date_missing"
+            return result
         market_date = _iso_date(feed_as_of)
         inherited = market_date is not None
     if market_date is None:
@@ -193,7 +269,22 @@ def normalize_market_observation(
         if target is None:
             result["observation_reason"] = "target_date_unknown"
             return result
-        if market_date >= target:
+        if instrument in DOMESTIC_KRX_INSTRUMENTS:
+            expected_session = latest_completed_krx_session(target)
+            if expected_session is None:
+                result["observation_status"] = UNAVAILABLE
+                result["observation_reason"] = (
+                    f"unknown KRX calendar coverage for target {target.isoformat()}"
+                )
+                return result
+            if market_date != expected_session:
+                result["observation_status"] = UNSETTLED_SESSION
+                result["observation_reason"] = (
+                    f"domestic session {market_date.isoformat()} does not match latest completed "
+                    f"KRX session {expected_session.isoformat()} before target {target.isoformat()}"
+                )
+                return result
+        elif market_date >= target:
             # The session this quote describes has not completed as of the
             # briefing date. Its close is a live or pre-open print and its
             # change is not a settled-session change.
@@ -463,7 +554,16 @@ def repair_feed_from_history(
         if stored_date is None or pct is None or close is None:
             still_unpublishable.append(entry)
             continue
-        if stored_date >= target or (target - stored_date).days > max_age_days:
+        if instrument in DOMESTIC_KRX_INSTRUMENTS:
+            expected_session = latest_completed_krx_session(target)
+            if expected_session is None or stored_date != expected_session:
+                still_unpublishable.append(
+                    f"{entry} (stored settled session {stored_date.isoformat()} "
+                    f"does not match latest completed KRX session "
+                    f"{expected_session.isoformat() if expected_session else 'unknown'})"
+                )
+                continue
+        elif stored_date >= target or (target - stored_date).days > max_age_days:
             still_unpublishable.append(
                 f"{entry} (stored settled session {stored_date.isoformat()} not usable)"
             )

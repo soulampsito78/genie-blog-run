@@ -27,6 +27,9 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 OPS_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = OPS_ROOT.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 FEEDS_DIR = OPS_ROOT / "feeds"
 BACKUP_DIR = FEEDS_DIR / ".backup"
 
@@ -553,6 +556,14 @@ def select_settled_naver_day_row(
     if target is None:
         raise FeedProbeError(f"Naver {code}: invalid target date {target_date!r}")
 
+    from market_observation import latest_completed_krx_session
+
+    expected_session = latest_completed_krx_session(target_date)
+    if expected_session is None:
+        raise FeedProbeError(
+            f"Naver {code}: calendar coverage unknown or invalid target date {target_date!r}"
+        )
+
     candidates = [
         row
         for row in parse_naver_index_day_rows(html, code)
@@ -564,6 +575,11 @@ def select_settled_naver_day_row(
         )
     row = max(candidates, key=lambda r: r["market_date"])
     market_date = row["market_date"]
+    if market_date != expected_session:
+        raise FeedProbeError(
+            f"Naver {code}: settled session {market_date.isoformat()} does not match "
+            f"latest completed KRX session {expected_session.isoformat()} for target {target_date}"
+        )
     previous_close: Optional[float] = None
     if row["change_pts"] is not None:
         previous_close = round(row["close"] - row["change_pts"], 2)
@@ -604,6 +620,14 @@ def select_settled_naver_domestic_row(
     target = _parse_iso_date(target_date)
     if target is None:
         raise FeedProbeError(f"Naver {code}: invalid target date {target_date!r}")
+
+    from market_observation import latest_completed_krx_session
+
+    expected_session = latest_completed_krx_session(target_date)
+    if expected_session is None:
+        raise FeedProbeError(
+            f"Naver {code}: calendar coverage unknown or invalid target date {target_date!r}"
+        )
     try:
         parsed = json.loads(payload)
     except (TypeError, ValueError) as exc:
@@ -623,6 +647,11 @@ def select_settled_naver_domestic_row(
     if len(candidates) < 2:
         raise FeedProbeError(f"Naver {code}: insufficient completed daily sessions")
     market_date, row = candidates[0]
+    if market_date != expected_session:
+        raise FeedProbeError(
+            f"Naver {code}: settled session {market_date.isoformat()} does not match "
+            f"latest completed KRX session {expected_session.isoformat()} for target {target_date}"
+        )
     previous_date, previous = candidates[1]
     if previous_date >= market_date:
         raise FeedProbeError(f"Naver {code}: duplicate or unordered daily sessions")
@@ -1021,6 +1050,20 @@ def probe_korea_japan_indices(
 
     if not indices:
         raise FeedProbeError(f"korea_japan_indices: no index parsed ({errors})")
+
+    from market_observation import latest_completed_krx_session
+
+    expected_session = latest_completed_krx_session(target_date)
+    if expected_session is None:
+        raise FeedProbeError(f"korea_japan_indices: calendar coverage unknown for {target_date!r}")
+    for code in ("KOSPI", "KOSDAQ"):
+        if code in indices:
+            row_date = _parse_iso_date(indices[code].get("market_date") or indices[code].get("as_of"))
+            if row_date != expected_session:
+                raise FeedProbeError(
+                    f"korea_japan_indices: {code} session {row_date} does not match "
+                    f"latest completed KRX session {expected_session.isoformat()} for target {target_date}"
+                )
 
     as_of = max(as_of_dates) if as_of_dates else target_date
     _assert_as_of_fresh(as_of, target_date, "korea_japan_indices")
