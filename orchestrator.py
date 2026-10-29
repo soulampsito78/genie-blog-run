@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
@@ -343,6 +344,8 @@ def extract_email_html_for_artifact(
     result: OrchestrationResult,
     *,
     run_id: str | None = None,
+    today_image_result: Any = None,
+    images_available: bool | None = None,
 ) -> str:
     """Best-effort email HTML for admin artifact storage (same render path as send)."""
     if result.response_status != 200 or not isinstance(result.response_data, dict):
@@ -356,11 +359,21 @@ def extract_email_html_for_artifact(
         try:
             from main import build_today_genie_email_html_for_cid_mime_send
 
-            return build_today_genie_email_html_for_cid_mime_send(
+            img_avail = (
+                images_available
+                if images_available is not None
+                else (today_image_result is not None)
+            )
+            html = build_today_genie_email_html_for_cid_mime_send(
                 data,
                 validation_result=validation_result,
                 run_id=run_id,
+                images_available=img_avail,
             )
+            if not img_avail and "genie-no-image-notice" not in html:
+                notice = _today_genie_no_image_notice_html(validation_result)
+                html = _inject_owner_email_notice(html, notice)
+            return html
         except Exception as e:  # noqa: BLE001
             logger.warning("extract_email_html_for_artifact today_genie failed: %s", e)
             return ""
@@ -569,13 +582,49 @@ def persist_orchestrator_run_artifact(
 
         meta.update(persist_today_genie_customer_images(rid, today_image_result))
     if owner_email_html_snapshot is None:
-        email_html = extract_email_html_for_artifact(result, run_id=rid)
+        email_html = extract_email_html_for_artifact(
+            result,
+            run_id=rid,
+            today_image_result=today_image_result,
+        )
         email_html = _inject_owner_email_notice(email_html, owner_email_notice_html)
     else:
         # Persist exactly the attempted owner MIME HTML, including its notice.
         # Re-rendering after SMTP changes wall-clock fields and breaks binding.
         email_html = owner_email_html_snapshot
     return save_run_artifact(meta, email_html=email_html)
+
+
+def _today_genie_no_image_notice_html(validation_result: str = "pass") -> str:
+    """Truthful owner-only notice explaining that images were not generated for this run."""
+    from auto_remediation import (
+        AUTO_REMEDIATION_NOTICE_END,
+        AUTO_REMEDIATION_NOTICE_START,
+    )
+
+    if str(validation_result or "").strip() != "pass":
+        state_title = "검증으로 인한 이미지 미생성 초안 (no-call validation draft)"
+        explanation = (
+            "자동 검증 기준 미통과로 인해 이번 실행의 이미지는 생성되지 않았습니다. "
+            "본 메일은 초안 텍스트 및 출처 식별자 검토를 위한 미리보기이며 정적 이미지는 첨부되지 않습니다."
+        )
+    else:
+        state_title = "이미지 미생성 초안 (images not generated for this run)"
+        explanation = (
+            "이번 실행의 이미지는 생성되지 않았습니다. "
+            "본 메일은 초안 텍스트 및 출처 식별자 검토를 위한 미리보기이며 정적 이미지는 첨부되지 않습니다."
+        )
+
+    return (
+        f"{AUTO_REMEDIATION_NOTICE_START}"
+        '<section id="genie-no-image-notice" aria-label="이미지 미생성 알림" '
+        'style="margin:0 0 20px 0;padding:16px 18px;border:1px solid #94a3b8;'
+        'border-radius:10px;background:#f8fafc;">'
+        f'<p style="margin:0 0 8px 0;font-size:14px;font-weight:800;color:#334155;">{state_title}</p>'
+        f'<p style="margin:0;font-size:13px;line-height:1.6;color:#475569;">{explanation}</p>'
+        '</section>'
+        f"{AUTO_REMEDIATION_NOTICE_END}"
+    )
 
 
 def _inject_owner_email_notice(html_body: str, notice_html: str) -> str:
@@ -716,14 +765,30 @@ def send_email_if_allowed(
                 return False
 
         if owner_email_html_snapshot is None:
+            img_avail = today_image_result is not None
             html_body = build_today_genie_email_html_for_cid_mime_send(
                 data,
                 validation_result=validation_result,
                 run_id=rid or None,
+                images_available=img_avail,
             )
+            if not img_avail and "genie-no-image-notice" not in html_body:
+                notice = _today_genie_no_image_notice_html(validation_result)
+                html_body = _inject_owner_email_notice(html_body, notice)
             html_body = _inject_owner_email_notice(html_body, owner_email_notice_html)
         else:
             html_body = owner_email_html_snapshot
+            if today_image_result is None:
+                if re.search(r"<img\b", html_body, re.IGNORECASE):
+                    logger.warning(
+                        "send_email_if_allowed: skipped (caller snapshot contains image elements but today_image_result is None)"
+                    )
+                    return False
+                if "genie-no-image-notice" not in html_body:
+                    logger.warning(
+                        "send_email_if_allowed: skipped (caller snapshot missing required no-image notice for None image result)"
+                    )
+                    return False
         if validation_result == "pass" and allow_send and "운영자 검수 화면 열기" not in html_body:
             logger.warning("send_email_if_allowed: skipped (admin_review_link_missing_in_html)")
             return False
@@ -747,21 +812,11 @@ def send_email_if_allowed(
                     today_image_result.issue_codes,
                 )
         else:
-            repo = Path(__file__).resolve().parent
-            top_latest = repo / "static" / "email" / "GENIE_EMAIL_today_genie_top_latest.jpg"
-            bottom_latest = repo / "static" / "email" / "GENIE_EMAIL_today_genie_bottom_latest.jpg"
-            if not top_latest.is_file() or not bottom_latest.is_file():
-                logger.warning(
-                    "send_email_if_allowed: skipped (today_genie latest image assets missing: top=%s bottom=%s)",
-                    top_latest.is_file(),
-                    bottom_latest.is_file(),
-                )
-                return False
-            cid_top, cid_bottom = today_genie_email_inline_cid_pair()
-            inline_parts = [
-                (str(top_latest), cid_top, "GENIE_EMAIL_today_genie_top.jpg"),
-                (str(bottom_latest), cid_bottom, "GENIE_EMAIL_today_genie_bottom.jpg"),
-            ]
+            inline_parts = []
+            logger.info(
+                "send_email_if_allowed: today_image_result=None; images not generated for run_id=%s; omitting static image attachments",
+                rid,
+            )
 
         return send_genie_email(
             html_body,
@@ -905,7 +960,11 @@ def execute_orchestrator_run(
         if str(mode or "") == "today_genie" and run_id:
             # One render per run, shared by send and persistence. None means
             # legacy preparation; an empty snapshot must stay empty/fail closed.
-            owner_html = extract_email_html_for_artifact(result, run_id=run_id)
+            owner_html = extract_email_html_for_artifact(
+                result,
+                run_id=run_id,
+                today_image_result=today_image_result,
+            )
             owner_html = _inject_owner_email_notice(owner_html, owner_email_notice_html)
             owner_html_kwargs["owner_email_html_snapshot"] = owner_html
 
