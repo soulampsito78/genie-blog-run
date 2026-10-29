@@ -202,3 +202,319 @@ def test_run_today_genie_text_pipeline_guidance_and_control():
     assert all("CORRECTED" not in kw["detail"] for kw in data_c["key_watchpoints"]), "Control watchpoint detail must not carry CORRECTED marker"
     assert all("BASE" in rc["detail"] for rc in data_c["risk_check"]), "Control risk check detail must carry causal BASE marker"
     assert all("CORRECTED" not in rc["detail"] for rc in data_c["risk_check"]), "Control risk check detail must not carry CORRECTED marker"
+
+
+def test_frozen_today_replay_input_projection_blocks_unselected_narrative_and_preserves_feeds():
+    import copy
+    from main import _apply_frozen_today_news_selection
+    from prompts import build_full_prompt, build_top3_extraction_prompt
+    from today_genie_replay_context import (
+        CONTEXT_KEY,
+        build_today_replay_context,
+        replay_context_valid,
+    )
+
+    raw_input = {
+        "target_date": "2026-10-28",
+        "briefing_generated_at_kst": "2026-10-28T11:00:00+09:00",
+        "briefing_time_kst": "06:30",
+        "purpose": "장전 금융 브리핑",
+        "editor_note": "사실/해석/추정 구분. 입력 부족 시 보수적으로 축약.",
+        "input_feed_status": "partial",
+        "overnight_us_market": {"DJI": {"close": "42100.5", "pct_change": 0.45}},
+        "macro_indicators": {"US10Y": {"value": "4.21"}},
+        "korea_japan_indices": {"KOSPI": {"close": "2610.2"}},
+        "current_role_evidence": {"role": "financial_editor", "as_of": "2026-10-28"},
+        "image_weather_context": {"city": "서울", "condition": "clear"},
+        # Safety/diagnostic feed contract fields (exact false/blocked/diagnostic values)
+        "today_required_feed_contract_passed": False,
+        "today_required_feed_contract_missing": ["overnight_us_market"],
+        "today_required_feed_contract_stale": ["korea_japan_indices"],
+        "today_genie_feed_gate_reason": "feed_contract_failed",
+        "today_genie_feed_unavailable_count": 2,
+        "scheduler_delivery_success": False,
+        "scheduler_delivery_http_status": 500,
+        "pipeline_success": False,
+        "owner_review_created": True,
+        "retry_recommended": True,
+        "manual_action_required": True,
+        "feed_json_decode_failed_envs": ["ENV_FEED_CORRUPT"],
+        "today_genie_feed_gate": "block",
+        "today_genie_feed_source": "cache_fallback",
+        "today_genie_feed_refresh_attempted": True,
+        "today_genie_feed_refresh_status": "failed",
+        "today_genie_feed_fallback_used": True,
+        "today_genie_feed_fallback_reason": "live_refresh_timeout",
+        # Synthetic live narrative risk factors and unknown root narrative container
+        "risk_factors": [
+            {"risk": "UNSELECTED_SENTINEL_RISK_EVENT", "detail": "live narrative risk factor leak"}
+        ],
+        "unselected_root_narrative": "UNSELECTED_SENTINEL_RISK_EVENT should never enter prompts",
+        "arbitrary_foreign_narrative": {"headline": "UNSELECTED_SENTINEL_RISK_EVENT"},
+    }
+    # Date-bound replay context
+    raw_input[CONTEXT_KEY] = build_today_replay_context(
+        raw_input, "20261028_063000_today_genie_12345678"
+    )
+
+    frozen_news = [
+        {
+            "headline": f"정착 기사 {i}",
+            "news_id": f"settled_id_{i}",
+            "url": f"https://example.com/news/{i}",
+            "source": "언론사",
+        }
+        for i in range(1, 4)
+    ]
+
+    before_copy = copy.deepcopy(raw_input)
+
+    projected = _apply_frozen_today_news_selection(
+        raw_input,
+        frozen_news,
+        parent_run_id=_V_PID,
+        correction_guidance="Tighten watchpoint 2",
+    )
+
+    # 1. Full caller-input equality against before-copy (NO mutation)
+    assert raw_input == before_copy
+
+    # 2. Projected dictionary validation
+    assert projected["top_market_news"] == frozen_news
+    assert projected["risk_factors"] == []
+    assert "unselected_root_narrative" not in projected
+    assert "arbitrary_foreign_narrative" not in projected
+    assert projected["today_news_selection_frozen"] is True
+    assert projected["today_news_selection_frozen_parent_run_id"] == _V_PID
+    assert projected["correction_guidance"] == "Tighten watchpoint 2"
+    assert projected["overnight_us_market"] == raw_input["overnight_us_market"]
+    assert projected["macro_indicators"] == raw_input["macro_indicators"]
+    assert projected["korea_japan_indices"] == raw_input["korea_japan_indices"]
+    assert projected["current_role_evidence"] == raw_input["current_role_evidence"]
+
+    # 3. Preserved safety and diagnostic fields
+    assert projected["today_required_feed_contract_passed"] is False
+    assert projected["today_required_feed_contract_missing"] == ["overnight_us_market"]
+    assert projected["today_required_feed_contract_stale"] == ["korea_japan_indices"]
+    assert projected["today_genie_feed_gate_reason"] == "feed_contract_failed"
+    assert projected["today_genie_feed_unavailable_count"] == 2
+    assert projected["scheduler_delivery_success"] is False
+    assert projected["scheduler_delivery_http_status"] == 500
+    assert projected["pipeline_success"] is False
+    assert projected["owner_review_created"] is True
+    assert projected["retry_recommended"] is True
+    assert projected["manual_action_required"] is True
+    assert projected["feed_json_decode_failed_envs"] == ["ENV_FEED_CORRUPT"]
+    assert projected["today_genie_feed_gate"] == "block"
+    assert projected["today_genie_feed_source"] == "cache_fallback"
+    assert projected["today_genie_feed_refresh_attempted"] is True
+    assert projected["today_genie_feed_refresh_status"] == "failed"
+    assert projected["today_genie_feed_fallback_used"] is True
+    assert projected["today_genie_feed_fallback_reason"] == "live_refresh_timeout"
+
+    # 4. Valid date-bound replay context preserved
+    assert CONTEXT_KEY in projected
+    assert replay_context_valid(projected[CONTEXT_KEY])
+
+    # 5. Prompt builders must NOT contain unselected sentinel narrative
+    ext_prompt = build_top3_extraction_prompt(projected)
+    main_prompt = build_full_prompt("today_genie", projected, today_genie_main_briefing=True)
+
+    assert "UNSELECTED_SENTINEL_RISK_EVENT" not in ext_prompt
+    assert "UNSELECTED_SENTINEL_RISK_EVENT" not in main_prompt
+    assert "unselected_root_narrative" not in ext_prompt
+    assert "unselected_root_narrative" not in main_prompt
+    assert "arbitrary_foreign_narrative" not in ext_prompt
+    assert "arbitrary_foreign_narrative" not in main_prompt
+
+    # 6. Prompt builders MUST contain exact selected article IDs, URLs, and order in BOTH prompts
+    for p_name, p_text in [("ext_prompt", ext_prompt), ("main_prompt", main_prompt)]:
+        idx_1 = p_text.find("settled_id_1")
+        idx_2 = p_text.find("settled_id_2")
+        idx_3 = p_text.find("settled_id_3")
+        assert idx_1 != -1 and idx_2 != -1 and idx_3 != -1, f"Missing settled IDs in {p_name}"
+        assert idx_1 < idx_2 < idx_3, f"Settled IDs not in exact order in {p_name}"
+
+        url_1 = p_text.find("https://example.com/news/1")
+        url_2 = p_text.find("https://example.com/news/2")
+        url_3 = p_text.find("https://example.com/news/3")
+        assert url_1 != -1 and url_2 != -1 and url_3 != -1, f"Missing URLs in {p_name}"
+        assert url_1 < url_2 < url_3, f"URLs not in exact order in {p_name}"
+
+        head_1 = p_text.find("정착 기사 1")
+        head_2 = p_text.find("정착 기사 2")
+        head_3 = p_text.find("정착 기사 3")
+        assert head_1 != -1 and head_2 != -1 and head_3 != -1, f"Missing headlines in {p_name}"
+        assert head_1 < head_2 < head_3, f"Headlines not in exact order in {p_name}"
+
+    # Quantitative feeds preserved in prompt text
+    assert "42100.5" in ext_prompt
+    assert "42100.5" in main_prompt
+    assert "4.21" in ext_prompt
+    assert "4.21" in main_prompt
+
+
+def test_late_replay_subject_alignment_and_historical_clause_preservation():
+    from main import (
+        build_today_genie_email_html_for_cid_mime_send,
+        stabilize_today_genie_validation_fields,
+    )
+    from orchestrator import OrchestrationResult, send_email_if_allowed
+    from publishing_policy import PublishingDecision
+    from today_genie_replay_context import (
+        CONTEXT_KEY,
+        build_today_replay_context,
+        replay_temporal_conflicts,
+    )
+
+    rt_replay = {
+        "target_date": "2026-10-28",
+        "briefing_generated_at_kst": "2026-10-28T11:00:00+09:00",
+    }
+    rt_replay[CONTEXT_KEY] = build_today_replay_context(
+        rt_replay, "20261028_063000_today_genie_12345678"
+    )
+
+    # Case A: Stale pre-open edition label is repaired to neutral late-edition
+    data_stale = {
+        CONTEXT_KEY: rt_replay[CONTEXT_KEY],
+        "channel_drafts": {
+            "email_subject": "오늘의 지니 장전 브리핑",
+            "naver_blog_title": "장전 브리핑 - 시장 정리",
+        },
+    }
+    stabilized_stale = stabilize_today_genie_validation_fields(data_stale, rt_replay)
+    assert stabilized_stale["channel_drafts"]["email_subject"] == "오늘의 지니 재발행 브리핑"
+    assert stabilized_stale["channel_drafts"]["naver_blog_title"] == "재발행 브리핑 - 시장 정리"
+    assert replay_temporal_conflicts(stabilized_stale) == []
+
+    # Case B: Legitimate historical subject facts must remain byte-identical
+    historical_subjects = [
+        "어제 장전 브리핑에서 확인된 수치",
+        "지난 거래일 장전 브리핑 발표 정리",
+        "전일 장전 브리핑 대비 주요 변동",
+    ]
+    for hist_subj in historical_subjects:
+        data_hist = {
+            CONTEXT_KEY: rt_replay[CONTEXT_KEY],
+            "channel_drafts": {
+                "email_subject": hist_subj,
+                "naver_blog_title": hist_subj,
+            },
+        }
+        stabilized_hist = stabilize_today_genie_validation_fields(data_hist, rt_replay)
+        assert stabilized_hist["channel_drafts"]["email_subject"] == hist_subj
+        assert stabilized_hist["channel_drafts"]["naver_blog_title"] == hist_subj
+        assert replay_temporal_conflicts(stabilized_hist) == []
+
+    # Case C: Already-neutral subjects must remain byte-identical
+    data_neutral = {
+        CONTEXT_KEY: rt_replay[CONTEXT_KEY],
+        "channel_drafts": {
+            "email_subject": "오늘 시장 브리핑",
+            "naver_blog_title": "오늘 시장 브리핑",
+        },
+    }
+    stabilized_neutral = stabilize_today_genie_validation_fields(data_neutral, rt_replay)
+    assert stabilized_neutral["channel_drafts"]["email_subject"] == "오늘 시장 브리핑"
+    assert stabilized_neutral["channel_drafts"]["naver_blog_title"] == "오늘 시장 브리핑"
+    assert replay_temporal_conflicts(stabilized_neutral) == []
+
+    # Case D: Natural mode (non-replay) must NOT modify pre-open edition labels
+    rt_natural = {
+        "target_date": "2026-10-28",
+        "briefing_generated_at_kst": "2026-10-28T06:30:00+09:00",
+    }
+    data_natural = {
+        "channel_drafts": {
+            "email_subject": "오늘의 지니 장전 브리핑",
+            "naver_blog_title": "장전 브리핑 - 시장 정리",
+        },
+    }
+    stabilized_natural = stabilize_today_genie_validation_fields(data_natural, rt_natural)
+    assert stabilized_natural["channel_drafts"]["email_subject"] == "오늘의 지니 장전 브리핑"
+    assert stabilized_natural["channel_drafts"]["naver_blog_title"] == "장전 브리핑 - 시장 정리"
+
+    # Case E: Actual owner MIME construction uses aligned subject and valid admin link
+    from orchestrator import extract_email_html_for_artifact
+
+    run_id = "20261028_110000_today_genie_12345678"
+    orch_res = OrchestrationResult(
+        decision=PublishingDecision(
+            send_email=True,
+            create_naver_draft=False,
+            auto_publish=False,
+            require_review=False,
+            suppress_external=False,
+        ),
+        reason_summary="ok",
+        response_status=200,
+        mode="today_genie",
+        response_data={
+            "validation_result": "pass",
+            "data": stabilized_stale,
+            "runtime_input": rt_replay,
+        },
+    )
+    with patch.dict(os.environ, {"GENIE_ADMIN_PUBLIC_BASE_URL": "https://admin.example.com"}):
+        mime_html = extract_email_html_for_artifact(
+            orch_res,
+            run_id=run_id,
+            today_image_result=None,
+        )
+        assert "운영자 검수 화면 열기" in mime_html
+        assert "genie-no-image-notice" in mime_html
+
+        sent_calls = []
+        with patch("orchestrator.send_genie_email", side_effect=lambda html, subj, **k: sent_calls.append((html, subj)) or True):
+            sent = send_email_if_allowed(
+                orch_res,
+                run_id=run_id,
+                owner_email_html_snapshot=mime_html,
+            )
+            assert sent is True
+            assert len(sent_calls) == 1
+            assert sent_calls[0][1] == "[운영자 검토] 오늘의 지니 재발행 브리핑"
+
+
+def test_frozen_replay_risk_and_closing_fallbacks_avoid_unstated_cpi():
+    from main import stabilize_today_genie_validation_fields
+    from today_genie_replay_context import CONTEXT_KEY, build_today_replay_context
+
+    rt_replay = {
+        "target_date": "2026-10-28",
+        "briefing_generated_at_kst": "2026-10-28T11:00:00+09:00",
+    }
+    rt_replay[CONTEXT_KEY] = build_today_replay_context(
+        rt_replay, "20261028_063000_today_genie_12345678"
+    )
+
+    data_missing = {
+        CONTEXT_KEY: rt_replay[CONTEXT_KEY],
+        "channel_drafts": {"email_subject": "오늘 시장 브리핑"},
+        "risk_check": [],
+        "closing_message": "",
+    }
+
+    stabilized = stabilize_today_genie_validation_fields(data_missing, rt_replay)
+
+    # Replay fallback must NOT reintroduce unstated CPI or pre-open instructions
+    assert all("CPI" not in r["detail"] for r in stabilized["risk_check"])
+    assert stabilized["risk_check"][0]["detail"] == "금리와 원/달러 환율이 같은 방향으로 움직이는지 관측 기준에 맞춰 확인합니다."
+    assert "CPI" not in stabilized["closing_message"]
+    assert stabilized["closing_message"] == "금리·환율 반응과 외국인 수급은 입력의 관측 기준에 맞춰 함께 확인합니다."
+
+    # Natural mode must preserve original deterministic fallback
+    rt_natural = {
+        "target_date": "2026-10-28",
+        "briefing_generated_at_kst": "2026-10-28T06:30:00+09:00",
+    }
+    data_natural = {
+        "channel_drafts": {"email_subject": "오늘 시장 브리핑"},
+        "risk_check": [],
+        "closing_message": "",
+    }
+    stabilized_nat = stabilize_today_genie_validation_fields(data_natural, rt_natural)
+    assert "CPI" in stabilized_nat["risk_check"][0]["detail"]
+    assert "CPI" in stabilized_nat["closing_message"]
+
