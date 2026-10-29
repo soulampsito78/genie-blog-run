@@ -380,7 +380,13 @@ _DENSITY_PAD = (
 )
 
 
-def _compose_top3_detail(wh: str, wy: str, wk: str, slot_index: int) -> str:
+def _compose_top3_detail(
+    wh: str,
+    wy: str,
+    wk: str,
+    slot_index: int,
+    is_replay: bool = False,
+) -> str:
     """Paragraph shape: fact → today → Korea watch → slot-specific closer (no shared boilerplate)."""
     parts: List[str] = []
     a = _finish_sentence(wh)
@@ -388,7 +394,7 @@ def _compose_top3_detail(wh: str, wy: str, wk: str, slot_index: int) -> str:
         parts.append(a)
     b = _finish_sentence(wy)
     if b:
-        if not any(x in b for x in ("오늘", "장전", "금일", "당일", "아침")):
+        if not is_replay and not any(x in b for x in ("오늘", "장전", "금일", "당일", "아침")):
             b = f"오늘 장전에서는 {b.lstrip()}"
         parts.append(b)
     c = wk.strip()
@@ -398,10 +404,11 @@ def _compose_top3_detail(wh: str, wy: str, wk: str, slot_index: int) -> str:
         parts.append(_finish_sentence(c))
     parts.append(_SLOT_CLOSERS[slot_index % 3])
     base = " ".join(parts)
-    if not any(m in base for m in _MEANING_MARKERS):
-        base += _MEANING_TAIL[slot_index % 3]
-    if len(base) < 96:
-        base += _DENSITY_PAD[slot_index % 3]
+    if not is_replay:
+        if not any(m in base for m in _MEANING_MARKERS):
+            base += _MEANING_TAIL[slot_index % 3]
+        if len(base) < 96:
+            base += _DENSITY_PAD[slot_index % 3]
     return _polite_top3_tone(base)
 
 
@@ -540,6 +547,13 @@ def assemble_key_watchpoints_from_slots(
     """
     aliases = model_watchpoints if isinstance(model_watchpoints, list) else []
     valid = collect_valid_major_overseas_news(runtime_input, max_items=3)
+    is_replay = False
+    if isinstance(runtime_input, dict):
+        try:
+            from today_genie_replay_context import is_today_replay
+            is_replay = bool(is_today_replay(runtime_input))
+        except Exception:
+            is_replay = False
     slots_by_news_id = {
         str(slot.get("news_id") or "").strip(): slot
         for slot in slots
@@ -586,7 +600,7 @@ def assemble_key_watchpoints_from_slots(
             wk = wk_m if len(wk_m) >= 20 else fk
         if len(hk) > 72:
             hk = hk[:69] + "…"
-        detail = _compose_top3_detail(wh, wy, wk, position)
+        detail = _compose_top3_detail(wh, wy, wk, position, is_replay=is_replay)
         if position < len(valid):
             nh = str(valid[position][1].get("headline") or "").strip()
             if nh:

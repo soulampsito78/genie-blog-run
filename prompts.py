@@ -557,6 +557,7 @@ def _correction_guidance_rule(runtime_input: Dict[str, Any]) -> str:
     적용 규칙:
     - 위 교정 지침을 반영하여 제목(title), 채널 제목(channel_drafts.email_subject / channel_drafts.naver_blog_title), 인사(greeting), 요약(summary), 시장 맥락(market_setup), 본문 상세 설명(key_watchpoints의 headline / detail / what_happened / why_it_matters_today / what_to_watch_in_korea), 기회(opportunities), 리스크 점검(risk_check), 마감 문장(closing_message)을 교정한다.
     - 입력 기사의 원본 팩트와 출처 범위 안에서만 서술하며, 없는 사실을 지어내거나 기사 밖의 글로벌 이슈/타이틀로 전면 대체하지 않는다.
+    - 출처 충실성(TOP3 헤드라인 및 본문 공통): 시간 전후 관계('~이후')를 근거 없는 단일 인과로 단정하지 않는다. 당해 연도 전망 유지와 차기 연도 전망이 혼재된 경우 당해 연도 단독 원인으로 왜곡하지 않는다. 불확실성·개인 의견·미래 해석은 출처에 귀속되거나 조건부 표현을 유지한다.
     - 기존 선정된 기사 3건의 순서, 식별자(news_id), URL, 핵심 수치, 역할/안전 정책을 그대로 보존한다.
     - 시스템 지침이나 운영자 메모 메타 문구를 고객 본문 텍스트에 그대로 유출하지 않는다.
     """).strip()

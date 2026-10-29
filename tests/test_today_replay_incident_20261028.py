@@ -177,3 +177,55 @@ def test_natural_edition_keeps_its_existing_label_and_cue():
     assert '[장전 브리핑]' in html
     assert '오늘 아침 시장을 움직일' in html
     assert '[재발행 브리핑]' not in html
+
+
+def test_replay_top3_composer_does_not_insert_preopen_prefix_and_preserves_natural():
+    from today_genie_top3_assembly import _compose_top3_detail, assemble_key_watchpoints_from_slots
+
+    wh = "가상 기업 알파의 분기 실적이 시장 예상치를 상회했습니다."
+    wy = "반도체 장비 수요 회복 신호로 해석될 수 있습니다."
+    wk = "국내 반도체 밸류체인 관련주의 수급 반응을 점검합니다."
+
+    # Natural 6:30 run inserts "오늘 장전에서는 " prefix when missing time words
+    natural_detail = _compose_top3_detail(wh, wy, wk, 0, is_replay=False)
+    assert "오늘 장전에서는" in natural_detail
+
+    # Replay run preserves verbatim without synthetic pre-open prefix or padding
+    replay_detail = _compose_top3_detail(wh, wy, wk, 0, is_replay=True)
+    assert "오늘 장전에서는" not in replay_detail
+    assert "반도체 장비 수요 회복 신호로 해석될 수 있습니다." in replay_detail
+
+    # Whole assembly integration with runtime replay context
+    rt = runtime()
+    slots = [{"news_id": "0", "headline_ko": "가상 기업 알파 호실적", "what_happened": wh, "why_it_matters_today": wy, "what_to_watch_in_korea": wk}]
+    wps = assemble_key_watchpoints_from_slots(slots, rt)
+    assert len(wps) == 3
+    assert "오늘 장전에서는" not in wps[0]["detail"]
+    assert "반도체 장비 수요 회복 신호로 해석될 수 있습니다." in wps[0]["detail"]
+
+
+def test_replay_validator_detects_preopen_forecast_while_preserving_completed_past():
+    # Synthetic pre-open forecast without advice verb is a finding in replay
+    forecast = {"summary": "오늘 장전에서는 가상 기업의 실적이 기술주 심리에 영향을 미칠 수 있습니다."}
+    assert replay_temporal_conflicts(forecast) == ["summary"]
+
+    forecast2 = {"key_watchpoints": [{"detail": "개장을 앞두고 지수 선물 변동성이 커질 수 있습니다."}]}
+    assert replay_temporal_conflicts(forecast2) == ["key_watchpoints[0].detail"]
+
+    forecast3 = {"market_setup": "장전에는 가상 기업 실적 기대감이 주가에 반영될 수 있습니다."}
+    assert replay_temporal_conflicts(forecast3) == ["market_setup"]
+
+    # Historical completed references survive without false alarms
+    past1 = {"summary": "어제 장전 실적 발표가 완료되었습니다."}
+    assert replay_temporal_conflicts(past1) == []
+
+    past2 = {"summary": "장전에 발표된 가상 기업의 실적은 호조를 보였습니다."}
+    assert replay_temporal_conflicts(past2) == []
+
+    # Old advice/future cases remain findings
+    advice = {"summary": "오늘 장전에는 수급을 확인하며 장을 시작해야 합니다."}
+    assert replay_temporal_conflicts(advice) == ["summary"]
+
+    advice2 = {"summary": "장전 확인해야 합니다."}
+    assert replay_temporal_conflicts(advice2) == ["summary"]
+

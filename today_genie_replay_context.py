@@ -110,7 +110,8 @@ def replay_temporal_conflicts(data: Dict[str, Any]) -> list[str]:
         label = field in ("title", "channel_drafts.email_subject", "channel_drafts.naver_blog_title")
         if ((label and _PREOPEN_EDITION.search(inspected))
                 or _START_INSTRUCTION.search(inspected)
-                or _WINDOW_INSTRUCTION.search(inspected)):
+                or _WINDOW_INSTRUCTION.search(inspected)
+                or _PREOPEN_FORECAST.search(inspected)):
             conflicts.append(field)
     return conflicts
 
@@ -130,6 +131,9 @@ _ADVICE = (
     r"|(?:살펴|지켜)(?:봅니다|보세요|봐야|보겠|볼\s*필요))"
 )
 _WINDOW_INSTRUCTION = re.compile(_TIME_WINDOW + r"[^.!?\n]*" + _ADVICE)
+_PREOPEN_FORECAST = re.compile(
+    r"(?:오늘\s+)?(?:장전|개장\s*전)(?:에서는|에는|에서)?|개장을\s*앞두고"
+)
 
 # The known noun/verb splice produced by the retired phrase replacement.
 # This is a narrow regression diagnostic, not a general Korean grammar model.
