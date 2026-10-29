@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -1639,6 +1640,34 @@ def _frozen_today_news_selection(job: Any) -> Optional[List[Dict[str, Any]]]:
     return items or None
 
 
+_TODAY_FROZEN_REPLAY_ALLOWED_FIELDS = {
+    # Essential identity and scheduling
+    "target_date",
+    "briefing_type",
+    "briefing_time_kst",
+    "briefing_generated_at_kst",
+    "purpose",
+    "input_feed_status",
+    "editor_note",
+    # Quantitative market feeds (dated numerical observations)
+    "overnight_us_market",
+    "macro_indicators",
+    "korea_japan_indices",
+    # Authority / role metadata
+    "current_role_evidence",
+    # Image weather hint
+    "image_weather_context",
+    # Replay and test context
+    "today_replay_context",
+    "controlled_test_mode",
+    "correction_guidance",
+    # Feed gate and diagnostic/telemetry fields
+    "feed_json_decode_failed_envs",
+    "today_genie_feed_gate",
+    *TODAY_GENIE_FEED_DIAGNOSTIC_KEYS,
+}
+
+
 def _apply_frozen_today_news_selection(
     runtime_input: Dict[str, Any],
     frozen_news: List[Dict[str, Any]],
@@ -1651,13 +1680,27 @@ def _apply_frozen_today_news_selection(
     The dedup gate is deliberately skipped. Its job is to choose today's articles
     and record that choice; here the choice is already made and re-running it
     would drop the parent's articles as "already sent" and substitute new ones.
+
+    Only safe, non-narrative quantitative feeds, authority metadata, and replay
+    context are projected. Unrelated/live narrative containers (such as live
+    risk_factors or unknown narrative fields) are excluded so they cannot leak
+    into prompt builders. Caller input is not mutated.
     """
-    out = dict(runtime_input)
-    out["top_market_news"] = frozen_news
+    out: Dict[str, Any] = {}
+    for key in _TODAY_FROZEN_REPLAY_ALLOWED_FIELDS:
+        if key in runtime_input:
+            val = runtime_input[key]
+            out[key] = copy.deepcopy(val) if isinstance(val, (dict, list)) else val
+
+    out["top_market_news"] = [dict(item) for item in frozen_news]
+    out["risk_factors"] = []
     out["today_news_selection_frozen"] = True
     out["today_news_selection_frozen_parent_run_id"] = parent_run_id or None
-    if correction_guidance:
-        out["correction_guidance"] = str(correction_guidance).strip()
+
+    effective_guidance = correction_guidance or runtime_input.get("correction_guidance")
+    if effective_guidance:
+        out["correction_guidance"] = str(effective_guidance).strip()
+
     # Same shape metadata_from_gate_result returns, so the artifact keeps its
     # selection evidence: a child with no selected_items cannot itself be
     # body_only-remediated, which would break the chain one run later.
@@ -2340,6 +2383,15 @@ def _today_genie_risk_fallbacks_from_feeds(runtime_input: Dict[str, Any]) -> Lis
     if fallback:
         return fallback
 
+    if is_today_replay(runtime_input):
+        return [
+            {
+                "risk": "금리·환율 반응",
+                "detail": "금리와 원/달러 환율이 같은 방향으로 움직이는지 관측 기준에 맞춰 확인합니다.",
+                "basis": "interpretation",
+            }
+        ]
+
     return [
         {
             "risk": "금리·환율 반응",
@@ -2540,6 +2592,35 @@ def stabilize_today_genie_market_narrative(
     return out
 
 
+_EDITION_LABEL_PATTERN = re.compile(r"(오늘의\s*지니\s*)?(?:장전|개장\s*전)\s*브리핑")
+_PAST_WINDOW_PATTERN = re.compile(
+    r"(?:전일|어제|지난\s*거래일|당시)\s*(?:개장\s*후\s*)?(?:첫\s*30\s*분|장\s*초반|장전|개장\s*전)"
+)
+
+
+def _align_replay_subject_edition_label(subj: str) -> str:
+    """Align current edition label in subject to neutral replay edition.
+
+    Historical clauses (e.g. '어제 장전 브리핑', '지난 거래일 장전 브리핑')
+    must remain byte-identical.
+    """
+    if not isinstance(subj, str) or not subj.strip():
+        return subj
+
+    past_spans = [m.span() for m in _PAST_WINDOW_PATTERN.finditer(subj)]
+
+    def _replace(m: re.Match[str]) -> str:
+        m_start, m_end = m.span()
+        # If this match overlaps with any past-window span, preserve it as a historical clause
+        for p_start, p_end in past_spans:
+            if not (m_end <= p_start or m_start >= p_end):
+                return m.group(0)
+        prefix = m.group(1) or ""
+        return f"{prefix}재발행 브리핑"
+
+    return _EDITION_LABEL_PATTERN.sub(_replace, subj).strip()
+
+
 def stabilize_today_genie_validation_fields(
     data: Dict[str, Any],
     runtime_input: Dict[str, Any],
@@ -2553,6 +2634,18 @@ def stabilize_today_genie_validation_fields(
     normalized = stabilize_today_genie_market_narrative(normalized, runtime_input)
     normalized = stabilize_today_genie_top3_grounding(normalized, runtime_input)
     normalized = stabilize_today_genie_image_prompt_anchors(normalized, runtime_input)
+
+    if is_today_replay(runtime_input):
+        drafts = normalized.get("channel_drafts")
+        if isinstance(drafts, dict):
+            drafts = dict(drafts)
+            subj = drafts.get("email_subject")
+            if isinstance(subj, str):
+                drafts["email_subject"] = _align_replay_subject_edition_label(subj)
+            naver_title = drafts.get("naver_blog_title")
+            if isinstance(naver_title, str):
+                drafts["naver_blog_title"] = _align_replay_subject_edition_label(naver_title)
+            normalized["channel_drafts"] = drafts
 
     risk_rows: List[Dict[str, str]] = []
     source_risks = normalized.get("risk_check")
@@ -2583,9 +2676,14 @@ def stabilize_today_genie_validation_fields(
         "리스크 관리",
     )
     if not closing or any(phrase in closing for phrase in lecture_tails):
-        normalized["closing_message"] = (
-            "오늘은 CPI 이후 금리·환율 반응과 외국인 수급이 같은 방향인지 먼저 확인하겠습니다."
-        )
+        if is_today_replay(runtime_input):
+            normalized["closing_message"] = (
+                "금리·환율 반응과 외국인 수급은 입력의 관측 기준에 맞춰 함께 확인합니다."
+            )
+        else:
+            normalized["closing_message"] = (
+                "오늘은 CPI 이후 금리·환율 반응과 외국인 수급이 같은 방향인지 먼저 확인하겠습니다."
+            )
 
     # Deterministic strip of forbidden customer-surface cliche closers
     # (validators._forbidden_surface_cliche_issues). Keep validators strict;
