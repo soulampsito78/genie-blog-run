@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from orchestrator import (
     OrchestrationResult,
+    build_run_artifact_metadata,
     execute_orchestrator_run,
     persist_orchestrator_run_artifact,
     send_email_if_allowed,
@@ -449,6 +450,147 @@ class TodayGenieOrchestratorImageGenerationTests(unittest.TestCase):
         mock_send.assert_called_once()
         self.assertEqual(mock_send.call_args.args[0], valid_html)
         self.assertEqual(mock_send.call_args.kwargs.get("inline_jpeg_parts"), [])
+
+    def test_artifact_metadata_preserves_issue_details_for_draft_only(self) -> None:
+        result = _pass_today_result(validation_result="draft_only")
+        issue = {
+            "code": "TEMPORAL_ANCHOR_MISMATCH",
+            "message": "Key watchpoint date does not match target date",
+            "severity": "error",
+            "field_path": "data.key_watchpoints[0].source_published_at",
+        }
+        result.response_data["issues"] = [issue]
+        meta = build_run_artifact_metadata(
+            result,
+            run_id="20261104_070000_today_genie_test0001",
+            email_sent=False,
+        )
+        self.assertEqual(meta["issue_codes"], ["TEMPORAL_ANCHOR_MISMATCH"])
+        self.assertEqual(meta["issue_details"], [issue])
+        self.assertEqual(meta["customer_delivery_status"], "not_sent")
+        self.assertEqual(meta["owner_review_status"], "pending_review")
+        self.assertEqual(meta["workflow_status"], "draft_only")
+
+    def test_artifact_metadata_nested_runtime_validation_fallback(self) -> None:
+        nested_issue = {
+            "code": "TEMPORAL_ORDER_INVALID",
+            "message": "Timestamp is ahead of anchor",
+            "severity": "error",
+            "field": "source_published_at",
+        }
+        result = OrchestrationResult(
+            decision=PublishingDecision(
+                send_email=False,
+                create_naver_draft=False,
+                auto_publish=False,
+                require_review=True,
+                suppress_external=True,
+            ),
+            reason_summary="validation_hold",
+            response_status=200,
+            mode="today_genie",
+            response_data={
+                "validation_result": "hold",
+                "workflow_status": "draft_only",
+                "runtime_validation_check": {
+                    "issue_details": [nested_issue],
+                },
+            },
+        )
+        meta = build_run_artifact_metadata(
+            result,
+            run_id="20261104_070000_today_genie_test0002",
+            email_sent=False,
+        )
+        self.assertEqual(meta["issue_codes"], ["TEMPORAL_ORDER_INVALID"])
+        self.assertEqual(meta["issue_details"], [nested_issue])
+        self.assertEqual(meta["validation_result"], "hold")
+        self.assertEqual(meta["customer_delivery_status"], "not_sent")
+
+    def test_artifact_metadata_malformed_and_forbidden_details_safe_handling(self) -> None:
+        malformed_issues = [
+            "not-a-dict",
+            None,
+            123,
+            {
+                "code": "TEMPORAL_STALE",
+                "message": "Feed is stale",
+                "severity": "warning",
+                "field_path": "today_genie_feed_staleness",
+                "raw_payload": {"secret": 123},
+                "prompt": "secret prompt",
+                "credentials": "token",
+                "recipients": ["foo@bar.com"],
+                "data": {"body": "..."},
+            },
+        ]
+        result = OrchestrationResult(
+            decision=PublishingDecision(
+                send_email=False,
+                create_naver_draft=False,
+                auto_publish=False,
+                require_review=True,
+                suppress_external=True,
+            ),
+            reason_summary="validation_fail",
+            response_status=200,
+            mode="today_genie",
+            response_data={
+                "validation_result": "draft_only",
+                "workflow_status": "draft_only",
+                "issues": malformed_issues,
+            },
+        )
+        meta = build_run_artifact_metadata(
+            result,
+            run_id="20261104_070000_today_genie_test0003",
+            email_sent=False,
+        )
+        self.assertEqual(meta["issue_codes"], ["TEMPORAL_STALE"])
+        expected_cleaned = {
+            "code": "TEMPORAL_STALE",
+            "message": "Feed is stale",
+            "severity": "warning",
+            "field_path": "today_genie_feed_staleness",
+        }
+        self.assertEqual(meta["issue_details"], [expected_cleaned])
+        self.assertEqual(meta["validation_result"], "draft_only")
+        self.assertEqual(meta["customer_delivery_status"], "not_sent")
+
+    def test_artifact_metadata_failed_api_reply_preserves_issue_details(self) -> None:
+        failed_issue = {
+            "code": "TEMPORAL_ANCHOR_MISSING",
+            "message": "Missing anchor date",
+            "severity": "critical",
+        }
+        result = OrchestrationResult(
+            decision=PublishingDecision(
+                send_email=False,
+                create_naver_draft=False,
+                auto_publish=False,
+                require_review=True,
+                suppress_external=True,
+            ),
+            reason_summary="api_error",
+            response_status=500,
+            mode="today_genie",
+            response_data={
+                "detail": {
+                    "reason": "validation_failed",
+                    "validation_result": "hold",
+                    "issues": [failed_issue],
+                }
+            },
+        )
+        meta = build_run_artifact_metadata(
+            result,
+            run_id="20261104_070000_today_genie_test0004",
+            email_sent=False,
+        )
+        self.assertEqual(meta["issue_codes"], ["TEMPORAL_ANCHOR_MISSING"])
+        self.assertEqual(meta["issue_details"], [failed_issue])
+        self.assertEqual(meta["customer_delivery_status"], "not_sent")
+        self.assertEqual(meta["owner_review_status"], "pending_review")
 
 
 if __name__ == "__main__":

@@ -2196,6 +2196,7 @@ def superseded_child_check(
 def can_approve_customer_send(
     meta: Dict[str, Any], *, has_email_html: bool,
     allow_manual_quality_warning: bool = False,
+    now: Optional[datetime] = None,
 ) -> tuple[bool, str]:
     mode = str(meta.get("mode") or "")
     if mode not in APPROVABLE_MODES:
@@ -2245,14 +2246,19 @@ def can_approve_customer_send(
     vr = str(meta.get("validation_result") or "")
     if vr == "block" or str(meta.get("artifact_status") or "") == "failed":
         return False, "not_approvable"
+    from customer_review_confirmation import today_quality_warning_present
+
+    is_today_manual_warning = bool(
+        allow_manual_quality_warning and today_quality_warning_present(meta, now=now)
+    )
     if str(meta.get("customer_surface_status") or "") == PRODUCT_REVIEW_REQUIRED:
-        from customer_review_confirmation import today_quality_warning_present
         # Only the authenticated human route opts in. Default/automated callers
         # remain blocked, and all hard guards above/below remain unchanged.
-        if not (allow_manual_quality_warning and today_quality_warning_present(meta)):
+        if not is_today_manual_warning:
             return False, "product_surface_remediation_needed"
     if mode == "today_genie" and vr != "pass":
-        return False, "review_required_remediation_needed"
+        if not is_today_manual_warning:
+            return False, "review_required_remediation_needed"
     if mode in {"keysuri_global_tech", "keysuri_korea_tech"}:
         if meta.get("reader_surface_enforced") is not True:
             return False, "keysuri_reader_surface_unverified"
