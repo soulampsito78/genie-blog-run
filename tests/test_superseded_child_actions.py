@@ -109,6 +109,15 @@ class SupersededChildActionsTests(unittest.TestCase):
     def _save_run(self, meta: dict) -> None:
         save_run_artifact(meta, email_html="<p>briefing</p>")
 
+    def _save_raw_run(self, meta: dict, email_html: str = "<p>briefing</p>") -> None:
+        """Write raw metadata directly without save-time normalization or defaulting."""
+        run_id = str(meta.get("run_id") or "").strip()
+        (self.runs_dir / f"{run_id}.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        if email_html:
+            (self.runs_dir / f"{run_id}.email.html").write_text(email_html, encoding="utf-8")
+
     def test_summary_shaped_lineage_accepted_parent_renders_reference_only_detail(self) -> None:
         """Exact incident shape: regen_parent_run_id + auto_parent_id, parent is accepted.
 
@@ -365,6 +374,474 @@ class SupersededChildActionsTests(unittest.TestCase):
         is_sup, pid, pmeta, reason = superseded_child_check(child_meta)
         self.assertFalse(is_sup)
         self.assertEqual(reason, "")
+
+    def test_owner_review_mail_alone_does_not_block_eligible_child(self) -> None:
+        """Natural Global/Korea owner-review mail sets generic smtp_attempted/email_sent
+        and explicit owner_email_* fields while customer_delivery_status is not_sent.
+        Parent is NOT submitted to customers; child remains eligible."""
+        parent_id = "20261028_123001_keysuri_global_tech_d26e88e2"
+        child_id = "20261028_124632_keysuri_global_tech_acf60d79"
+
+        # 1. Pending review parent with owner-review mail sent
+        parent_meta = {
+            "run_id": parent_id,
+            "mode": "keysuri_global_tech",
+            "program_id": "keysuri_global_tech",
+            "smtp_attempted": True,
+            "email_sent": True,
+            "owner_email_smtp_attempted": True,
+            "owner_email_delivery_status": "smtp_accepted",
+            "owner_email_sent_at_kst": "2026-10-28T12:31:00+09:00",
+            "owner_email_recipient_count": 1,
+            "owner_review_status": "pending_review",
+            "customer_delivery_status": "not_sent",
+            "customer_email_delivery_status": "not_sent",
+            "validation_result": "pass",
+            "safety_verdict": "SAFE",
+            "editorial_verdict": "REVIEW",
+            "reader_surface_enforced": True,
+            "reader_surface_complete": True,
+        }
+        child_meta = {
+            "run_id": child_id,
+            "mode": "keysuri_global_tech",
+            "program_id": "keysuri_global_tech",
+            "regen_parent_run_id": parent_id,
+            "customer_delivery_status": "not_sent",
+            "customer_email_delivery_status": "not_sent",
+            "owner_review_status": "pending_review",
+            "validation_result": "pass",
+            "safety_verdict": "SAFE",
+            "editorial_verdict": "REVIEW",
+            "reader_surface_enforced": True,
+            "reader_surface_complete": True,
+        }
+        self._save_run(parent_meta)
+        self._save_run(child_meta)
+
+        is_sup, pid, pmeta, reason = superseded_child_check(child_meta)
+        self.assertFalse(is_sup)
+        self.assertEqual(reason, "")
+
+        can_appr, reason = can_approve_customer_send(child_meta, has_email_html=True)
+        self.assertNotEqual(reason, "superseded_child_reference_only")
+
+        self._login()
+        resp_confirm = self.client.get(f"/admin/runs/{child_id}/approve-confirm")
+        self.assertNotIn("동일 발행일의 원본 실행이 이미 처리되어", resp_confirm.text)
+
+        resp_detail = self.client.get(f"/admin/runs/{child_id}")
+        self.assertEqual(resp_detail.status_code, 200)
+        self.assertNotIn("대체된 교정본", resp_detail.text)
+        self.assertNotIn("참고용 보존 실행", resp_detail.text)
+
+        # 2. Held parent with owner-review mail sent: child remains eligible
+        parent_meta_held = dict(parent_meta, owner_review_status="held")
+        self._save_run(parent_meta_held)
+        is_sup_held, _, _, reason_held = superseded_child_check(child_meta)
+        self.assertFalse(is_sup_held)
+        self.assertEqual(reason_held, "")
+
+        # 3. Korea tech mode owner-review mail
+        korea_parent_id = "20261028_183001_keysuri_korea_tech_11223344"
+        korea_child_id = "20261028_184632_keysuri_korea_tech_55667788"
+        korea_parent = {
+            "run_id": korea_parent_id,
+            "mode": "keysuri_korea_tech",
+            "program_id": "keysuri_korea_tech",
+            "smtp_attempted": True,
+            "email_sent": True,
+            "owner_email_smtp_attempted": True,
+            "owner_email_delivery_status": "smtp_accepted",
+            "customer_delivery_status": "not_sent",
+            "customer_email_delivery_status": "not_sent",
+            "validation_result": "pass",
+            "safety_verdict": "SAFE",
+            "editorial_verdict": "REVIEW",
+            "reader_surface_enforced": True,
+            "reader_surface_complete": True,
+            "bottom_shot_source": "fixed_105936_fallback",
+            "bottom_shot_asset_id": "keysuri_korea_bottom_20260605_105936",
+        }
+        korea_child = {
+            "run_id": korea_child_id,
+            "mode": "keysuri_korea_tech",
+            "program_id": "keysuri_korea_tech",
+            "regen_parent_run_id": korea_parent_id,
+            "customer_delivery_status": "not_sent",
+            "customer_email_delivery_status": "not_sent",
+            "owner_review_status": "pending_review",
+            "validation_result": "pass",
+            "safety_verdict": "SAFE",
+            "editorial_verdict": "REVIEW",
+            "reader_surface_enforced": True,
+            "reader_surface_complete": True,
+            "bottom_shot_source": "fixed_105936_fallback",
+            "bottom_shot_asset_id": "keysuri_korea_bottom_20260605_105936",
+        }
+        self._save_run(korea_parent)
+        self._save_run(korea_child)
+        k_sup, _, _, k_reason = superseded_child_check(korea_child)
+        self.assertFalse(k_sup)
+        self.assertEqual(k_reason, "")
+
+    def test_actual_customer_evidence_overrides_owner_mail_evidence(self) -> None:
+        """Affirmative customer flags, counts, timestamps, statuses override owner mail evidence."""
+        parent_id = "20261028_123001_keysuri_global_tech_d26e88e2"
+        child_id = "20261028_124632_keysuri_global_tech_acf60d79"
+
+        base_owner_mail = {
+            "smtp_attempted": True,
+            "email_sent": True,
+            "owner_email_smtp_attempted": True,
+            "owner_email_delivery_status": "smtp_accepted",
+            "owner_email_sent_at_kst": "2026-10-28T12:31:00+09:00",
+            "owner_email_recipient_count": 1,
+            "owner_review_status": "pending_review",
+        }
+
+        customer_override_flags = [
+            {"customer_delivery_attempted": True},
+            {"customer_email_smtp_attempted": True},
+            {"customer_email_delivery_attempted": True},
+            {"delivery_attempted": True},
+            {"send_attempted": True},
+            {"customer_delivery_attempted_at": "2026-10-28T12:35:00+09:00"},
+            {"customer_email_sent_at_kst": "2026-10-28T12:35:00+09:00"},
+            {"customer_sent_at": "2026-10-28T12:35:00+09:00"},
+            {"customer_delivery_completed_at": "2026-10-28T12:35:00+09:00"},
+            {"customer_delivery_attempt_count": 1},
+            {"customer_delivery_accepted_count": 5},
+            {"smtp_accepted_recipient_count": 5},
+            {"customer_delivery_refused_count": 1},
+            {"smtp_refused_recipient_count": 1},
+            {"customer_delivery_unknown_count": 2},
+            {"smtp_unknown_recipient_count": 2},
+            {"smtp_refused_recipients_masked": ["u***@example.com"]},
+            {"customer_delivery_status": "submitted"},
+            {"customer_delivery_status": "partial_refusal"},
+            {"customer_email_delivery_status": "outcome_unknown"},
+            {"customer_delivery_status": "smtp_accepted"},
+        ]
+        for flag in customer_override_flags:
+            p_meta = {
+                "run_id": parent_id,
+                "mode": "keysuri_global_tech",
+                "customer_delivery_status": "not_sent",
+                "customer_email_delivery_status": "not_sent",
+                **base_owner_mail,
+                **flag,
+            }
+            c_meta = {
+                "run_id": child_id,
+                "mode": "keysuri_global_tech",
+                "regen_parent_run_id": parent_id,
+                "customer_delivery_status": "not_sent",
+            }
+            self._save_run(p_meta)
+            self._save_run(c_meta)
+
+            is_sup, pid, pmeta, reason = superseded_child_check(c_meta)
+            self.assertTrue(is_sup, f"Customer override failed to block for flag: {flag}")
+            self.assertEqual(reason, "superseded_child_reference_only")
+
+    def test_generic_only_legacy_ambiguity_remains_blocked(self) -> None:
+        """Generic smtp_attempted or email_sent without owner review channel evidence remains blocked."""
+        parent_id = "20261028_123001_keysuri_global_tech_d26e88e2"
+        child_id = "20261028_124632_keysuri_global_tech_acf60d79"
+
+        # 1. smtp_attempted alone without owner channel fields
+        p1 = {
+            "run_id": parent_id,
+            "mode": "keysuri_global_tech",
+            "smtp_attempted": True,
+            "customer_delivery_status": "not_sent",
+            "customer_email_delivery_status": "not_sent",
+        }
+        c1 = {
+            "run_id": child_id,
+            "mode": "keysuri_global_tech",
+            "regen_parent_run_id": parent_id,
+            "customer_delivery_status": "not_sent",
+        }
+        self._save_run(p1)
+        self._save_run(c1)
+        is_sup1, _, _, reason1 = superseded_child_check(c1)
+        self.assertTrue(is_sup1)
+        self.assertEqual(reason1, "superseded_child_reference_only")
+
+        # 2. email_sent alone without owner channel fields
+        p2 = {
+            "run_id": parent_id,
+            "mode": "keysuri_global_tech",
+            "email_sent": True,
+            "customer_delivery_status": "not_sent",
+            "customer_email_delivery_status": "not_sent",
+        }
+        self._save_run(p2)
+        is_sup2, _, _, reason2 = superseded_child_check(c1)
+        self.assertTrue(is_sup2)
+        self.assertEqual(reason2, "superseded_child_reference_only")
+
+    def test_malformed_and_contradictory_owner_evidence_fails_closed(self) -> None:
+        """Malformed or contradictory owner channel fields fail closed to parent_reconciliation_required."""
+        parent_id = "20261028_123001_keysuri_global_tech_d26e88e2"
+        child_id = "20261028_124632_keysuri_global_tech_acf60d79"
+
+        contradictory_shapes = [
+            # owner_email_smtp_attempted is False but status is smtp_accepted
+            {
+                "smtp_attempted": True,
+                "owner_email_smtp_attempted": False,
+                "owner_email_delivery_status": "smtp_accepted",
+            },
+            # owner_email_smtp_attempted is True but status is not_sent
+            {
+                "smtp_attempted": True,
+                "owner_email_smtp_attempted": True,
+                "owner_email_delivery_status": "not_sent",
+            },
+            # owner_email_smtp_attempted is True but generic smtp_attempted is False
+            {
+                "smtp_attempted": False,
+                "email_sent": True,
+                "owner_email_smtp_attempted": True,
+                "owner_email_delivery_status": "smtp_accepted",
+            },
+            # owner_email_delivery_status is unknown status
+            {
+                "smtp_attempted": True,
+                "owner_email_smtp_attempted": True,
+                "owner_email_delivery_status": "unexpected_channel_status",
+            },
+            # owner_email_smtp_attempted is non-boolean malformed
+            {
+                "smtp_attempted": True,
+                "owner_email_smtp_attempted": "yes",
+                "owner_email_delivery_status": "smtp_accepted",
+            },
+            # owner_email_delivery_status is non-string malformed
+            {
+                "smtp_attempted": True,
+                "owner_email_smtp_attempted": True,
+                "owner_email_delivery_status": 12345,
+            },
+            # owner_email_recipient_count is malformed non-integer string
+            {
+                "smtp_attempted": True,
+                "owner_email_smtp_attempted": True,
+                "owner_email_delivery_status": "smtp_accepted",
+                "owner_email_recipient_count": "MALFORMED_COUNT",
+            },
+        ]
+        for shape in contradictory_shapes:
+            p_meta = {
+                "run_id": parent_id,
+                "mode": "keysuri_global_tech",
+                "customer_delivery_status": "not_sent",
+                "customer_email_delivery_status": "not_sent",
+                **shape,
+            }
+            c_meta = {
+                "run_id": child_id,
+                "mode": "keysuri_global_tech",
+                "regen_parent_run_id": parent_id,
+                "customer_delivery_status": "not_sent",
+            }
+            self._save_run(p_meta)
+            self._save_run(c_meta)
+
+            is_sup, _, _, reason = superseded_child_check(c_meta)
+            self.assertTrue(is_sup, f"Failed to fail-closed on contradictory shape: {shape}")
+            self.assertEqual(reason, "parent_reconciliation_required")
+
+    def test_customer_state_safety_gap_regressions(self) -> None:
+        """Missing/empty/unknown customer status aliases, conflicting aliases, and string/nonboolean
+        customer attempt flags combined with owner SMTP must fail closed."""
+        parent_id = "20261028_123001_keysuri_global_tech_d26e88e2"
+        child_id = "20261028_124632_keysuri_global_tech_acf60d79"
+
+        base_owner_mail = {
+            "smtp_attempted": True,
+            "email_sent": True,
+            "owner_email_smtp_attempted": True,
+            "owner_email_delivery_status": "smtp_accepted",
+            "owner_email_sent_at_kst": "2026-10-28T12:31:00+09:00",
+            "owner_email_recipient_count": 1,
+            "owner_review_status": "pending_review",
+        }
+
+        # 1. Missing or empty customer status aliases must not become eligible (remain blocked)
+        missing_empty_shapes = [
+            # Both absent
+            {},
+            # customer_delivery_status empty
+            {"customer_delivery_status": ""},
+            # customer_email_delivery_status empty
+            {"customer_email_delivery_status": ""},
+            # Both empty
+            {"customer_delivery_status": "", "customer_email_delivery_status": ""},
+        ]
+        for shape in missing_empty_shapes:
+            p_meta = {
+                "run_id": parent_id,
+                "mode": "keysuri_global_tech",
+                **base_owner_mail,
+                **shape,
+            }
+            c_meta = {
+                "run_id": child_id,
+                "mode": "keysuri_global_tech",
+                "regen_parent_run_id": parent_id,
+                "customer_delivery_status": "not_sent",
+            }
+            self._save_raw_run(p_meta)
+            self._save_run(c_meta)
+            is_sup, _, _, reason = superseded_child_check(c_meta)
+            self.assertTrue(is_sup, f"Missing/empty customer status must block: {shape}")
+            self.assertEqual(reason, "superseded_child_reference_only")
+
+        # 2. Unknown or non-string customer delivery status fails closed to reconciliation
+        unknown_status_shapes = [
+            {"customer_delivery_status": "unrecognized_status"},
+            {"customer_email_delivery_status": "unrecognized_status", "customer_delivery_status": "not_sent"},
+            {"customer_delivery_status": 9999},
+            {"customer_email_delivery_status": ["not_sent"]},
+        ]
+        for shape in unknown_status_shapes:
+            p_meta = {
+                "run_id": parent_id,
+                "mode": "keysuri_global_tech",
+                **base_owner_mail,
+                **shape,
+            }
+            c_meta = {
+                "run_id": child_id,
+                "mode": "keysuri_global_tech",
+                "regen_parent_run_id": parent_id,
+                "customer_delivery_status": "not_sent",
+            }
+            self._save_raw_run(p_meta)
+            self._save_run(c_meta)
+            is_sup, _, _, reason = superseded_child_check(c_meta)
+            self.assertTrue(is_sup, f"Unknown customer status must fail closed: {shape}")
+            self.assertEqual(reason, "parent_reconciliation_required")
+
+        # 3. String / non-boolean customer attempt flags combined with owner SMTP fail closed to reconciliation
+        nonboolean_attempt_shapes = [
+            {"customer_delivery_attempted": "true"},
+            {"customer_delivery_attempted": 1},
+            {"customer_email_smtp_attempted": "yes"},
+            {"customer_email_delivery_attempted": "TRUE"},
+            {"delivery_attempted": "1"},
+            {"send_attempted": ["send"]},
+        ]
+        for shape in nonboolean_attempt_shapes:
+            p_meta = {
+                "run_id": parent_id,
+                "mode": "keysuri_global_tech",
+                "customer_delivery_status": "not_sent",
+                "customer_email_delivery_status": "not_sent",
+                **base_owner_mail,
+                **shape,
+            }
+            c_meta = {
+                "run_id": child_id,
+                "mode": "keysuri_global_tech",
+                "regen_parent_run_id": parent_id,
+                "customer_delivery_status": "not_sent",
+            }
+            self._save_raw_run(p_meta)
+            self._save_run(c_meta)
+            is_sup, _, _, reason = superseded_child_check(c_meta)
+            self.assertTrue(is_sup, f"Nonboolean attempt flag must fail closed: {shape}")
+            self.assertEqual(reason, "parent_reconciliation_required")
+
+        # 4. Conflicting aliases combined with owner SMTP block child
+        conflicting_shapes = [
+            {"customer_delivery_status": "not_sent", "customer_email_delivery_status": "submitted"},
+            {"customer_delivery_status": "not_sent", "customer_email_delivery_status": "outcome_unknown"},
+            {"customer_delivery_status": "not_sent", "customer_email_delivery_status": "partial_refusal"},
+        ]
+        for shape in conflicting_shapes:
+            p_meta = {
+                "run_id": parent_id,
+                "mode": "keysuri_global_tech",
+                **base_owner_mail,
+                **shape,
+            }
+            c_meta = {
+                "run_id": child_id,
+                "mode": "keysuri_global_tech",
+                "regen_parent_run_id": parent_id,
+                "customer_delivery_status": "not_sent",
+            }
+            self._save_raw_run(p_meta)
+            self._save_run(c_meta)
+            is_sup, _, _, reason = superseded_child_check(c_meta)
+            self.assertTrue(is_sup, f"Conflicting aliases must block child: {shape}")
+            self.assertEqual(reason, "superseded_child_reference_only")
+
+    def test_durable_safety_store_boundary_overrides_owner_mail_parent(self) -> None:
+        """Durable publication reservation in safety store overrides owner review mail parent."""
+        parent_id = "20261028_123001_keysuri_global_tech_d26e88e2"
+        child_id = "20261028_124632_keysuri_global_tech_acf60d79"
+
+        parent_meta = {
+            "run_id": parent_id,
+            "mode": "keysuri_global_tech",
+            "smtp_attempted": True,
+            "email_sent": True,
+            "owner_email_smtp_attempted": True,
+            "owner_email_delivery_status": "smtp_accepted",
+            "customer_delivery_status": "not_sent",
+            "customer_email_delivery_status": "not_sent",
+        }
+        child_meta = {
+            "run_id": child_id,
+            "mode": "keysuri_global_tech",
+            "regen_parent_run_id": parent_id,
+            "customer_delivery_status": "not_sent",
+        }
+        self._save_run(parent_meta)
+        self._save_run(child_meta)
+
+        # Write durable attempt reservation
+        product = PRODUCTS["keysuri_global_tech"]
+        day = "2026-10-28"
+        att_id = "publication_" + _digest([product, day])
+        s_store._write_json(
+            f"publication_attempts/{att_id}.json",
+            {"attempt_id": att_id, "run_id": parent_id, "product_code": product, "publication_date": day},
+        )
+
+        is_sup, _, _, reason = superseded_child_check(child_meta)
+        self.assertTrue(is_sup)
+        self.assertEqual(reason, "superseded_child_reference_only")
+
+    def test_different_dates_and_modes_with_owner_mail_parent_fails_closed(self) -> None:
+        """Different dates or modes with owner-mail parent fail closed to parent_reconciliation_required."""
+        child_id = "20261028_124632_keysuri_global_tech_acf60d79"
+
+        # Different date
+        c1 = {
+            "run_id": child_id,
+            "mode": "keysuri_global_tech",
+            "parent_run_id": "20261027_123001_keysuri_global_tech_d26e88e2",
+        }
+        is_sup1, _, _, reason1 = superseded_child_check(c1)
+        self.assertTrue(is_sup1)
+        self.assertEqual(reason1, "parent_reconciliation_required")
+
+        # Different mode
+        c2 = {
+            "run_id": child_id,
+            "mode": "keysuri_global_tech",
+            "parent_run_id": "20261028_063000_today_genie_11223344",
+        }
+        is_sup2, _, _, reason2 = superseded_child_check(c2)
+        self.assertTrue(is_sup2)
+        self.assertEqual(reason2, "parent_reconciliation_required")
 
     def test_durable_only_reservation_stops_effects(self) -> None:
         """A publication_attempts record in safety store stops effects even if parent artifact status is not_sent."""
