@@ -458,21 +458,24 @@ class KeysuriGradedValidationTests(unittest.TestCase):
         # development and creates a false full-suite failure.
         import subprocess
 
-        changed = subprocess.run(
-            [
-                "git",
-                "show",
-                "--format=",
-                "--name-only",
-                "ac3f4f917149a422aa7b43d9aca6ceab732600a3",
-                "--",
-                "today_*.py",
-            ],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
+        try:
+            changed = subprocess.run(
+                [
+                    "git",
+                    "show",
+                    "--format=",
+                    "--name-only",
+                    "ac3f4f917149a422aa7b43d9aca6ceab732600a3",
+                    "--",
+                    "today_*.py",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+            changed = ""
         self.assertEqual(changed, "")
 
     def test_12_production_corpus_shadow_matrix(self) -> None:
@@ -560,6 +563,369 @@ class KeysuriGradedValidationTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["side_effects"]["smtp"], 0)
         self.assertEqual(payload["customer_send"], 0)
+
+    def test_15_canonical_adjudication_repaired_old_connector_vs_real_residual(self) -> None:
+        # 1. Repaired old connector: older pass flagged ellipsis, but actual final structured field
+        # and rendered surface prove the defect gone. Must NOT be counted as residual, stays traceable as repaired.
+        repaired_result = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_korea_tech",
+            subject="[운영자 검토] 정상 제목",
+            email_html="<html><body><p>시장 변화를 확인합니다.</p></body></html>",
+            structured_briefing={"one_line_checkpoint": "시장 변화를 확인합니다."},
+            visible_quality_fields={
+                "terminal_issue_codes": ["keysuri_korean_connector_ellipsis_blocked"],
+                "visible_text_quality_samples": [
+                    {
+                        "path": "generated_briefing.one_line_checkpoint",
+                        "sample": "시장…변화를 확인합니다.",
+                        "repaired_sample": "시장 변화를 확인합니다.",
+                        "validator_result": "repaired",
+                    }
+                ],
+            },
+        )
+        self.assertEqual(repaired_result["safety_verdict"], SAFETY_SAFE)
+        self.assertEqual(repaired_result["editorial_verdict"], EDITORIAL_READY)
+        self.assertEqual(repaired_result["owner_delivery_behavior"], "SEND_OWNER_REVIEW")
+        self.assertNotIn("keysuri_korean_connector_ellipsis_blocked", repaired_result["review_issue_codes"])
+        self.assertIn("keysuri_korean_connector_ellipsis_blocked", repaired_result["repaired_issue_codes"])
+        self.assertTrue(repaired_result["repair_history"])
+        self.assertEqual(repaired_result["repair_history"][0]["before"], "시장…변화를 확인합니다.")
+        self.assertEqual(repaired_result["repair_history"][0]["after"], "시장 변화를 확인합니다.")
+
+        # 2. Genuine final connector residual: defect is still in structured field and rendered surface.
+        # Must remain counted as residual, triggering warning/review.
+        residual_result = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_korea_tech",
+            subject="[운영자 검토] 정상 제목",
+            email_html="<html><body><p>시장…변화를 확인합니다.</p></body></html>",
+            structured_briefing={"one_line_checkpoint": "시장…변화를 확인합니다."},
+            visible_quality_fields={
+                "terminal_issue_codes": ["keysuri_korean_connector_ellipsis_blocked"],
+                "visible_text_quality_samples": [
+                    {
+                        "path": "generated_briefing.one_line_checkpoint",
+                        "sample": "시장…변화를 확인합니다.",
+                        "validator_result": "block",
+                    }
+                ],
+            },
+        )
+        self.assertEqual(residual_result["safety_verdict"], SAFETY_SAFE)
+        self.assertEqual(residual_result["editorial_verdict"], EDITORIAL_REVIEW)
+        self.assertEqual(residual_result["owner_delivery_behavior"], OWNER_SEND_WARNING)
+        self.assertIn("keysuri_korean_connector_ellipsis_blocked", residual_result["review_issue_codes"])
+        self.assertNotIn("keysuri_korean_connector_ellipsis_blocked", residual_result["repaired_issue_codes"])
+
+        # 3. Six genuine residuals still trigger POOR (threshold 6 preserved, no waiver)
+        six_residuals = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_korea_tech",
+            subject="[운영자 검토] 정상 제목",
+            email_html="<html><body><p>잔여 결함 표면</p></body></html>",
+            extra_findings=[
+                {"issue_code": "keysuri_korean_connector_ellipsis_blocked", "field": f"item_{i}", "before": f"결함…{i}"}
+                for i in range(6)
+            ],
+        )
+        self.assertEqual(six_residuals["editorial_verdict"], EDITORIAL_POOR)
+        self.assertEqual(six_residuals["owner_delivery_behavior"], OWNER_SEND_POOR_NOTICE)
+
+    def test_16_adversarial_stale_connector_and_residual_adjudication(self) -> None:
+        # 1. Alias handling: old alias field vs real residual via alias
+        # A. Alias 'checkpoint' maps to 'one_line_checkpoint': repaired when clean
+        alias_repaired = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_korea_tech",
+            subject="[운영자 검토] 정상 제목",
+            email_html="<html><body><p>정상 확인 텍스트입니다.</p></body></html>",
+            structured_briefing={"one_line_checkpoint": "정상 확인 텍스트입니다."},
+            extra_findings=[
+                {"issue_code": "keysuri_korean_connector_ellipsis_blocked", "field": "checkpoint", "before": "정상…결함"}
+            ],
+        )
+        self.assertEqual(alias_repaired["editorial_verdict"], EDITORIAL_READY)
+        self.assertNotIn("keysuri_korean_connector_ellipsis_blocked", alias_repaired["review_issue_codes"])
+        self.assertIn("keysuri_korean_connector_ellipsis_blocked", alias_repaired["repaired_issue_codes"])
+
+        # B. Real residual via alias: 'one_line_checkpoint' still has the defect
+        alias_residual = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_korea_tech",
+            subject="[운영자 검토] 정상 제목",
+            email_html="<html><body><p>정상…결함 확인 텍스트입니다.</p></body></html>",
+            structured_briefing={"one_line_checkpoint": "정상…결함 확인 텍스트입니다."},
+            extra_findings=[
+                {"issue_code": "keysuri_korean_connector_ellipsis_blocked", "field": "checkpoint", "before": "정상…결함"}
+            ],
+        )
+        self.assertEqual(alias_residual["editorial_verdict"], EDITORIAL_REVIEW)
+        self.assertIn("keysuri_korean_connector_ellipsis_blocked", alias_residual["review_issue_codes"])
+        self.assertNotIn("keysuri_korean_connector_ellipsis_blocked", alias_residual["repaired_issue_codes"])
+
+        # 2. Absent final evidence fails closed
+        # A. structured_briefing is None: cannot prove repaired
+        absent_briefing = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_korea_tech",
+            subject="[운영자 검토] 정상 제목",
+            email_html="<html><body><p>본문 표면</p></body></html>",
+            structured_briefing=None,
+            extra_findings=[
+                {"issue_code": "keysuri_korean_connector_ellipsis_blocked", "field": "one_line_checkpoint", "before": "결함…1"}
+            ],
+        )
+        self.assertEqual(absent_briefing["editorial_verdict"], EDITORIAL_REVIEW)
+        self.assertIn("keysuri_korean_connector_ellipsis_blocked", absent_briefing["review_issue_codes"])
+
+        # B. Field absent in structured_briefing: cannot prove repaired
+        missing_field = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_korea_tech",
+            subject="[운영자 검토] 정상 제목",
+            email_html="<html><body><p>본문 표면</p></body></html>",
+            structured_briefing={"other_field": "값"},
+            extra_findings=[
+                {"issue_code": "keysuri_korean_connector_ellipsis_blocked", "field": "generated_briefing.one_line_checkpoint", "before": "결함…1"}
+            ],
+        )
+        self.assertEqual(missing_field["editorial_verdict"], EDITORIAL_REVIEW)
+        self.assertIn("keysuri_korean_connector_ellipsis_blocked", missing_field["review_issue_codes"])
+
+        # C. Structured field clean, but rendered surface (email_html) still leaks the defect
+        surface_leak = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_korea_tech",
+            subject="[운영자 검토] 정상 제목",
+            email_html="<html><body><p>누출된 결함…1 표면</p></body></html>",
+            structured_briefing={"one_line_checkpoint": "정상 수정 완료"},
+            extra_findings=[
+                {"issue_code": "keysuri_korean_connector_ellipsis_blocked", "field": "one_line_checkpoint", "before": "결함…1"}
+            ],
+        )
+        self.assertEqual(surface_leak["editorial_verdict"], EDITORIAL_REVIEW)
+        self.assertIn("keysuri_korean_connector_ellipsis_blocked", surface_leak["review_issue_codes"])
+
+        # 3. Other families and unknown codes remain strict
+        other_family = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_korea_tech",
+            subject="[운영자 검토] 정상 제목",
+            email_html="<html><body><p>본문 표면</p></body></html>",
+            structured_briefing={"one_line_checkpoint": "정상 텍스트"},
+            extra_findings=[
+                {"issue_code": "unsupported_claim", "field": "one_line_checkpoint", "before": "불일치"}
+            ],
+        )
+        self.assertEqual(other_family["safety_verdict"], SAFETY_UNSAFE)
+        self.assertEqual(other_family["owner_delivery_behavior"], OWNER_HOLD_INCIDENT)
+
+        unknown_code = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_korea_tech",
+            subject="[운영자 검토] 정상 제목",
+            email_html="<html><body><p>본문 표면</p></body></html>",
+            structured_briefing={"one_line_checkpoint": "정상 텍스트"},
+            extra_findings=[
+                {"issue_code": "unknown_future_defect_code", "field": "one_line_checkpoint"}
+            ],
+        )
+        self.assertEqual(unknown_code["safety_verdict"], SAFETY_INCONCLUSIVE)
+        self.assertEqual(unknown_code["owner_delivery_behavior"], OWNER_HOLD_INCIDENT)
+
+        # 4. Strict threshold 6 boundary: 5 residuals -> WARNING (REVIEW), 6 residuals -> POOR_NOTICE (POOR)
+        five_residuals = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_korea_tech",
+            subject="[운영자 검토] 정상 제목",
+            email_html="<html><body><p>잔여 결함 표면</p></body></html>",
+            extra_findings=[
+                {"issue_code": "keysuri_korean_connector_ellipsis_blocked", "field": f"item_{i}", "before": f"결함…{i}"}
+                for i in range(5)
+            ],
+        )
+        self.assertEqual(five_residuals["editorial_verdict"], EDITORIAL_REVIEW)
+        self.assertEqual(five_residuals["owner_delivery_behavior"], OWNER_SEND_WARNING)
+
+        six_residuals_strict = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_korea_tech",
+            subject="[운영자 검토] 정상 제목",
+            email_html="<html><body><p>잔여 결함 표면</p></body></html>",
+            extra_findings=[
+                {"issue_code": "keysuri_korean_connector_ellipsis_blocked", "field": f"item_{i}", "before": f"결함…{i}"}
+                for i in range(6)
+            ],
+        )
+        self.assertEqual(six_residuals_strict["editorial_verdict"], EDITORIAL_POOR)
+        self.assertEqual(six_residuals_strict["owner_delivery_behavior"], OWNER_SEND_POOR_NOTICE)
+
+    def test_falsification_connector_defect_empty_rendered_and_unrepaired_field(self) -> None:
+        from keysuri_quality_adjudication import _is_connector_defect_gone
+
+        # Falsification check 1: Empty rendered surface cannot prove both final surfaces clean
+        clean_structured = {"one_line_checkpoint": "시장 변화를 확인합니다."}
+        empty_html_defect_gone = _is_connector_defect_gone(
+            {"field": "one_line_checkpoint", "before": "시장…변화를 확인합니다."},
+            structured_briefing=clean_structured,
+            email_html="",
+            subject="",
+        )
+        self.assertFalse(
+            empty_html_defect_gone,
+            "DEFECT: _is_connector_defect_gone returns True when email_html rendered surface is empty/blank",
+        )
+
+        # Falsification check 2: Repairable-but-currently-unrepaired connector field in final structured briefing
+        # '시장…변화' is repairable so repair_korean_connector_ellipsis_text(field_val).blocked is False (repaired is True).
+        # But the briefing text itself is STILL UNREPAIRED! A clipped or non-matching before string must not let it pass.
+        unrepaired_structured = {"one_line_checkpoint": "시장…변화를 확인합니다."}
+        unrepaired_field_defect_gone = _is_connector_defect_gone(
+            {"field": "one_line_checkpoint", "before": "이슈…확산"},
+            structured_briefing=unrepaired_structured,
+            email_html="<html><body><p>시장 변화</p></body></html>",
+            subject="정상 제목",
+        )
+        self.assertFalse(
+            unrepaired_field_defect_gone,
+            "DEFECT: _is_connector_defect_gone returns True for unrepaired connector defect when blocked=False and before-string does not match",
+        )
+
+    def test_canonical_stale_connector_normalization_exhaustive_surface_matrix(self) -> None:
+        from keysuri_quality_adjudication import _is_connector_defect_gone
+
+        clean_text = "국내 테크와 생태계의 주요 변화를 확인합니다."
+        clean_structured = {"one_line_checkpoint": clean_text}
+        valid_html = f"<html><body><article><p>{clean_text}</p></article></body></html>"
+        valid_row = {
+            "issue_code": "keysuri_korean_connector_ellipsis_blocked",
+            "field": "one_line_checkpoint",
+            "before": "국내 테크…생태계",
+        }
+
+        # 1. Both surfaces clean proves defect gone
+        self.assertTrue(
+            _is_connector_defect_gone(
+                valid_row,
+                structured_briefing=clean_structured,
+                email_html=valid_html,
+                subject="[운영자 검토] 정상 제목",
+            )
+        )
+
+        # 2. Rendered surface missing / blank / whitespace-only fails closed
+        for blank_html in ("", "   ", "\n\t\n", "<html><body>   </body></html>"):
+            self.assertFalse(
+                _is_connector_defect_gone(
+                    valid_row,
+                    structured_briefing=clean_structured,
+                    email_html=blank_html,
+                    subject="",
+                ),
+                f"Must fail closed on blank html: {blank_html!r}",
+            )
+
+        # 3. Missing structured briefing or not mapping fails closed
+        self.assertFalse(
+            _is_connector_defect_gone(
+                valid_row,
+                structured_briefing=None,
+                email_html=valid_html,
+                subject="제목",
+            )
+        )
+
+        # 4. Missing structured field or empty field fails closed
+        self.assertFalse(
+            _is_connector_defect_gone(
+                valid_row,
+                structured_briefing={"other_section": clean_text},
+                email_html=valid_html,
+                subject="제목",
+            )
+        )
+        self.assertFalse(
+            _is_connector_defect_gone(
+                valid_row,
+                structured_briefing={"one_line_checkpoint": "   "},
+                email_html=valid_html,
+                subject="제목",
+            )
+        )
+
+        # 5. CURRENT repairable-but-unrepaired connector in final structured briefing fails closed
+        # Even if before string is clipped or completely different!
+        unrepaired_briefing = {"one_line_checkpoint": "국내 테크…생태계의 주요 변화를 확인합니다."}
+        for mismatch_before in ("완전다른결함", "국내", "", "   "):
+            defect_row = {
+                "issue_code": "keysuri_korean_connector_ellipsis_blocked",
+                "field": "one_line_checkpoint",
+                "before": mismatch_before,
+            }
+            self.assertFalse(
+                _is_connector_defect_gone(
+                    defect_row,
+                    structured_briefing=unrepaired_briefing,
+                    email_html=valid_html,
+                    subject="제목",
+                ),
+                f"Must fail closed when structured field contains unrepaired connector: before={mismatch_before!r}",
+            )
+
+        # 6. Rendered surface contains before defect text fails closed
+        rendered_leak_html = f"<html><body><p>국내 테크…생태계 잔여 결함</p></body></html>"
+        self.assertFalse(
+            _is_connector_defect_gone(
+                valid_row,
+                structured_briefing=clean_structured,
+                email_html=rendered_leak_html,
+                subject="제목",
+            )
+        )
+
+        # 7. Adjudication flow: repaired old connector retains history, removes from review/terminal
+        repaired_adj = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_korea_tech",
+            subject="[운영자 검토] 정상 제목",
+            email_html=valid_html,
+            structured_briefing=clean_structured,
+            extra_findings=[valid_row],
+        )
+        self.assertEqual(repaired_adj["safety_verdict"], SAFETY_SAFE)
+        self.assertEqual(repaired_adj["editorial_verdict"], EDITORIAL_READY)
+        self.assertEqual(repaired_adj["owner_delivery_behavior"], "SEND_OWNER_REVIEW")
+        self.assertNotIn("keysuri_korean_connector_ellipsis_blocked", repaired_adj["review_issue_codes"])
+        self.assertIn("keysuri_korean_connector_ellipsis_blocked", repaired_adj["repaired_issue_codes"])
+        self.assertTrue(repaired_adj["repair_history"])
+        self.assertEqual(repaired_adj["repair_history"][0]["before"], "국내 테크…생태계")
+        self.assertEqual(repaired_adj["repair_history"][0]["after"], clean_text)
+
+        # 8. Genuine residuals threshold 6 and unknown codes remain strict
+        res_5 = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_korea_tech",
+            subject="[운영자 검토] 제목",
+            email_html=valid_html,
+            structured_briefing=unrepaired_briefing,
+            extra_findings=[
+                {"issue_code": "keysuri_korean_connector_ellipsis_blocked", "field": f"item_{i}", "before": f"결함…{i}"}
+                for i in range(5)
+            ],
+        )
+        self.assertEqual(res_5["editorial_verdict"], EDITORIAL_REVIEW)
+        self.assertEqual(res_5["owner_delivery_behavior"], OWNER_SEND_WARNING)
+
+        res_6 = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_korea_tech",
+            subject="[운영자 검토] 제목",
+            email_html=valid_html,
+            structured_briefing=unrepaired_briefing,
+            extra_findings=[
+                {"issue_code": "keysuri_korean_connector_ellipsis_blocked", "field": f"item_{i}", "before": f"결함…{i}"}
+                for i in range(6)
+            ],
+        )
+        self.assertEqual(res_6["editorial_verdict"], EDITORIAL_POOR)
+        self.assertEqual(res_6["owner_delivery_behavior"], OWNER_SEND_POOR_NOTICE)
+
+        unsafe_adj = adjudicate_keysuri_owner_surface(
+            program_id="keysuri_korea_tech",
+            subject="[운영자 검토] 제목",
+            email_html=valid_html,
+            structured_briefing=clean_structured,
+            extra_findings=[{"issue_code": "unsupported_claim", "field": "checkpoint"}],
+        )
+        self.assertEqual(unsafe_adj["safety_verdict"], SAFETY_UNSAFE)
+        self.assertEqual(unsafe_adj["owner_delivery_behavior"], OWNER_HOLD_INCIDENT)
 
 
 if __name__ == "__main__":

@@ -545,12 +545,100 @@ def _canonical_delivery_matrix(safety_verdict: str, editorial_verdict: str) -> D
     }
 
 
+def _lookup_structured_field_value(data: Any, path: str) -> Optional[str]:
+    if not isinstance(data, (dict, list)) or not path:
+        return None
+    if isinstance(data, dict) and path in data:
+        val = data[path]
+        return str(val) if isinstance(val, (str, int, float)) else None
+
+    clean_path = path.strip()
+    if clean_path.startswith("generated_briefing."):
+        clean_path = clean_path[len("generated_briefing."):]
+
+    parts = re.split(r"\.|\[(\d+)\]", clean_path)
+    curr = data
+    found = True
+    for part in parts:
+        if not part:
+            continue
+        if part.isdigit():
+            idx = int(part)
+            if isinstance(curr, list) and 0 <= idx < len(curr):
+                curr = curr[idx]
+            else:
+                found = False
+                break
+        elif isinstance(curr, dict) and part in curr:
+            curr = curr[part]
+        else:
+            found = False
+            break
+    if found and isinstance(curr, (str, int, float)):
+        return str(curr)
+
+    if isinstance(data, dict):
+        aliases = {
+            "checkpoint": ["one_line_checkpoint", "checkpoint"],
+            "one_line_checkpoint": ["one_line_checkpoint", "checkpoint"],
+            "headline": ["headline", "korean_title", "title"],
+            "deep_dive": ["deep_dive", "deep_dive_body"],
+        }
+        for alias_key, candidates in aliases.items():
+            if clean_path == alias_key or clean_path.endswith(f".{alias_key}"):
+                for cand in candidates:
+                    if cand in data and isinstance(data[cand], (str, int, float)):
+                        return str(data[cand])
+    return None
+
+
+def _is_connector_defect_gone(
+    row: Mapping[str, Any],
+    *,
+    structured_briefing: Optional[Mapping[str, Any]],
+    email_html: str,
+    subject: str,
+) -> bool:
+    """True when final structured field and rendered surface prove connector defect gone."""
+    from keysuri_visible_text_quality import repair_korean_connector_ellipsis_text
+
+    if not isinstance(structured_briefing, Mapping):
+        return False
+
+    # 1. Rendered surface check: must be present (non-empty)
+    visible_text = extract_visible_text(email_html)
+    if not visible_text.strip():
+        return False
+
+    visible_rendered = f"{str(subject or '').strip()}\n{visible_text}".strip()
+    before = str(row.get("before") or row.get("sample") or row.get("excerpt") or "").strip()
+    if before and before in visible_rendered:
+        return False
+
+    # 2. Structured field check: field must exist, be non-empty, and be clean under detector semantics
+    field_path = str(row.get("field") or row.get("section") or row.get("path") or "").strip()
+    field_val = _lookup_structured_field_value(structured_briefing, field_path)
+    if field_val is None or not str(field_val).strip():
+        return False
+
+    field_str = str(field_val)
+    if before and before in field_str:
+        return False
+
+    res = repair_korean_connector_ellipsis_text(field_str)
+    if res.blocked or res.repaired or (res.text != field_str):
+        return False
+
+    return True
+
+
 def adjudicate_keysuri_quality(
     *,
     program_id: str,
     subject: str,
     email_html: str,
     findings: Sequence[Mapping[str, Any]],
+    structured_briefing: Optional[Mapping[str, Any]] = None,
     owner_review_url: str = "",
 ) -> Dict[str, Any]:
     """Evaluate one final candidate and return the exact owner delivery surface."""
@@ -567,6 +655,26 @@ def adjudicate_keysuri_quality(
         repaired = row.get("reported_state") == FINDING_REPAIRED or (
             policy is not None and policy.severity == FINDING_SEVERITY_INFO
         )
+        if not repaired and code == "keysuri_korean_connector_ellipsis_blocked":
+            if _is_connector_defect_gone(
+                row,
+                structured_briefing=structured_briefing,
+                email_html=email_html,
+                subject=subject,
+            ):
+                repaired = True
+                if not row.get("after"):
+                    fval = _lookup_structured_field_value(
+                        structured_briefing,
+                        str(row.get("field") or row.get("section") or row.get("path") or ""),
+                    )
+                    if fval:
+                        row["after"] = fval
+                    elif row.get("before"):
+                        from keysuri_visible_text_quality import repair_korean_connector_ellipsis_text
+                        r_res = repair_korean_connector_ellipsis_text(str(row["before"]))
+                        if r_res.text:
+                            row["after"] = r_res.text
         if repaired:
             severity = FINDING_SEVERITY_INFO
             state = FINDING_REPAIRED
@@ -717,6 +825,7 @@ def adjudicate_keysuri_owner_surface(
             post_render_result=post_render_result,
             extra_findings=[*(extra_findings or []), *structured_findings],
         ),
+        structured_briefing=structured_briefing,
         owner_review_url=owner_review_url,
     )
     source_fields = (
@@ -776,6 +885,33 @@ def adjudicate_keysuri_owner_surface(
                     for existing in history
                 ):
                     history.append(compact)
+    for row in result.get("findings") or []:
+        if row.get("finding_state") == FINDING_REPAIRED and row.get("before") and row.get("after"):
+            compact = {
+                "issue_code": _bounded_text(row.get("issue_code"), 120),
+                "field": _bounded_text(row.get("field") or row.get("path"), 180),
+                "rank": row.get("rank"),
+                "source_id": _bounded_text(row.get("source_id"), 160),
+                "before": _bounded_text(row.get("before"), 180),
+                "after": _bounded_text(row.get("after"), 180),
+            }
+            compact = {k: v for k, v in compact.items() if v not in (None, "")}
+            history_key = (
+                str(compact.get("issue_code") or ""),
+                str(compact.get("field") or ""),
+                str(compact.get("before") or ""),
+                str(compact.get("after") or ""),
+            )
+            if not any(
+                (
+                    str(existing.get("issue_code") or ""),
+                    str(existing.get("field") or ""),
+                    str(existing.get("before") or ""),
+                    str(existing.get("after") or ""),
+                ) == history_key
+                for existing in history
+            ):
+                history.append(compact)
     result["repair_history"] = history
     return result
 
