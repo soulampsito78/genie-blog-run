@@ -1684,7 +1684,8 @@ def _apply_frozen_today_news_selection(
     Only safe, non-narrative quantitative feeds, authority metadata, and replay
     context are projected. Unrelated/live narrative containers (such as live
     risk_factors or unknown narrative fields) are excluded so they cannot leak
-    into prompt builders. Caller input is not mutated.
+    into prompt builders. Risk factors are strictly derived from the settled
+    selected articles and projected macro indicators. Caller input is not mutated.
     """
     out: Dict[str, Any] = {}
     for key in _TODAY_FROZEN_REPLAY_ALLOWED_FIELDS:
@@ -1693,7 +1694,21 @@ def _apply_frozen_today_news_selection(
             out[key] = copy.deepcopy(val) if isinstance(val, (dict, list)) else val
 
     out["top_market_news"] = [dict(item) for item in frozen_news]
-    out["risk_factors"] = []
+    valid_news = [
+        dict(item)
+        for item in (frozen_news or [])
+        if isinstance(item, dict) and isinstance(item.get("headline"), str) and item["headline"].strip()
+    ]
+    derived_risks: List[Dict[str, Any]] = []
+    if valid_news:
+        try:
+            from ops.probe_today_genie_feeds import build_risk_factors
+
+            macro = out.get("macro_indicators") if isinstance(out.get("macro_indicators"), dict) else {}
+            derived_risks = build_risk_factors(valid_news, macro)
+        except Exception:
+            derived_risks = []
+    out["risk_factors"] = derived_risks
     out["today_news_selection_frozen"] = True
     out["today_news_selection_frozen_parent_run_id"] = parent_run_id or None
 

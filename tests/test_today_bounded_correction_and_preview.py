@@ -281,7 +281,15 @@ def test_frozen_today_replay_input_projection_blocks_unselected_narrative_and_pr
 
     # 2. Projected dictionary validation
     assert projected["top_market_news"] == frozen_news
-    assert projected["risk_factors"] == []
+    assert len(projected["risk_factors"]) >= 1, "Projected risk_factors must not be empty []"
+    assert all(
+        "UNSELECTED_SENTINEL_RISK_EVENT" not in r.get("detail", "")
+        and "UNSELECTED_SENTINEL_RISK_EVENT" not in r.get("risk", "")
+        for r in projected["risk_factors"]
+    ), "Unselected sentinel risk must not leak into projected risks"
+    assert any(
+        "정착 기사 1" in r.get("detail", "") for r in projected["risk_factors"]
+    ), "Derived risk factors must be grounded in settled selected articles"
     assert "unselected_root_narrative" not in projected
     assert "arbitrary_foreign_narrative" not in projected
     assert projected["today_news_selection_frozen"] is True
@@ -352,6 +360,114 @@ def test_frozen_today_replay_input_projection_blocks_unselected_narrative_and_pr
     assert "42100.5" in main_prompt
     assert "4.21" in ext_prompt
     assert "4.21" in main_prompt
+
+
+def _valid_today_data_for_test(runtime_input: dict) -> dict:
+    from today_genie_replay_context import CONTEXT_KEY
+    wps = [
+        {
+            "headline": f"핵심 이슈 {i}",
+            "detail": f"{item['headline'][:25]} 관련 어젯밤 확인된 수치와 오늘 시장 관점입니다.",
+            "news_id": item.get("news_id", f"news_{i}"),
+            "basis": "fact",
+        }
+        for i, item in enumerate(runtime_input.get("top_market_news", []), 1)
+    ]
+    data = {
+        "mode": "today_genie",
+        "title": "2026년 9월 2일 오늘의 지니 글로벌 금융 브리핑 시장 관점",
+        "greeting": "안녕하세요.",
+        "summary": "2026년 9월 2일 금융 브리핑입니다. 야간 시장 주요 지수 흐름과 환율을 종합 점검합니다. 확정 마감 세션 수치를 바탕으로 오늘 아침 운용 관점을 정리합니다.",
+        "market_setup": "확정 마감 기준 상승 지수는 코스피(+0.23%)이고 하락 지수는 코스닥(-1.56%), 나스닥(-1.03%), 다우존스(-0.79%), S&P 500(-0.71%), 니케이(-0.15%)입니다. 오늘 국내 시장에서는 코스피와 코스닥의 엇갈림, 원/달러 환율과 외국인 수급을 차례로 점검하며 니케이 반응도 함께 살핍니다.",
+        "market_snapshot": [
+            {"label": "코스피", "value": "6835.80 (+0.23%)", "basis": "fact"},
+            {"label": "코스닥", "value": "821.25 (-1.56%)", "basis": "fact"},
+            {"label": "S&P 500", "value": "7631.47 (-0.71%)", "basis": "fact"},
+            {"label": "나스닥", "value": "26099.77 (-1.03%)", "basis": "fact"},
+            {"label": "니케이", "value": "66215.34 (-0.15%)", "basis": "fact"},
+            {"label": "다우존스", "value": "52766.88 (-0.79%)", "basis": "fact"},
+        ],
+        "key_watchpoints": wps,
+        "opportunities": [{"theme": "반도체 수급", "reason": "AI 수요 확대 지속", "basis": "interpretation"}],
+        "risk_check": [{"risk": "환율 변동성", "detail": "원/달러 환율 움직임과 외국인 수급 방향을 우선 확인합니다.", "basis": "interpretation"}],
+        "closing_message": "오늘은 외국인 수급을 먼저 확인하고 시장 변동성에 대한 단정은 피합니다.",
+        "image_prompt_studio": "Professional female Korean news anchor presenting financial market news in a modern broadcasting studio with charts showing Nasdaq and S&P 500 data.",
+        "image_prompt_outdoor": "Korean news anchor in professional attire walking near Seoul financial district on a clear morning with subtle references to Treasury yields and US equities.",
+        "hashtags": ["#오늘의지니", "#장전브리핑", "#모닝브리핑", "#증시전망", "#시장점검", "#환율동향", "#투자전략"],
+        "channel_drafts": {
+            "email_subject": "오늘의 지니 재발행 브리핑",
+            "naver_blog_title": "재발행 브리핑 - 시장 정리",
+        },
+    }
+    if CONTEXT_KEY in runtime_input:
+        data[CONTEXT_KEY] = dict(runtime_input[CONTEXT_KEY])
+    return data
+
+
+def test_frozen_today_replay_reconciles_risk_factors_with_validator():
+    from main import _apply_frozen_today_news_selection
+    from validators import validate_today_genie
+    from today_genie_replay_context import CONTEXT_KEY, build_today_replay_context
+
+    parent_id = "20260902_063000_today_genie_12345678"
+    rt_known = dict(_RT_FIXTURE)
+    rt_known["briefing_generated_at_kst"] = "2026-09-02T11:00:00+09:00"
+    rt_known[CONTEXT_KEY] = build_today_replay_context(rt_known, parent_id)
+
+    # Real projection
+    projected = _apply_frozen_today_news_selection(
+        rt_known,
+        rt_known["top_market_news"],
+        parent_run_id=parent_id,
+    )
+
+    # Defect assertion: projected risk_factors must not be empty []
+    assert len(projected["risk_factors"]) >= 1, "Projected risk_factors must not be empty"
+
+    # Real validation: validate_today_genie must NOT emit input_insufficient for risk_factors
+    val_data = _valid_today_data_for_test(projected)
+    val_res = validate_today_genie(val_data, projected)
+    insufficient = [i for i in val_res.issues if i.code == "input_insufficient"]
+    assert not insufficient, f"Complete frozen replay must not emit input_insufficient: {[i.message for i in insufficient]}"
+
+
+def test_natural_behavior_and_fail_closed_cases():
+    from main import _apply_frozen_today_news_selection
+    from validators import validate_today_genie
+
+    # 1. Natural behavior unchanged: natural input with full feeds does not emit input_insufficient
+    data_natural = _valid_today_data_for_test(_RT_FIXTURE)
+    val_natural = validate_today_genie(data_natural, _RT_FIXTURE)
+    assert not any(i.code == "input_insufficient" for i in val_natural.issues)
+
+    # 2. Fail closed on empty selection: risk_factors becomes [], validator emits input_insufficient
+    proj_empty = _apply_frozen_today_news_selection(_RT_FIXTURE, [], parent_run_id=_V_PID)
+    assert proj_empty["risk_factors"] == []
+    val_empty = validate_today_genie(_valid_today_data_for_test(proj_empty), proj_empty)
+    assert any(i.code == "input_insufficient" and "risk_factors" in i.message for i in val_empty.issues)
+
+    # 3. Fail closed on malformed selection (empty headline string)
+    proj_malformed = _apply_frozen_today_news_selection(_RT_FIXTURE, [{"headline": "   "}], parent_run_id=_V_PID)
+    assert proj_malformed["risk_factors"] == []
+    val_malformed = validate_today_genie(_valid_today_data_for_test(proj_malformed), proj_malformed)
+    assert any(i.code == "input_insufficient" and "risk_factors" in i.message for i in val_malformed.issues)
+
+    # 4. Fail closed on natural missing risks
+    rt_no_risks = dict(_RT_FIXTURE, risk_factors=[])
+    val_no_risks = validate_today_genie(_valid_today_data_for_test(rt_no_risks), rt_no_risks)
+    assert any(i.code == "input_insufficient" and "risk_factors" in i.message for i in val_no_risks.issues)
+
+    # 5. Fail closed on missing real macro input
+    rt_no_macro = dict(_RT_FIXTURE)
+    rt_no_macro.pop("macro_indicators", None)
+    val_no_macro = validate_today_genie(_valid_today_data_for_test(rt_no_macro), rt_no_macro)
+    assert any(i.code == "input_insufficient" and "macro_indicators" in i.message for i in val_no_macro.issues)
+
+    # 6. Fail closed on marker spoof: setting today_news_selection_frozen=True without risk_factors
+    spoof_input = dict(_RT_FIXTURE, today_news_selection_frozen=True, risk_factors=[])
+    val_spoof = validate_today_genie(_valid_today_data_for_test(spoof_input), spoof_input)
+    assert any(i.code == "input_insufficient" and "risk_factors" in i.message for i in val_spoof.issues)
+
 
 
 def test_late_replay_subject_alignment_and_historical_clause_preservation():
@@ -518,3 +634,142 @@ def test_frozen_replay_risk_and_closing_fallbacks_avoid_unstated_cpi():
     assert "CPI" in stabilized_nat["risk_check"][0]["detail"]
     assert "CPI" in stabilized_nat["closing_message"]
 
+
+
+# =============================================================================
+# INDEPENDENT PRODUCT QA SYNTHETIC REGRESSION TEST CASES
+# =============================================================================
+
+def test_independent_qa_risk_derivation_structure_and_macro_fallback():
+    from main import _apply_frozen_today_news_selection
+    from validators import validate_today_genie
+
+    # 1. Standard 3 items: derived risks must contain headline attribution for top 2 news
+    news_3 = [
+        {"headline": "미국 연준 금리 동결 시사", "date": "2026-09-01", "news_id": "news_1"},
+        {"headline": "유럽 중앙은행 추가 긴축 경계", "date": "2026-09-01", "news_id": "news_2"},
+        {"headline": "아시아 기술주 혼조세 마감", "date": "2026-09-01", "news_id": "news_3"},
+    ]
+    proj_3 = _apply_frozen_today_news_selection(_RT_FIXTURE, news_3, parent_run_id=_V_PID)
+    assert len(proj_3["risk_factors"]) == 2
+    assert proj_3["risk_factors"][0]["risk"] == "Headline / geopolitics"
+    assert "Sourced from CNBC RSS (2026-09-01): 미국 연준 금리 동결 시사" in proj_3["risk_factors"][0]["detail"]
+    assert proj_3["risk_factors"][1]["risk"] == "Policy / macro narrative"
+    assert "Sourced from CNBC RSS (2026-09-01): 유럽 중앙은행 추가 긴축 경계" in proj_3["risk_factors"][1]["detail"]
+
+    # 2. 1 news item + macro headline: activates macro fallback for second risk
+    news_1 = [{"headline": "단일 주요 헤드라인", "date": "2026-09-01", "news_id": "news_1"}]
+    rt_macro = dict(_RT_FIXTURE, macro_indicators={"headline": "거시 경제 불확실성 지속", "as_of": "2026-09-01"})
+    proj_1_macro = _apply_frozen_today_news_selection(rt_macro, news_1, parent_run_id=_V_PID)
+    assert len(proj_1_macro["risk_factors"]) == 2
+    assert proj_1_macro["risk_factors"][0]["risk"] == "Headline / geopolitics"
+    assert proj_1_macro["risk_factors"][1]["risk"] == "Macro / index tone"
+    assert "거시 경제 불확실성 지속" in proj_1_macro["risk_factors"][1]["detail"]
+
+    # 3. 1 news item + NO macro headline: produces 1 risk factor, still non-empty
+    rt_no_macro_head = dict(_RT_FIXTURE, macro_indicators={"as_of": "2026-09-01"})
+    proj_1_no_macro = _apply_frozen_today_news_selection(rt_no_macro_head, news_1, parent_run_id=_V_PID)
+    assert len(proj_1_no_macro["risk_factors"]) == 1
+    val_res = validate_today_genie(_valid_today_data_for_test(proj_1_no_macro), proj_1_no_macro)
+    assert not any(i.code == "input_insufficient" for i in val_res.issues)
+
+    # 4. Long headline is safely truncated to 240 chars
+    long_news = [{"headline": "A" * 500, "date": "2026-09-01", "news_id": "news_long"}]
+    proj_long = _apply_frozen_today_news_selection(_RT_FIXTURE, long_news, parent_run_id=_V_PID)
+    assert len(proj_long["risk_factors"]) >= 1
+    assert "A" * 240 in proj_long["risk_factors"][0]["detail"]
+    assert "A" * 241 not in proj_long["risk_factors"][0]["detail"]
+
+
+def test_independent_qa_source_containment_and_unrelated_sentinel_exclusion():
+    import copy
+    from main import _apply_frozen_today_news_selection
+    from prompts import build_top3_extraction_prompt, build_full_prompt
+
+    sentinel_str = "ATTACK_SENTINEL_LIVE_INJECTION_X77"
+    raw_input = dict(_RT_FIXTURE)
+    raw_input["risk_factors"] = [
+        {"risk": sentinel_str, "detail": f"live leak of {sentinel_str}"}
+    ]
+    raw_input["unselected_root_narrative"] = f"root leak of {sentinel_str}"
+    raw_input["foreign_carrier"] = {"nested": sentinel_str}
+    raw_input["arbitrary_field"] = [sentinel_str]
+
+    before = copy.deepcopy(raw_input)
+    frozen_news = list(_V_NEWS)
+
+    projected = _apply_frozen_today_news_selection(
+        raw_input,
+        frozen_news,
+        parent_run_id=_V_PID,
+        correction_guidance="Preserve tone",
+    )
+
+    # Immutability check
+    assert raw_input == before, "Caller runtime_input was mutated by _apply_frozen_today_news_selection"
+    assert frozen_news == _V_NEWS, "frozen_news list was mutated"
+
+    # Sentinel containment in projected dictionary
+    assert sentinel_str not in str(projected.get("risk_factors")), "Sentinel leaked into projected risk_factors"
+    assert "unselected_root_narrative" not in projected
+    assert "foreign_carrier" not in projected
+    assert "arbitrary_field" not in projected
+
+    # Sentinel containment in both prompt builders
+    ext_prompt = build_top3_extraction_prompt(projected)
+    main_prompt = build_full_prompt("today_genie", projected, today_genie_main_briefing=True)
+    assert sentinel_str not in ext_prompt, f"Sentinel leaked into extraction prompt"
+    assert sentinel_str not in main_prompt, f"Sentinel leaked into main prompt"
+
+
+def test_independent_qa_builder_exception_fails_closed():
+    from unittest.mock import patch
+    from main import _apply_frozen_today_news_selection
+    from validators import validate_today_genie
+
+    # Simulate builder unexpected exception (fail closed to empty risk_factors)
+    with patch("ops.probe_today_genie_feeds.build_risk_factors", side_effect=RuntimeError("simulated builder crash")):
+        projected = _apply_frozen_today_news_selection(_RT_FIXTURE, _V_NEWS, parent_run_id=_V_PID)
+        assert projected["risk_factors"] == [], "Risk factors must be empty list on builder exception"
+
+        val_res = validate_today_genie(_valid_today_data_for_test(projected), projected)
+        assert any(
+            i.code == "input_insufficient" and "risk_factors" in i.message for i in val_res.issues
+        ), "Validator must emit input_insufficient when risk builder fails"
+
+
+def test_independent_qa_mixed_malformed_news_and_spoof_resilience():
+    from main import _apply_frozen_today_news_selection
+    from validators import validate_today_genie
+
+    # 1. Mixed malformed: 1 valid headline and 2 invalid entries
+    mixed_news = [
+        {"headline": "유효한 헤드라인", "date": "2026-09-01", "news_id": "valid_1"},
+        {"headline": "   ", "date": "2026-09-01"},
+        {"no_headline_key": "some value"},
+    ]
+    proj_mixed = _apply_frozen_today_news_selection(_RT_FIXTURE, mixed_news, parent_run_id=_V_PID)
+    assert len(proj_mixed["risk_factors"]) >= 1
+    assert "유효한 헤드라인" in proj_mixed["risk_factors"][0]["detail"]
+
+    # 2. All malformed news: valid_news is empty, risk_factors is [], validator emits input_insufficient
+    all_malformed = [
+        {"headline": ""},
+        {"headline": "   "},
+        {"other_key": 12345},
+    ]
+    proj_bad = _apply_frozen_today_news_selection(_RT_FIXTURE, all_malformed, parent_run_id=_V_PID)
+    assert proj_bad["risk_factors"] == []
+    val_bad = validate_today_genie(_valid_today_data_for_test(_RT_FIXTURE), proj_bad)
+    assert any(
+        i.code == "input_insufficient" and "risk_factors" in i.message for i in val_bad.issues
+    )
+
+    # 3. Spoofed frozen marker without required market inputs fails
+    for missing_key in ["overnight_us_market", "macro_indicators", "top_market_news", "risk_factors"]:
+        spoofed = dict(_RT_FIXTURE, today_news_selection_frozen=True)
+        spoofed[missing_key] = {} if "market" in missing_key or "macro" in missing_key else []
+        val_spoof = validate_today_genie(_valid_today_data_for_test(spoofed), spoofed)
+        assert any(
+            i.code == "input_insufficient" and missing_key in i.message for i in val_spoof.issues
+        ), f"Spoofed input missing {missing_key} must fail validation"
