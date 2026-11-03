@@ -1296,6 +1296,106 @@ class SupersededChildActionsTests(unittest.TestCase):
         self.assertNotIn("delivery_attempted", loaded or {})
         self.assertNotIn("customer_delivery_events", loaded or {})
 
+    def test_today_owner_only_generic_email_exact_provenance_acceptance_and_blocks(self) -> None:
+        """Verify exact Today owner-only generic email acceptance and all block boundaries."""
+        base_parent = {
+            "run_id": "20261028_063000_today_genie_11223344",
+            "mode": "today_genie",
+            "program_id": "today_genie",
+            "trigger_source": "scheduled_owner_review",
+            "execution_class": "natural_scheduled",
+            "response_status": 200,
+            "workflow_status": "validated",
+            "policy": {
+                "require_review": True,
+                "send_email": True,
+                "create_naver_draft": False,
+                "suppress_external": False,
+            },
+            "customer_delivery_status": "not_sent",
+            "customer_email_delivery_status": "not_sent",
+            "email_sent": True,
+            "smtp_attempted": True,
+            "owner_review_status": "pending_review",
+            "validation_result": "pass",
+        }
+        child_id = "20261028_064500_today_genie_55667788"
+        child_meta = {
+            "run_id": child_id,
+            "mode": "today_genie",
+            "program_id": "today_genie",
+            "parent_run_id": base_parent["run_id"],
+            "customer_delivery_status": "not_sent",
+            "customer_email_delivery_status": "not_sent",
+            "owner_review_status": "pending_review",
+            "validation_result": "pass",
+        }
+
+        # 1. Exact Today proven schema -> child is eligible (NOT superseded)
+        self._save_raw_run(base_parent)
+        self._save_raw_run(child_meta)
+        is_sup, pid, pmeta, reason = superseded_child_check(child_meta)
+        self.assertFalse(is_sup)
+        self.assertEqual(reason, "")
+
+        # 2. Held parent -> child remains eligible in superseded_child_check, but parent cannot be approved
+        parent_held = dict(base_parent, owner_review_status="held")
+        self._save_raw_run(parent_held)
+        is_sup, _, _, reason = superseded_child_check(child_meta)
+        self.assertFalse(is_sup)
+        can_appr, reason = can_approve_customer_send(parent_held, has_email_html=True)
+        self.assertFalse(can_appr)
+        self.assertEqual(reason, "review_held")
+
+        # 3. Parameterized negative cases -> all MUST block as superseded_child_reference_only or reconciliation
+        negative_mutations = [
+            # Other mode
+            ({"mode": "keysuri_global_tech", "program_id": "keysuri_global_tech", "run_id": "20261028_123000_keysuri_global_tech_11223344"},
+             {"mode": "keysuri_global_tech", "program_id": "keysuri_global_tech", "run_id": "20261028_124500_keysuri_global_tech_55667788", "parent_run_id": "20261028_123000_keysuri_global_tech_11223344"},
+             "superseded_child_reference_only"),
+            # Manual trigger
+            ({"trigger_source": "manual"}, {}, "superseded_child_reference_only"),
+            # Unproven execution class (admin_reissue)
+            ({"execution_class": "admin_reissue"}, {}, "superseded_child_reference_only"),
+            # Response status 500
+            ({"response_status": 500}, {}, "superseded_child_reference_only"),
+            # Workflow status draft_only
+            ({"workflow_status": "draft_only"}, {}, "superseded_child_reference_only"),
+            # Policy changed: require_review False
+            ({"policy": {"require_review": False, "send_email": True, "create_naver_draft": False, "suppress_external": False}}, {}, "superseded_child_reference_only"),
+            # Policy changed: send_email False
+            ({"policy": {"require_review": True, "send_email": False, "create_naver_draft": False, "suppress_external": False}}, {}, "superseded_child_reference_only"),
+            # Policy changed: create_naver_draft True
+            ({"policy": {"require_review": True, "send_email": True, "create_naver_draft": True, "suppress_external": False}}, {}, "superseded_child_reference_only"),
+            # Policy changed: suppress_external True
+            ({"policy": {"require_review": True, "send_email": True, "create_naver_draft": False, "suppress_external": True}}, {}, "superseded_child_reference_only"),
+            # Missing customer-not-sent (empty status)
+            ({"customer_delivery_status": "", "customer_email_delivery_status": ""}, {}, "superseded_child_reference_only"),
+            # Contradictory owner fields: raw_owner_att not True but owner_status smtp_accepted
+            ({"owner_email_smtp_attempted": False, "owner_email_delivery_status": "smtp_accepted"}, {}, "parent_reconciliation_required"),
+            # Contradictory owner fields: raw_owner_att True and owner_status not_sent
+            ({"owner_email_smtp_attempted": True, "owner_email_delivery_status": "not_sent"}, {}, "parent_reconciliation_required"),
+            # Contradictory: raw_owner_att True and smtp_attempted False
+            ({"owner_email_smtp_attempted": True, "owner_email_delivery_status": "smtp_accepted", "smtp_attempted": False}, {}, "parent_reconciliation_required"),
+            # Explicit SMTP outcome UNKNOWN
+            ({"customer_email_delivery_status": "outcome_unknown"}, {}, "superseded_child_reference_only"),
+            # Positive unknown count
+            ({"customer_delivery_unknown_count": 1}, {}, "superseded_child_reference_only"),
+        ]
+
+        for p_mut, c_mut, expected_reason in negative_mutations:
+            p_case = dict(base_parent)
+            p_case.update(p_mut)
+            c_case = dict(child_meta)
+            c_case.update(c_mut)
+            if "run_id" in p_mut and "parent_run_id" not in c_mut:
+                c_case["parent_run_id"] = p_case["run_id"]
+            self._save_raw_run(p_case)
+            self._save_raw_run(c_case)
+            is_sup, _, _, reason = superseded_child_check(c_case)
+            self.assertTrue(is_sup, f"Failed for p_mut={p_mut}")
+            self.assertEqual(reason, expected_reason, f"Failed reason for p_mut={p_mut}")
+
 
 
 if __name__ == "__main__":

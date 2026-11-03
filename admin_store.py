@@ -2126,6 +2126,30 @@ def superseded_child_check(
             raw_owner_att is True and owner_status in {"smtp_accepted", "failed"}
         )
         if not is_owner_review_transport:
+            # Narrow known Today producer schema provenance rule:
+            # The public Today orchestrator schema (today_genie, scheduled_owner_review,
+            # natural_scheduled, response_status=200, workflow_status in (validated, pass),
+            # policy require_review=True, send_email=True, create_naver_draft=False,
+            # suppress_external=False) records generic email_sent=True for owner-review-only
+            # MIME without explicit owner channel fields. If strict source provenance proves
+            # this exact owner-only producer, treat generic mail as owner review transport.
+            parent_policy = parent_meta.get("policy") if isinstance(parent_meta.get("policy"), dict) else {}
+            if (
+                raw_owner_att is None
+                and raw_owner_status is None
+                and id_parent_mode == "today_genie"
+                and str(parent_meta.get("trigger_source") or "").strip() == "scheduled_owner_review"
+                and str(parent_meta.get("execution_class") or "").strip() == "natural_scheduled"
+                and parent_meta.get("response_status") == 200
+                and str(parent_meta.get("workflow_status") or "").strip() in {"validated", "pass"}
+                and parent_policy.get("require_review") is True
+                and parent_policy.get("send_email") is True
+                and parent_policy.get("create_naver_draft") is False
+                and parent_policy.get("suppress_external") is False
+            ):
+                is_owner_review_transport = True
+
+        if not is_owner_review_transport:
             # Ambiguous legacy generic-only submission without owner review channel attribution
             is_parent_submitted = True
         else:
