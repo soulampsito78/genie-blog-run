@@ -5,6 +5,7 @@ import copy
 import json
 import logging
 import os
+import base64
 import hashlib
 import re
 import tempfile
@@ -755,6 +756,7 @@ def _download_keysuri_top_image_from_gcs(
     *,
     bucket_name: str,
     object_name: str,
+    if_generation_match: Optional[int] = None,
 ) -> Optional[str]:
     """Download a persisted top image from GCS to ``dest``.
 
@@ -770,11 +772,98 @@ def _download_keysuri_top_image_from_gcs(
         if not blob.exists():
             return "top_image_gcs_missing"
         dest.parent.mkdir(parents=True, exist_ok=True)
-        blob.download_to_filename(str(dest))
+        gen = getattr(blob, "generation", None)
+        if gen is not None:
+            try:
+                gen = int(gen)
+            except (ValueError, TypeError):
+                gen = None
+        if if_generation_match is not None and gen is not None:
+            if gen != if_generation_match:
+                return "top_image_gcs_generation_mismatch"
+        kwargs = {}
+        match_gen = if_generation_match if if_generation_match is not None else gen
+        if match_gen is not None:
+            kwargs["if_generation_match"] = match_gen
+        try:
+            blob.download_to_filename(str(dest), **kwargs)
+        except TypeError:
+            blob.download_to_filename(str(dest))
     except Exception as exc:  # noqa: BLE001 — restore failure must degrade to safe-fail
         logger.warning("keysuri top image GCS download failed: %s", type(exc).__name__)
         return "top_image_gcs_download_failed"
     return None
+
+
+def _fetch_pinned_gcs_object(
+    bucket_name: str,
+    object_name: str,
+    dest: Optional[Path] = None,
+    *,
+    expected_generation: Optional[int] = None,
+) -> Tuple[Optional[bytes], Optional[int], Optional[str]]:
+    """Strict generation-pinned GCS object fetch helper.
+
+    Returns (bytes, generation, error_code). Never raises.
+    """
+    if not bucket_name:
+        return None, None, "gcs_bucket_not_configured"
+    if not object_name:
+        return None, None, "gcs_object_not_configured"
+    try:
+        blob = _get_gcs_client().bucket(bucket_name).blob(object_name)
+        if not blob.exists():
+            return None, None, "gcs_object_missing"
+        gen = getattr(blob, "generation", None)
+        if gen is not None:
+            try:
+                gen = int(gen)
+            except (ValueError, TypeError):
+                gen = None
+        if expected_generation is not None and gen is not None:
+            if gen != expected_generation:
+                return None, None, "gcs_generation_mismatch"
+        kwargs = {}
+        match_gen = expected_generation if expected_generation is not None else gen
+        if match_gen is not None:
+            kwargs["if_generation_match"] = match_gen
+        data = None
+        if dest is not None:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                blob.download_to_filename(str(dest), **kwargs)
+            except TypeError:
+                blob.download_to_filename(str(dest))
+            data = dest.read_bytes()
+        else:
+            if hasattr(blob, "download_as_bytes"):
+                try:
+                    data = blob.download_as_bytes(**kwargs)
+                except TypeError:
+                    data = blob.download_as_bytes()
+            elif hasattr(blob, "download_as_text"):
+                try:
+                    text = blob.download_as_text(encoding="utf-8")
+                    data = text.encode("utf-8")
+                except Exception:
+                    data = None
+            if data is None and hasattr(blob, "download_to_filename"):
+                with tempfile.NamedTemporaryFile(delete=False) as tf:
+                    tmp = Path(tf.name)
+                try:
+                    try:
+                        blob.download_to_filename(str(tmp), **kwargs)
+                    except TypeError:
+                        blob.download_to_filename(str(tmp))
+                    data = tmp.read_bytes()
+                finally:
+                    tmp.unlink(missing_ok=True)
+        if data is None:
+            return None, None, "gcs_download_failed"
+        return data, gen, None
+    except Exception as exc:
+        logger.warning("pinned GCS fetch failed for %s: %s", object_name, type(exc).__name__)
+        return None, None, f"gcs_fetch_error:{type(exc).__name__}"
 
 
 def _parent_top_image_gcs_refs(parent: Dict[str, Any]) -> List[Tuple[str, str, str]]:
@@ -3717,32 +3806,202 @@ def _mark_korea_reissue_owner_pending_copy(email_html: str) -> str:
     return email_html.replace(pending, f'<span class="owner-review-badge">{pending}</span>')
 
 
+def _extract_preview_data_uri(html_text: str, role: str) -> Optional[bytes]:
+    if role == "top":
+        hero_class = "top-shot-hero"
+        figure_id = "top-shot-image"
+    elif role == "bottom":
+        hero_class = "korea-bottom-hero"
+        figure_id = "bottom-shot-image"
+    else:
+        return None
+
+    img_tag_re = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+    container_re = re.compile(
+        rf"<(?P<tag>figure|div|section)\b[^>]*id=[\"']{figure_id}[\"'][^>]*>(?P<content>.*?)</(?P=tag)>",
+        re.IGNORECASE | re.DOTALL,
+    )
+    data_uri_re = re.compile(r'src=["\']data:image/[^;]+;base64,([A-Za-z0-9+/=\s]+)["\']', re.IGNORECASE)
+
+    matched_bytes: List[bytes] = []
+    container_spans: List[Tuple[int, int]] = []
+    for cm in container_re.finditer(html_text):
+        container_spans.append((cm.start(), cm.end()))
+        for im in img_tag_re.finditer(cm.group("content")):
+            tag = im.group(0)
+            dm = data_uri_re.search(tag)
+            if dm:
+                raw_b64 = re.sub(r"\s+", "", dm.group(1))
+                try:
+                    dec = base64.b64decode(raw_b64)
+                    if dec:
+                        matched_bytes.append(dec)
+                except Exception:
+                    pass
+
+    for im in img_tag_re.finditer(html_text):
+        tag = im.group(0)
+        im_start = im.start()
+        if any(start <= im_start < end for start, end in container_spans):
+            continue
+        if hero_class in tag:
+            dm = data_uri_re.search(tag)
+            if dm:
+                raw_b64 = re.sub(r"\s+", "", dm.group(1))
+                try:
+                    dec = base64.b64decode(raw_b64)
+                    if dec:
+                        matched_bytes.append(dec)
+                except Exception:
+                    pass
+
+    if len(matched_bytes) != 1:
+        return None
+    return matched_bytes[0]
+
+
+def _resolve_korea_durable_preview_authority(
+    parent: Dict[str, Any],
+) -> Optional[Dict[str, Tuple[Path, str]]]:
+    """Verify strong durable authority for Korea image reuse when inline hashes are empty.
+
+    POOR intentionally sends a SHORT notice with no inline images while full
+    contract preview + exact Korea top/bottom objects are preserved.
+    owner_email_inline_image_hashes=[] is truthful SMTP evidence: never replace/fill it.
+    Permits image reuse only with existing parent-run-bound preview + both exact
+    image objects; strict configured bucket, parent run/role/object lineage, matching
+    SHA across decoded full-preview pixels and generation-pinned downloaded image bytes.
+    Fails closed on missing, ambiguous, wrong-run, mutated or conflicting proof.
+    """
+    parent_run_id = str(parent.get("run_id") or "").strip()
+    if not parent_run_id:
+        return None
+
+    configured_bucket = admin_artifact_bucket_name()
+    parent_bucket = str(parent.get("korea_generated_image_gcs_bucket") or "").strip()
+    if not configured_bucket or not parent_bucket or parent_bucket != configured_bucket:
+        return None
+
+    prefix = admin_artifact_gcs_prefix()
+    expected_top_obj = f"{prefix}/{parent_run_id}.images/korea_top.jpg"
+    expected_bottom_obj = f"{prefix}/{parent_run_id}.images/korea_bottom.jpg"
+
+    top_obj = str(parent.get("korea_generated_top_gcs_object") or "").strip()
+    bottom_obj = str(parent.get("korea_generated_bottom_gcs_object") or "").strip()
+    if top_obj != expected_top_obj or bottom_obj != expected_bottom_obj:
+        return None
+
+    preview_html = None
+    if isinstance(parent.get("preview_html"), str) and parent["preview_html"].strip():
+        preview_html = parent["preview_html"]
+    elif parent.get("html_path"):
+        p = _path_from_parent_image_reference(parent.get("html_path"))
+        if p is not None and p.is_file() and parent_run_id in p.name:
+            try:
+                preview_html = p.read_text(encoding="utf-8")
+            except OSError:
+                preview_html = None
+    if preview_html is None:
+        def_path = _REPO / "output" / "admin_runs" / "keysuri_service" / f"{parent_run_id}.html"
+        if def_path.is_file():
+            try:
+                preview_html = def_path.read_text(encoding="utf-8")
+            except OSError:
+                preview_html = None
+
+    if preview_html is None:
+        preview_obj = str(parent.get("contract_preview_gcs_object") or "").strip()
+        if not preview_obj:
+            preview_obj = f"{prefix}/{parent_run_id}.preview.html"
+        if parent_run_id not in preview_obj:
+            return None
+        preview_bytes, _gen, preview_err = _fetch_pinned_gcs_object(
+            parent_bucket, preview_obj
+        )
+        if (preview_err is not None or not preview_bytes) and not parent.get("contract_preview_gcs_object"):
+            alt_preview_obj = f"{prefix}/{parent_run_id}.contract_preview.html"
+            preview_bytes, _gen, preview_err = _fetch_pinned_gcs_object(
+                parent_bucket, alt_preview_obj
+            )
+        if preview_err is not None or not preview_bytes:
+            return None
+        try:
+            preview_html = preview_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+
+    if not preview_html:
+        return None
+
+    top_pixels = _extract_preview_data_uri(preview_html, "top")
+    bottom_pixels = _extract_preview_data_uri(preview_html, "bottom")
+    if not top_pixels or not bottom_pixels:
+        return None
+
+    top_preview_sha = hashlib.sha256(top_pixels).hexdigest()
+    bottom_preview_sha = hashlib.sha256(bottom_pixels).hexdigest()
+    if not re.fullmatch(r"[a-f0-9]{64}", top_preview_sha) or not re.fullmatch(r"[a-f0-9]{64}", bottom_preview_sha):
+        return None
+
+    assets_dir = _writable_keysuri_service_assets_dir()
+    dest_top = assets_dir / f"korea_reused_top_{top_preview_sha}.jpg"
+    issue_top = _download_keysuri_top_image_from_gcs(dest_top, bucket_name=parent_bucket, object_name=top_obj)
+    if issue_top is not None or not dest_top.is_file() or _sha256_file(dest_top) != top_preview_sha:
+        return None
+
+    dest_bottom = assets_dir / f"korea_reused_bottom_{bottom_preview_sha}.jpg"
+    issue_bottom = _download_keysuri_top_image_from_gcs(dest_bottom, bucket_name=parent_bucket, object_name=bottom_obj)
+    if issue_bottom is not None or not dest_bottom.is_file() or _sha256_file(dest_bottom) != bottom_preview_sha:
+        return None
+
+    authority = {
+        "top": (dest_top, top_preview_sha),
+        "bottom": (dest_bottom, bottom_preview_sha),
+    }
+    return authority
+
+
 def _restore_exact_korea_parent_image(parent: Dict[str, Any], role: str) -> Optional[Path]:
     """Reuse only the recorded CID/hash bytes, including across revisions."""
     if role not in {"top", "bottom"}:
         return None
-    cid = str(parent.get("top_image_cid" if role == "top" else "bottom_image_cid") or "")
-    rows = [r for r in parent.get("owner_email_inline_image_hashes") or []
-            if isinstance(r, dict) and cid and r.get("cid") == cid]
-    hashes = {str(r.get("sha256") or "") for r in rows}
-    if len(hashes) != 1:
-        return None
-    expected = next(iter(hashes))
-    if not re.fullmatch(r"[a-f0-9]{64}", expected):
-        return None
-    for row in rows:
-        path = _path_from_parent_image_reference(row.get("path"))
-        if path is not None and path.is_file():
-            return path if _sha256_file(path) == expected else None
-    obj = str(parent.get(f"korea_generated_{role}_gcs_object") or "")
-    bucket = str(parent.get("korea_generated_image_gcs_bucket") or "")
-    if not obj or not bucket:
-        return None
-    dest = _writable_keysuri_service_assets_dir() / f"korea_reused_{role}_{expected}.jpg"
-    issue = _download_keysuri_top_image_from_gcs(dest, bucket_name=bucket, object_name=obj)
-    if issue is not None or not dest.is_file() or _sha256_file(dest) != expected:
-        return None
-    return dest
+    all_rows = parent.get("owner_email_inline_image_hashes")
+    if all_rows is not None and len(all_rows) > 0:
+        if not isinstance(all_rows, list):
+            return None
+        cid = str(parent.get("top_image_cid" if role == "top" else "bottom_image_cid") or "")
+        if not cid:
+            return None
+        rows = [r for r in all_rows if isinstance(r, dict) and r.get("cid") == cid]
+        if not rows:
+            return None
+        hashes = {str(r.get("sha256") or "") for r in rows}
+        if len(hashes) != 1:
+            return None
+        expected = next(iter(hashes))
+        if not re.fullmatch(r"[a-f0-9]{64}", expected):
+            return None
+        for row in rows:
+            path = _path_from_parent_image_reference(row.get("path"))
+            if path is not None and path.is_file():
+                return path if _sha256_file(path) == expected else None
+        obj = str(parent.get(f"korea_generated_{role}_gcs_object") or "")
+        bucket = str(parent.get("korea_generated_image_gcs_bucket") or "")
+        if not obj or not bucket:
+            return None
+        dest = _writable_keysuri_service_assets_dir() / f"korea_reused_{role}_{expected}.jpg"
+        issue = _download_keysuri_top_image_from_gcs(dest, bucket_name=bucket, object_name=obj)
+        if issue is not None or not dest.is_file() or _sha256_file(dest) != expected:
+            return None
+        return dest
+
+    # ONLY when owner_email_inline_image_hashes is empty (e.g. POOR sent short notice),
+    # verify separate durable authority from parent-bound preview + GCS objects.
+    authority = _resolve_korea_durable_preview_authority(parent)
+    if authority is not None and role in authority:
+        dest, _sha = authority[role]
+        return dest
+    return None
 
 
 def _saved_top_image_reference(parent: Dict[str, Any]) -> Tuple[Optional[Path], Dict[str, Any]]:
@@ -3753,7 +4012,7 @@ def _saved_top_image_reference(parent: Dict[str, Any]) -> Tuple[Optional[Path], 
     body_only reissue. For no-send QA we can still render the child with the
     preserved CID/reference; actual owner email send still requires a local file.
     """
-    if parent.get("mode") == PROGRAM_KOREA and parent.get("korea_generated_top_gcs_object"):
+    if (parent.get("mode") == PROGRAM_KOREA or parent.get("program_id") == PROGRAM_KOREA) and parent.get("korea_generated_top_gcs_object"):
         restored = _restore_exact_korea_parent_image(parent, "top")
         return restored, {
             "reissue_body_only_image_reused": restored is not None,
@@ -4444,14 +4703,26 @@ def run_keysuri_image_only_reissue(
 def _preserved_korea_bottom_identity(parent: Dict[str, Any], image_path: Path) -> Tuple[Dict[str, Any], Optional[str]]:
     """Carry origin identity only for the exact previously recorded image bytes."""
     cid = str(parent.get("bottom_image_cid") or parent.get("korea_bottom_shot_cid") or "")
-    rows = parent.get("owner_email_inline_image_hashes") or []
-    expected = [str(row.get("sha256") or "") for row in rows
-                if isinstance(row, dict) and cid and row.get("cid") == cid]
-    if not expected:
-        return {}, None  # No proof: never manufacture an approval identity.
+    all_rows = parent.get("owner_email_inline_image_hashes")
     actual = hashlib.sha256(image_path.read_bytes()).hexdigest()
-    if len(set(expected)) != 1 or expected[0] != actual:
-        return {}, "text_only_reissue_bottom_image_hash_mismatch"
+    if all_rows is not None and len(all_rows) > 0:
+        if not isinstance(all_rows, list):
+            return {}, "text_only_reissue_bottom_image_hash_mismatch"
+        if not cid:
+            return {}, "text_only_reissue_bottom_image_hash_mismatch"
+        rows = [r for r in all_rows if isinstance(r, dict) and r.get("cid") == cid]
+        if not rows:
+            return {}, "text_only_reissue_bottom_image_hash_mismatch"
+        expected = [str(row.get("sha256") or "") for row in rows]
+        if len(set(expected)) != 1 or expected[0] != actual:
+            return {}, "text_only_reissue_bottom_image_hash_mismatch"
+    else:
+        authority = _resolve_korea_durable_preview_authority(parent)
+        if authority is None or "bottom" not in authority:
+            return {}, None  # No proof: never manufacture an approval identity.
+        _dest, bottom_sha = authority["bottom"]
+        if actual != bottom_sha:
+            return {}, "text_only_reissue_bottom_image_hash_mismatch"
     keys = (
         "bottom_shot_source", "korea_bottom_shot_source", "bottom_shot_asset_id",
         "korea_bottom_shot_asset_id", "bottom_anchor_asset_id", "korea_bottom_anchor_asset_id",
@@ -4493,6 +4764,38 @@ def run_keysuri_text_only_reissue(
     pid = str(parent.get("program_id") or parent.get("mode") or "").strip()
     if pid not in _KEYSURI_PROGRAMS:
         return {"ok": False, "error": "text_only_reissue_unsupported_mode", "program_id": pid}
+
+    # Prerequisites check BEFORE paid body caller
+    top_image_path, top_image_reuse_fields = _saved_top_image_reference(parent)
+    if top_image_path is None:
+        return {"ok": False, "error": "text_only_reissue_missing_saved_top_image", "program_id": pid}
+    if send_owner_email and not top_image_path.is_file():
+        return {
+            "ok": False,
+            "error": "text_only_reissue_missing_saved_top_image",
+            "program_id": pid,
+            **top_image_reuse_fields,
+        }
+    bottom_image_path = _saved_korea_bottom_image_path(parent) if pid == PROGRAM_KOREA else None
+    if pid == PROGRAM_KOREA and parent.get("korea_generated_bottom_gcs_object") and bottom_image_path is None:
+        return {"ok": False, "error": "text_only_reissue_bottom_image_restore_unverified", "program_id": pid}
+    preserved_bottom_identity: Dict[str, Any] = {}
+    if pid == PROGRAM_KOREA and bottom_image_path is not None:
+        preserved_bottom_identity, image_identity_error = _preserved_korea_bottom_identity(parent, bottom_image_path)
+        if image_identity_error:
+            return {"ok": False, "error": image_identity_error, "program_id": pid}
+
+    if frozen_parent:
+        frozen_prompt_input, frozen_err = _regen_prompt_input_from_parent(parent, pid)
+        if frozen_err is not None or not isinstance(frozen_prompt_input, dict):
+            return {
+                "ok": False,
+                "error": frozen_err or "text_only_reissue_missing_parent_source_snapshot",
+                "program_id": pid,
+                "reissue_source_contract": "frozen_parent",
+                "reissue_source_recollected": False,
+                "reissue_news_reselected": False,
+            }
 
     exclude_source_ids, exclude_urls, exclude_fps = _build_text_only_exclude_identifiers(parent)
     selected_count_before = len(exclude_source_ids)
@@ -4569,24 +4872,6 @@ def run_keysuri_text_only_reissue(
     selected_count_after = len(replacement_signal_ids)
 
     child_run_id = generate_run_id(pid)
-    top_image_path, top_image_reuse_fields = _saved_top_image_reference(parent)
-    if top_image_path is None:
-        return {"ok": False, "error": "text_only_reissue_missing_saved_top_image", "program_id": pid}
-    if send_owner_email and not top_image_path.is_file():
-        return {
-            "ok": False,
-            "error": "text_only_reissue_missing_saved_top_image",
-            "program_id": pid,
-            **top_image_reuse_fields,
-        }
-    bottom_image_path = _saved_korea_bottom_image_path(parent) if pid == PROGRAM_KOREA else None
-    if pid == PROGRAM_KOREA and parent.get("korea_generated_bottom_gcs_object") and bottom_image_path is None:
-        return {"ok": False, "error": "text_only_reissue_bottom_image_restore_unverified", "program_id": pid}
-    preserved_bottom_identity: Dict[str, Any] = {}
-    if pid == PROGRAM_KOREA and bottom_image_path is not None:
-        preserved_bottom_identity, image_identity_error = _preserved_korea_bottom_identity(parent, bottom_image_path)
-        if image_identity_error:
-            return {"ok": False, "error": image_identity_error, "program_id": pid}
 
     # Reusing the parent's pixels does not make its durable object child-bound.
     # The customer renderer requires a Global object under this child's run ID,
