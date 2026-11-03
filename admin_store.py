@@ -1968,7 +1968,7 @@ def superseded_child_check(
         return True, parent_id, None, "parent_reconciliation_required"
 
     try:
-        parent_meta = load_run_artifact(parent_id)
+        parent_meta = load_run_artifact(parent_id, normalize=False)
     except Exception:
         return True, parent_id, None, "parent_reconciliation_required"
 
@@ -2027,13 +2027,24 @@ def superseded_child_check(
     if p_att_cnt is not None and p_att_cnt > 0:
         is_parent_submitted = True
 
+    customer_bool_fields = (
+        "customer_delivery_attempted",
+        "customer_email_smtp_attempted",
+        "customer_email_delivery_attempted",
+        "delivery_attempted",
+        "send_attempted",
+    )
+    for cbf in customer_bool_fields:
+        cb_val = parent_meta.get(cbf)
+        if cb_val is not None and not isinstance(cb_val, bool):
+            return True, parent_id, parent_meta, "parent_reconciliation_required"
+
     if (
         parent_meta.get("customer_delivery_attempted") is True
+        or parent_meta.get("customer_email_smtp_attempted") is True
+        or parent_meta.get("customer_email_delivery_attempted") is True
         or parent_meta.get("delivery_attempted") is True
         or parent_meta.get("send_attempted") is True
-        or parent_meta.get("customer_email_smtp_attempted") is True
-        or parent_meta.get("smtp_attempted") is True
-        or parent_meta.get("customer_email_delivery_attempted") is True
         or bool(str(parent_meta.get("customer_delivery_attempted_at") or "").strip())
         or bool(str(parent_meta.get("customer_email_sent_at_kst") or "").strip())
         or bool(str(parent_meta.get("customer_sent_at") or "").strip())
@@ -2041,9 +2052,20 @@ def superseded_child_check(
     ):
         is_parent_submitted = True
 
-    p_status_1 = str(parent_meta.get("customer_email_delivery_status") or "").strip().lower()
-    p_status_2 = str(parent_meta.get("customer_delivery_status") or "").strip().lower()
+    raw_c_status_1 = parent_meta.get("customer_email_delivery_status")
+    raw_c_status_2 = parent_meta.get("customer_delivery_status")
+    if raw_c_status_1 is not None and not isinstance(raw_c_status_1, str):
+        return True, parent_id, parent_meta, "parent_reconciliation_required"
+    if raw_c_status_2 is not None and not isinstance(raw_c_status_2, str):
+        return True, parent_id, parent_meta, "parent_reconciliation_required"
+
+    p_status_1 = str(raw_c_status_1 or "").strip().lower()
+    p_status_2 = str(raw_c_status_2 or "").strip().lower()
     parent_statuses = {s for s in (p_status_1, p_status_2) if s}
+
+    _valid_customer_statuses = frozenset(s.lower() for s in CUSTOMER_DELIVERY_STATUSES)
+    if any(st not in _valid_customer_statuses for st in parent_statuses):
+        return True, parent_id, parent_meta, "parent_reconciliation_required"
 
     canonical_submitted_statuses = {
         "submitted",
@@ -2062,6 +2084,56 @@ def superseded_child_check(
     }
     if any(st in canonical_submitted_statuses for st in parent_statuses):
         is_parent_submitted = True
+
+    # Channel-aware classification for generic mail transport flags (smtp_attempted, email_sent):
+    # Natural owner-review mail sets generic smtp_attempted/email_sent alongside explicit owner_email_*
+    # channel evidence. Owner-review transport alone must never count as customer submission.
+    # Ambiguous legacy generic-only submission (no owner channel evidence) remains blocked.
+    # Contradictory or malformed owner channel evidence fails closed to reconciliation.
+    # In the owner-only attribution branch, unambiguous explicit CUSTOMER-NOT-SENT evidence under the
+    # real public schema is required; missing, empty, or conflicting customer status fails closed.
+    has_generic_mail = (
+        parent_meta.get("smtp_attempted") is True
+        or parent_meta.get("email_sent") is True
+    )
+    if has_generic_mail and not is_parent_submitted:
+        raw_owner_att = parent_meta.get("owner_email_smtp_attempted")
+        raw_owner_status = parent_meta.get("owner_email_delivery_status")
+        if raw_owner_att is not None and not isinstance(raw_owner_att, bool):
+            return True, parent_id, parent_meta, "parent_reconciliation_required"
+        if raw_owner_status is not None and not isinstance(raw_owner_status, str):
+            return True, parent_id, parent_meta, "parent_reconciliation_required"
+
+        raw_owner_cnt = parent_meta.get("owner_email_recipient_count")
+        if raw_owner_cnt is not None:
+            _, owner_cnt_malformed = _parse_delivery_count(raw_owner_cnt)
+            if owner_cnt_malformed:
+                return True, parent_id, parent_meta, "parent_reconciliation_required"
+
+        owner_status = str(raw_owner_status or "").strip().lower()
+        if owner_status and owner_status not in {"smtp_accepted", "failed", "not_sent"}:
+            return True, parent_id, parent_meta, "parent_reconciliation_required"
+
+        # Contradictory owner evidence
+        if raw_owner_att is not True and owner_status in {"smtp_accepted", "failed"}:
+            return True, parent_id, parent_meta, "parent_reconciliation_required"
+        if raw_owner_att is True and owner_status == "not_sent":
+            return True, parent_id, parent_meta, "parent_reconciliation_required"
+        if raw_owner_att is True and parent_meta.get("smtp_attempted") is False:
+            return True, parent_id, parent_meta, "parent_reconciliation_required"
+
+        is_owner_review_transport = (
+            raw_owner_att is True and owner_status in {"smtp_accepted", "failed"}
+        )
+        if not is_owner_review_transport:
+            # Ambiguous legacy generic-only submission without owner review channel attribution
+            is_parent_submitted = True
+        else:
+            # Owner-review attribution branch:
+            # Must require unambiguous explicit CUSTOMER-NOT-SENT evidence under the real public schema.
+            # Missing or empty customer status aliases, or status other than "not_sent", fail closed.
+            if not parent_statuses or parent_statuses != {"not_sent"}:
+                is_parent_submitted = True
 
     if parent_delivery_label in _DELIVERY_SUBMITTED_LABELS:
         is_parent_submitted = True
