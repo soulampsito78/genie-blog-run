@@ -229,3 +229,59 @@ def test_replay_validator_detects_preopen_forecast_while_preserving_completed_pa
     advice2 = {"summary": "장전 확인해야 합니다."}
     assert replay_temporal_conflicts(advice2) == ["summary"]
 
+
+@pytest.mark.parametrize("source,expected", [
+    ("오늘의 지니 장전 브리핑", "오늘의 지니 재발행 브리핑"),
+    ("오늘의지니 장전 브리핑", "오늘의지니 재발행 브리핑"),
+    ("장전 브리핑: 반도체 수급 점검", "재발행 브리핑: 반도체 수급 점검"),
+    ("개장 전 브리핑: 반도체 점검", "재발행 브리핑: 반도체 점검"),
+    # Bare historical fact without 브리핑 label must remain byte-identical
+    ("2026-10-27 장전 선물 급락", "2026-10-27 장전 선물 급락"),
+    ("개장전 시황 점검", "개장전 시황 점검"),
+    # Past window protected spans remain byte-identical
+    ("어제 장전 브리핑", "어제 장전 브리핑"),
+    ("지난 거래일 장전 브리핑", "지난 거래일 장전 브리핑"),
+])
+def test_replay_edition_label_neutralization_and_historical_fact_preservation(source, expected):
+    from main import _align_replay_subject_edition_label
+
+    assert _align_replay_subject_edition_label(source) == expected
+
+
+def test_stabilize_validation_fields_title_and_drafts_replay_vs_nonreplay():
+    from main import stabilize_today_genie_validation_fields
+
+    data = {
+        "title": "오늘의 지니 장전 브리핑: 반도체 수급",
+        "channel_drafts": {
+            "email_subject": "오늘의 지니 장전 브리핑",
+            "naver_blog_title": "장전 브리핑: 시장 동향",
+        },
+        "summary": "핵심 브리핑 요약 문장입니다.",
+        "market_setup": "코스피와 환율을 점검합니다.",
+    }
+
+    # 1. Non-replay mode: titles and drafts remain unchanged
+    nonreplay_rt = {"target_date": "2026-10-28"}
+    out_nonreplay = stabilize_today_genie_validation_fields(data, nonreplay_rt)
+    assert out_nonreplay["title"] == "오늘의 지니 장전 브리핑: 반도체 수급"
+    assert out_nonreplay["channel_drafts"]["email_subject"] == "오늘의 지니 장전 브리핑"
+    assert out_nonreplay["channel_drafts"]["naver_blog_title"] == "장전 브리핑: 시장 동향"
+
+    # 2. Replay mode: edition labels become neutral 재발행
+    replay_rt = runtime()
+    out_replay = stabilize_today_genie_validation_fields(data, replay_rt)
+    assert out_replay["title"] == "오늘의 지니 재발행 브리핑: 반도체 수급"
+    assert out_replay["channel_drafts"]["email_subject"] == "오늘의 지니 재발행 브리핑"
+    assert out_replay["channel_drafts"]["naver_blog_title"] == "재발행 브리핑: 시장 동향"
+
+    # 3. Replay mode with bare historical fact title: remains byte-identical
+    data_fact = dict(data, title="2026-10-27 장전 선물 급락")
+    out_fact = stabilize_today_genie_validation_fields(data_fact, replay_rt)
+    assert out_fact["title"] == "2026-10-27 장전 선물 급락"
+
+    # 4. Real body pre-open instruction stays detected/blocked
+    instruction = {"summary": "오늘 장전에는 금리·환율과 외국인 수급을 함께 확인합니다."}
+    assert replay_temporal_conflicts(instruction) == ["summary"]
+
+

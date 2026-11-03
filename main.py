@@ -2651,6 +2651,9 @@ def stabilize_today_genie_validation_fields(
     normalized = stabilize_today_genie_image_prompt_anchors(normalized, runtime_input)
 
     if is_today_replay(runtime_input):
+        title = normalized.get("title")
+        if isinstance(title, str):
+            normalized["title"] = _align_replay_subject_edition_label(title)
         drafts = normalized.get("channel_drafts")
         if isinstance(drafts, dict):
             drafts = dict(drafts)
