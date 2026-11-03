@@ -81,6 +81,40 @@ def _as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+_ALLOWED_DIAGNOSTIC_KEYS = (
+    "code",
+    "message",
+    "severity",
+    "field",
+    "field_path",
+    "path",
+    "location",
+    "stage",
+)
+
+
+def _sanitize_issue_details(items: Any, max_items: int = 100) -> list[Dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    sanitized: list[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        cleaned: Dict[str, Any] = {}
+        for k in _ALLOWED_DIAGNOSTIC_KEYS:
+            if k in item and item[k] is not None:
+                val = item[k]
+                if isinstance(val, (str, int, float, bool)):
+                    cleaned[k] = val if not isinstance(val, str) else val[:2000]
+                elif isinstance(val, (list, tuple)) and k in ("path", "field_path"):
+                    cleaned[k] = [x for x in val if isinstance(x, (str, int))][:50]
+        if cleaned:
+            sanitized.append(cleaned)
+        if len(sanitized) >= max_items:
+            break
+    return sanitized
+
+
 def _runtime_check_from_api_payload(
     payload: Dict[str, Any],
     *,
@@ -92,12 +126,34 @@ def _runtime_check_from_api_payload(
     runtime = root_runtime if isinstance(root_runtime, dict) else detail_runtime if isinstance(detail_runtime, dict) else {}
     root_issues = payload.get("issues")
     detail_issues = detail.get("issues")
-    issue_details = _as_list(root_issues) if isinstance(root_issues, list) else _as_list(detail_issues)
+    root_runtime_issues = root_runtime.get("issue_details") if isinstance(root_runtime, dict) else None
+    detail_runtime_issues = detail_runtime.get("issue_details") if isinstance(detail_runtime, dict) else None
+
+    if isinstance(root_issues, list):
+        raw_issue_details = root_issues
+    elif isinstance(detail_issues, list):
+        raw_issue_details = detail_issues
+    elif isinstance(root_runtime_issues, list):
+        raw_issue_details = root_runtime_issues
+    elif isinstance(detail_runtime_issues, list):
+        raw_issue_details = detail_runtime_issues
+    elif isinstance(root_runtime, dict) and isinstance(root_runtime.get("issues"), list):
+        raw_issue_details = root_runtime.get("issues")
+    elif isinstance(detail_runtime, dict) and isinstance(detail_runtime.get("issues"), list):
+        raw_issue_details = detail_runtime.get("issues")
+    else:
+        raw_issue_details = []
+
+    issue_details = _sanitize_issue_details(raw_issue_details)
     issue_codes: list[str] = []
     if isinstance(payload.get("issue_codes"), list):
         issue_codes = [str(x) for x in payload.get("issue_codes")]
     elif isinstance(detail.get("issue_codes"), list):
         issue_codes = [str(x) for x in detail.get("issue_codes")]
+    elif isinstance(root_runtime, dict) and isinstance(root_runtime.get("issue_codes"), list):
+        issue_codes = [str(x) for x in root_runtime.get("issue_codes")]
+    elif isinstance(detail_runtime, dict) and isinstance(detail_runtime.get("issue_codes"), list):
+        issue_codes = [str(x) for x in detail_runtime.get("issue_codes")]
     else:
         issue_codes = [
             str(item.get("code"))
@@ -450,6 +506,7 @@ def build_run_artifact_metadata(
             "suppress_external": bool(result.decision.suppress_external),
         },
         "issue_codes": runtime_check.get("issue_codes", []),
+        "issue_details": _sanitize_issue_details(runtime_check.get("issue_details", [])),
         "content_quality_warnings": runtime_check.get("content_quality_warnings", []),
         "target_date": runtime_check.get("target_date"),
         "owner_review_status": "pending_review",
@@ -673,6 +730,7 @@ def send_email_if_allowed(
         "suppress_external": bool(result.decision.suppress_external),
         "reason_summary": result.reason_summary,
         "issue_codes": runtime_check.get("issue_codes", []),
+        "issue_details": _sanitize_issue_details(runtime_check.get("issue_details", [])),
         "content_quality_warnings": runtime_check.get("content_quality_warnings", []),
     }
     allow_send = bool(result.decision.send_email)

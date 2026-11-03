@@ -1396,6 +1396,44 @@ class SupersededChildActionsTests(unittest.TestCase):
             self.assertTrue(is_sup, f"Failed for p_mut={p_mut}")
             self.assertEqual(reason, expected_reason, f"Failed reason for p_mut={p_mut}")
 
+    def test_manual_quality_warning_cannot_bypass_superseded_child_guard(self) -> None:
+        """Even with allow_manual_quality_warning=True, a superseded child run remains blocked."""
+        parent_id = "20261028_123000_today_genie_11223344"
+        child_id = "20261028_124500_today_genie_55667788"
+        parent_meta = {
+            "run_id": parent_id,
+            "mode": "today_genie",
+            "validation_result": "pass",
+            "customer_delivery_status": "smtp_accepted",
+            "smtp_accepted_recipient_count": 10,
+        }
+        child_meta = {
+            "run_id": child_id,
+            "mode": "today_genie",
+            "parent_run_id": parent_id,
+            "validation_result": "draft_only",
+            "runtime_safety_status": "REVIEW_REQUIRED",
+            "customer_surface_status": "PRODUCT_REVIEW_REQUIRED",
+            "response_status": 200,
+            "target_date": "2026-10-28",
+            "created_at": "2026-10-28T07:30:00+09:00",
+            "required_count": 3,
+            "selected_items": ["item1", "item2", "item3"],
+            "issue_codes": ["today_replay_temporal_conflict"],
+            "customer_delivery_status": "not_sent",
+            "owner_review_status": "pending_review",
+        }
+        self._save_raw_run(parent_meta)
+        self._save_raw_run(child_meta)
+
+        ok, reason = can_approve_customer_send(
+            child_meta,
+            has_email_html=True,
+            allow_manual_quality_warning=True,
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "superseded_child_reference_only")
+
 
 
 if __name__ == "__main__":
