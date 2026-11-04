@@ -10,10 +10,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from admin_store import _get_gcs_client, resolve_customer_recipients
 from customer_review_confirmation import (
+    DELEGATED_WORK_REVIEW,
     HUMAN_OWNER,
     PRE_SEND_REVIEWED,
     PRE_SEND_OWNER_WITH_WARNINGS,
     customer_review_confirmation,
+    today_delegated_warning_eligible,
     today_quality_warning_present,
 )
 from email_sender import parse_customer_to_addrs, send_genie_email
@@ -357,15 +359,20 @@ def prepare_today_geenee_customer_delivery(
         if not ready:
             return {"ok": False, "error": err}
     warning_present = today_quality_warning_present(meta)
-    if warning_present and approval_source != HUMAN_OWNER:
-        return {"ok": False, "error": "manual_warning_requires_human_owner"}
+    delegated_warning_ok = today_delegated_warning_eligible(meta)
+    if warning_present:
+        if approval_source == HUMAN_OWNER:
+            review_confirmation_state = REVIEW_CONFIRMATION_STATE_OWNER_WARNING
+        elif approval_source == DELEGATED_WORK_REVIEW and delegated_warning_ok:
+            review_confirmation_state = REVIEW_CONFIRMATION_STATE_REVIEW_PASSED
+        else:
+            return {"ok": False, "error": "manual_warning_requires_human_owner"}
+    else:
+        review_confirmation_state = REVIEW_CONFIRMATION_STATE_REVIEW_PASSED
     try:
         html_body = prepare_customer_final_html(
             saved_html,
-            review_confirmation_state=(
-                REVIEW_CONFIRMATION_STATE_OWNER_WARNING if warning_present
-                else REVIEW_CONFIRMATION_STATE_REVIEW_PASSED
-            ),
+            review_confirmation_state=review_confirmation_state,
             approval_source=approval_source,
         )
     except ValueError as exc:

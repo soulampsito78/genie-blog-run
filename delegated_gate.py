@@ -307,6 +307,8 @@ class FrozenCandidate:
         meta = json.loads(self.meta_json)
         if binding.get("artifact_sha256") != digest(meta) or binding.get("received_html_sha256") != _sha(self.saved_html.encode("utf-8")):
             raise GateError("FROZEN_ARTIFACT_CHANGED", "STATE_CONFLICT")
+        if "artifact_metadata" in binding and binding.get("artifact_metadata") != meta:
+            raise GateError("FROZEN_ARTIFACT_CHANGED", "STATE_CONFLICT")
 
 
 def freeze_candidate(*, meta: dict, saved_html: str, received_message: dict, recipient_plan: dict) -> FrozenCandidate:
@@ -367,9 +369,13 @@ lineage, final content or recipient snapshot requires a new review.
     artifact_hash = digest(meta)
     image_rows = [{"role": image.role, "cid": image.cid, "filename": image.filename, "sha256": _sha(image.content)} for image in images]
     publication_date = str(recipient_plan.get("publication_date") or "")
+    from customer_review_confirmation import today_delegated_warning_eligible
+    warning_eligible = bool(today_delegated_warning_eligible(meta))
     binding = {
         "run_id": run_id, "mode": mode, "publication_date": publication_date,
         "artifact_id": f"{run_id}:{artifact_hash}", "artifact_sha256": artifact_hash,
+        "delegated_warning_eligible": warning_eligible,
+        "artifact_metadata": meta,
         "subject_sha256": _sha(str(prepared["subject"]).encode("utf-8")),
         "body_sha256": _sha(customer_html.encode("utf-8")),
         "received_html_sha256": _sha(saved_html.encode("utf-8")),
