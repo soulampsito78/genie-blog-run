@@ -2613,7 +2613,7 @@ _PAST_WINDOW_PATTERN = re.compile(
 )
 
 
-def _align_replay_subject_edition_label(subj: str) -> str:
+def _align_replay_subject_edition_label(subj: str, target_date: Optional[str] = None) -> str:
     """Align current edition label in subject to neutral replay edition.
 
     Historical clauses (e.g. '어제 장전 브리핑', '지난 거래일 장전 브리핑')
@@ -2621,6 +2621,17 @@ def _align_replay_subject_edition_label(subj: str) -> str:
     """
     if not isinstance(subj, str) or not subj.strip():
         return subj
+
+    if target_date and isinstance(target_date, str):
+        try:
+            from datetime import date
+            dt = date.fromisoformat(target_date.strip())
+            date_prefix = re.compile(
+                rf"^((\[재발행\]\s*)?\[?\s*0?{dt.month}\s*월\s*0?{dt.day}\s*일\s*)장전(\s*\]?[:\s\-]*)",
+            )
+            subj = date_prefix.sub(r"\1재발행\3", subj)
+        except Exception:
+            pass
 
     past_spans = [m.span() for m in _PAST_WINDOW_PATTERN.finditer(subj)]
 
@@ -2651,18 +2662,21 @@ def stabilize_today_genie_validation_fields(
     normalized = stabilize_today_genie_image_prompt_anchors(normalized, runtime_input)
 
     if is_today_replay(runtime_input):
+        from today_genie_replay_context import CONTEXT_KEY
+        replay_ctx = runtime_input.get(CONTEXT_KEY) if isinstance(runtime_input.get(CONTEXT_KEY), dict) else {}
+        target_date = str(replay_ctx.get("target_date") or runtime_input.get("target_date") or "").strip()
         title = normalized.get("title")
         if isinstance(title, str):
-            normalized["title"] = _align_replay_subject_edition_label(title)
+            normalized["title"] = _align_replay_subject_edition_label(title, target_date=target_date)
         drafts = normalized.get("channel_drafts")
         if isinstance(drafts, dict):
             drafts = dict(drafts)
             subj = drafts.get("email_subject")
             if isinstance(subj, str):
-                drafts["email_subject"] = _align_replay_subject_edition_label(subj)
+                drafts["email_subject"] = _align_replay_subject_edition_label(subj, target_date=target_date)
             naver_title = drafts.get("naver_blog_title")
             if isinstance(naver_title, str):
-                drafts["naver_blog_title"] = _align_replay_subject_edition_label(naver_title)
+                drafts["naver_blog_title"] = _align_replay_subject_edition_label(naver_title, target_date=target_date)
             normalized["channel_drafts"] = drafts
 
     risk_rows: List[Dict[str, str]] = []
@@ -2760,17 +2774,25 @@ def product_surface_review_fields(mode: str, data: Any) -> Dict[str, Any]:
             diag = raw
     status = str(diag.get("customer_surface_status") or CUSTOMER_SURFACE_PASS)
     codes = [str(code) for code in (diag.get("issue_codes") or [])]
+    blocking_codes = [str(code) for code in (diag.get("blocking_issue_codes") or [])]
+    editorial_codes = [str(code) for code in (diag.get("editorial_warning_codes") or [])]
     if status == CUSTOMER_SURFACE_PASS:
         label = "고객 표면 검수 통과"
     else:
         label = "제품 표면 검수 필요 — 고객 발송 차단(product_surface_remediation_needed)"
-        if codes:
-            label += " · " + ", ".join(codes[:4])
-    return {
+        display_codes = blocking_codes if blocking_codes else codes
+        if display_codes:
+            label += " · " + ", ".join(display_codes[:4])
+    res = {
         "product_surface_status": status,
         "product_surface_status_label": label,
         "product_surface_issue_codes": codes,
     }
+    if blocking_codes:
+        res["product_surface_blocking_issue_codes"] = blocking_codes
+    if editorial_codes:
+        res["product_surface_editorial_warning_codes"] = editorial_codes
+    return res
 
 
 def email_operational_handoff_meta(

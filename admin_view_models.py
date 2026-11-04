@@ -155,17 +155,25 @@ def run_origin(meta: Mapping[str, Any]) -> str:
 
 def issue_codes(meta: Mapping[str, Any]) -> list[str]:
     found: list[str] = []
-    for key in ("terminal_issue_codes", "issue_codes", "validation_issue_codes"):
+    for key in (
+        "terminal_issue_codes",
+        "issue_codes",
+        "validation_issue_codes",
+        "product_surface_issue_codes",
+        "product_surface_editorial_warning_codes",
+    ):
         value = meta.get(key)
-        if isinstance(value, list):
+        if isinstance(value, (list, tuple, set)):
             found.extend(str(item) for item in value if str(item).strip())
         elif isinstance(value, str) and value.strip():
             found.extend(part.strip() for part in re.split(r"[,;]", value) if part.strip())
     result = meta.get("validation_result")
     if isinstance(result, dict):
         nested = result.get("issue_codes")
-        if isinstance(nested, list):
+        if isinstance(nested, (list, tuple, set)):
             found.extend(str(item) for item in nested if str(item).strip())
+        elif isinstance(nested, str) and nested.strip():
+            found.extend(part.strip() for part in re.split(r"[,;]", nested) if part.strip())
     return list(dict.fromkeys(found))
 
 
@@ -197,6 +205,31 @@ def validation_projection(meta: Mapping[str, Any]) -> Dict[str, Any]:
             "top_image_cid",
         )
     )
+
+    owner_status = str(meta.get("owner_review_status") or "")
+    approval_source = str(meta.get("approval_source") or "")
+    approval_channel = str(meta.get("approval_channel") or "")
+    approval_nonce_used = meta.get("approval_nonce_used") is True
+    human_approved = (
+        owner_status == "approved"
+        and approval_source == "HUMAN_OWNER"
+        and approval_channel == "browser_confirm"
+        and approval_nonce_used
+    )
+    if human_approved:
+        checks = [
+            {"label": "운영자 최종 확인 완료", "tone": "good"},
+        ]
+        if issues:
+            checks.append({"label": f"자동 진단 기록 보존 ({len(issues)}건)", "tone": "warn"})
+        return {
+            "label": "운영자 최종 확인 완료",
+            "tone": "good",
+            "summary": "운영책임자의 직접 검수 및 최종 발송 승인이 완료되었습니다. (자동 진단 기록 보존)",
+            "checks": checks,
+            "issues": issues,
+        }
+
     pid = program_id(meta)
     safety = str(meta.get("safety_verdict") or "")
     editorial = str(meta.get("editorial_verdict") or "")
@@ -248,7 +281,23 @@ def validation_projection(meta: Mapping[str, Any]) -> Dict[str, Any]:
             ],
             "issues": issues,
         }
+
+    from publication_review_policy import are_all_editorial_harmless
+    editorial_only = bool(issues) and are_all_editorial_harmless(issues)
+
     if validation_is_pass(meta):
+        if editorial_only:
+            checks = [
+                {"label": "편집 참고사항 (재발행은 선택 사항)", "tone": "warn"},
+                {"label": f"자동 진단의 편집 참고사항 보존 ({len(issues)}건)", "tone": "warn"},
+            ]
+            return {
+                "label": "편집 참고사항",
+                "tone": "warn",
+                "summary": "자동 진단의 편집 참고사항이 보존되어 있습니다. 재발행은 선택 사항이며 운영책임자 검토 후 발송을 결정할 수 있습니다.",
+                "checks": checks,
+                "issues": issues,
+            }
         checks = [
             {"label": "필수 구성 정상", "tone": "good"},
             {
@@ -261,6 +310,18 @@ def validation_projection(meta: Mapping[str, Any]) -> Dict[str, Any]:
             "label": "검수 통과",
             "tone": "good",
             "summary": "고객 발송 검토를 진행할 수 있습니다.",
+            "checks": checks,
+            "issues": issues,
+        }
+    if editorial_only and not validation_is_failed(meta):
+        checks = [
+            {"label": "편집 참고사항 (재발행은 선택 사항)", "tone": "warn"},
+            {"label": f"자동 진단의 편집 참고사항 보존 ({len(issues)}건)", "tone": "warn"},
+        ]
+        return {
+            "label": "편집 참고사항",
+            "tone": "warn",
+            "summary": "자동 진단의 편집 참고사항이 보존되어 있습니다. 재발행은 선택 사항이며 운영책임자 검토 후 발송을 결정할 수 있습니다.",
             "checks": checks,
             "issues": issues,
         }

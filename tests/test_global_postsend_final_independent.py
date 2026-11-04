@@ -503,12 +503,12 @@ class GlobalPostsendFinalIndependentTests(unittest.TestCase):
         self.assertEqual(second_plan.stop_reason, "attempt_budget_exhausted")
 
     # 14. Global SAFE + editorial REVIEW unsent positive remains eligible
-    def test_global_safe_review_unsent_positive_remains_eligible(self) -> None:
-        """Global natural run with SAFE + editorial REVIEW and unsent is eligible for body-only remediation."""
+    def test_global_safe_review_unsent_harmless_stops_editorial_only(self) -> None:
+        """Global natural run with SAFE + harmless editorial REVIEW stops as editorial_only."""
         meta = _base_global_meta()
         plan = plan_auto_remediation(meta)
-        self.assertTrue(plan.eligible)
-        self.assertEqual(plan.scope, SCOPE_BODY_ONLY)
+        self.assertFalse(plan.eligible)
+        self.assertEqual(plan.stop_reason, "editorial_only")
 
     # 15. Lineage self-reference (auto_parent_id == run_id) preserves eligibility and is not a child link
     def test_lineage_self_reference_preserves_parent_eligibility_and_review(self) -> None:

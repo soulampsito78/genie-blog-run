@@ -526,11 +526,123 @@ class AdminRoutesTests(unittest.TestCase):
             }
         )
         resp = self.client.get(f"/admin/runs/{run_id}")
+        self.assertEqual(resp.headers.get("Cache-Control"), "no-store")
         self.assertIn("고객 이메일 발송 상태", resp.text)
         self.assertIn("PASS", resp.text)
         self.assertIn("발송 접수 완료", resp.text)
         self.assertIn("SMTP 접수", resp.text)
         self.assertNotIn("전달 확인", resp.text)
+
+    def test_genuine_human_approval_display_precedence_and_guards_all_products(self) -> None:
+        self.client.post("/admin/login", data={"password": "test-admin-secret"})
+        products = ("today_genie", "keysuri_global_tech", "keysuri_korea_tech")
+
+        for idx, mode in enumerate(products, start=1):
+            with self.subTest(mode=mode, scenario="genuine_accepted"):
+                run_id = f"20260530_120{idx}00_{mode}_a1b2c3d{idx}"
+                save_run_artifact(
+                    {
+                        "run_id": run_id,
+                        "mode": mode,
+                        "validation_result": "pass",
+                        "workflow_status": "validated",
+                        "owner_review_status": "approved",
+                        "approval_source": "HUMAN_OWNER",
+                        "approval_channel": "browser_confirm",
+                        "approval_nonce_used": True,
+                        "customer_delivery_status": "smtp_accepted",
+                        "email_sent": True,
+                        "response_status": 200,
+                    }
+                )
+                resp = self.client.get(f"/admin/runs/{run_id}")
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(resp.headers.get("Cache-Control"), "no-store")
+                self.assertIn("운영자 최종 확인 완료", resp.text)
+                self.assertNotIn(f"/admin/runs/{run_id}/approve", resp.text)
+                self.assertIn("고객 발송 차단", resp.text)
+                self.assertIn("새 발송 차단", resp.text)
+
+            with self.subTest(mode=mode, scenario="genuine_unknown_delivery"):
+                run_id = f"20260530_121{idx}00_{mode}_b1c2d3e{idx}"
+                save_run_artifact(
+                    {
+                        "run_id": run_id,
+                        "mode": mode,
+                        "validation_result": "pass",
+                        "workflow_status": "validated",
+                        "owner_review_status": "approved",
+                        "approval_source": "HUMAN_OWNER",
+                        "approval_channel": "browser_confirm",
+                        "approval_nonce_used": True,
+                        "customer_delivery_status": "outcome_unknown",
+                        "email_sent": True,
+                        "response_status": 200,
+                    }
+                )
+                resp = self.client.get(f"/admin/runs/{run_id}")
+                self.assertEqual(resp.status_code, 200)
+                self.assertIn("운영자 최종 확인 완료", resp.text)
+                self.assertTrue("RESULT UNKNOWN" in resp.text or "결과 미확정" in resp.text)
+                self.assertNotIn(f"/admin/runs/{run_id}/approve", resp.text)
+                self.assertIn("고객 발송 차단", resp.text)
+                self.assertIn("새 발송 차단", resp.text)
+
+            with self.subTest(mode=mode, scenario="genuine_superseded_reference_only"):
+                parent_id = f"20260530_122{idx}00_{mode}_c1c2c3c{idx}"
+                child_id = f"20260530_122{idx}30_{mode}_d1d2d3d{idx}"
+                save_run_artifact(
+                    {
+                        "run_id": parent_id,
+                        "mode": mode,
+                        "validation_result": "pass",
+                        "customer_delivery_status": "smtp_accepted",
+                        "email_sent": True,
+                        "response_status": 200,
+                    }
+                )
+                save_run_artifact(
+                    {
+                        "run_id": child_id,
+                        "parent_run_id": parent_id,
+                        "mode": mode,
+                        "validation_result": "pass",
+                        "workflow_status": "validated",
+                        "owner_review_status": "approved",
+                        "approval_source": "HUMAN_OWNER",
+                        "approval_channel": "browser_confirm",
+                        "approval_nonce_used": True,
+                        "customer_delivery_status": "not_sent",
+                        "email_sent": True,
+                        "response_status": 200,
+                    }
+                )
+                resp = self.client.get(f"/admin/runs/{child_id}")
+                self.assertEqual(resp.status_code, 200)
+                self.assertIn("운영자 최종 확인 완료", resp.text)
+                self.assertNotIn(f"/admin/runs/{child_id}/approve", resp.text)
+                self.assertIn("고객 발송 차단", resp.text)
+                self.assertIn("참고용 보존 실행", resp.text)
+                self.assertIn("새 발송 차단", resp.text)
+
+            with self.subTest(mode=mode, scenario="timestamp_spoof_not_completed"):
+                spoof_id = f"20260530_123{idx}00_{mode}_e1e2e3e{idx}"
+                save_run_artifact(
+                    {
+                        "run_id": spoof_id,
+                        "mode": mode,
+                        "validation_result": "pass",
+                        "workflow_status": "validated",
+                        "owner_review_status": "approved",
+                        "approved_at": "2026-05-30T12:00:00+09:00",
+                        "customer_delivery_status": "smtp_accepted",
+                        "email_sent": True,
+                        "response_status": 200,
+                    }
+                )
+                resp = self.client.get(f"/admin/runs/{spoof_id}")
+                self.assertEqual(resp.status_code, 200)
+                self.assertNotIn("운영자 최종 확인 완료", resp.text)
 
     @patch("admin_routes.execute_orchestrator_run")
     def test_reissue_text_and_image_executes_and_persists_scope(self, mock_exec) -> None:

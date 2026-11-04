@@ -406,7 +406,8 @@ class RuntimeRiskListBoundaryTests(unittest.TestCase):
         payload = {"summary": "문구입니다.", "risk_check": [
             {"risk": "현재 트럼프 전 대통령입니다.", "detail": "현재 밴스 의원입니다."}]}
         expected_diagnostic = {"customer_surface_status": CUSTOMER_SURFACE_PASS, "customer_ready": True,
-                               "issue_codes": [], "findings": [], "contract_version": "genie-product-surface-v1",
+                               "issue_codes": [], "blocking_issue_codes": [], "editorial_warning_codes": [],
+                               "findings": [], "contract_version": "genie-product-surface-v1",
                                "structural_similarity_threshold": 0.82}
         for mode in ("keysuri_global_tech", "keysuri_korea_tech"):
             with self.subTest(mode=mode):
