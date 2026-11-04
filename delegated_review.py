@@ -96,9 +96,32 @@ limits here are shadow-evaluation parameters, not live schedule promises.
             return outcome("REVIEW_INCOMPLETE", "CANDIDATE_EVIDENCE_MISSING")
         if set(candidate["image_sha256"]) != EXPECTED_IMAGE_ROLES[candidate["mode"]]:
             return outcome("REVIEW_INCOMPLETE", "EXPECTED_IMAGE_ROLES_MISSING_OR_UNEXPECTED")
+        warning_eligible = False
+        if candidate.get("mode") == "today_genie":
+            from customer_review_confirmation import today_delegated_warning_eligible
+
+            meta_obj = candidate.get("artifact_metadata")
+            if isinstance(meta_obj, Mapping):
+                # Verify exact metadata against binding artifact_sha256 if present
+                if candidate.get("artifact_sha256"):
+                    meta_canon = json.dumps(meta_obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+                    meta_sha = hashlib.sha256(meta_canon.encode("utf-8")).hexdigest()
+                    if meta_sha != candidate["artifact_sha256"]:
+                        return outcome("HOLD", "ARTIFACT_METADATA_BINDING_MISMATCH")
+                warning_eligible = bool(today_delegated_warning_eligible(meta_obj, now=now))
+            elif isinstance(candidate, Mapping):
+                # Never trust a raw caller-supplied boolean alone: evaluate candidate attributes at current clock
+                warning_eligible = bool(today_delegated_warning_eligible(candidate, now=now))
+
         if candidate.get("first_pass_verdict") != "PASS":
-            return outcome("HOLD", "FIRST_PASS_NOT_PASS")
-        if candidate.get("artifact_status") not in {"emailed", "validated", "reissued"}:
+            if not warning_eligible:
+                return outcome("HOLD", "FIRST_PASS_NOT_PASS")
+        allowed_artifact_statuses = (
+            {"emailed", "validated", "reissued", "review_required"}
+            if warning_eligible
+            else {"emailed", "validated", "reissued"}
+        )
+        if candidate.get("artifact_status") not in allowed_artifact_statuses:
             return outcome("HOLD", "ARTIFACT_NOT_READY")
         if candidate.get("owner_review_status") not in {"pending_review", "reopened"}:
             return outcome("HOLD", "OWNER_REVIEW_STATE_CONFLICT")
@@ -107,7 +130,8 @@ limits here are shadow-evaluation parameters, not live schedule promises.
         from product_surface_contract import CUSTOMER_SURFACE_PASS
 
         if candidate.get("customer_surface_status") != CUSTOMER_SURFACE_PASS:
-            return outcome("HOLD", "PRODUCT_SURFACE_NOT_READY")
+            if not warning_eligible:
+                return outcome("HOLD", "PRODUCT_SURFACE_NOT_READY")
         if candidate["mode"] in {"keysuri_global_tech", "keysuri_korea_tech"} and (
             candidate.get("safety_verdict") != "SAFE" or candidate.get("editorial_verdict") not in {"READY", "REVIEW"}
         ):

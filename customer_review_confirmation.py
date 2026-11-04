@@ -191,6 +191,141 @@ def today_quality_warning_present(
     return True
 
 
+def today_delegated_warning_eligible(
+    meta: Mapping[str, Any],
+    *,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Evaluate narrow delegated warning review eligibility without Owner impersonation.
+
+    Eligibility allows an existing warning-bound candidate to enter the independent
+    delegated second-pass review pipeline. It is NOT approval, NOT a QA pass, and
+    NOT permission to send.
+    """
+    mode = str(meta.get("mode") or meta.get("program_id") or "")
+    if mode != "today_genie":
+        return False
+
+    val_res = str(meta.get("validation_result") or "")
+    rss = str(meta.get("runtime_safety_status") or "")
+    css = str(meta.get("customer_surface_status") or "")
+
+    try:
+        status_code = int(meta.get("response_status") or 0)
+    except (TypeError, ValueError):
+        return False
+
+    if status_code != 200:
+        return False
+
+    is_reviewable_warning = (
+        val_res == "draft_only"
+        and rss == "REVIEW_REQUIRED"
+        and css in ("PRODUCT_REVIEW_REQUIRED", "CUSTOMER_SURFACE_PASS")
+    )
+    is_legacy_pass_warning = (
+        val_res == "pass"
+        and rss == "RUNTIME_SAFETY_PASS"
+        and css == "PRODUCT_REVIEW_REQUIRED"
+    )
+
+    if not (is_reviewable_warning or is_legacy_pass_warning):
+        return False
+
+    # Never allow bare pass/review without explicit verified issue evidence
+    valid_codes, collected_codes = _collect_issue_codes(meta)
+    if not valid_codes or not collected_codes:
+        return False
+
+    from publication_review_policy import is_harmless_editorial_code
+
+    is_pure_editorial = all(is_harmless_editorial_code(code) for code in collected_codes)
+    is_legacy_allowed = all(
+        (code in ALLOWED_WARNING_ISSUE_CODES or is_harmless_editorial_code(code))
+        for code in collected_codes
+    )
+
+    # Any unknown or non-warning substantive code remains hard blocked
+    if not is_legacy_allowed:
+        return False
+
+    # Server time in Asia/Seoul: require timezone-aware datetime if supplied
+    if now is None:
+        now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+    else:
+        if now.tzinfo is None or now.utcoffset() is None:
+            return False
+        now_kst = now.astimezone(ZoneInfo("Asia/Seoul"))
+
+    # Known ambiguous legacy warnings strictly pre-09:00 KST
+    if not is_pure_editorial:
+        if now_kst.hour >= 9:
+            return False
+
+    # Date validation: server date must match artifact target date
+    target_date = str(meta.get("target_date") or "").strip()
+    if not target_date or target_date != now_kst.date().isoformat():
+        return False
+
+    # Run ID day must match target date / server date
+    run_id = str(meta.get("run_id") or "").strip()
+    match = re.match(r"^(\d{8})", run_id)
+    if not match or match.group(1) != now_kst.strftime("%Y%m%d"):
+        return False
+
+    # created_at must be timezone-aware and on the exact same date
+    created_at_raw = meta.get("created_at")
+    if not isinstance(created_at_raw, str) or not created_at_raw.strip():
+        return False
+    try:
+        created_dt = datetime.fromisoformat(created_at_raw.strip())
+    except Exception:
+        return False
+    if created_dt.tzinfo is None or created_dt.utcoffset() is None:
+        return False
+    created_kst = created_dt.astimezone(ZoneInfo("Asia/Seoul"))
+    if created_kst.date() != now_kst.date():
+        return False
+
+    # Require exact 3 selected/required item count
+    try:
+        req_count = int(meta.get("required_count"))
+    except (TypeError, ValueError):
+        return False
+    if req_count != 3:
+        return False
+
+    selected_items = meta.get("selected_items")
+    if not isinstance(selected_items, list) or len(selected_items) != 3:
+        return False
+
+    for count_key in ("selected_items_count", "selected_item_count", "selected_count"):
+        if count_key in meta:
+            try:
+                if int(meta[count_key]) != 3:
+                    return False
+            except (TypeError, ValueError):
+                return False
+
+    # Run state must be pending review and not delivered, held, or superseded
+    owner_status = str(meta.get("owner_review_status") or "pending_review")
+    if owner_status not in {"pending_review", "reopened"}:
+        return False
+
+    deliv_status = str(meta.get("customer_delivery_status") or "not_sent")
+    if deliv_status not in {"not_sent", "", "NOT_SENT"}:
+        return False
+
+    if (
+        meta.get("reissue_requested")
+        or meta.get("last_reissue_child_run_id")
+        or meta.get("superseded_by_run_id")
+    ):
+        return False
+
+    return True
+
+
 def customer_review_confirmation(*, approval_source: str, display_state: str) -> tuple[str, str]:
     """Return a truthful pre-submit display state and its source-specific copy.
 
