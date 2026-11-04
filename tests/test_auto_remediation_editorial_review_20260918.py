@@ -58,10 +58,11 @@ class EditorialReviewRemediationTests(unittest.TestCase):
 
     @patch("admin_store._reissue_parent_top_images_provably_gone", return_value=False)
     @patch("auto_remediation._delegated_review_repair_boundary", return_value=None)
-    def test_reviewed_runtime_pass_is_eligible_for_one_body_repair(self, _boundary, _image):
+    def test_reviewed_runtime_pass_with_harmless_editorial_is_ineligible_editorial_only(self, _boundary, _image):
+        """Harmless editorial-only review verdict is ineligible for automated body repair."""
         plan = plan_auto_remediation(_global_meta())
-        self.assertTrue(plan.eligible, plan.stop_reason)
-        self.assertEqual(plan.scope, SCOPE_BODY_ONLY)
+        self.assertFalse(plan.eligible)
+        self.assertEqual(plan.stop_reason, "editorial_only")
         self.assertEqual(plan.review_class, "review_required")
 
     @patch("auto_remediation._delegated_review_repair_boundary", return_value=None)

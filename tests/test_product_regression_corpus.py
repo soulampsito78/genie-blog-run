@@ -59,13 +59,30 @@ class ProductRegressionCorpusTests(unittest.TestCase):
                     entry["mode"], structured, source_input=source_input
                 )
                 expected = entry["expectation"]
-                if expected == "GOOD_EXPECTED_PASS":
+                if expected == "EDITORIAL_WARNING_EXPECTED_PASS":
+                    self.assertTrue(result.customer_ready)
+                    self.assertEqual(result.status, CUSTOMER_SURFACE_PASS)
+                    self.assertTrue(len(result.findings) > 0)
+                    self.assertTrue(
+                        bool(getattr(result, "editorial_warning_codes", None))
+                        or bool(getattr(result, "issue_codes", None))
+                    )
+                elif expected == "GOOD_EXPECTED_PASS":
                     self.assertEqual(result.status, CUSTOMER_SURFACE_PASS)
                 else:
                     self.assertEqual(result.status, PRODUCT_REVIEW_REQUIRED)
                 expected_codes = set(entry.get("expected_issue_codes") or [])
                 actual_codes = {finding.code for finding in result.findings}
                 self.assertTrue(expected_codes.issubset(actual_codes))
+                if entry["id"] == "today_20260903_repeated_skeleton":
+                    self.assertNotIn(
+                        "customer_surface_repeated_sentence_skeleton",
+                        result.blocking_issue_codes,
+                    )
+                    self.assertIn(
+                        "customer_surface_repeated_sentence_skeleton",
+                        result.editorial_warning_codes,
+                    )
 
                 if entry.get("proof_repair"):
                     # The boundary diagnoses; it never repairs.  A defective

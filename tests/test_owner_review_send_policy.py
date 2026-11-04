@@ -160,7 +160,7 @@ class OwnerReviewSendPolicyTests(unittest.TestCase):
             _today_genie_result_from_issues(
                 [ValidationIssue("weak_opening", "editorial", "warning")]
             ),
-            "draft_only",
+            "pass",
         )
 
     def test_block_result_no_send(self) -> None:

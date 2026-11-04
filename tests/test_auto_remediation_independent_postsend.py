@@ -162,14 +162,14 @@ class IndependentPostsendBoundaryTests(unittest.TestCase):
     def _runners(self, runner_fn, mode: str = "today_genie", scope: str = SCOPE_BODY_ONLY) -> Dict[Tuple[str, str], Any]:
         return {(mode, scope): runner_fn}
 
-    # --- 1. Global SAFE + editorial REVIEW unsent remains eligible ---
-    def test_global_safe_editorial_review_unsent_remains_eligible(self) -> None:
-        """Global natural scheduled run with SAFE + editorial REVIEW and unsent is eligible."""
+    # --- 1. Global SAFE + editorial REVIEW unsent stops editorial_only ---
+    def test_global_safe_editorial_review_unsent_stops_editorial_only(self) -> None:
+        """Global natural scheduled run with SAFE + harmless editorial REVIEW stops as editorial_only."""
         meta = _base_global_meta()
         run_id = self._save(meta)
         plan = plan_auto_remediation(meta)
-        self.assertTrue(plan.eligible, f"Plan should be eligible, got stop_reason: {plan.stop_reason}")
-        self.assertEqual(plan.scope, SCOPE_BODY_ONLY)
+        self.assertFalse(plan.eligible)
+        self.assertEqual(plan.stop_reason, "editorial_only")
 
         child_id = "20261028_123100_keysuri_global_tech_c1c2c3c4"
         runners = self._runners(
@@ -178,11 +178,9 @@ class IndependentPostsendBoundaryTests(unittest.TestCase):
             scope=SCOPE_BODY_ONLY,
         )
         summary = run_auto_remediation(run_id, runners=runners, report_fn=self._report_fn)
-        self.assertTrue(summary["automatic_remediation_triggered"])
-        self.assertEqual(summary["automatic_remediation_result"], RESULT_SUCCEEDED)
-        self.assertEqual(summary["automatic_remediation_child_run_id"], child_id)
-        # Global body-only reissue must use frozen parent news
-        self.assertTrue(self.runner_calls[0][1].get("frozen_parent"))
+        self.assertFalse(summary["automatic_remediation_triggered"])
+        self.assertEqual(summary["stop_reason"], "editorial_only")
+        self.assertEqual(len(self.runner_calls), 0)
 
     # --- 2. Same mode/product/date durable attempt or outcome stops even if parent projection is stale/corrupt/zero ---
     def test_durable_attempt_or_outcome_stops_even_with_corrupt_or_zero_parent_projection(self) -> None:

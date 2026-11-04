@@ -127,7 +127,9 @@ def today_genie_issue_is_hard_fail(code: str, severity: str) -> bool:
 def _today_genie_result_from_issues(issues: List[ValidationIssue]) -> GateResultType:
     if any(today_genie_issue_is_hard_fail(issue.code, issue.severity) for issue in issues):
         return "block"
-    if issues:
+    from publication_review_policy import classify_validator_issues
+    blocking_codes, _ = classify_validator_issues(issues)
+    if blocking_codes:
         return "draft_only"
     return "pass"
 
@@ -524,9 +526,18 @@ def _detail_has_what_and_why_today(detail: str) -> bool:
             "주초",
         ),
     )
-    tactical_today = len(sents) >= 2 and _has_any(
-        d,
-        ("주시", "관찰", "확인", "대응", "접근", "운용", "판단", "시나리오", "점검"),
+    tactical_today = len(sents) >= 2 and (
+        _has_any(
+            d,
+            ("주시", "관찰", "확인", "대응", "접근", "운용", "판단", "시나리오", "점검"),
+        )
+        or any(
+            re.search(pat, d)
+            for pat in (
+                r"주목할\s*필요가\s*있(?:다|습니다|을\s*것으로\s*보입니다)",
+                r"면밀히\s*살펴야\s*(?:합니다|한다|하겠습니다|할\s*필요가\s*있(?:다|습니다))",
+            )
+        )
     )
     meaning = _has_any(d, INTERPRETATION_CUE_TERMS) or _has_any(
         d,
@@ -2240,6 +2251,7 @@ def _korean_surface_issues_today_genie(data: Dict[str, Any]) -> List[ValidationI
 
 def _today_replay_copy_issues(data: Dict[str, Any], runtime_input: Dict[str, Any]) -> List[ValidationIssue]:
     from today_genie_replay_context import CONTEXT_KEY, is_today_replay, replay_temporal_conflicts
+    from publication_review_policy import is_replay_edition_label_path, is_temporal_instruction_or_forecast
     if not runtime_input.get("today_news_selection_frozen"):
         if CONTEXT_KEY in data or CONTEXT_KEY in runtime_input:
             return [ValidationIssue("today_replay_context_mismatch", "재발행 문맥이 frozen 부모에 결속되지 않았습니다.", "error")]
@@ -2248,8 +2260,47 @@ def _today_replay_copy_issues(data: Dict[str, Any], runtime_input: Dict[str, Any
         return [ValidationIssue("today_replay_context_unavailable", "재발행 작성시각·발행일·부모 결속이 미확인입니다.", "error")]
     if data.get(CONTEXT_KEY) != runtime_input[CONTEXT_KEY]:
         return [ValidationIssue("today_replay_context_mismatch", "고객 본문과 서버 재발행 문맥이 일치하지 않습니다.", "error")]
-    return [ValidationIssue("today_replay_temporal_conflict", f"재발행 시점과 맞지 않는 개장 전 지시: {field}", "error")
-            for field in replay_temporal_conflicts(data)]
+
+    def _get_path_text(field_name: str) -> str:
+        if field_name == "title":
+            return str(data.get("title") or "")
+        if field_name == "channel_drafts.email_subject":
+            drafts = data.get("channel_drafts")
+            return str(drafts.get("email_subject") or "") if isinstance(drafts, dict) else ""
+        if field_name == "channel_drafts.naver_blog_title":
+            drafts = data.get("channel_drafts")
+            return str(drafts.get("naver_blog_title") or "") if isinstance(drafts, dict) else ""
+        return ""
+
+    issues: List[ValidationIssue] = []
+    for field in replay_temporal_conflicts(data):
+        if is_replay_edition_label_path(field):
+            field_text = _get_path_text(field)
+            if is_temporal_instruction_or_forecast(field_text):
+                issues.append(
+                    ValidationIssue(
+                        "today_replay_temporal_conflict",
+                        f"재발행 시점과 맞지 않는 개장 전 지시: {field}",
+                        "error",
+                    )
+                )
+            else:
+                issues.append(
+                    ValidationIssue(
+                        "today_replay_edition_label_warning",
+                        f"재발행 판본 표기 권장: {field}",
+                        "warning",
+                    )
+                )
+        else:
+            issues.append(
+                ValidationIssue(
+                    "today_replay_temporal_conflict",
+                    f"재발행 시점과 맞지 않는 개장 전 지시: {field}",
+                    "error",
+                )
+            )
+    return issues
 
 
 def validate_today_genie(data: Dict[str, Any], runtime_input: Dict[str, Any]) -> ValidationResult:

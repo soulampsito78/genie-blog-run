@@ -444,14 +444,12 @@ _APPROVE_ERROR_MESSAGES = {
     "missing_smtp": "SMTP 설정이 없습니다.",
     "not_approvable": "승인할 수 없는 검증 상태입니다.",
     "product_surface_remediation_needed": (
-        "제품 표면 검수 필요(product_surface_remediation_needed): 고객 표면 QA가 "
-        "PRODUCT_REVIEW_REQUIRED입니다. 운영자 검수와 재발행은 계속 가능하지만 "
-        "고객 발송은 차단됩니다. 아래 재발행으로 교정한 뒤 새 실행을 승인하세요."
+        "제품 표면 검수 필요(product_surface_remediation_needed): 사실·출처·핵심 표현 등 "
+        "차단 사유에 대한 확인이 필요합니다. 내용을 점검하거나 필요한 경우 재발행을 진행하세요."
     ),
     "review_required_remediation_needed": (
-        "런타임 검증이 pass가 아닙니다(review_required_remediation_needed). "
-        "고객 발송만 차단되며 이 실행은 재발행할 수 있습니다. "
-        "아래 재발행으로 교정한 뒤 새 실행을 승인하세요."
+        "런타임 검증 필요(review_required_remediation_needed): 사실성·데이터 무결성 검증 "
+        "확인이 필요합니다. 진단 내역을 점검하거나 필요한 경우 재발행을 진행하세요."
     ),
     "keysuri_safety_not_safe": "안전성 판정이 SAFE가 아니어서 고객 발송할 수 없습니다.",
     "keysuri_editorial_poor": "편집 품질이 POOR인 후보는 고객 승인을 제공하지 않습니다.",
@@ -2580,10 +2578,23 @@ def admin_run_detail(request: Request, run_id: str):
 </form>'''
     view = run_projection(meta, current_recipient_count=recipient_count)
     validation = view["validation"]
+    is_human_approved = bool(
+        str(meta.get("owner_review_status") or "").strip() == "approved"
+        and meta.get("approval_source") == "HUMAN_OWNER"
+        and meta.get("approval_channel") == "browser_confirm"
+        and meta.get("approval_nonce_used") is True
+    )
     if is_superseded:
         safety = str(meta.get("safety_verdict") or "")
         editorial = str(meta.get("editorial_verdict") or "")
-        if superseded_reason == "parent_reconciliation_required":
+        if is_human_approved:
+            val_label = validation.get("label", "운영자 최종 확인 완료")
+            val_tone = validation.get("tone", "good")
+            if superseded_reason == "parent_reconciliation_required":
+                val_summary = (str(validation.get("summary") or "") + " 원본 실행과의 계보 또는 발송 상태 정합성 확인이 필요한 기록입니다. 추가 고객 발송이나 수정을 진행하지 않습니다.").strip()
+            else:
+                val_summary = (str(validation.get("summary") or "") + " 원본 실행이 이미 처리되어 참고용으로 보존된 기록입니다. 추가 발송이나 수정을 진행하지 않습니다.").strip()
+        elif superseded_reason == "parent_reconciliation_required":
             val_label = "정합성 확인 필요"
             val_tone = "warn"
             val_summary = "원본 실행과의 계보 또는 발송 상태 정합성 확인이 필요한 기록입니다. 추가 고객 발송이나 수정을 진행하지 않습니다."
@@ -2622,7 +2633,14 @@ def admin_run_detail(request: Request, run_id: str):
     elif is_own_submitted:
         safety = str(meta.get("safety_verdict") or "")
         editorial = str(meta.get("editorial_verdict") or "")
-        if own_submission_disp == "reconciliation":
+        if is_human_approved:
+            val_label = validation.get("label", "운영자 최종 확인 완료")
+            val_tone = validation.get("tone", "good")
+            if own_submission_disp == "reconciliation":
+                val_summary = (str(validation.get("summary") or "") + " 발송 결과 또는 원장 정합성 확인이 필요한 기록입니다. 추가 고객 발송이나 수정을 진행하지 않습니다.").strip()
+            else:
+                val_summary = (str(validation.get("summary") or "") + " 이미 고객 발송이 접수되어 추가 고객 발송을 진행하지 않습니다.").strip()
+        elif own_submission_disp == "reconciliation":
             val_label = "정합성 확인 필요"
             val_tone = "warn"
             val_summary = "발송 결과 또는 원장 정합성 확인이 필요한 기록입니다. 추가 고객 발송이나 수정을 진행하지 않습니다."
@@ -2648,6 +2666,8 @@ def admin_run_detail(request: Request, run_id: str):
             val_checks.append(item)
         if own_submission_disp == "reconciliation":
             val_checks.append({"label": "정합성 확인 필요 (새 발송 차단)", "tone": "warn"})
+        elif is_human_approved:
+            val_checks.append({"label": "발송 접수 완료 (새 발송 차단)", "tone": "neutral"})
         else:
             val_checks.append({"label": "과거 검수 이력 (새 발송 차단)", "tone": "neutral"})
 
@@ -2789,12 +2809,14 @@ def admin_run_detail(request: Request, run_id: str):
 <nav class="surface" aria-label="운영 보조 메뉴" style="margin-top:18px;display:flex;flex-wrap:wrap;gap:12px 18px;">{email_link}<a href="/admin/customer-recipients">베타 고객 수신자 관리</a><a href="/admin/notices">고객 공지 메일</a></nav>
 """
     memory.record("after_projection")
-    return _finish_heavy_admin_projection(
+    response = _finish_heavy_admin_projection(
         memory,
         title=f"Review {run_id}",
         inner=inner,
         active="reviews",
     )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.post("/admin/runs/{run_id}/hold")
@@ -3197,7 +3219,7 @@ def admin_run_approve_confirm(request: Request, run_id: str):
     memory.record("after_projection")
     inner = f"""
 {_ui_page_header('고객 발송 최종 확인', '이 정확한 브리핑을 아래의 정확한 수신자에게 발송합니다.', view['program']['display'])}
-{"" if not snapshot.get("manual_owner_quality_warning") else '<div class="warn">품질 검수 경고가 남아 있습니다. 아래 발송 확인은 운영책임자의 발송 결정이며 사실성 검수 통과를 의미하지 않습니다.</div>'}
+{"" if not snapshot.get("manual_owner_quality_warning") else '<div class="warn">편집 품질 관련 참고사항이 포함되어 있습니다. 운영책임자의 직접 검토 및 최종 확인 후 발송을 진행합니다.</div>'}
 <section class="surface"><div class="metrics">
 {_ui_metric('실제 제목', prepared_subject)}
 {_ui_metric('고정 수신자', recipient_label)}

@@ -37,6 +37,7 @@ CUSTOMER_SURFACE_PASS = "CUSTOMER_SURFACE_PASS"
 PRODUCT_REVIEW_REQUIRED = "PRODUCT_REVIEW_REQUIRED"
 RELEASE_REGRESSION_PASS = "RELEASE_REGRESSION_PASS"
 RELEASE_REGRESSION_FAIL = "RELEASE_REGRESSION_FAIL"
+EDITORIAL_WARNING_EXPECTED_PASS = "EDITORIAL_WARNING_EXPECTED_PASS"
 
 STRUCTURAL_SIMILARITY_THRESHOLD = 0.82
 PRODUCT_SURFACE_DIAGNOSTIC_KEY = "_product_surface_qa"
@@ -229,6 +230,8 @@ class ProductSurfaceFinding:
 class ProductSurfaceResult:
     status: str
     findings: Tuple[ProductSurfaceFinding, ...]
+    blocking_issue_codes: Tuple[str, ...] = ()
+    editorial_warning_codes: Tuple[str, ...] = ()
 
     @property
     def customer_ready(self) -> bool:
@@ -239,6 +242,8 @@ class ProductSurfaceResult:
             "customer_surface_status": self.status,
             "customer_ready": self.customer_ready,
             "issue_codes": sorted({finding.code for finding in self.findings}),
+            "blocking_issue_codes": sorted(self.blocking_issue_codes),
+            "editorial_warning_codes": sorted(self.editorial_warning_codes),
             "findings": [finding.as_dict() for finding in self.findings],
             "contract_version": "genie-product-surface-v1",
             "structural_similarity_threshold": STRUCTURAL_SIMILARITY_THRESHOLD,
@@ -264,6 +269,8 @@ def acceptance_status_fields(
         "product_surface_issue_codes": sorted(
             {finding.code for finding in surface_result.findings}
         ),
+        "product_surface_blocking_issue_codes": sorted(surface_result.blocking_issue_codes),
+        "product_surface_editorial_warning_codes": sorted(surface_result.editorial_warning_codes),
     }
 
 
@@ -588,13 +595,34 @@ def evaluate_product_surface(
         from today_genie_replay_context import (
             CONTEXT_KEY, known_copy_grammar_conflicts, replay_temporal_conflicts,
         )
+        from publication_review_policy import is_replay_edition_label_path, is_temporal_instruction_or_forecast
         findings.extend(ProductSurfaceFinding(
             "today_copy_malformed_grammar", path, "문장의 명사와 동사 활용이 잘못 결합됐습니다.", ()
         ) for path in known_copy_grammar_conflicts(structured_output))
         if CONTEXT_KEY in structured_output:
-            findings.extend(ProductSurfaceFinding(
-                "today_replay_temporal_conflict", path, "재발행 시점에 맞는 문장인지 검토해야 합니다.", ()
-            ) for path in replay_temporal_conflicts(structured_output))
+            for path in replay_temporal_conflicts(structured_output):
+                if is_replay_edition_label_path(path):
+                    field_text = ""
+                    if path == "title":
+                        field_text = str(structured_output.get("title") or "")
+                    elif path == "channel_drafts.email_subject":
+                        drafts = structured_output.get("channel_drafts")
+                        field_text = str(drafts.get("email_subject") or "") if isinstance(drafts, dict) else ""
+                    elif path == "channel_drafts.naver_blog_title":
+                        drafts = structured_output.get("channel_drafts")
+                        field_text = str(drafts.get("naver_blog_title") or "") if isinstance(drafts, dict) else ""
+                    if is_temporal_instruction_or_forecast(field_text):
+                        findings.append(ProductSurfaceFinding(
+                            "today_replay_temporal_conflict", path, "재발행 시점에 맞는 문장인지 검토해야 합니다.", ()
+                        ))
+                    else:
+                        findings.append(ProductSurfaceFinding(
+                            "today_replay_edition_label_warning", path, "재발행 판본 표기 권장 사항이 있습니다.", ()
+                        ))
+                else:
+                    findings.append(ProductSurfaceFinding(
+                        "today_replay_temporal_conflict", path, "재발행 시점에 맞는 문장인지 검토해야 합니다.", ()
+                    ))
 
     for field in fields:
         field_source_titles = source_titles
@@ -864,9 +892,14 @@ def evaluate_product_surface(
                 ))
 
     unique = _dedupe_findings(findings)
+    from publication_review_policy import classify_surface_findings
+    blocking_codes, editorial_codes = classify_surface_findings(unique)
+    status = PRODUCT_REVIEW_REQUIRED if blocking_codes else CUSTOMER_SURFACE_PASS
     return ProductSurfaceResult(
-        PRODUCT_REVIEW_REQUIRED if unique else CUSTOMER_SURFACE_PASS,
-        unique,
+        status=status,
+        findings=unique,
+        blocking_issue_codes=tuple(sorted(set(blocking_codes))),
+        editorial_warning_codes=tuple(sorted(set(editorial_codes))),
     )
 
 
@@ -923,5 +956,7 @@ def product_surface_run_fields(structured_output: Any) -> Dict[str, Any]:
     return {
         "customer_surface_status": diag.get("customer_surface_status"),
         "product_surface_issue_codes": list(diag.get("issue_codes") or []),
+        "product_surface_blocking_issue_codes": list(diag.get("blocking_issue_codes") or []),
+        "product_surface_editorial_warning_codes": list(diag.get("editorial_warning_codes") or []),
         "product_surface_contract_version": diag.get("contract_version"),
     }

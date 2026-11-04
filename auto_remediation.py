@@ -40,6 +40,7 @@ from admin_store import (
 )
 from admin_urls import build_owner_review_admin_url
 from issue_code_registry import ISSUE_CODE_REGISTRY, REPAIRABILITY_TERMINAL_BLOCK
+from publication_review_policy import are_all_editorial_harmless
 from publishing_policy import FINANCE_SAFETY_CODES
 
 logger = logging.getLogger(__name__)
@@ -224,15 +225,36 @@ def artifact_issue_codes(meta: Dict[str, Any]) -> List[str]:
         "terminal_issue_codes",
         "review_issue_codes",
         "product_surface_issue_codes",
+        "product_surface_editorial_warning_codes",
     ):
         raw = meta.get(key)
-        if not isinstance(raw, list):
-            continue
-        for value in raw:
-            code = str(value or "").strip()
-            if code and code not in seen:
-                seen.add(code)
-                codes.append(code)
+        if isinstance(raw, (list, tuple, set)):
+            for value in raw:
+                code = str(value or "").strip()
+                if code and code not in seen:
+                    seen.add(code)
+                    codes.append(code)
+        elif isinstance(raw, str) and raw.strip():
+            for part in re.split(r"[,;]", raw):
+                code = part.strip()
+                if code and code not in seen:
+                    seen.add(code)
+                    codes.append(code)
+    result = meta.get("validation_result")
+    if isinstance(result, dict):
+        nested = result.get("issue_codes")
+        if isinstance(nested, (list, tuple, set)):
+            for value in nested:
+                code = str(value or "").strip()
+                if code and code not in seen:
+                    seen.add(code)
+                    codes.append(code)
+        elif isinstance(nested, str) and nested.strip():
+            for part in re.split(r"[,;]", nested):
+                code = part.strip()
+                if code and code not in seen:
+                    seen.add(code)
+                    codes.append(code)
     return codes
 
 
@@ -480,6 +502,7 @@ ALREADY_SETTLED_STOP_REASONS = frozenset({
     "publication_already_reserved_or_accepted",
     "customer_delivery_already_attempted",
     "run_passed",
+    "editorial_only",
     "already_a_remediation_child",
     "not_a_natural_scheduled_run",
     "no_send_verification_run",
@@ -534,6 +557,15 @@ def plan_auto_remediation(meta: Optional[Dict[str, Any]]) -> AutoRemediationPlan
         )
 
     codes = artifact_issue_codes(meta)
+    outstanding = [c for c in codes if not _is_informational_code(c)]
+    if outstanding and are_all_editorial_harmless(outstanding):
+        return AutoRemediationPlan(
+            False,
+            stop_reason="editorial_only",
+            review_class=review_class,
+            issue_codes=codes,
+        )
+
     scope, blocking, unclassified = classify_issue_codes(codes)
     if scope is None:
         reason = "non_remediable_issue_code" if blocking else "unclassified_issue_code"

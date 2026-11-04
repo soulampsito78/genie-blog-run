@@ -15,7 +15,7 @@ HUMAN_OWNER = "HUMAN_OWNER"
 DELEGATED_WORK_REVIEW = "DELEGATED_WORK_REVIEW"
 PRE_SEND_REVIEWED = "PRE_SEND_REVIEWED"
 PRE_SEND_OWNER_WITH_WARNINGS = "PRE_SEND_OWNER_WITH_WARNINGS"
-HUMAN_OWNER_WARNING_TEXT = "본 브리핑은 품질 검수 경고를 유지한 상태로 운영책임자의 발송 결정에 따라 제공됩니다."
+HUMAN_OWNER_WARNING_TEXT = "본 브리핑은 품질 검수 참고사항을 확인한 운영책임자의 직접 검수와 최종 발송 승인에 따라 제공됩니다."
 
 HUMAN_DIRECT_REVIEW_TEXT = "본 브리핑은 운영책임자의 직접 검수를 통과했습니다."
 DELEGATED_REVIEW_TEXT = "본 브리핑은 운영책임자가 정한 정책에 따른 독립적인 AI 검토를 통과했습니다."
@@ -114,7 +114,7 @@ def today_quality_warning_present(
         status_code == 200
         and val_res == "draft_only"
         and rss == "REVIEW_REQUIRED"
-        and css == "PRODUCT_REVIEW_REQUIRED"
+        and css in ("PRODUCT_REVIEW_REQUIRED", "CUSTOMER_SURFACE_PASS")
     ):
         return False
 
@@ -122,7 +122,11 @@ def today_quality_warning_present(
     if not valid_codes:
         return False
 
-    if not all(code in ALLOWED_WARNING_ISSUE_CODES for code in collected_codes):
+    from publication_review_policy import is_harmless_editorial_code
+    is_pure_editorial = all(is_harmless_editorial_code(code) for code in collected_codes)
+    is_legacy_allowed = all(code in ALLOWED_WARNING_ISSUE_CODES for code in collected_codes)
+
+    if not (is_pure_editorial or is_legacy_allowed):
         return False
 
     # Server time in Asia/Seoul
@@ -133,9 +137,11 @@ def today_quality_warning_present(
     else:
         now_kst = now.astimezone(ZoneInfo("Asia/Seoul"))
 
-    # Actual time must be strictly before 09:00 KST
-    if now_kst.hour >= 9:
-        return False
+    # Legacy ambiguous warnings (today_replay_temporal_conflict, top3_item_insufficient_briefing)
+    # require strictly before 09:00 KST. Pure style and proven label-only findings have no 09 cutoff.
+    if not is_pure_editorial:
+        if now_kst.hour >= 9:
+            return False
 
     # Actual server date must match exact artifact target date
     target_date = str(meta.get("target_date") or "").strip()
