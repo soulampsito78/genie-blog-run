@@ -49,3 +49,18 @@ class DelegatedInternalRouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_route_preserves_large_signed_body_without_real_delivery():
+    raw = b'{"fixture":"' + b'x' * 280_000 + b'"}'
+    outcome = {"verdict": "PASS", "reason_codes": ["AUTHENTICATED_SHADOW_ONLY"],
+               "customer_send_authorized": False}
+    with mock.patch.dict(os.environ, {"GENIE_INTERNAL_JOB_TOKEN": "internal-test-token"}), \
+         mock.patch("delegated_gate.run_configured_review_event", return_value=outcome) as run:
+        response = TestClient(app).post(
+            "/internal/jobs/delegated-review", content=raw,
+            headers={"X-Genie-Internal-Job-Token": "internal-test-token",
+                     "X-Genie-Review-Key-Id": "reviewer-v1",
+                     "X-Genie-Review-Signature": "a" * 64})
+    assert response.status_code == 200
+    assert run.call_args.args[0] == raw

@@ -98,7 +98,9 @@ class GateSettings:
 
 def authenticate_event(raw: bytes, headers: Mapping[str, str], settings: GateSettings, *, now: datetime) -> tuple[dict, str]:
     """Verify exact bytes before parsing. Header identity cannot grant authority."""
-    if not isinstance(raw, bytes) or not raw or len(raw) > 128 * 1024:
+    # The event includes the entire signed artifact metadata. Allow bounded
+    # larger artifacts while authenticating the complete unmodified payload.
+    if not isinstance(raw, bytes) or not raw or len(raw) > 1024 * 1024:
         raise GateError("INVALID_EVENT_SIZE", "REVIEW_UNAVAILABLE")
     key_id = str(headers.get("x-genie-review-key-id") or "")
     key = (settings.reviewer_keys or {}).get(key_id)
