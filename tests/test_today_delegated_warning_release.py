@@ -159,6 +159,10 @@ def test_delegated_warning_eligible_held_or_superseded_blocked(base_warning_meta
     assert today_delegated_warning_eligible(superseded_meta, now=PRE09_NOW) is False
 
 
+_orig_today_quality_warning_present = today_quality_warning_present
+_orig_today_delegated_warning_eligible = today_delegated_warning_eligible
+
+
 def test_truthful_renderer_delegated_vs_human(base_warning_meta, sample_saved_html, monkeypatch, tmp_path):
     top_img = tmp_path / "top.jpg"
     top_img.write_bytes(b"jpeg top")
@@ -171,6 +175,22 @@ def test_truthful_renderer_delegated_vs_human(base_warning_meta, sample_saved_ht
             source="test",
             reason_code="ok",
         ),
+    )
+    monkeypatch.setattr(
+        "today_geenee_customer_delivery.today_quality_warning_present",
+        lambda meta, **kw: _orig_today_quality_warning_present(meta, now=kw.get("now") or PRE09_NOW),
+    )
+    monkeypatch.setattr(
+        "today_geenee_customer_delivery.today_delegated_warning_eligible",
+        lambda meta, **kw: _orig_today_delegated_warning_eligible(meta, now=kw.get("now") or PRE09_NOW),
+    )
+    monkeypatch.setattr(
+        "customer_review_confirmation.today_quality_warning_present",
+        lambda meta, **kw: _orig_today_quality_warning_present(meta, now=kw.get("now") or PRE09_NOW),
+    )
+    monkeypatch.setattr(
+        "customer_review_confirmation.today_delegated_warning_eligible",
+        lambda meta, **kw: _orig_today_delegated_warning_eligible(meta, now=kw.get("now") or PRE09_NOW),
     )
 
     # Delegated render: produces review_passed display state with DELEGATED_REVIEW_TEXT
@@ -212,6 +232,22 @@ def test_freeze_candidate_preserves_raw_diagnostics(base_warning_meta, sample_sa
             source="test",
             reason_code="ok",
         ),
+    )
+    monkeypatch.setattr(
+        "today_geenee_customer_delivery.today_quality_warning_present",
+        lambda meta, **kw: _orig_today_quality_warning_present(meta, now=kw.get("now") or PRE09_NOW),
+    )
+    monkeypatch.setattr(
+        "today_geenee_customer_delivery.today_delegated_warning_eligible",
+        lambda meta, **kw: _orig_today_delegated_warning_eligible(meta, now=kw.get("now") or PRE09_NOW),
+    )
+    monkeypatch.setattr(
+        "customer_review_confirmation.today_quality_warning_present",
+        lambda meta, **kw: _orig_today_quality_warning_present(meta, now=kw.get("now") or PRE09_NOW),
+    )
+    monkeypatch.setattr(
+        "customer_review_confirmation.today_delegated_warning_eligible",
+        lambda meta, **kw: _orig_today_delegated_warning_eligible(meta, now=kw.get("now") or PRE09_NOW),
     )
 
     plan = {

@@ -401,6 +401,210 @@ def prepare_today_geenee_customer_delivery(
     }
 
 
+def render_today_geenee_postsend_frozen_preview(
+    saved_html: str,
+    meta: Dict[str, Any],
+    *,
+    recipients_override: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Reconstruct already signed-and-accepted frozen customer body for read-only preview.
+
+    Does not grant delivery authority, backdate clocks, or relax send eligibility.
+    Validates exact immutable event/result/attempt/outcome proof and candidate binding.
+    Fails closed if proof is missing, tampered, or mismatched.
+    """
+    import hashlib
+    import admin_safety_store as s_store
+    from delegated_delivery_safety import PRODUCTS, _digest
+
+    run_id = str(meta.get("run_id") or "").strip()
+    mode = str(meta.get("mode") or "").strip()
+    if mode != "today_genie" or not run_id:
+        return {"ok": False, "error": "unsupported_frozen_preview_target"}
+
+    approval_source = str(meta.get("approval_source") or "").strip()
+    if approval_source != DELEGATED_WORK_REVIEW:
+        return {"ok": False, "error": "frozen_preview_requires_delegated_review"}
+
+    delivery_status = str(meta.get("customer_delivery_status") or meta.get("customer_email_delivery_status") or "").strip().upper()
+    if delivery_status not in {"ACCEPTED_ALL", "SMTP_ACCEPTED"}:
+        return {"ok": False, "error": "frozen_preview_requires_accepted_delivery"}
+
+    review_id = str(meta.get("delegated_review_id") or "").strip()
+    candidate_sha256 = str(meta.get("delegated_candidate_sha256") or "").strip()
+    if not review_id or not candidate_sha256:
+        return {"ok": False, "error": "missing_delegated_review_identity"}
+
+    s_product = PRODUCTS.get("today_genie")
+    if not s_product or len(run_id) < 8 or not run_id[:8].isdigit():
+        return {"ok": False, "error": "invalid_run_identity"}
+
+    s_day = f"{run_id[:4]}-{run_id[4:6]}-{run_id[6:8]}"
+    attempt_id = str(meta.get("delegated_delivery_attempt_id") or "").strip()
+    expected_attempt_id = "publication_" + _digest([s_product, s_day])
+    if attempt_id and attempt_id != expected_attempt_id:
+        return {"ok": False, "error": "delegated_attempt_id_mismatch"}
+    attempt_id = expected_attempt_id
+
+    # 1. Load and verify delegated_review_events/<review_id>.json
+    event_record = s_store._read_json(f"delegated_review_events/{review_id}.json")
+    if not event_record or not isinstance(event_record, dict):
+        return {"ok": False, "error": "delegated_review_event_missing"}
+    ev_inner = event_record.get("event")
+    if not isinstance(ev_inner, dict) or str(ev_inner.get("run_id") or "").strip() != run_id:
+        return {"ok": False, "error": "delegated_review_event_run_mismatch"}
+    ev_cand = str(ev_inner.get("candidate_sha256") or "").strip()
+    if not ev_cand or ev_cand != candidate_sha256:
+        return {"ok": False, "error": "delegated_review_event_candidate_mismatch"}
+
+    review = ev_inner.get("review")
+    if not isinstance(review, dict):
+        return {"ok": False, "error": "delegated_review_payload_missing"}
+
+    from delegated_gate import digest
+
+    orig_art_meta = review.get("artifact_metadata")
+    orig_art_sha = str(review.get("artifact_sha256") or "").strip()
+    if not orig_art_sha:
+        return {"ok": False, "error": "missing_signed_artifact_sha"}
+    if orig_art_meta is not None:
+        if not isinstance(orig_art_meta, dict) or digest(orig_art_meta) != orig_art_sha:
+            return {"ok": False, "error": "signed_artifact_metadata_tampered"}
+
+    orig_recv_html_sha = str(review.get("received_html_sha256") or "").strip()
+    if not orig_recv_html_sha:
+        return {"ok": False, "error": "missing_signed_received_html_sha"}
+    actual_recv_html_sha = hashlib.sha256(saved_html.encode("utf-8")).hexdigest()
+    if actual_recv_html_sha != orig_recv_html_sha:
+        return {"ok": False, "error": "received_html_sha_mismatch"}
+
+    orig_subject_sha = str(review.get("subject_sha256") or "").strip()
+    if not orig_subject_sha:
+        return {"ok": False, "error": "missing_signed_subject_sha"}
+    subject = build_customer_final_subject(meta, saved_html)
+    actual_subject_sha = hashlib.sha256(str(subject).encode("utf-8")).hexdigest()
+    if actual_subject_sha != orig_subject_sha:
+        return {"ok": False, "error": "signed_subject_sha_mismatch"}
+
+    orig_body_sha = str(review.get("body_sha256") or "").strip()
+    if not orig_body_sha:
+        return {"ok": False, "error": "missing_signed_body_sha"}
+    try:
+        html_body = prepare_customer_final_html(
+            saved_html,
+            review_confirmation_state=REVIEW_CONFIRMATION_STATE_REVIEW_PASSED,
+            approval_source=DELEGATED_WORK_REVIEW,
+        )
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    actual_body_sha = hashlib.sha256(html_body.encode("utf-8")).hexdigest()
+    if actual_body_sha != orig_body_sha:
+        return {"ok": False, "error": "signed_body_sha_mismatch"}
+
+    global _LAST_CUSTOMER_IMAGE_RESOLUTION_REASON
+    _LAST_CUSTOMER_IMAGE_RESOLUTION_REASON = ""
+    inline_parts = _resolve_today_genie_inline_jpeg_parts(meta)
+    if inline_parts is None:
+        return {
+            "ok": False,
+            "error": _LAST_CUSTOMER_IMAGE_RESOLUTION_REASON or "today_image_resolution_failed",
+        }
+
+    orig_image_identity = review.get("image_identity")
+    orig_image_sha256 = review.get("image_sha256")
+    if not orig_image_identity and not orig_image_sha256:
+        return {"ok": False, "error": "missing_signed_image_proof"}
+
+    resolved_images = []
+    for index, (path, cid, filename) in enumerate(inline_parts):
+        role = "top" if index == 0 else "bottom" if index == 1 else f"image_{index+1}"
+        p = Path(path)
+        if not p.is_file():
+            return {"ok": False, "error": "resolved_image_file_missing"}
+        img_bytes = p.read_bytes()
+        if not img_bytes:
+            return {"ok": False, "error": "resolved_image_empty"}
+        c_sha = hashlib.sha256(img_bytes).hexdigest()
+        resolved_images.append({
+            "role": role,
+            "cid": str(cid),
+            "filename": Path(filename).name,
+            "sha256": c_sha,
+        })
+
+    if isinstance(orig_image_identity, list):
+        if len(resolved_images) != len(orig_image_identity):
+            return {"ok": False, "error": "signed_image_count_mismatch"}
+        for res_img, exp_img in zip(resolved_images, orig_image_identity):
+            if not isinstance(exp_img, dict):
+                return {"ok": False, "error": "signed_image_identity_malformed"}
+            if res_img["role"] != exp_img.get("role") or res_img["cid"] != str(exp_img.get("cid")) or res_img["sha256"] != exp_img.get("sha256"):
+                return {"ok": False, "error": "signed_image_identity_mismatch"}
+
+    if isinstance(orig_image_sha256, dict):
+        for res_img in resolved_images:
+            exp_sha = orig_image_sha256.get(res_img["role"])
+            if not exp_sha or exp_sha != res_img["sha256"]:
+                return {"ok": False, "error": "signed_image_sha_mismatch"}
+
+    # 2. Load and verify delegated_review_results/<review_id>.json
+    result_record = s_store._read_json(f"delegated_review_results/{review_id}.json")
+    if not result_record or not isinstance(result_record, dict):
+        return {"ok": False, "error": "delegated_review_result_missing"}
+    if result_record.get("verdict") != "PASS":
+        return {"ok": False, "error": "delegated_review_result_not_pass"}
+    if str(result_record.get("run_id") or "").strip() != run_id:
+        return {"ok": False, "error": "delegated_review_result_run_mismatch"}
+    if str(result_record.get("review_id") or "").strip() != review_id:
+        return {"ok": False, "error": "delegated_review_result_review_mismatch"}
+    if str(result_record.get("candidate_sha256") or "").strip() != candidate_sha256:
+        return {"ok": False, "error": "delegated_review_candidate_mismatch"}
+    if str(result_record.get("attempt_id") or "").strip() != attempt_id:
+        return {"ok": False, "error": "delegated_review_result_attempt_mismatch"}
+
+    # 3. Load and verify publication_attempts/<attempt_id>.json
+    attempt_record = s_store._read_json(f"publication_attempts/{attempt_id}.json")
+    if not attempt_record or not isinstance(attempt_record, dict):
+        return {"ok": False, "error": "publication_attempt_missing"}
+    if str(attempt_record.get("run_id") or "").strip() != run_id:
+        return {"ok": False, "error": "publication_attempt_run_mismatch"}
+    if str(attempt_record.get("candidate_sha256") or "").strip() != candidate_sha256:
+        return {"ok": False, "error": "publication_attempt_candidate_mismatch"}
+    if str(attempt_record.get("review_id") or "").strip() != review_id:
+        return {"ok": False, "error": "publication_attempt_review_mismatch"}
+    att_prod = attempt_record.get("product_code") or attempt_record.get("product")
+    if att_prod and str(att_prod) != s_product:
+        return {"ok": False, "error": "publication_attempt_product_mismatch"}
+    att_day = attempt_record.get("publication_date") or attempt_record.get("day")
+    if att_day and str(att_day) != s_day:
+        return {"ok": False, "error": "publication_attempt_date_mismatch"}
+
+    # 4. Load and verify publication_outcomes/<attempt_id>.json
+    outcome_record = s_store._read_json(f"publication_outcomes/{attempt_id}.json")
+    if not outcome_record or not isinstance(outcome_record, dict):
+        return {"ok": False, "error": "publication_outcome_missing"}
+    if outcome_record.get("outcome") != "PROVIDER_ACCEPTED":
+        return {"ok": False, "error": "publication_outcome_not_accepted"}
+    if str(outcome_record.get("attempt_id") or "").strip() != attempt_id:
+        return {"ok": False, "error": "publication_outcome_attempt_mismatch"}
+
+    recipients = (
+        list(recipients_override)
+        if recipients_override is not None
+        else list(resolve_customer_recipients()["final_recipients"])
+    )
+    if not recipients:
+        return {"ok": False, "error": "missing_customer_to"}
+
+    return {
+        "ok": True,
+        "html_body": html_body,
+        "subject": subject,
+        "inline_jpeg_parts": list(inline_parts),
+        "recipients": recipients,
+    }
+
+
 def send_customer_timeout_draft_email(*_args: Any, **_kwargs: Any) -> bool:
     """Retired: timeout-based customer auto-send is not active policy."""
     logger.info("send_customer_timeout_draft_email: retired no-op (timeout auto-send removed)")

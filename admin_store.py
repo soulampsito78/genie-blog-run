@@ -2182,8 +2182,64 @@ def superseded_child_check(
                 outcome_key = f"publication_outcomes/{s_att}.json"
                 reconcil_key = f"publication_reconciliation/{s_reconcil}.json"
 
-                if _s_exists(attempt_key) or _s_exists(outcome_key) or _s_exists(reconcil_key):
-                    is_parent_submitted = True
+                has_att = _s_exists(attempt_key)
+                has_out = _s_exists(outcome_key)
+                has_rec = _s_exists(reconcil_key)
+
+                if has_att or has_out or has_rec:
+                    if has_rec:
+                        rec_data = s_store._read_json(reconcil_key)
+                        if rec_data is None or not isinstance(rec_data, dict):
+                            return True, parent_id, parent_meta, "parent_reconciliation_required"
+                        if rec_data.get("prior_outcome") != "NO_SUBMISSION_CONFIRMED":
+                            rec_run_id = str(rec_data.get("run_id") or "").strip()
+                            if not rec_run_id or rec_run_id != child_run_id:
+                                return True, parent_id, parent_meta, "parent_reconciliation_required"
+
+                    if has_att or has_out:
+                        attempt_data = s_store._read_json(attempt_key) if has_att else None
+                        outcome_data = s_store._read_json(outcome_key) if has_out else None
+
+                        if has_out:
+                            if outcome_data is None or not isinstance(outcome_data, dict):
+                                return True, parent_id, parent_meta, "parent_reconciliation_required"
+                            out_att_id = str(outcome_data.get("attempt_id") or "").strip()
+                            if out_att_id and out_att_id != s_att:
+                                return True, parent_id, parent_meta, "parent_reconciliation_required"
+                            if attempt_data is None:
+                                attempt_data = s_store._read_json(attempt_key)
+
+                        if attempt_data is None:
+                            return True, parent_id, parent_meta, "parent_reconciliation_required"
+                        if not isinstance(attempt_data, dict):
+                            return True, parent_id, parent_meta, "parent_reconciliation_required"
+
+                        att_id_val = str(attempt_data.get("attempt_id") or "").strip()
+                        if att_id_val and att_id_val != s_att:
+                            return True, parent_id, parent_meta, "parent_reconciliation_required"
+
+                        att_prod = attempt_data.get("product_code") or attempt_data.get("product")
+                        if att_prod and str(att_prod) != s_product:
+                            return True, parent_id, parent_meta, "parent_reconciliation_required"
+
+                        att_day = attempt_data.get("publication_date") or attempt_data.get("day")
+                        if att_day and str(att_day) != s_day:
+                            return True, parent_id, parent_meta, "parent_reconciliation_required"
+
+                        att_run_id = str(attempt_data.get("run_id") or "").strip()
+                        if not att_run_id:
+                            is_parent_submitted = True
+                        elif att_run_id == child_run_id:
+                            meta_cand = str(meta.get("delegated_candidate_sha256") or meta.get("candidate_sha256") or "").strip()
+                            att_cand = str(attempt_data.get("candidate_sha256") or "").strip()
+                            if meta_cand and att_cand and meta_cand != att_cand:
+                                return True, parent_id, parent_meta, "parent_reconciliation_required"
+                            meta_rev = str(meta.get("delegated_review_id") or meta.get("review_id") or "").strip()
+                            att_rev = str(attempt_data.get("review_id") or "").strip()
+                            if meta_rev and att_rev and meta_rev != att_rev:
+                                return True, parent_id, parent_meta, "parent_reconciliation_required"
+                        else:
+                            is_parent_submitted = True
         except Exception:
             return True, parent_id, parent_meta, "parent_reconciliation_required"
 

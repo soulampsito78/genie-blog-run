@@ -2584,6 +2584,14 @@ def admin_run_detail(request: Request, run_id: str):
         and meta.get("approval_channel") == "browser_confirm"
         and meta.get("approval_nonce_used") is True
     )
+    is_delegated_approved = bool(
+        meta.get("approval_source") == "DELEGATED_WORK_REVIEW"
+        and (
+            str(meta.get("delegated_review_status") or "").lower() == "passed"
+            or bool(meta.get("delegated_review_id"))
+            or str(meta.get("owner_review_status") or "").strip() == "approved"
+        )
+    )
     if is_superseded:
         safety = str(meta.get("safety_verdict") or "")
         editorial = str(meta.get("editorial_verdict") or "")
@@ -2633,13 +2641,20 @@ def admin_run_detail(request: Request, run_id: str):
     elif is_own_submitted:
         safety = str(meta.get("safety_verdict") or "")
         editorial = str(meta.get("editorial_verdict") or "")
-        if is_human_approved:
-            val_label = validation.get("label", "운영자 최종 확인 완료")
-            val_tone = validation.get("tone", "good")
-            if own_submission_disp == "reconciliation":
-                val_summary = (str(validation.get("summary") or "") + " 발송 결과 또는 원장 정합성 확인이 필요한 기록입니다. 추가 고객 발송이나 수정을 진행하지 않습니다.").strip()
+        if is_human_approved or is_delegated_approved:
+            val_tone = "good"
+            if is_delegated_approved:
+                val_label = "위임 AI 검수 완료"
+                if own_submission_disp == "reconciliation":
+                    val_summary = (str(validation.get("summary") or "") + " 발송 결과 또는 원장 정합성 확인이 필요한 기록입니다. 추가 고객 발송이나 수정을 진행하지 않습니다.").strip()
+                else:
+                    val_summary = (str(validation.get("summary") or "") + " 위임 AI 검수 및 고객 발송 접수가 완료되었습니다. 추가 고객 발송을 진행하지 않습니다.").strip()
             else:
-                val_summary = (str(validation.get("summary") or "") + " 이미 고객 발송이 접수되어 추가 고객 발송을 진행하지 않습니다.").strip()
+                val_label = validation.get("label", "운영자 최종 확인 완료")
+                if own_submission_disp == "reconciliation":
+                    val_summary = (str(validation.get("summary") or "") + " 발송 결과 또는 원장 정합성 확인이 필요한 기록입니다. 추가 고객 발송이나 수정을 진행하지 않습니다.").strip()
+                else:
+                    val_summary = (str(validation.get("summary") or "") + " 이미 고객 발송이 접수되어 추가 고객 발송을 진행하지 않습니다.").strip()
         elif own_submission_disp == "reconciliation":
             val_label = "정합성 확인 필요"
             val_tone = "warn"
@@ -2668,6 +2683,8 @@ def admin_run_detail(request: Request, run_id: str):
             val_checks.append({"label": "정합성 확인 필요 (새 발송 차단)", "tone": "warn"})
         elif is_human_approved:
             val_checks.append({"label": "발송 접수 완료 (새 발송 차단)", "tone": "neutral"})
+        elif is_delegated_approved:
+            val_checks.append({"label": "SMTP 접수 완료 (추가 발송 차단)", "tone": "neutral"})
         else:
             val_checks.append({"label": "과거 검수 이력 (새 발송 차단)", "tone": "neutral"})
 
@@ -2707,11 +2724,12 @@ def admin_run_detail(request: Request, run_id: str):
             "승인은 되돌릴 수 없습니다. 실제 발송은 기존 nonce와 확인 체크가 있는 별도 최종 확인 화면에서만 실행됩니다."
         )
     elif is_own_submitted:
-        approval_explanation = (
-            "발송 결과 또는 원장 정합성 확인이 필요하여 추가 발송을 시작할 수 없습니다. 차단 사유를 확인하세요."
-            if own_submission_disp == "reconciliation"
-            else "이미 고객 발송이 접수되어 추가 고객 발송을 시작할 수 없습니다. 차단 사유를 확인하세요."
-        )
+        if own_submission_disp == "accepted":
+            approval_heading = "SMTP 접수 완료"
+            approval_explanation = "이미 고객 발송이 접수되어 추가 제출을 진행하지 않습니다."
+        else:
+            approval_heading = "정합성 확인 필요"
+            approval_explanation = "발송 결과 또는 원장 정합성 확인이 필요하여 추가 발송을 시작할 수 없습니다. 차단 사유를 확인하세요."
     else:
         approval_explanation = (
             "현재 근거로는 새 고객 발송을 시작할 수 없습니다. 차단 사유를 확인하세요."
@@ -2913,16 +2931,31 @@ def _delegated_email_preview_target(run_id, meta, saved_html, *, now=None):
     if mode not in grant["products"]:
         raise ValueError("DELEGATED_PREVIEW_PRODUCT_NOT_AUTHORIZED")
     if mode == "today_genie":
-        from today_geenee_customer_delivery import prepare_today_geenee_customer_delivery as prepare
+        from today_geenee_customer_delivery import (
+            prepare_today_geenee_customer_delivery,
+            render_today_geenee_postsend_frozen_preview,
+        )
+        is_own_submitted, is_own_accepted, _ = run_submission_disposition(meta)
+        if is_own_accepted and meta.get("approval_source") == DELEGATED_WORK_REVIEW:
+            prepared = render_today_geenee_postsend_frozen_preview(
+                saved_html, meta, recipients_override=grant["recipients"]
+            )
+        else:
+            prepared = prepare_today_geenee_customer_delivery(
+                saved_html, meta, recipients_override=grant["recipients"],
+                approval_source=DELEGATED_WORK_REVIEW
+            )
     else:
         if mode == "keysuri_korea_tech":
             from admin_store import _keysuri_korea_bottom_baseline_confirmed
             ok, reason = _keysuri_korea_bottom_baseline_confirmed(meta)
             if not ok:
                 raise ValueError(reason)
-        from keysuri_customer_delivery import prepare_keysuri_customer_delivery as prepare
-    prepared = prepare(saved_html, meta, recipients_override=grant["recipients"],
-                       approval_source=DELEGATED_WORK_REVIEW)
+        from keysuri_customer_delivery import prepare_keysuri_customer_delivery
+        prepared = prepare_keysuri_customer_delivery(
+            saved_html, meta, recipients_override=grant["recipients"],
+            approval_source=DELEGATED_WORK_REVIEW
+        )
     if not prepared.get("ok"):
         raise ValueError(str(prepared.get("error") or "DELEGATED_PREVIEW_PREPARATION_FAILED"))
     content = str(prepared["html_body"])
