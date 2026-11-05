@@ -230,6 +230,28 @@ def validation_projection(meta: Mapping[str, Any]) -> Dict[str, Any]:
             "issues": issues,
         }
 
+    delegated_approved = (
+        approval_source == "DELEGATED_WORK_REVIEW"
+        and (
+            owner_status == "approved"
+            or str(meta.get("delegated_review_status") or "").lower() == "passed"
+            or bool(meta.get("delegated_review_id"))
+        )
+    )
+    if delegated_approved:
+        checks = [
+            {"label": "위임 AI 검수 완료", "tone": "good"},
+        ]
+        if issues:
+            checks.append({"label": f"자동 진단 기록 보존 ({len(issues)}건)", "tone": "warn"})
+        return {
+            "label": "위임 AI 검수 완료",
+            "tone": "good",
+            "summary": "위임 AI 검수 및 승인이 완료되었습니다. (자동 진단 기록 보존)",
+            "checks": checks,
+            "issues": issues,
+        }
+
     pid = program_id(meta)
     safety = str(meta.get("safety_verdict") or "")
     editorial = str(meta.get("editorial_verdict") or "")

@@ -560,7 +560,9 @@ class AdminRoutesTests(unittest.TestCase):
                 self.assertEqual(resp.headers.get("Cache-Control"), "no-store")
                 self.assertIn("운영자 최종 확인 완료", resp.text)
                 self.assertNotIn(f"/admin/runs/{run_id}/approve", resp.text)
-                self.assertIn("고객 발송 차단", resp.text)
+                self.assertNotIn(f"/admin/runs/{run_id}/approve-confirm", resp.text)
+                self.assertIn("정합성 확인 필요", resp.text)
+                self.assertIn("승인 발송 불가", resp.text)
                 self.assertIn("새 발송 차단", resp.text)
 
             with self.subTest(mode=mode, scenario="genuine_unknown_delivery"):
@@ -585,7 +587,9 @@ class AdminRoutesTests(unittest.TestCase):
                 self.assertIn("운영자 최종 확인 완료", resp.text)
                 self.assertTrue("RESULT UNKNOWN" in resp.text or "결과 미확정" in resp.text)
                 self.assertNotIn(f"/admin/runs/{run_id}/approve", resp.text)
-                self.assertIn("고객 발송 차단", resp.text)
+                self.assertNotIn(f"/admin/runs/{run_id}/approve-confirm", resp.text)
+                self.assertIn("정합성 확인 필요", resp.text)
+                self.assertIn("승인 발송 불가", resp.text)
                 self.assertIn("새 발송 차단", resp.text)
 
             with self.subTest(mode=mode, scenario="genuine_superseded_reference_only"):
