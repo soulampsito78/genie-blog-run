@@ -921,3 +921,52 @@ def test_read_only_shadow_anomaly_does_not_mutate_live_hold_state(setup_case):
     result = run(candidate, event=event, configuration=settings("SHADOW"))
     assert result["verdict"] == "HOLD_INCOMPLETE" and result["customer_send_authorized"] is False
     assert admin_store.run_delivery_transition(candidate.binding["run_id"])["state"] == "READY"
+
+
+def _large_candidate(candidate):
+    meta = json.loads(candidate.meta_json)
+    meta["synthetic_large_trace"] = "x" * 280_000
+    binding = candidate.binding
+    binding["artifact_metadata"] = meta
+    binding["artifact_sha256"] = gate.digest(meta)
+    binding["artifact_id"] = f'{binding["run_id"]}:{binding["artifact_sha256"]}'
+    return replace(candidate, binding_json=gate.canonical(binding), meta_json=gate.canonical(meta))
+
+
+def test_large_signed_candidate_is_authenticated_and_reviewed_in_shadow(setup_case):
+    candidate = _large_candidate(setup_case())
+    candidate.assert_integrity()
+    event = helper_event_for(candidate)
+    raw, headers = signed(event)
+    assert 128 * 1024 < len(raw) < 1024 * 1024
+    result = gate.process_review_event(raw, headers, loader=Loader(candidate),
+                                       recipient_authority=Authority(), now=NOW,
+                                       settings=settings("SHADOW"))
+    assert result["verdict"] == "PASS"
+    assert result["customer_send_authorized"] is False
+
+
+def test_large_event_tampering_still_fails_authentication(setup_case):
+    event = helper_event_for(_large_candidate(setup_case()))
+    raw, headers = signed(event)
+    tampered = raw.replace(b'"synthetic_large_trace":"x', b'"synthetic_large_trace":"y', 1)
+    assert tampered != raw
+    with pytest.raises(gate.GateError) as error:
+        gate.authenticate_event(tampered, headers, settings(), now=NOW)
+    assert error.value.code == "REVIEW_AUTHENTICATION_FAILED"
+
+
+def test_large_candidate_metadata_mutation_invalidates_frozen_binding(setup_case):
+    candidate = _large_candidate(setup_case())
+    meta = json.loads(candidate.meta_json)
+    meta["synthetic_large_trace"] = "y" * 280_000
+    changed = replace(candidate, meta_json=gate.canonical(meta))
+    with pytest.raises(gate.GateError) as error:
+        changed.assert_integrity()
+    assert error.value.code == "FROZEN_ARTIFACT_CHANGED"
+
+
+def test_event_above_one_mib_remains_rejected_before_authentication():
+    with pytest.raises(gate.GateError) as error:
+        gate.authenticate_event(b'x' * (1024 * 1024 + 1), {}, settings(), now=NOW)
+    assert error.value.code == "INVALID_EVENT_SIZE"
