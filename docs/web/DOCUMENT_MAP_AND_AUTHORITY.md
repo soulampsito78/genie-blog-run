@@ -2,6 +2,8 @@
 
 # GENIE × KeeSuri — Document Map and Authority
 
+**발행 업무 필독:** [GENIE·KeeSuri 발행 실패 방지](../ops/GENIE_KEYSURI_FAILURE_PREVENTION_REQUIRED.md). 현재 Owner 지시와 serving·원장을 우선한다.
+
 **Status:** APPROVED
 **Version:** v1
 **As of:** 2026-08-10 (KST)
