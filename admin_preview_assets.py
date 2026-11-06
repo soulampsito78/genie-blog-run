@@ -18,6 +18,7 @@ from admin_store import (
     admin_artifact_bucket_name,
     admin_artifact_gcs_prefix,
     admin_runs_dir,
+    load_run_artifact,
     repo_root,
 )
 
@@ -112,15 +113,44 @@ def _local_path_for_slot(meta: Mapping[str, Any], slot: str) -> Optional[Path]:
     return None
 
 
+def _validated_reused_parent(run_id: str, meta: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Resolve only the recorded parent of a body-only image-preserving reissue."""
+    parent_id = str(meta.get("regen_parent_run_id") or "")
+    if (meta.get("run_id") != run_id or meta.get("regen_type") != "body_only"
+            or meta.get("regen_preserved_images") is not True
+            or meta.get("reissue_body_only_image_reused") is not True
+            or not re.fullmatch(r"[A-Za-z0-9_-]+", parent_id)
+            or parent_id == run_id):
+        return {}
+    try:
+        parent = load_run_artifact(parent_id)
+    except Exception:
+        return {}
+    if (not isinstance(parent, Mapping) or parent.get("run_id") != parent_id
+            or parent.get("mode") != meta.get("mode")
+            or parent_id[:8] != run_id[:8]):
+        return {}
+    return parent
+
+
 def preview_assets_for_run(run_id: str, meta: Mapping[str, Any]) -> dict[str, PreviewAsset]:
     """Return only exact CID identities belonging to this run, never a browser path."""
     configured_bucket = str(admin_artifact_bucket_name() or "").strip()
     assets: dict[str, PreviewAsset] = {}
+    parent: Optional[Mapping[str, Any]] = None
     for slot, cid in _slot_cids(meta).items():
         if not cid:
             continue
         bucket, object_name = _gcs_object_for_slot(meta, slot)
         safe_object = _safe_gcs_object(run_id, object_name)
+        if not safe_object:
+            if parent is None:
+                parent = _validated_reused_parent(run_id, meta)
+            parent_id = str(parent.get("run_id") or "")
+            parent_bucket, parent_object = _gcs_object_for_slot(parent, slot)
+            if (parent_id and _slot_cids(parent).get(slot) == cid
+                    and parent_bucket == bucket and parent_object == object_name):
+                safe_object = _safe_gcs_object(parent_id, object_name)
         if configured_bucket and bucket == configured_bucket and safe_object:
             assets[slot] = PreviewAsset(slot=slot, cid=cid, backend="gcs", object_name=safe_object)
             continue
