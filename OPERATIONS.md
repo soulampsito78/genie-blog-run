@@ -2,6 +2,8 @@
 
 # Genie orchestration – production hardening and operations
 
+**작업 전 필독:** [GENIE·KeeSuri 발행 실패 방지](docs/ops/GENIE_KEYSURI_FAILURE_PREVENTION_REQUIRED.md) — 불필요한 보류와 승인 대기, 잘못된 검수 입력 및 발송 결과 혼동을 방지한다.
+
 Current delegated target operations: freeze the final validated customer candidate and bind the actual received review email to it; complete authenticated Work PASS may proceed unattended after authorized activation. Existing bounded pre-freeze repair is permitted only with validation rerun and audit. Post-PASS material mutation invalidates the review. Work-detected content anomalies HOLD for manual recovery and fresh review. Normal success is logged without Owner decision requests. The historical orchestration sections below do not override these approved semantics or authorize live changes.
 
 This document covers secret handling, runtime split, resilience, logging, and the production execution model for the orchestration layer. The Genie API runtime (`main.py`) is unchanged.
