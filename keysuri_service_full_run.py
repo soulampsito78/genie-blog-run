@@ -2810,7 +2810,18 @@ _REISSUE_GENERIC_BODY_MARKERS = (
     "사업 운영, 파트너십, 기술 도입 우선순위에 주는 변화를 점검하면",
 )
 
-_REISSUE_BROKEN_JOIN_RE = re.compile(r"(?:습니다|좋겠습니다)\.\s*(?:은|는|이|가|을|를)\s")
+# Only exempt a recognizable demonstrative subject ("이 신호가"); an
+# ambiguous standalone "이" remains a validation hold.
+_REISSUE_BROKEN_JOIN_RE = re.compile(
+    r"(?:습니다|좋겠습니다)\.\s*(?:은|는|가|을|를|이(?!\s+(?:신호|이슈|변화|기사)가(?:\s|[,.!?]|$)))\s"
+)
+
+# A detached topic particle immediately before an explicit subject is a known
+# generation artifact: the subject itself remains intact.  Do not guess a
+# missing noun or repair other fragments; the existing gate must hold those.
+_REISSUE_ORPHAN_TOPIC_BEFORE_EXPLICIT_SUBJECT_RE = re.compile(
+    r"(?<=[.])\s+(?:은|는)\s+(?=(?:이|그|해당)\s+(?:신호|이슈|변화|기사)가\s)"
+)
 
 
 def _reissue_norm_compare_key(text: Any) -> str:
@@ -3271,6 +3282,17 @@ def _normalize_reissue_visible_top5_item(
                 path = f"top_5_news.items[{rank - 1}].{field}"
                 if path not in sanitized_fields:
                     sanitized_fields.append(path)
+
+    for field in _REISSUE_VISIBLE_BODY_FIELDS:
+        value = item.get(field)
+        if not isinstance(value, str):
+            continue
+        repaired = _REISSUE_ORPHAN_TOPIC_BEFORE_EXPLICIT_SUBJECT_RE.sub(" ", value)
+        if repaired != value:
+            item[field] = repaired
+            path = f"top_5_news.items[{rank - 1}].{field}"
+            if path not in sanitized_fields:
+                sanitized_fields.append(path)
 
     source_ids = live_item.get("source_ids") if isinstance(live_item.get("source_ids"), list) else []
     if not source_ids:

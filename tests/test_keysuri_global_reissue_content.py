@@ -12,6 +12,7 @@ from keysuri_briefing_content_enricher import near_duplicate_key
 from keysuri_service_full_run import (
     _reissue_clean_fallback_templates,
     _reissue_real_title,
+    _normalize_reissue_visible_top5_item,
     _repair_reissue_top5_from_live_selection,
     correlate_reissue_seeds,
     reissue_top5_content_issue_codes,
@@ -335,6 +336,32 @@ class ContentGateTests(unittest.TestCase):
         cards = _korean_model_items(_english_live_items())
         cards[0]["business_implication"] = "점검하면 좋겠습니다. 은 이 신호가 사업 운영에 영향을 줍니다."
         self.assertIn("reissue_top5_broken_particle_join", reissue_top5_content_issue_codes(cards))
+
+    def test_demonstrative_i_at_start_of_sentence_is_not_orphan_particle(self) -> None:
+        cards = _korean_model_items(_english_live_items())
+        cards[0]["business_implication"] = "도입 일정을 확인했습니다. 이 신호가 사업 운영에 영향을 줍니다."
+        self.assertNotIn("reissue_top5_broken_particle_join", reissue_top5_content_issue_codes(cards))
+
+    def test_ambiguous_i_remains_blocked(self) -> None:
+        cards = _korean_model_items(_english_live_items())
+        cards[0]["business_implication"] = "도입 일정을 확인했습니다. 이 적용됩니다."
+        self.assertIn("reissue_top5_broken_particle_join", reissue_top5_content_issue_codes(cards))
+
+    def test_orphan_topic_before_explicit_subject_is_repaired_without_changing_claim(self) -> None:
+        live = _english_live_items()[0]
+        seed = _korean_model_items([live])[0]
+        seed["business_implication"] = "점검하면 좋겠습니다. 은 이 신호가 사업 운영에 영향을 줍니다."
+        item, fields, _ = _normalize_reissue_visible_top5_item(live, rank=1, visible_seed=seed)
+        self.assertEqual(item["business_implication"], "점검하면 좋겠습니다. 이 신호가 사업 운영에 영향을 줍니다.")
+        self.assertIn("top_5_news.items[0].business_implication", fields)
+        self.assertNotIn("reissue_top5_broken_particle_join", reissue_top5_content_issue_codes([item]))
+
+    def test_ambiguous_orphan_particle_still_blocks(self) -> None:
+        live = _english_live_items()[0]
+        seed = _korean_model_items([live])[0]
+        seed["business_implication"] = "점검하면 좋겠습니다. 을 통해 성과가 개선됩니다."
+        item, _, _ = _normalize_reissue_visible_top5_item(live, rank=1, visible_seed=seed)
+        self.assertIn("reissue_top5_broken_particle_join", reissue_top5_content_issue_codes([item]))
 
     def test_duplicate_titles_blocked(self) -> None:
         cards = _korean_model_items(_english_live_items())
