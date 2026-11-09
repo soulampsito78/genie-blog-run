@@ -2810,10 +2810,11 @@ _REISSUE_GENERIC_BODY_MARKERS = (
     "사업 운영, 파트너십, 기술 도입 우선순위에 주는 변화를 점검하면",
 )
 
-# Only exempt a recognizable demonstrative subject ("이 신호가"); an
-# ambiguous standalone "이" remains a validation hold.
+# A demonstrative followed by a Korean noun with an attached case/topic marker
+# ("이 기능은", "이 모델은") is a grammatical sentence opening. Keep the
+# hold for standalone "이" when that bounded shape is not present.
 _REISSUE_BROKEN_JOIN_RE = re.compile(
-    r"(?:습니다|좋겠습니다)\.\s*(?:은|는|가|을|를|이(?!\s+(?:신호|이슈|변화|기사)가(?:\s|[,.!?]|$)))\s"
+    r"(?:습니다|좋겠습니다)\.\s*(?:은|는|가|을|를|이(?!\s+[가-힣]{1,24}(?:은|는|이|가|을|를)(?:\s|[,.!?]|$)))\s"
 )
 
 # A detached topic particle immediately before an explicit subject is a known
