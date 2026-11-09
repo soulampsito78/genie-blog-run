@@ -339,8 +339,10 @@ class ContentGateTests(unittest.TestCase):
 
     def test_demonstrative_i_at_start_of_sentence_is_not_orphan_particle(self) -> None:
         cards = _korean_model_items(_english_live_items())
-        cards[0]["business_implication"] = "도입 일정을 확인했습니다. 이 신호가 사업 운영에 영향을 줍니다."
-        self.assertNotIn("reissue_top5_broken_particle_join", reissue_top5_content_issue_codes(cards))
+        for phrase in ("이 신호가", "이 기능은", "이 모델은", "이 계획을"):
+            with self.subTest(phrase=phrase):
+                cards[0]["business_implication"] = f"도입 일정을 확인했습니다. {phrase} 사업 운영에 영향을 줍니다."
+                self.assertNotIn("reissue_top5_broken_particle_join", reissue_top5_content_issue_codes(cards))
 
     def test_ambiguous_i_remains_blocked(self) -> None:
         cards = _korean_model_items(_english_live_items())
