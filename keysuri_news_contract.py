@@ -1158,7 +1158,10 @@ def classify_global_event_novelty(
         within_window = (
             age_h is not None and age_h <= GLOBAL_CURRENT_DEVELOPMENT_WINDOW_HOURS
         )
-        presentable = bool(independent or within_window or age_h is None)
+        # Relative time in a source ("today", "now") is anchored to that
+        # document's publication, not the briefing clock. It cannot make an
+        # old source current again when the briefing is produced later.
+        presentable = bool(within_window or age_h is None)
         return EventNoveltyVerdict(
             is_roundup=is_roundup,
             event_date_basis="document_published_proxy",
@@ -1193,7 +1196,7 @@ def classify_global_event_novelty(
         within_window = (
             age_h is not None and age_h <= GLOBAL_CURRENT_DEVELOPMENT_WINDOW_HOURS
         )
-        presentable = bool(independent or within_window or age_h is None)
+        presentable = bool(within_window or age_h is None)
         return EventNoveltyVerdict(
             is_roundup=False,
             backward_reference=backward_marker,
@@ -1211,6 +1214,7 @@ def classify_global_event_novelty(
         )
 
     eligible = independent
+    presentable = bool(eligible and (age_h is None or age_h <= GLOBAL_CURRENT_DEVELOPMENT_WINDOW_HOURS))
     return EventNoveltyVerdict(
         is_roundup=True,
         backward_reference=backward_marker,
@@ -1219,10 +1223,13 @@ def classify_global_event_novelty(
         event_not_later_than=bound,
         has_independent_development=independent,
         eligible_as_new_development=eligible,
-        presentable_as_new_development=eligible,
-        framing_role="new_development" if eligible else "historical_followup",
+        presentable_as_new_development=presentable,
+        framing_role="new_development" if presentable else "historical_followup",
         document_age_hours=age_h,
-        reason="" if eligible else "global_recap_backward_referenced_event",
+        reason=("" if presentable else (
+            "global_past_announcement_no_new_development" if eligible
+            else "global_recap_backward_referenced_event"
+        )),
     )
 
 
