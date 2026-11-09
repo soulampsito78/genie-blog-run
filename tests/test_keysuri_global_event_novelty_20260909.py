@@ -510,8 +510,8 @@ class TestK_GenuineLaterDevelopmentAboutOldProduct(unittest.TestCase):
         self.assertTrue(v.presentable_as_new_development)
         self.assertEqual(v.framing_role, "new_development")
 
-    def test_aged_document_with_its_own_present_development_stays_new(self):
-        """Positive evidence beats age — this is why there is no age cutoff."""
+    def test_aged_document_with_its_own_present_development_is_historical(self):
+        """A source's 'immediately' is relative to its publication date."""
         v = classify_global_event_novelty(
             "Vendor status update",
             "The company is announcing a price reduction effective immediately.",
@@ -519,7 +519,18 @@ class TestK_GenuineLaterDevelopmentAboutOldProduct(unittest.TestCase):
             as_of=B607_AS_OF,
         )
         self.assertTrue(v.has_independent_development)
-        self.assertTrue(v.presentable_as_new_development)
+        self.assertFalse(v.presentable_as_new_development)
+
+    def test_minerva_today_is_relative_to_october_publication(self):
+        v = classify_global_event_novelty(
+            "NVIDIA Unveils Minerva to Bring End-to-End Observability for AI Factories",
+            "Launched today, NVIDIA Minerva is an AIOps platform built to help teams find problems earlier.",
+            published_at="2026-10-23T00:00:02+09:00",
+            as_of="2026-11-09T13:23:38+09:00",
+        )
+        self.assertTrue(v.has_independent_development)
+        self.assertFalse(v.presentable_as_new_development)
+        self.assertEqual(v.framing_role, "historical_followup")
 
 
 class TestL_DocumentDateIsProxyNotVerifiedEvent(unittest.TestCase):

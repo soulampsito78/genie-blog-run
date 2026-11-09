@@ -4758,6 +4758,50 @@ def _preserved_korea_bottom_identity(parent: Dict[str, Any], image_path: Path) -
     return {key: copy.deepcopy(parent[key]) for key in keys if key in parent}, None
 
 
+def _filter_global_stale_reissue_claims(source_pack: Dict[str, Any], *, as_of: str) -> Tuple[Dict[str, Any], int]:
+    """For an old-news correction, retain only dated claims from the last 7 days.
+
+    The 168-hour boundary is the scorer's existing current-week bucket. Never
+    turn an unknown or future date into a fresh date; keep source records intact.
+    """
+    result = copy.deepcopy(source_pack)
+    try:
+        now = datetime.fromisoformat(as_of.replace("Z", "+00:00"))
+        if now.tzinfo is None:
+            raise ValueError("timezone required")
+    except (TypeError, ValueError):
+        raise ValueError("reissue freshness clock unavailable")
+    source_rows = (result.get("sources") or []) + (result.get("backfill_sources") or [])
+    sources = {str(s.get("source_id") or ""): s for s in source_rows if isinstance(s, dict)}
+    rejected = 0
+    for key in ("claims", "backfill_claims"):
+        if not isinstance(result.get(key), list):
+            continue
+        accepted = []
+        for claim in result[key]:
+            if not isinstance(claim, dict):
+                rejected += 1
+                continue
+            ids = claim.get("source_ids") if isinstance(claim.get("source_ids"), list) else []
+            raw = str(claim.get("published_at") or "").strip()
+            if not raw and len(ids) == 1:
+                raw = str(sources.get(str(ids[0]), {}).get("published_at") or "").strip()
+            try:
+                published = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                if published.tzinfo is None:
+                    raise ValueError("timezone required")
+                age = (now - published).total_seconds() / 3600
+            except (TypeError, ValueError):
+                rejected += 1
+                continue
+            if 0 <= age <= 168:
+                accepted.append(claim)
+            else:
+                rejected += 1
+        result[key] = accepted
+    return result, rejected
+
+
 def run_keysuri_text_only_reissue(
     parent_run_id: str,
     *,
@@ -4857,6 +4901,15 @@ def run_keysuri_text_only_reissue(
                 "error_code_detail": type(exc).__name__,
             }
 
+        stale_removed = None
+        if pid == PROGRAM_GLOBAL and reissue_reason_code == "오래된 뉴스 포함":
+            try:
+                fresh_source_pack, stale_removed = _filter_global_stale_reissue_claims(
+                    fresh_source_pack, as_of=now_kst_iso()
+                )
+            except ValueError:
+                return {"ok": False, "error": "reissue_freshness_clock_unavailable", "program_id": pid}
+
         exclusion_rows = _keysuri_reissue_exclusion_rows(parent)
         prompt_input, generated_briefing, repair_fields, regen_error = _regenerate_keysuri_text_from_source_pack(
             pid,
@@ -4865,6 +4918,9 @@ def run_keysuri_text_only_reissue(
             text_caller=text_caller,
             extra_recent_log=exclusion_rows,
         )
+        if stale_removed is not None:
+            repair_fields = dict(repair_fields or {})
+            repair_fields["reissue_stale_or_undated_claims_excluded"] = stale_removed
     if regen_error or prompt_input is None or generated_briefing is None:
         failure = {
             "ok": False,
