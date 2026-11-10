@@ -7,7 +7,8 @@ drift at the boundary that produces the frozen candidate.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 
 import pytest
 
@@ -251,6 +252,108 @@ def test_real_customer_renderer_freezes_a_delegated_candidate(tmp_path, monkeypa
     candidate.assert_integrity()
     with pytest.raises(gate.GateError, match="FROZEN_PAYLOAD_CHANGED"):
         replace(candidate, customer_html=candidate.customer_html + "mutated").assert_integrity()
+
+
+@pytest.mark.parametrize(("mode", "slot"), [
+    ("today_genie", "06:30"),
+    ("keysuri_global_tech", "12:30"),
+    ("keysuri_korea_tech", "18:30"),
+])
+@pytest.mark.parametrize("fault", [None, "early", "caution", "wrong_mime", "suppressed"])
+def test_automatic_pass_uses_bound_mime_and_same_delivery_guard(tmp_path, monkeypatch, mode, slot, fault):
+    from unittest.mock import Mock
+
+    import admin_safety_store as store
+    from customer_review_confirmation import AUTOMATIC_QA_TEXT, DELEGATED_AUTOMATIC_QA
+    from scripts import submit_delegated_work_review as helper
+
+    monkeypatch.setattr(store, "_uses_gcs_backend", lambda: False)
+    monkeypatch.setenv("GENIE_ADMIN_SAFETY_LOCAL_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setattr("admin_store._keysuri_korea_bottom_baseline_confirmed", lambda _: (True, "ok"))
+    meta, saved_html, plan = _case(tmp_path, mode)
+    now = NOW + timedelta(hours=3)
+    if fault == "early":
+        now = datetime.fromisoformat(f"2026-09-10T{slot}:00+09:00") - timedelta(seconds=1)
+    meta.update(
+        execution_class="natural_scheduled", scheduled_slot=slot, kst_schedule_date="2026-09-10",
+        email_sent=True, runtime_safety_status="RUNTIME_SAFETY_PASS",
+        issue_codes=["meta_lead_opening"], terminal_issue_codes=[], review_issue_codes=[],
+    )
+    if mode != "today_genie":
+        meta.update(editorial_verdict="REVIEW", review_issue_codes=["meta_lead_opening"])
+        meta["issue_codes"].append("keysuri_korean_connector_ellipsis_repaired")
+        meta["repaired_issue_codes"] = ["keysuri_korean_connector_ellipsis_repaired"]
+    if fault == "caution":
+        meta["review_issue_codes"] = ["SOURCE_CLAIM_CONTRADICTION"]
+    run_id = meta["run_id"]
+    saved_html += f"<p>{run_id}</p>"
+    receipt = {**_receipt(), "review_basis": DELEGATED_AUTOMATIC_QA}
+    fixture = gate.freeze_candidate(meta=meta, saved_html=saved_html, received_message=receipt, recipient_plan=plan)
+    monkeypatch.setattr("admin_store.load_run_artifact", lambda _: meta)
+    monkeypatch.setattr("admin_store.load_run_email_html", lambda _: saved_html)
+    safety.record_delivery_cutover(starts_on="2026-09-10", inventory_sha256="1"*64,
+        evidence_refs=["fixture://inventory"], operator_id="fixture", all_writers_use_publication_guard=True)
+    store._create_json_once("delegated_recipient_plans/" + plan["plan_id"] + ".json", plan)
+    message = EmailMessage()
+    message["Message-ID"] = "<automatic-qa@example.test>"
+    message.set_content("Alternate body")
+    message.add_alternative(saved_html, subtype="html")
+    for image in fixture.images:
+        data = b"not the received image" if fault == "wrong_mime" else image.content
+        message.get_payload()[-1].add_related(data, maintype="image", subtype="jpeg", cid=f"<{image.cid}>")
+    receipt_args = dict(
+        run_id=run_id, mailbox_id="fixture-inbox", message_id="fixture-received-id",
+        received_at=(NOW - timedelta(minutes=10)).isoformat(), raw_mime=message.as_bytes(),
+        render_capture=b"", customer_render_capture=b"", recipient_plan=plan,
+        review_basis=DELEGATED_AUTOMATIC_QA, now=now,
+    )
+    registration_errors = {
+        "early": "AUTOMATIC_QA_BEFORE_PUBLICATION_TARGET",
+        "caution": "AUTOMATIC_QA_WARNING_REQUIRES_REVIEW",
+        "wrong_mime": "RECEIVED_IMAGE_ARTIFACT_MISMATCH",
+    }
+    if fault in registration_errors:
+        with pytest.raises(gate.GateError, match=registration_errors[fault]):
+            gate.register_received_mail_evidence(**receipt_args)
+        assert store._read_json(f"delegated_received_bindings/{gate._sha(run_id.encode())}.json") is None
+        return
+
+    gate.register_received_mail_evidence(**receipt_args)
+    authority = Mock()
+    if fault == "suppressed":
+        authority.revalidate.side_effect = safety.DeliverySafetyError("DELIVERY_SUPPRESSED")
+    loader = gate.RunArtifactCandidateLoader(authority)
+    candidate = loader.load(run_id, now=now)
+    key = gate.ReviewerKey("fixture-runner", b"test-only-key-not-used-in-operation")
+    settings = gate.GateSettings(mode="ON", authorized_policy=gate.POLICY_VERSION, reviewer_keys={"fixture": key})
+    event = helper._construct_review_event(
+        {"run_id": run_id}, candidate, principal=key.principal, reviewer_model="",
+        policy_version=gate.POLICY_VERSION, now=now, event_id="auto_qa_fixture_event_1",
+    )
+    assert event["review"] == {"reviewer_agent": key.principal}
+    sender = Mock(return_value={"outcome": "ACCEPTED_ALL"})
+
+    def dispatch():
+        signed = helper._sign_review_event(event, canonicalize=gate.canonical, key_id="fixture", secret=key.secret)
+        return gate.process_review_event(*signed, loader=loader, recipient_authority=authority,
+                                         now=now, settings=settings, sender=sender)
+
+    result = dispatch()
+    if fault == "suppressed":
+        assert result["reason_codes"] == ["DELIVERY_SUPPRESSED"]
+        sender.assert_not_called()
+        return
+    assert result["submission_outcome"] == "ACCEPTED_ALL"
+    assert result["approval_source"] == DELEGATED_AUTOMATIC_QA
+    assert result["owner_approval_basis"] == "STANDING_SCHEDULED_PUBLICATION_2026_11_10"
+    assert result["reviewer_model"] is None and result["reviewed_at"] is None
+    delivered = sender.call_args.args[0]
+    assert AUTOMATIC_QA_TEXT in delivered.customer_html
+    assert HUMAN_COPY not in delivered.customer_html and gate._DELEGATED_COPY not in delivered.customer_html
+    assert store._read_json(f"publication_outcomes/{result['attempt_id']}.json")["outcome"] == "PROVIDER_ACCEPTED"
+    event["event_id"] = "auto_qa_fixture_event_2"
+    assert dispatch()["reason_codes"] == ["DELIVERY_HANDOFF_ALREADY_CLAIMED"]
+    sender.assert_called_once()
 
 
 @pytest.mark.parametrize("mode", ["today_genie", "keysuri_global_tech", "keysuri_korea_tech"])

@@ -15,6 +15,7 @@ from genie_schedule_policy import (
     korean_public_holiday_name,
 )
 from delivery_trace import customer_delivery_evidence_conflict
+from customer_review_confirmation import DELEGATED_AUTOMATIC_QA, DELEGATED_WORK_REVIEW
 
 
 ACTIVE_PROGRAMS = (
@@ -231,7 +232,7 @@ def validation_projection(meta: Mapping[str, Any]) -> Dict[str, Any]:
         }
 
     delegated_approved = (
-        approval_source == "DELEGATED_WORK_REVIEW"
+        approval_source in {DELEGATED_WORK_REVIEW, DELEGATED_AUTOMATIC_QA}
         and (
             owner_status == "approved"
             or str(meta.get("delegated_review_status") or "").lower() == "passed"
@@ -239,15 +240,20 @@ def validation_projection(meta: Mapping[str, Any]) -> Dict[str, Any]:
         )
     )
     if delegated_approved:
+        automatic = approval_source == DELEGATED_AUTOMATIC_QA
+        label = "자동검수 통과" if automatic else "위임 AI 검수 완료"
         checks = [
-            {"label": "위임 AI 검수 완료", "tone": "good"},
+            {"label": label, "tone": "good"},
         ]
         if issues:
             checks.append({"label": f"자동 진단 기록 보존 ({len(issues)}건)", "tone": "warn"})
         return {
-            "label": "위임 AI 검수 완료",
+            "label": label,
             "tone": "good",
-            "summary": "위임 AI 검수 및 승인이 완료되었습니다. (자동 진단 기록 보존)",
+            "summary": (
+                "운영책임자의 정기 발송 사전 승인 범위에서 자동검수를 통과했습니다."
+                if automatic else "위임 AI 검수 및 승인이 완료되었습니다. (자동 진단 기록 보존)"
+            ),
             "checks": checks,
             "issues": issues,
         }

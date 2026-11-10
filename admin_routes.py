@@ -46,6 +46,7 @@ from admin_view_models import (
     scheduler_label,
 )
 from admin_preview_assets import read_preview_asset, stream_customer_html_for_admin_preview
+from customer_review_confirmation import DELEGATED_AUTOMATIC_QA, DELEGATED_WORK_REVIEW
 
 from admin_store import (
     EXECUTABLE_REISSUE_SCOPE,
@@ -2585,7 +2586,7 @@ def admin_run_detail(request: Request, run_id: str):
         and meta.get("approval_nonce_used") is True
     )
     is_delegated_approved = bool(
-        meta.get("approval_source") == "DELEGATED_WORK_REVIEW"
+        meta.get("approval_source") in {DELEGATED_WORK_REVIEW, DELEGATED_AUTOMATIC_QA}
         and (
             str(meta.get("delegated_review_status") or "").lower() == "passed"
             or bool(meta.get("delegated_review_id"))
@@ -2644,11 +2645,11 @@ def admin_run_detail(request: Request, run_id: str):
         if is_human_approved or is_delegated_approved:
             val_tone = "good"
             if is_delegated_approved:
-                val_label = "위임 AI 검수 완료"
+                val_label = validation.get("label", "위임 AI 검수 완료")
                 if own_submission_disp == "reconciliation":
                     val_summary = (str(validation.get("summary") or "") + " 발송 결과 또는 원장 정합성 확인이 필요한 기록입니다. 추가 고객 발송이나 수정을 진행하지 않습니다.").strip()
                 else:
-                    val_summary = (str(validation.get("summary") or "") + " 위임 AI 검수 및 고객 발송 접수가 완료되었습니다. 추가 고객 발송을 진행하지 않습니다.").strip()
+                    val_summary = (str(validation.get("summary") or "") + " 고객 발송이 접수되었습니다. 추가 고객 발송을 진행하지 않습니다.").strip()
             else:
                 val_label = validation.get("label", "운영자 최종 확인 완료")
                 if own_submission_disp == "reconciliation":
@@ -2914,7 +2915,7 @@ def _delegated_email_preview_target(run_id, meta, saved_html, *, now=None):
     from pathlib import Path
     from zoneinfo import ZoneInfo
     from admin_beta_delegation import load_active_admin_beta_delegation
-    from customer_review_confirmation import DELEGATED_WORK_REVIEW, DELEGATED_REVIEW_TEXT
+    from customer_review_confirmation import AUTOMATIC_QA_TEXT, DELEGATED_REVIEW_TEXT
     from delegated_gate import digest
     from admin_preview_assets import preview_assets_for_run
 
@@ -2930,20 +2931,23 @@ def _delegated_email_preview_target(run_id, meta, saved_html, *, now=None):
     grant = load_active_admin_beta_delegation(reconcile_edits=False)
     if mode not in grant["products"]:
         raise ValueError("DELEGATED_PREVIEW_PRODUCT_NOT_AUTHORIZED")
+    _, is_own_accepted, _ = run_submission_disposition(meta)
+    approval_source = DELEGATED_WORK_REVIEW
+    if is_own_accepted and meta.get("approval_source") == DELEGATED_AUTOMATIC_QA:
+        approval_source = DELEGATED_AUTOMATIC_QA
     if mode == "today_genie":
         from today_geenee_customer_delivery import (
             prepare_today_geenee_customer_delivery,
             render_today_geenee_postsend_frozen_preview,
         )
-        is_own_submitted, is_own_accepted, _ = run_submission_disposition(meta)
-        if is_own_accepted and meta.get("approval_source") == DELEGATED_WORK_REVIEW:
+        if is_own_accepted and meta.get("approval_source") == approval_source:
             prepared = render_today_geenee_postsend_frozen_preview(
                 saved_html, meta, recipients_override=grant["recipients"]
             )
         else:
             prepared = prepare_today_geenee_customer_delivery(
                 saved_html, meta, recipients_override=grant["recipients"],
-                approval_source=DELEGATED_WORK_REVIEW
+                approval_source=approval_source,
             )
     else:
         if mode == "keysuri_korea_tech":
@@ -2954,12 +2958,13 @@ def _delegated_email_preview_target(run_id, meta, saved_html, *, now=None):
         from keysuri_customer_delivery import prepare_keysuri_customer_delivery
         prepared = prepare_keysuri_customer_delivery(
             saved_html, meta, recipients_override=grant["recipients"],
-            approval_source=DELEGATED_WORK_REVIEW
+            approval_source=approval_source,
         )
     if not prepared.get("ok"):
         raise ValueError(str(prepared.get("error") or "DELEGATED_PREVIEW_PREPARATION_FAILED"))
     content = str(prepared["html_body"])
-    if "운영책임자의 직접 검수" in content or DELEGATED_REVIEW_TEXT not in content:
+    review_text = AUTOMATIC_QA_TEXT if approval_source == DELEGATED_AUTOMATIC_QA else DELEGATED_REVIEW_TEXT
+    if "운영책임자의 직접 검수" in content or review_text not in content:
         raise ValueError("DELEGATED_PREVIEW_DISPLAY_SOURCE_MISMATCH")
     images = []
     assets = preview_assets_for_run(run_id, _delegated_preview_asset_meta(meta, saved_html))
