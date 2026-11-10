@@ -4,6 +4,8 @@
 
 **발행 업무 필독:** [GENIE·KeeSuri 발행 실패 방지](../ops/GENIE_KEYSURI_FAILURE_PREVENTION_REQUIRED.md). 현재 Owner 지시와 serving·원장을 우선한다.
 
+**발행 절차 정본:** [GENIE·KeeSuri 운영 워크플로우](../ops/GENIE_KEYSURI_OPERATING_WORKFLOW.md).
+
 **Status:** APPROVED
 **Version:** v1
 **As of:** 2026-08-10 (KST)
