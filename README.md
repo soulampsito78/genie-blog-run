@@ -2,6 +2,8 @@
 
 **발행 업무 필독:** [GENIE·KeeSuri 발행 실패 방지](docs/ops/GENIE_KEYSURI_FAILURE_PREVENTION_REQUIRED.md) — 실제 실패와 반복하지 말아야 할 운영 절차.
 
+**발행 절차 정본:** [GENIE·KeeSuri 운영 워크플로우](docs/ops/GENIE_KEYSURI_OPERATING_WORKFLOW.md).
+
 Automated publishing system for the Genie persona briefing content.
 
 This project generates and distributes daily briefings for multiple programs under a single Cloud Run service.
