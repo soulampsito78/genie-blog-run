@@ -42,6 +42,79 @@ def _hashes_valid(value: Any) -> bool:
     )
 
 
+class CandidatePreflightError(ValueError):
+    def __init__(self, verdict: str, code: str):
+        super().__init__(code)
+        self.verdict = verdict
+
+
+def validate_candidate_preflight(
+    candidate: Mapping[str, Any], *, now: datetime, allow_today_warning: bool = True,
+) -> datetime:
+    """Shared producer artifact gates for both dispatch review bases."""
+    current = _timestamp(now.isoformat())
+    if candidate.get("mode") not in ACTIVE_MODES:
+        raise CandidatePreflightError("HOLD", "UNSUPPORTED_MODE")
+    from admin_store import validate_run_id
+
+    if not validate_run_id(str(candidate.get("run_id") or "")):
+        raise CandidatePreflightError("HOLD", "INVALID_RUN_ID")
+    date.fromisoformat(str(candidate.get("publication_date") or ""))
+    identity = _RUN_ID.fullmatch(str(candidate["run_id"]))
+    if not identity or identity.group(2) != candidate["mode"] or identity.group(1) != str(candidate["publication_date"]).replace("-", ""):
+        raise CandidatePreflightError("HOLD", "RUN_PRODUCT_DATE_MISMATCH")
+    if candidate["publication_date"] != current.astimezone(ZoneInfo("Asia/Seoul")).date().isoformat():
+        raise CandidatePreflightError("HOLD", "PUBLICATION_OUTSIDE_CURRENT_KST_DATE")
+    run_time = datetime.strptime(str(candidate["run_id"])[:15], "%Y%m%d_%H%M%S").replace(tzinfo=ZoneInfo("Asia/Seoul"))
+    if not all(_HASH.fullmatch(str(candidate.get(field) or "")) for field in ("subject_sha256", "body_sha256")) or not _hashes_valid(candidate.get("image_sha256")):
+        raise CandidatePreflightError("REVIEW_INCOMPLETE", "CANDIDATE_EVIDENCE_MISSING")
+    if set(candidate["image_sha256"]) != EXPECTED_IMAGE_ROLES[candidate["mode"]]:
+        raise CandidatePreflightError("REVIEW_INCOMPLETE", "EXPECTED_IMAGE_ROLES_MISSING_OR_UNEXPECTED")
+    warning_eligible = False
+    if allow_today_warning and candidate.get("mode") == "today_genie":
+        from customer_review_confirmation import today_delegated_warning_eligible
+
+        meta_obj = candidate.get("artifact_metadata")
+        if isinstance(meta_obj, Mapping):
+            # Verify exact metadata against binding artifact_sha256 if present
+            if candidate.get("artifact_sha256"):
+                meta_canon = json.dumps(meta_obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+                meta_sha = hashlib.sha256(meta_canon.encode("utf-8")).hexdigest()
+                if meta_sha != candidate["artifact_sha256"]:
+                    raise CandidatePreflightError("HOLD", "ARTIFACT_METADATA_BINDING_MISMATCH")
+            warning_eligible = bool(today_delegated_warning_eligible(meta_obj, now=now))
+        elif isinstance(candidate, Mapping):
+            # Never trust a raw caller-supplied boolean alone: evaluate candidate attributes at current clock
+            warning_eligible = bool(today_delegated_warning_eligible(candidate, now=now))
+
+    if candidate.get("first_pass_verdict") != "PASS":
+        if not warning_eligible:
+            raise CandidatePreflightError("HOLD", "FIRST_PASS_NOT_PASS")
+    allowed_artifact_statuses = (
+        {"emailed", "validated", "reissued", "review_required"}
+        if warning_eligible
+        else {"emailed", "validated", "reissued"}
+    )
+    if candidate.get("artifact_status") not in allowed_artifact_statuses:
+        raise CandidatePreflightError("HOLD", "ARTIFACT_NOT_READY")
+    if candidate.get("owner_review_status") not in {"pending_review", "reopened"}:
+        raise CandidatePreflightError("HOLD", "OWNER_REVIEW_STATE_CONFLICT")
+    if candidate.get("reissue_requested") or candidate.get("last_reissue_child_run_id") or candidate.get("superseded_by_run_id"):
+        raise CandidatePreflightError("HOLD", "PUBLICATION_SUPERSEDED_OR_REISSUE_PENDING")
+    from product_surface_contract import CUSTOMER_SURFACE_PASS
+
+    if candidate.get("customer_surface_status") != CUSTOMER_SURFACE_PASS:
+        if not warning_eligible:
+            raise CandidatePreflightError("HOLD", "PRODUCT_SURFACE_NOT_READY")
+    if candidate["mode"] in {"keysuri_global_tech", "keysuri_korea_tech"} and (
+        candidate.get("safety_verdict") != "SAFE" or candidate.get("editorial_verdict") not in {"READY", "REVIEW"}
+    ):
+        raise CandidatePreflightError("HOLD", "FIRST_PASS_SAFETY_OR_EDITORIAL_NOT_READY")
+    if candidate.get("customer_delivery_status") != "not_sent":
+        raise CandidatePreflightError("HOLD", "DELIVERY_RECONCILIATION_REQUIRED")
+    return run_time
+
+
 def evaluate_shadow_review(
     candidate: Mapping[str, Any],
     review: Mapping[str, Any] | None,
@@ -79,65 +152,7 @@ limits here are shadow-evaluation parameters, not live schedule promises.
         result["evaluated_at"] = current.isoformat()
         if max_email_age.total_seconds() <= 0 or max_review_age.total_seconds() <= 0:
             return outcome("WORK_REVIEW_ERROR", "INVALID_TIME_WINDOW")
-        if candidate.get("mode") not in ACTIVE_MODES:
-            return outcome("HOLD", "UNSUPPORTED_MODE")
-        from admin_store import validate_run_id
-
-        if not validate_run_id(str(candidate.get("run_id") or "")):
-            return outcome("HOLD", "INVALID_RUN_ID")
-        date.fromisoformat(str(candidate.get("publication_date") or ""))
-        identity = _RUN_ID.fullmatch(str(candidate["run_id"]))
-        if not identity or identity.group(2) != candidate["mode"] or identity.group(1) != str(candidate["publication_date"]).replace("-", ""):
-            return outcome("HOLD", "RUN_PRODUCT_DATE_MISMATCH")
-        if candidate["publication_date"] != current.astimezone(ZoneInfo("Asia/Seoul")).date().isoformat():
-            return outcome("HOLD", "PUBLICATION_OUTSIDE_CURRENT_KST_DATE")
-        run_time = datetime.strptime(str(candidate["run_id"])[:15], "%Y%m%d_%H%M%S").replace(tzinfo=ZoneInfo("Asia/Seoul"))
-        if not all(_HASH.fullmatch(str(candidate.get(field) or "")) for field in ("subject_sha256", "body_sha256")) or not _hashes_valid(candidate.get("image_sha256")):
-            return outcome("REVIEW_INCOMPLETE", "CANDIDATE_EVIDENCE_MISSING")
-        if set(candidate["image_sha256"]) != EXPECTED_IMAGE_ROLES[candidate["mode"]]:
-            return outcome("REVIEW_INCOMPLETE", "EXPECTED_IMAGE_ROLES_MISSING_OR_UNEXPECTED")
-        warning_eligible = False
-        if candidate.get("mode") == "today_genie":
-            from customer_review_confirmation import today_delegated_warning_eligible
-
-            meta_obj = candidate.get("artifact_metadata")
-            if isinstance(meta_obj, Mapping):
-                # Verify exact metadata against binding artifact_sha256 if present
-                if candidate.get("artifact_sha256"):
-                    meta_canon = json.dumps(meta_obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
-                    meta_sha = hashlib.sha256(meta_canon.encode("utf-8")).hexdigest()
-                    if meta_sha != candidate["artifact_sha256"]:
-                        return outcome("HOLD", "ARTIFACT_METADATA_BINDING_MISMATCH")
-                warning_eligible = bool(today_delegated_warning_eligible(meta_obj, now=now))
-            elif isinstance(candidate, Mapping):
-                # Never trust a raw caller-supplied boolean alone: evaluate candidate attributes at current clock
-                warning_eligible = bool(today_delegated_warning_eligible(candidate, now=now))
-
-        if candidate.get("first_pass_verdict") != "PASS":
-            if not warning_eligible:
-                return outcome("HOLD", "FIRST_PASS_NOT_PASS")
-        allowed_artifact_statuses = (
-            {"emailed", "validated", "reissued", "review_required"}
-            if warning_eligible
-            else {"emailed", "validated", "reissued"}
-        )
-        if candidate.get("artifact_status") not in allowed_artifact_statuses:
-            return outcome("HOLD", "ARTIFACT_NOT_READY")
-        if candidate.get("owner_review_status") not in {"pending_review", "reopened"}:
-            return outcome("HOLD", "OWNER_REVIEW_STATE_CONFLICT")
-        if candidate.get("reissue_requested") or candidate.get("last_reissue_child_run_id") or candidate.get("superseded_by_run_id"):
-            return outcome("HOLD", "PUBLICATION_SUPERSEDED_OR_REISSUE_PENDING")
-        from product_surface_contract import CUSTOMER_SURFACE_PASS
-
-        if candidate.get("customer_surface_status") != CUSTOMER_SURFACE_PASS:
-            if not warning_eligible:
-                return outcome("HOLD", "PRODUCT_SURFACE_NOT_READY")
-        if candidate["mode"] in {"keysuri_global_tech", "keysuri_korea_tech"} and (
-            candidate.get("safety_verdict") != "SAFE" or candidate.get("editorial_verdict") not in {"READY", "REVIEW"}
-        ):
-            return outcome("HOLD", "FIRST_PASS_SAFETY_OR_EDITORIAL_NOT_READY")
-        if candidate.get("customer_delivery_status") != "not_sent":
-            return outcome("HOLD", "DELIVERY_RECONCILIATION_REQUIRED")
+        run_time = validate_candidate_preflight(candidate, now=now)
         if review is None:
             return outcome("REVIEW_UNAVAILABLE", "NO_REVIEW")
         if not isinstance(review, Mapping):
@@ -196,6 +211,8 @@ limits here are shadow-evaluation parameters, not live schedule promises.
         result["reviewed_at"] = reviewed.isoformat()
         result["received_message_id"] = message["message_id"]
         return outcome("PASS", "SHADOW_COMPLETE_ATTESTATION_ONLY")
+    except CandidatePreflightError as exc:
+        return outcome(exc.verdict, str(exc))
     except (TypeError, ValueError, AttributeError, KeyError):
         return outcome("WORK_REVIEW_ERROR", "MALFORMED_REVIEW_EVIDENCE")
 

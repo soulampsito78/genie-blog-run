@@ -13,14 +13,20 @@ from zoneinfo import ZoneInfo
 
 HUMAN_OWNER = "HUMAN_OWNER"
 DELEGATED_WORK_REVIEW = "DELEGATED_WORK_REVIEW"
+DELEGATED_AUTOMATIC_QA = "DELEGATED_AUTOMATIC_QA"
 PRE_SEND_REVIEWED = "PRE_SEND_REVIEWED"
 PRE_SEND_OWNER_WITH_WARNINGS = "PRE_SEND_OWNER_WITH_WARNINGS"
 HUMAN_OWNER_WARNING_TEXT = "본 브리핑은 품질 검수 참고사항을 확인한 운영책임자의 직접 검수와 최종 발송 승인에 따라 제공됩니다."
 
 HUMAN_DIRECT_REVIEW_TEXT = "본 브리핑은 운영책임자의 직접 검수를 통과했습니다."
 DELEGATED_REVIEW_TEXT = "본 브리핑은 운영책임자가 정한 정책에 따른 독립적인 AI 검토를 통과했습니다."
+AUTOMATIC_QA_TEXT = "본 브리핑은 운영책임자가 정한 정책에 따른 자동 품질 검사를 통과했습니다."
 
-_SOURCES = frozenset({HUMAN_OWNER, DELEGATED_WORK_REVIEW})
+_REVIEW_TEXT = {
+    HUMAN_OWNER: HUMAN_DIRECT_REVIEW_TEXT,
+    DELEGATED_WORK_REVIEW: DELEGATED_REVIEW_TEXT,
+    DELEGATED_AUTOMATIC_QA: AUTOMATIC_QA_TEXT,
+}
 
 ALLOWED_WARNING_ISSUE_CODES = frozenset({
     "today_replay_temporal_conflict",
@@ -332,7 +338,7 @@ def customer_review_confirmation(*, approval_source: str, display_state: str) ->
     Customer payload preparation occurs before SMTP/provider submission, so an
     outbound candidate must never claim that it has already been sent.
     """
-    if approval_source not in _SOURCES:
+    if approval_source not in _REVIEW_TEXT:
         raise ValueError(f"unsupported customer review approval_source: {approval_source!r}")
     if display_state == PRE_SEND_OWNER_WITH_WARNINGS:
         if approval_source != HUMAN_OWNER:
@@ -340,5 +346,4 @@ def customer_review_confirmation(*, approval_source: str, display_state: str) ->
         return "owner_send_with_warnings", HUMAN_OWNER_WARNING_TEXT
     if display_state != PRE_SEND_REVIEWED:
         raise ValueError(f"unsupported customer review display_state: {display_state!r}")
-    text = HUMAN_DIRECT_REVIEW_TEXT if approval_source == HUMAN_OWNER else DELEGATED_REVIEW_TEXT
-    return "review_passed", text
+    return "review_passed", _REVIEW_TEXT[approval_source]

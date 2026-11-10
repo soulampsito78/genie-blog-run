@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from admin_store import _get_gcs_client, resolve_customer_recipients
 from customer_review_confirmation import (
+    DELEGATED_AUTOMATIC_QA,
     DELEGATED_WORK_REVIEW,
     HUMAN_OWNER,
     PRE_SEND_REVIEWED,
@@ -423,7 +424,7 @@ def render_today_geenee_postsend_frozen_preview(
         return {"ok": False, "error": "unsupported_frozen_preview_target"}
 
     approval_source = str(meta.get("approval_source") or "").strip()
-    if approval_source != DELEGATED_WORK_REVIEW:
+    if approval_source not in {DELEGATED_WORK_REVIEW, DELEGATED_AUTOMATIC_QA}:
         return {"ok": False, "error": "frozen_preview_requires_delegated_review"}
 
     delivery_status = str(meta.get("customer_delivery_status") or meta.get("customer_email_delivery_status") or "").strip().upper()
@@ -463,6 +464,12 @@ def render_today_geenee_postsend_frozen_preview(
 
     from delegated_gate import digest
 
+    if approval_source == DELEGATED_AUTOMATIC_QA:
+        review = ev_inner.get("automatic_qa_candidate")
+        if (ev_inner.get("review_basis") != approval_source or not isinstance(review, dict)
+                or digest(review) != candidate_sha256):
+            return {"ok": False, "error": "automatic_qa_candidate_proof_mismatch"}
+
     orig_art_meta = review.get("artifact_metadata")
     orig_art_sha = str(review.get("artifact_sha256") or "").strip()
     if not orig_art_sha:
@@ -493,7 +500,7 @@ def render_today_geenee_postsend_frozen_preview(
         html_body = prepare_customer_final_html(
             saved_html,
             review_confirmation_state=REVIEW_CONFIRMATION_STATE_REVIEW_PASSED,
-            approval_source=DELEGATED_WORK_REVIEW,
+            approval_source=approval_source,
         )
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
@@ -553,6 +560,8 @@ def render_today_geenee_postsend_frozen_preview(
         return {"ok": False, "error": "delegated_review_result_missing"}
     if result_record.get("verdict") != "PASS":
         return {"ok": False, "error": "delegated_review_result_not_pass"}
+    if approval_source == DELEGATED_AUTOMATIC_QA and result_record.get("approval_source") != approval_source:
+        return {"ok": False, "error": "automatic_qa_result_source_mismatch"}
     if str(result_record.get("run_id") or "").strip() != run_id:
         return {"ok": False, "error": "delegated_review_result_run_mismatch"}
     if str(result_record.get("review_id") or "").strip() != review_id:

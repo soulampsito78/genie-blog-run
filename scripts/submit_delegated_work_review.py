@@ -92,14 +92,26 @@ def _construct_review_event(
     sources=FAIL while this attestation is true; an unreadable/missing source
     must not be promoted to true merely because the finding includes evidence.
     """
-    checks, evidence = _normalise_checks(review_input)
-    return {
+    from customer_review_confirmation import DELEGATED_AUTOMATIC_QA
+
+    envelope = {
         "event_id": event_id,
         "run_id": str(review_input.get("run_id") or ""),
         "audience": "genie-delegated-review",
         "policy_version": policy_version,
         "issued_at": now.isoformat(),
         "candidate_sha256": candidate.candidate_sha256,
+    }
+    if candidate.review_basis == DELEGATED_AUTOMATIC_QA:
+        return {
+            **envelope,
+            "review_basis": DELEGATED_AUTOMATIC_QA,
+            "automatic_qa_candidate": candidate.binding,
+            "review": {"reviewer_agent": principal},
+        }
+    checks, evidence = _normalise_checks(review_input)
+    return {
+        **envelope,
         "review": {
             **candidate.binding,
             "policy_version": policy_version,
@@ -143,20 +155,23 @@ def _post(path: str, raw: bytes, headers: dict[str, str]) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--review-json", required=True)
+    parser.add_argument("--automatic-qa", action="store_true", help="Use the server-owned producer decision")
     parser.add_argument("--raw-mime", required=True)
-    parser.add_argument("--email-render-capture", required=True)
-    parser.add_argument("--customer-render-capture", required=True)
+    parser.add_argument("--email-render-capture")
+    parser.add_argument("--customer-render-capture")
     parser.add_argument("--mailbox-id", required=True)
     parser.add_argument("--message-id", required=True)
     parser.add_argument("--received-at", required=True)
     parser.add_argument("--reviewer-model", default="gpt-5.3-codex-spark")
     args = parser.parse_args()
 
+    if not args.automatic_qa and not (args.email_render_capture and args.customer_render_capture):
+        parser.error("independent review requires both render captures")
     review_input = json.loads(Path(args.review_json).read_text(encoding="utf-8"))
     run_id = str(review_input.get("run_id") or "")
     mode = str(review_input.get("product") or review_input.get("mode") or "")
     publication_date = str(review_input.get("publication_date") or "")
-    verdict = str(review_input.get("overall_verdict") or "").upper()
+    verdict = "PASS" if args.automatic_qa else str(review_input.get("overall_verdict") or "").upper()
     if verdict not in {
         "PASS",
         "HOLD_ANOMALY",
@@ -176,15 +191,26 @@ def main() -> int:
     )
     repo = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(repo))
+    from admin_store import load_run_artifact, validate_run_id
+    from customer_review_confirmation import DELEGATED_AUTOMATIC_QA, DELEGATED_WORK_REVIEW
     from delegated_delivery_safety import recipient_authority
     from delegated_gate import (
         POLICY_VERSION,
         RunArtifactCandidateLoader,
         canonical,
         register_received_mail_evidence,
+        validate_automatic_qa_producer,
+        validate_automatic_qa_slot,
     )
 
     now = datetime.now(timezone.utc)
+    review_basis = DELEGATED_AUTOMATIC_QA if args.automatic_qa else DELEGATED_WORK_REVIEW
+    if args.automatic_qa:
+        meta = load_run_artifact(run_id) if validate_run_id(run_id) else None
+        if not meta or meta.get("mode") != mode:
+            raise RuntimeError("automatic_qa_artifact_unavailable")
+        validate_automatic_qa_slot(meta, publication_date=publication_date, now=now)
+        validate_automatic_qa_producer(meta)
     authority = recipient_authority()
     plan = authority.prepare(mode, publication_date, now)
     register_received_mail_evidence(
@@ -193,9 +219,11 @@ def main() -> int:
         message_id=args.message_id,
         received_at=args.received_at,
         raw_mime=Path(args.raw_mime).read_bytes(),
-        render_capture=Path(args.email_render_capture).read_bytes(),
-        customer_render_capture=Path(args.customer_render_capture).read_bytes(),
+        render_capture=Path(args.email_render_capture).read_bytes() if not args.automatic_qa else b"",
+        customer_render_capture=Path(args.customer_render_capture).read_bytes() if not args.automatic_qa else b"",
         recipient_plan=plan,
+        review_basis=review_basis,
+        now=now,
     )
     candidate = RunArtifactCandidateLoader(authority).load(run_id, now=now)
     key_config = json.loads(_secret(REVIEWER_SECRET))
@@ -206,7 +234,8 @@ def main() -> int:
         raise RuntimeError("reviewer_secret_invalid")
     event = _construct_review_event(
         review_input, candidate, principal=principal,
-        reviewer_model=args.reviewer_model, policy_version=POLICY_VERSION, now=now,
+        reviewer_model=args.reviewer_model, policy_version=POLICY_VERSION,
+        now=datetime.now(timezone.utc) if args.automatic_qa else now,
         event_id="review_" + secrets.token_hex(16),
     )
     raw, review_headers = _sign_review_event(
@@ -231,6 +260,7 @@ def main() -> int:
             "customer_send_authorized",
             "approval_source",
             "approval_authority",
+            "owner_approval_basis",
             "authority_grant_id",
             "attempt_id",
             "submission_outcome",

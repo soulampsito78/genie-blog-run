@@ -136,5 +136,5 @@
   <line class="divider" x1="68" y1="1370" x2="1372" y2="1370"/>
   <text class="head" x="68" y="1413">과검수 금지</text>
   <text class="small" x="68" y="1450">Owner 상시 사전 승인 · 사실을 바꾸지 않는 표현의 과장은 통과 · 같은 실행에서 결과까지 확인</text>
-  <text class="label" x="68" y="1482">정본 v1.8 · 2026-11-10 KST · 운영 서버의 발송 경로 적용 상태는 정본에서 확인</text>
+  <text class="label" x="68" y="1482">정본 v1.9 · 2026-11-10 KST · 자동검수와 독립 검수의 발송 경로는 정본에서 확인</text>
 </svg>

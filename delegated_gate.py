@@ -21,8 +21,18 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Mapping
 
-from delegated_review import evaluate_shadow_review, POLICY_VERSION as SHADOW_POLICY
-from customer_review_confirmation import DELEGATED_REVIEW_TEXT, DELEGATED_WORK_REVIEW
+from delegated_review import (
+    CandidatePreflightError,
+    evaluate_shadow_review,
+    validate_candidate_preflight,
+    POLICY_VERSION as SHADOW_POLICY,
+)
+from customer_review_confirmation import (
+    AUTOMATIC_QA_TEXT,
+    DELEGATED_AUTOMATIC_QA,
+    DELEGATED_REVIEW_TEXT,
+    DELEGATED_WORK_REVIEW,
+)
 
 POLICY_VERSION = "genie-keesuri-second-pass-v2"
 REQUIRED_CHECKS = frozenset({"content", "sources", "images", "render", "customer_render", "run_identity", "delivery_readiness"})
@@ -297,6 +307,10 @@ class FrozenCandidate:
     def candidate_sha256(self) -> str:
         return digest(self.binding)
 
+    @property
+    def review_basis(self) -> str:
+        return (self.binding.get("received_message") or {}).get("review_basis", DELEGATED_WORK_REVIEW)
+
     def assert_integrity(self) -> None:
         binding = self.binding
         if binding.get("body_sha256") != _sha(self.customer_html.encode("utf-8")) or binding.get("subject_sha256") != _sha(self.subject.encode("utf-8")):
@@ -346,11 +360,18 @@ lineage, final content or recipient snapshot requires a new review.
     # before its hash is frozen.  This presentation argument cannot grant any
     # approval or delivery right; later authenticated review and final boundary
     # checks remain mandatory.
+    review_basis = received_message.get("review_basis", DELEGATED_WORK_REVIEW)
+    review_text = {
+        DELEGATED_WORK_REVIEW: _DELEGATED_COPY,
+        DELEGATED_AUTOMATIC_QA: AUTOMATIC_QA_TEXT,
+    }.get(review_basis)
+    if review_text is None:
+        raise GateError("UNKNOWN_REVIEW_BASIS", "STATE_CONFLICT")
     prepared = prepare(
         saved_html,
         meta,
         recipients_override=recipients,
-        approval_source=DELEGATED_WORK_REVIEW,
+        approval_source=review_basis,
     )
     if not prepared.get("ok"):
         raise GateError(str(prepared.get("error") or "CANDIDATE_PREPARATION_FAILED"))
@@ -358,7 +379,7 @@ lineage, final content or recipient snapshot requires a new review.
     # Never let a future renderer's explicit human-attestation copy slip through.
     if "운영책임자의 직접 검수" in customer_html:
         raise GateError("UNSUPPORTED_HUMAN_APPROVAL_COPY", "STATE_CONFLICT")
-    if _DELEGATED_COPY not in customer_html:
+    if review_text not in customer_html or (review_basis == DELEGATED_AUTOMATIC_QA and _DELEGATED_COPY in customer_html):
         raise GateError("DELEGATED_APPROVAL_COPY_MISSING", "STATE_CONFLICT")
     images = tuple(FrozenImage("top" if index == 0 else "bottom" if index == 1 else f"image_{index+1}", str(cid), Path(filename).name, Path(path).read_bytes())
                    for index, (path, cid, filename) in enumerate(prepared["inline_jpeg_parts"]))
@@ -419,7 +440,9 @@ before this narrowly scoped comparison and is never rewritten.
 
 def register_received_mail_evidence(*, run_id: str, mailbox_id: str, message_id: str,
                                     received_at: str, raw_mime: bytes, render_capture: bytes,
-                                    customer_render_capture: bytes, recipient_plan: dict) -> dict:
+                                    customer_render_capture: bytes, recipient_plan: dict,
+                                    review_basis: str = DELEGATED_WORK_REVIEW,
+                                    now: datetime | None = None) -> dict:
     """Trusted Gmail broker only; not exposed as a reviewer/request endpoint.
 
 Derive evidence hashes from actual MIME/capture bytes. Refuse wrong saved HTML,
@@ -432,7 +455,11 @@ this function cannot make a connector available or prove visual quality.
     from admin_store import load_run_artifact, load_run_email_html, validate_run_id
     from admin_safety_store import _create_json_once, _read_json
     from delegated_delivery_safety import load_recipient_plan
-    if not validate_run_id(run_id) or not mailbox_id or not message_id or not raw_mime or not render_capture or not customer_render_capture:
+    if review_basis not in {DELEGATED_WORK_REVIEW, DELEGATED_AUTOMATIC_QA}:
+        raise GateError("UNKNOWN_REVIEW_BASIS", "STATE_CONFLICT")
+    if not validate_run_id(run_id) or not mailbox_id or not message_id or not raw_mime:
+        raise GateError("RECEIVED_MAIL_EVIDENCE_INCOMPLETE")
+    if review_basis == DELEGATED_WORK_REVIEW and (not render_capture or not customer_render_capture):
         raise GateError("RECEIVED_MAIL_EVIDENCE_INCOMPLETE")
     _time(received_at)
     plan = load_recipient_plan(recipient_plan["plan_id"], expected_sha256=recipient_plan["sha256"])
@@ -448,9 +475,12 @@ this function cannot make a connector available or prove visual quality.
     if not internet_id:
         raise GateError("RECEIVED_MESSAGE_ID_MISSING")
     receipt = {"mailbox_id": mailbox_id, "message_id": message_id,
-        "internet_message_id": internet_id, "received_at": received_at,
-        "raw_mime_sha256": _sha(raw_mime), "render_capture_sha256": _sha(render_capture),
-        "customer_render_capture_sha256": _sha(customer_render_capture)}
+        "internet_message_id": internet_id, "received_at": received_at, "raw_mime_sha256": _sha(raw_mime)}
+    if review_basis == DELEGATED_AUTOMATIC_QA:
+        receipt["review_basis"] = review_basis
+    else:
+        receipt["render_capture_sha256"] = _sha(render_capture)
+        receipt["customer_render_capture_sha256"] = _sha(customer_render_capture)
     candidate = freeze_candidate(meta=meta, saved_html=saved_html, received_message=receipt, recipient_plan=plan)
     received_images = {}
     for part in mime.walk():
@@ -462,6 +492,8 @@ this function cannot make a connector available or prove visual quality.
     for image in candidate.images:
         if received_images.get(image.cid.strip("<>")) != _sha(image.content):
             raise GateError("RECEIVED_IMAGE_ARTIFACT_MISMATCH", "STATE_CONFLICT")
+    if review_basis == DELEGATED_AUTOMATIC_QA:
+        _evaluate_automatic_qa(candidate, now=now or datetime.now(timezone.utc))
     record = {"run_id": run_id, "publication_date": plan["publication_date"], "received_message": receipt,
               "recipient_plan_id": plan["plan_id"], "recipient_plan_sha256": plan["sha256"],
               "candidate_sha256": candidate.candidate_sha256, "transport_comparison": transport}
@@ -503,11 +535,97 @@ inside the signed verdict into that independent record.
         return candidate
 
 
+def validate_automatic_qa_slot(meta: dict, *, publication_date: str, now: datetime) -> None:
+    """Standing approval covers only the exact current natural publication."""
+    from genie_schedule_policy import get_kst_now, holiday_calendar_covers, is_korean_publishing_day
+    from natural_run_reliability import NATURAL_SLOTS
+
+    slot = NATURAL_SLOTS.get(meta.get("mode"))
+    kst = get_kst_now(now)
+    if (
+        not slot or meta.get("execution_class") != "natural_scheduled"
+        or meta.get("scheduled_slot") != slot
+        or meta.get("kst_schedule_date") != publication_date
+        or publication_date != kst.date().isoformat()
+        or not holiday_calendar_covers(kst) or not is_korean_publishing_day(kst)
+    ):
+        raise GateError("AUTOMATIC_QA_SLOT_MISMATCH", "STATE_CONFLICT")
+    if kst.strftime("%H:%M") < slot:
+        raise GateError("AUTOMATIC_QA_BEFORE_PUBLICATION_TARGET", "STATE_CONFLICT")
+
+
+def validate_automatic_qa_producer(meta: dict) -> None:
+    """Read-only classification of an authoritative producer artifact."""
+    from publication_review_policy import is_harmless_editorial_code
+    from product_surface_contract import CUSTOMER_SURFACE_PASS
+
+    if meta.get("validation_result") != "pass" or meta.get("customer_surface_status") != CUSTOMER_SURFACE_PASS:
+        raise GateError("AUTOMATIC_QA_PRODUCER_NOT_PASS")
+    if meta.get("artifact_status") != "emailed" or meta.get("email_sent") is not True:
+        raise GateError("AUTOMATIC_QA_OWNER_MAIL_NOT_SENT")
+    if meta.get("runtime_safety_status") != "RUNTIME_SAFETY_PASS":
+        raise GateError("AUTOMATIC_QA_RUNTIME_NOT_PASS")
+    if meta.get("terminal_issue_codes", []) != []:
+        raise GateError("AUTOMATIC_QA_ADJUDICATION_INCOMPLETE")
+    if meta.get("mode") != "today_genie":
+        if meta.get("safety_verdict") != "SAFE" or meta.get("editorial_verdict") not in {"READY", "REVIEW"}:
+            raise GateError("AUTOMATIC_QA_QUALITY_NOT_READY")
+        if meta.get("terminal_issue_codes") != [] or not isinstance(meta.get("review_issue_codes"), list):
+            raise GateError("AUTOMATIC_QA_ADJUDICATION_INCOMPLETE")
+        if meta.get("editorial_verdict") == "REVIEW" and not meta["review_issue_codes"]:
+            raise GateError("AUTOMATIC_QA_WARNING_CLASSIFICATION_MISSING")
+    repaired = meta.get("repaired_issue_codes", [])
+    if not isinstance(repaired, list) or any(not isinstance(code, str) for code in repaired):
+        raise GateError("AUTOMATIC_QA_ADJUDICATION_INCOMPLETE")
+    for field in (
+        "issue_codes", "review_issue_codes", "validation_issue_codes",
+        "product_surface_issue_codes", "product_surface_editorial_warning_codes",
+    ):
+        codes = meta.get(field, [])
+        if not isinstance(codes, list) or any(
+            not isinstance(code, str) or (
+                not is_harmless_editorial_code(code) and not (field == "issue_codes" and code in repaired)
+            ) for code in codes
+        ):
+            raise GateError("AUTOMATIC_QA_WARNING_REQUIRES_REVIEW")
+    if not isinstance(meta.get("issue_codes"), list):
+        raise GateError("AUTOMATIC_QA_PRODUCER_DECISION_INCOMPLETE")
+
+
+def _evaluate_automatic_qa(candidate: FrozenCandidate, *, now: datetime) -> dict:
+    """Evaluate the trusted producer decision and receipt without a reviewer attestation."""
+    binding = candidate.binding
+    meta = json.loads(candidate.meta_json)
+    validate_automatic_qa_slot(meta, publication_date=binding["publication_date"], now=now)
+    try:
+        run_time = validate_candidate_preflight(binding, now=now, allow_today_warning=False)
+    except CandidatePreflightError as exc:
+        raise GateError(str(exc), "STATE_CONFLICT" if exc.verdict == "HOLD" else "HOLD_INCOMPLETE") from exc
+    validate_automatic_qa_producer(meta)
+    message = binding["received_message"]
+    if not all(message.get(key) for key in ("mailbox_id", "message_id", "internet_message_id", "received_at")):
+        raise GateError("RECEIVED_MAIL_EVIDENCE_INCOMPLETE", "REVIEW_UNAVAILABLE")
+    if not _HEX.fullmatch(str(message.get("raw_mime_sha256") or "")):
+        raise GateError("RECEIVED_MAIL_EVIDENCE_INCOMPLETE")
+    received = _time(message["received_at"])
+    if received < run_time or received > now or now - received > timedelta(hours=6):
+        raise GateError("AUTOMATIC_QA_RECEIPT_OUTSIDE_WINDOW", "REVIEW_UNAVAILABLE")
+    return {"verdict": "PASS", "reason_codes": ["PRODUCER_AUTOMATIC_QA_PASS"]}
+
+
 def evaluate_authenticated_review(candidate: FrozenCandidate, event: dict, *, now: datetime) -> dict:
     candidate.assert_integrity()
     review = event["review"]
     if event.get("candidate_sha256") != candidate.candidate_sha256:
         raise GateError("CANDIDATE_CHANGED_REVIEW_REQUIRED", "STATE_CONFLICT")
+    if event.get("review_basis", DELEGATED_WORK_REVIEW) != candidate.review_basis:
+        raise GateError("REVIEW_BASIS_MISMATCH", "STATE_CONFLICT")
+    if candidate.review_basis == DELEGATED_AUTOMATIC_QA:
+        if set(review) != {"reviewer_agent"}:
+            raise GateError("AUTOMATIC_QA_EVENT_HAS_REVIEW_ATTESTATION")
+        if event.get("automatic_qa_candidate") != candidate.binding:
+            raise GateError("AUTOMATIC_QA_CANDIDATE_BINDING_MISMATCH", "STATE_CONFLICT")
+        return _evaluate_automatic_qa(candidate, now=now)
     if review.get("policy_version") != POLICY_VERSION:
         raise GateError("REVIEW_POLICY_MISMATCH", "STATE_CONFLICT")
     final_capture = candidate.binding.get("customer_render_capture_sha256")
@@ -630,11 +748,15 @@ payload bytes. All durable claims survive failures and process restarts.
         if candidate.binding.get("run_id") != run_id:
             raise GateError("AUTHORITATIVE_RUN_MISMATCH", "STATE_CONFLICT")
         evaluation = evaluate_authenticated_review(candidate, event, now=now)
+        review_basis = candidate.review_basis
         audit = {"event_id": event["event_id"], "review_id": event_key, "run_id": run_id,
                  "candidate_sha256": candidate.candidate_sha256, "policy_version": POLICY_VERSION,
                  "reviewer_principal": principal, "reviewer_model": event["review"].get("reviewer_model"),
                  "reviewer_model_independently_verified": False, "authenticity_verified": True,
                  "reviewed_at": event["review"].get("reviewed_at"), "evaluated_at": now.isoformat()}
+        if review_basis == DELEGATED_AUTOMATIC_QA:
+            audit["review_basis"] = review_basis
+            audit["owner_approval_basis"] = "STANDING_SCHEDULED_PUBLICATION_2026_11_10"
         if evaluation["verdict"] != "PASS":
             if evaluation["verdict"] == "HOLD_ANOMALY" and settings.mode == "ON":
                 latch = run_delivery_transition(run_id, action="HOLD", authority="DELEGATED_WORK_REVIEW",
@@ -654,7 +776,7 @@ payload bytes. All durable claims survive failures and process restarts.
             recipient_authority.revalidate(plan, now=now)
             from delegated_delivery_safety import reserve_publication_attempt, complete_publication_attempt
             reservation = reserve_publication_attempt(plan, run_id=run_id, candidate_sha256=current.candidate_sha256,
-                                                      review_id=event_key, now=now)
+                                                      review_id=event_key, now=now, approval_source=review_basis)
             if not reservation.get("allowed"):
                 raise GateError(str(reservation.get("reason") or "PUBLICATION_RECONCILIATION_REQUIRED"), "STATE_CONFLICT")
             attempt_id = reservation["attempt_id"]
@@ -664,7 +786,7 @@ payload bytes. All durable claims survive failures and process restarts.
             recipient_authority.revalidate(plan, now=now)
             if settings.mode != "ON" or (sender is None and os.getenv("DELEGATED_SEND_MODE", "OFF").strip().upper() != "ON"):
                 raise GateError("DELEGATED_SEND_DISABLED_BEFORE_SUBMIT", "STATE_CONFLICT")
-            handoff = run_delivery_transition(run_id, action="SUBMIT", authority="DELEGATED_WORK_REVIEW",
+            handoff = run_delivery_transition(run_id, action="SUBMIT", authority=review_basis,
                                               candidate_sha256=current.candidate_sha256)
             if not handoff.get("allowed"):
                 raise GateError(handoff["reason"], "STATE_CONFLICT")
@@ -683,8 +805,8 @@ payload bytes. All durable claims survive failures and process restarts.
                                "UNKNOWN_AFTER_SUBMIT")
             complete_publication_attempt(attempt_id, outcome=provider_status, evidence=submission)
             result = _outcome("PASS", "DELEGATED_SUBMISSION_RECORDED", **audit,
-                              customer_send_authorized=True, approval_source="DELEGATED_WORK_REVIEW",
-                              approval_authority=str(plan.get("authority") or "DELEGATED_WORK_REVIEW"),
+                              customer_send_authorized=True, approval_source=review_basis,
+                              approval_authority=str(plan.get("authority") or review_basis),
                               authority_grant_id=plan.get("authority_grant_id"), attempt_id=attempt_id,
                               submission_outcome=status, inbox_receipt_confirmed=False,
                               owner_notification_required=status != "ACCEPTED_ALL")
@@ -734,20 +856,26 @@ cannot mutate the candidate after review. SMTP acceptance is never receipt.
         raise GateError("DELEGATED_SEND_MODE_OFF", "STATE_CONFLICT")
     meta = json.loads(candidate.meta_json)
     run_id, mode = candidate.binding["run_id"], candidate.binding["mode"]
+    review_basis = candidate.review_basis
     transition = run_delivery_transition(run_id)
-    if (transition.get("state") != "SUBMITTED" or transition.get("authority") != "DELEGATED_WORK_REVIEW"
+    if (transition.get("state") != "SUBMITTED" or transition.get("authority") != review_basis
             or transition.get("candidate_sha256") != candidate.candidate_sha256):
         raise GateError("DELEGATED_HANDOFF_CLAIM_MISSING", "STATE_CONFLICT")
     attempted_at = now_kst_iso()
     authority_fields = {
-        "approval_source": "DELEGATED_WORK_REVIEW",
-        "approval_authority": str(recipient_plan.get("authority") or "DELEGATED_WORK_REVIEW"),
+        "approval_source": review_basis,
+        "approval_authority": str(recipient_plan.get("authority") or review_basis),
         "delegated_authority_grant_id": recipient_plan.get("authority_grant_id"),
         "delegated_review_id": audit["review_id"], "delegated_review_policy_version": POLICY_VERSION,
         "delegated_candidate_sha256": candidate.candidate_sha256, "delegated_reviewed_at": audit["reviewed_at"],
         "delegated_reviewer_principal": audit["reviewer_principal"],
         "delegated_delivery_attempt_id": audit["attempt_id"], "customer_delivery_reason": "delegated_work_review_pass",
     }
+    if review_basis == DELEGATED_AUTOMATIC_QA:
+        authority_fields.update(
+            owner_approval_basis=audit["owner_approval_basis"],
+            customer_delivery_reason="producer_automatic_qa_pass",
+        )
     def attempt(row):
         if digest(normalize_artifact_view(row, run_id)) != candidate.binding["artifact_sha256"]:
             raise GateError("ARTIFACT_CHANGED_AT_HANDOFF", "STATE_CONFLICT")
@@ -801,4 +929,4 @@ cannot mutate the candidate after review. SMTP acceptance is never receipt.
             "refused_count": fields.get("customer_delivery_refused_count"),
             "unknown_count": fields.get("customer_delivery_unknown_count"),
             "provider_exactly_once": False, "inbox_receipt_confirmed": False,
-            "approval_source": "DELEGATED_WORK_REVIEW", "attempt_id": audit["attempt_id"]}
+        "approval_source": review_basis, "attempt_id": audit["attempt_id"]}

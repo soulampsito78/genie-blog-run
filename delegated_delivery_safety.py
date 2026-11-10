@@ -625,9 +625,10 @@ def reserve_publication_attempt(plan, *, run_id, candidate_sha256, review_id, no
     """
     import admin_safety_store as store
     from admin_store import validate_run_id
+    from customer_review_confirmation import DELEGATED_AUTOMATIC_QA, DELEGATED_WORK_REVIEW, HUMAN_OWNER
     plan = load_recipient_plan(plan["plan_id"], expected_sha256=plan["sha256"])
     if (not validate_run_id(run_id) or not review_id
-            or approval_source not in {"DELEGATED_WORK_REVIEW", "HUMAN_OWNER"}
+            or approval_source not in {DELEGATED_WORK_REVIEW, DELEGATED_AUTOMATIC_QA, HUMAN_OWNER}
             or not re.fullmatch(r"[a-f0-9]{64}", str(candidate_sha256))):
         raise DeliverySafetyError("INVALID_ATTEMPT_IDENTITY")
     product, day = plan["product_code"], plan["publication_date"]

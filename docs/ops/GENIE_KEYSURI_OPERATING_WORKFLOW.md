@@ -2,7 +2,7 @@
 
 > **작업 전 필독:** [발행 실패 방지 — 반드시 읽고 피해야 할 절차](GENIE_KEYSURI_FAILURE_PREVENTION_REQUIRED.md). 2026-11-05·06의 실제 요청 크기 거부, 교정본 이미지 경로 오류, 담당자의 불필요한 보류·승인 대기와 검수 자료 형식 오류를 기록한다. 실제 Owner의 직접 지시와 현재 serving·권한·원장이 우선한다.
 
-문서 ID: `GENIE-KEYSURI-OPS-WORKFLOW` · 버전 1.8 · 갱신 2026-11-10 KST
+문서 ID: `GENIE-KEYSURI-OPS-WORKFLOW` · 버전 1.9 · 갱신 2026-11-10 KST
 
 담당: 기존 GENIE 운영 담당과 기존 조정 PM. 발행일 정기 슬롯·진행 중인 승인 복구·23:55 일일 마감에 적용한다.
 
@@ -85,7 +85,7 @@ flowchart TD
 
 운영자 메일 제목이나 본문의 PASS 표기만으로 통과를 판정하지 않는다. 실제 수신 원본에 결속된 운영 서버의 판정을 사용한다. 자동 통과에는 자동검수의 실제 결과와 시각을 남긴다. 독립 검수를 수행했다고 서명하거나 고객 화면에 표시하려면 해당 검수 증거가 필요하다.
 
-**현재 운영 발송 서버의 적용 상태:** 2026-11-10 확인 기준 [기존 서명 게이트](../../delegated_gate.py)는 독립 검수 증거를 요구한다. 자동검수 결과를 직접 받아들이는 발송 경로가 실제 서버에서 지원되는지 먼저 확인한다. 지원되지 않으면 발송 경로 장애로 처리해 같은 실행에서 허용된 복구를 이어간다. 자동검수 통과에 독립 검수 서명을 덧씌우거나 검수 필드를 꾸미는 방식은 허용하지 않는다.
+**자동검수 발송 경로:** [서명 게이트](../../delegated_gate.py)는 `DELEGATED_AUTOMATIC_QA`와 독립 검수 근거를 구분한다. 자동검수 분기는 현재 자연 발행 후보, 생산자의 품질 판정, 정확 수신 MIME과 이미지, 목표 시각과 기존 수신·서명·중복 조건을 확인한다. 독립 검수 증거와 운영자 클릭을 요구하지 않는다. 배포 SHA를 대조해 운영 서버와 helper가 이 분기를 실제로 지원하는지 확인한다. 지원되지 않으면 발송 경로 장애로 처리한다.
 
 ### 2.1 정상 발송 지연을 줄이는 실행 규칙
 
@@ -183,7 +183,16 @@ Today는 같은 날 Owner가 **“06:05분 생설으로 기준을 잡아.”**�
 
 ### 4.5 기존 단일 signed 경로로 제출
 
-자동검수 통과 건은 해당 판정을 지원하는 실제 서버 서명 경로로 제출한다. 아래 형식은 **독립 검수 근거를 제출하는 현재 운영 경로**에 적용한다. 실제 검수와 서버 계약이 충족됐을 때 현재 값으로 채운다.
+자동검수 통과 건은 준비 즉시 서버 artifact를 읽고 `delegated_gate.validate_automatic_qa_producer(meta)`로 발송 분기를 확인한다. 목표 시각부터 실제 받은 운영자 메일로 아래 helper를 한 번 실행한다. 입력 JSON의 필드는 `run_id`, `product`, `publication_date`다. 발송 판정은 서버 artifact에서 결정하며, 별도 검수 PASS나 화면 캡처를 입력에 넣지 않는다.
+
+```sh
+/usr/bin/python3 scripts/submit_delegated_work_review.py --automatic-qa \
+  --review-json <candidate-identity.json> --raw-mime <received.eml> \
+  --mailbox-id <authorized-mailbox> --message-id <actual-message-id> \
+  --received-at <actual-ISO8601-with-offset>
+```
+
+독립 검수가 필요한 경우 실제 증거와 서버 계약을 충족한 뒤 아래 형식으로 제출한다.
 
 ```sh
 /usr/bin/python3 scripts/submit_delegated_work_review.py \
@@ -269,3 +278,4 @@ Raw MIME·수신 주소·권리 DB·credential·private run 원본은 저장소 
 | --- | --- |
 | 2026-11-10 | v1.7 정본 등록. 자동검수 통과·주의 이상·검수 불가를 분리하고, 프롬프트 로직을 포함한 원인 파악과 장애 복구를 재발행보다 우선한다. |
 | 2026-11-10 | v1.8 세 제품의 정기 고객 발송 상시 사전 승인과 실제 검수·제출 기록의 분리를 명시한다. |
+| 2026-11-10 | v1.9 정확 수신 MIME과 서버의 자동검수 판정을 기존 서명 발송 경로에 연결한다. |
