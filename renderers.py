@@ -971,7 +971,7 @@ def _today_snapshot_grouped_html(snapshot: Any) -> str:
         )
 
     domestic_html = render_group("전일 국내 마감", domestic_order)
-    japan_html = render_group("전일 일본 마감", japan_order)
+    japan_html = render_group("일본 증시 · 직전 거래일 마감", japan_order)
     us_html = render_group("밤사이 미국 마감", us_order)
     return f"{domestic_html}{japan_html}{us_html}".strip()
 

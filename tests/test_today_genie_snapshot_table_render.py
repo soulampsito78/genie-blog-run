@@ -78,13 +78,13 @@ class TodayGenieSnapshotTableRenderTests(unittest.TestCase):
 
         # Ensure correct section headings are present and legacy heading is absent
         self.assertIn("전일 국내 마감", html)
-        self.assertIn("전일 일본 마감", html)
+        self.assertIn("일본 증시 · 직전 거래일 마감", html)
         self.assertIn("밤사이 미국 마감", html)
         self.assertNotIn("밤사이 해외 마감", html)
 
         # Validate section order: Korea domestic -> Japan -> US overnight
         idx_kr = html.index("전일 국내 마감")
-        idx_jp = html.index("전일 일본 마감")
+        idx_jp = html.index("일본 증시 · 직전 거래일 마감")
         idx_us = html.index("밤사이 미국 마감")
         self.assertLess(idx_kr, idx_jp)
         self.assertLess(idx_jp, idx_us)
@@ -124,7 +124,8 @@ class TodayGenieSnapshotTableRenderTests(unittest.TestCase):
         snapshot = [{"label": "니케이", "close": 38981.75, "change_pct": 1.25}]
         html = _today_snapshot_grouped_html(snapshot)
 
-        self.assertIn("전일 일본 마감", html)
+        self.assertIn("일본 증시 · 직전 거래일 마감", html)
+        self.assertNotIn("전일 일본 마감", html)
         self.assertIn("니케이", html)
         self.assertIn("38981.75", html)
         self.assertIn("+1.25%", html)
@@ -151,7 +152,7 @@ class TodayGenieSnapshotTableRenderTests(unittest.TestCase):
         self.assertNotIn("S&P 500", html)
         self.assertNotIn("다우존스", html)
 
-        self.assertNotIn("전일 일본 마감", html)
+        self.assertNotIn("일본 증시 · 직전 거래일 마감", html)
         self.assertNotIn("니케이", html)
         self.assertNotIn("밤사이 해외 마감", html)
 
@@ -178,7 +179,7 @@ class TodayGenieSnapshotTableRenderTests(unittest.TestCase):
         html = _today_snapshot_grouped_html(snapshot)
 
         idx_kr = html.index("전일 국내 마감")
-        idx_jp = html.index("전일 일본 마감")
+        idx_jp = html.index("일본 증시 · 직전 거래일 마감")
         idx_us = html.index("밤사이 미국 마감")
 
         kr_part = html[idx_kr:idx_jp]
