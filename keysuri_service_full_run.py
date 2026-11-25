@@ -4869,7 +4869,38 @@ def run_keysuri_text_only_reissue(
     excluded_ids = list(exclude_source_ids)
     excluded_fps_applied = list(exclude_fps)
 
-    if frozen_parent:
+    targeted_fields: Dict[str, Any] = {}
+    repair_parent = None
+    if pid == PROGRAM_KOREA and reissue_reason_code == "뉴스 중복 이슈":
+        from keysuri_duplicate_repair import plan_duplicate_repair
+        try:
+            repair_parent, targeted_fields = plan_duplicate_repair(
+                parent, sent_rows=recent_sent_news_log(pid)
+            )
+        except ValueError as exc:
+            if str(exc) not in {"targeted_duplicate_repair_no_proven_duplicate",
+                                "targeted_duplicate_repair_missing_snapshot"}:
+                return {"ok": False, "error": str(exc), "program_id": pid}
+            # Other duplicate defects keep the existing fresh-pool path.
+            # A proven event with an exhausted pool fails closed above.
+    if repair_parent is not None:
+        prompt_input, generated_briefing, repair_fields, regen_error = (
+            _regenerate_keysuri_text_from_frozen_parent(
+                pid, repair_parent, text_caller=text_caller,
+                editorial_instruction=reissue_reason_note,
+            )
+        )
+        if regen_error is None:
+            expected = _frozen_parent_source_identities(repair_parent["regen_prompt_input_snapshot"])
+            actual_prompt = _frozen_parent_source_identities(prompt_input)
+            actual_body = _frozen_parent_source_identities(generated_briefing)
+            if not expected or actual_prompt != expected or actual_body != expected:
+                return {"ok": False, "error": "targeted_duplicate_repair_identity_mismatch", "program_id": pid}
+            targeted_fields["reissue_targeted_selection_identities_verified"] = True
+        excluded_ids = list(targeted_fields["reissue_same_event_removed_ids"])
+        excluded_fps_applied = []
+        exclusion_rows = []
+    elif frozen_parent:
         editorial_kwargs = {"editorial_instruction": reissue_reason_note} if reissue_reason_note else {}
         prompt_input, generated_briefing, repair_fields, regen_error = (
             _regenerate_keysuri_text_from_frozen_parent(
@@ -4940,6 +4971,12 @@ def run_keysuri_text_only_reissue(
         )
         return failure
     repair_fields = dict(repair_fields or {})
+    if targeted_fields:
+        # The working set is frozen during prose generation, but differs from
+        # the persisted parent's selection. Do not mislabel it as unchanged.
+        repair_fields = {key: value for key, value in repair_fields.items()
+                         if not key.startswith("reissue_frozen_parent_")}
+    repair_fields.update(targeted_fields)
     repair_fields.setdefault("reissue_recent_sent_log_count", int(prompt_input.get("sent_log_read_count") or 0))
     repair_fields.setdefault("reissue_recent_exposure_log_count", int(prompt_input.get("exposure_log_read_count") or 0))
     repair_fields.setdefault("reissue_excluded_parent_items_count", len(exclusion_rows))
@@ -5120,7 +5157,7 @@ def run_keysuri_text_only_reissue(
             "replacement_signal_titles": replacement_signal_titles,
             "selected_signal_count_before": selected_count_before,
             "selected_signal_count_after": selected_count_after,
-            "regen_source_pack_snapshot": _regen_source_pack_snapshot(parent),
+            "regen_source_pack_snapshot": (prompt_input.get("source_pack") if targeted_fields else _regen_source_pack_snapshot(parent)),
             "regen_prompt_input_snapshot": prompt_input,
             "regen_generated_briefing_snapshot": generated_briefing,
             "generated_image_path": _repo_rel(top_image_path),
