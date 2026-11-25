@@ -85,6 +85,7 @@ _RUN_MEMORY_IMAGE_STATUSES = frozenset(
 )
 
 _RUN_LIST_SUMMARY_KEYS = (
+    "copy_review_required",
     "run_id",
     "mode",
     "program_id",
@@ -1233,6 +1234,10 @@ def load_run_artifact(run_id: str, *, normalize: bool = True) -> Optional[Dict[s
 def load_run_email_html(run_id: str) -> Optional[str]:
     if not validate_run_id(run_id):
         return None
+    meta = _read_json_blob(run_id)
+    if meta and meta.get("original_copy_revision"):
+        from original_copy_edit import read_revision_html
+        return read_revision_html(meta)
     return _read_email_blob(run_id)
 
 
@@ -1240,6 +1245,9 @@ def run_email_html_exists(run_id: str) -> bool:
     """Check exact HTML object metadata without downloading the HTML body."""
     if not validate_run_id(run_id):
         return False
+    meta = _read_json_blob(run_id)
+    if meta and meta.get("original_copy_revision"):
+        return bool(load_run_email_html(run_id))
     if _uses_gcs_backend():
         return _bounded_gcs_email_blob(run_id) is not None
     try:
@@ -2466,6 +2474,10 @@ def _update_sent_news_log_after_customer_success(meta: Dict[str, Any], *, sent_a
     meta["sent_log_update_error"] = None
 
 
+from publication_content_guard import serialize_owner_submission
+
+
+@serialize_owner_submission
 def approve_run(
     run_id: str,
     note: str = "",

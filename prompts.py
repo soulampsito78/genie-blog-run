@@ -529,11 +529,23 @@ def today_genie_top3_extract_recovery_suffix() -> str:
 def _current_role_evidence_rule(runtime_input: Dict[str, Any]) -> str:
     """Bind generation to the same bounded evidence consumed by final QA."""
     evidence = runtime_input.get("current_role_evidence")
+    from temporal_context_diagnostic import _validated_role_evidence
+    valid = _validated_role_evidence(runtime_input.get("target_date"), evidence)
+    korean_titles = ""
+    if valid is not None:
+        korean_titles = (
+            "당일 공식 근거에 따른 현재 직함은 '트럼프 대통령', '밴스 부통령'이다. "
+            "summary와 risk_check를 포함한 현재 시점 서술에서 '트럼프 전 대통령'으로 쓰지 않는다. "
+            "과거 사건·과거 인용의 당시 직함은 현재 직함으로 바꾸지 않는다."
+        )
     if isinstance(evidence, dict):
         as_of = evidence.get("as_of") or "unknown"
         observed_at = evidence.get("observed_at") or "unknown"
         return dedent(f"""
         [DATED_CURRENT_ROLE_EVIDENCE — not general fact certification]
+        {korean_titles}
+        복귀 사건의 주체·직책·목적지를 분리한다. 기업 CEO의 회사 복귀를 백악관 복귀로 바꾸지 않는다.
+        헤드라인의 Washington/대통령은 정치적 맥락일 수 있으며 복귀 목적지의 근거가 아니다.
         runtime_input.current_role_evidence is the only supplied first-party snapshot for current office wording (as_of={as_of}, observed_at={observed_at}).
         It is valid only for this same KST date; if unavailable, stale, or inconsistent, do not guess a current title and preserve uncertainty.
         Use it only to avoid misstating the named person's current title on that exact date. It does not prove article facts, event timing, allegations, or any other claim. Preserve attribution and uncertainty; do not infer extra roles or extend this snapshot to another date. The server's final inspect-only diagnostic independently checks current-role spans against the same evidence and may block the customer surface.
@@ -577,7 +589,8 @@ def build_top3_extraction_prompt(runtime_input: Dict[str, Any]) -> str:
         유효한 해외 시장 헤드라인이 3건 미만이면, 남는 슬롯은 **반드시** `overnight_us_market`·`macro_indicators`·`risk_factors`(및 `top_macro_issues`가 있으면 그 구조) 안의 **실제 문장·수치·라벨만**으로 채운다.
         금지: '추가 뉴스 없음', '세 번째 뉴스는 확인되지 않았습니다' 등 **부재 설명형** 문장, 헤드라인 밖의 지어낸 이슈.
         """).strip()
-    correction_rule = _correction_guidance_rule(runtime_input)
+    from today_claim_context import prompt_rule
+    correction_rule = prompt_rule(runtime_input) + "\n" + _correction_guidance_rule(runtime_input)
     correction_block = f"\n\n{correction_rule}" if correction_rule else ""
     from today_genie_replay_context import replay_context_prompt
     replay_rule = replay_context_prompt(runtime_input)
@@ -701,7 +714,8 @@ def build_full_prompt(
     if mode == "today_genie":
         from today_genie_replay_context import replay_context_prompt
         replay_rule = replay_context_prompt(runtime_input)
-        guidance_text = _correction_guidance_rule(runtime_input)
+        from today_claim_context import prompt_rule
+        guidance_text = prompt_rule(runtime_input) + "\n" + _correction_guidance_rule(runtime_input)
         if guidance_text:
             correction_rule = "\n\n" + guidance_text
 

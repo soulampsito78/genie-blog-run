@@ -634,6 +634,11 @@ def persist_orchestrator_run_artifact(
         original_incident_id=original_incident_id,
     )
     meta["created_at"] = datetime.now(ZoneInfo("Asia/Seoul")).isoformat()
+    if mode == "today_genie" and send_owner_email and email_sent:
+        # This function's SMTP path is owner-review only. Preserve its channel
+        # explicitly so a later child is not mistaken for a customer resend.
+        meta["owner_email_smtp_attempted"] = True
+        meta["owner_email_delivery_status"] = "smtp_accepted"
     if mode == "today_genie" and today_image_result is not None:
         from today_genie_orchestrator_images import persist_today_genie_customer_images
 

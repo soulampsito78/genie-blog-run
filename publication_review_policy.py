@@ -42,6 +42,59 @@ ALL_HARMLESS_EDITORIAL_CODES: frozenset[str] = (
     VALIDATOR_EDITORIAL_ONLY_CODES | SURFACE_EDITORIAL_ONLY_CODES
 )
 
+# These are never harmless/automatic PASS. They may enter the existing signed
+# seven-check independent source review when the producer's safety/structure
+# already passed. Unknown, rights, numeric, image and security findings remain
+# outside this narrow route.
+SOURCE_SCOPE_REVIEW_CODES = frozenset({
+    "customer_surface_claim_scope_unverified",
+    "customer_surface_event_destination_unverified",
+    "customer_surface_temporal_scope_unverified",
+    "customer_surface_session_causality_unverified",
+    "customer_surface_person_scope_unverified",
+    "customer_surface_domestic_application_missing",
+    "customer_surface_consensus_scope_unverified",
+    "customer_surface_current_office_context_unknown",
+    "customer_surface_current_office_role_mismatch",
+})
+
+
+def source_scope_manual_review_eligible(meta, *, now=None):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    if not isinstance(meta, dict) or meta.get("mode") not in {"today_genie", "keysuri_global_tech", "keysuri_korea_tech"}:
+        return False
+    if meta.get("response_status") != 200 or meta.get("validation_result") != "pass" or meta.get("runtime_safety_status") != "RUNTIME_SAFETY_PASS":
+        return False
+    if meta.get("customer_surface_status") not in {"CUSTOMER_SURFACE_PASS", "PRODUCT_REVIEW_REQUIRED"}:
+        return False
+    now = now or datetime.now(ZoneInfo("Asia/Seoul"))
+    if now.tzinfo is None or meta.get("target_date") != now.astimezone(ZoneInfo("Asia/Seoul")).date().isoformat():
+        return False
+    if not str(meta.get("run_id") or "").startswith(meta["target_date"].replace("-", "") + "_"):
+        return False
+    codes = []
+    terminal = meta.get("terminal_issue_codes", [])
+    if not isinstance(terminal, list) or any(c not in SOURCE_SCOPE_REVIEW_CODES for c in terminal):
+        return False
+    for key in ("issue_codes", "review_issue_codes", "validation_issue_codes", "product_surface_issue_codes",
+                "product_surface_blocking_issue_codes", "product_surface_editorial_warning_codes"):
+        values = meta.get(key, [])
+        if not isinstance(values, list) or any(not isinstance(c, str) or not c for c in values):
+            return False
+        codes.extend(values)
+    # A nested unknown finding cannot disappear behind a narrower UI list.
+    from customer_review_confirmation import _collect_issue_codes
+    valid, nested_codes = _collect_issue_codes(meta)
+    if not valid:
+        return False
+    codes.extend(nested_codes)
+    if not set(codes) & SOURCE_SCOPE_REVIEW_CODES or any(c not in SOURCE_SCOPE_REVIEW_CODES | ALL_HARMLESS_EDITORIAL_CODES for c in codes):
+        return False
+    if meta["mode"] != "today_genie" and (meta.get("safety_verdict") != "SAFE" or meta.get("editorial_verdict") not in {"READY", "REVIEW"}):
+        return False
+    return True
+
 # Replay edition-label paths ONLY (Requirement 3)
 REPLAY_EDITION_LABEL_PATHS: frozenset[str] = frozenset({
     "title",

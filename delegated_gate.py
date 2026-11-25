@@ -556,6 +556,8 @@ def validate_automatic_qa_slot(meta: dict, *, publication_date: str, now: dateti
 
 def validate_automatic_qa_producer(meta: dict) -> None:
     """Read-only classification of an authoritative producer artifact."""
+    if meta.get("copy_review_required") or meta.get("original_copy_revision") or meta.get("direct_copy_edit"):
+        raise GateError("AUTOMATIC_QA_STALE_AFTER_COPY_EDIT")
     from publication_review_policy import is_harmless_editorial_code
     from product_surface_contract import CUSTOMER_SURFACE_PASS
 
@@ -767,38 +769,41 @@ payload bytes. All durable claims survive failures and process restarts.
         elif settings.mode == "SHADOW":
             result = _outcome("PASS", "AUTHENTICATED_SHADOW_ONLY", **audit)
         else:
-            # Reload at the final boundary; A->B changes require a new PASS.
-            current = loader.load(run_id, now=now)
-            current.assert_integrity()
-            if current.candidate_sha256 != candidate.candidate_sha256:
-                raise GateError("CANDIDATE_CHANGED_BEFORE_SUBMIT", "STATE_CONFLICT")
-            plan = current.recipient_plan
-            recipient_authority.revalidate(plan, now=now)
-            from delegated_delivery_safety import reserve_publication_attempt, complete_publication_attempt
-            reservation = reserve_publication_attempt(plan, run_id=run_id, candidate_sha256=current.candidate_sha256,
-                                                      review_id=event_key, now=now, approval_source=review_basis)
-            if not reservation.get("allowed"):
-                raise GateError(str(reservation.get("reason") or "PUBLICATION_RECONCILIATION_REQUIRED"), "STATE_CONFLICT")
-            attempt_id = reservation["attempt_id"]
-            # Recheck suppression and kill switch after acquiring durable claims.
-            # Explicit injected settings are trusted test/composition config; the
-            # production default rereads the environment immediately before SMTP.
-            recipient_authority.revalidate(plan, now=now)
-            if settings.mode != "ON" or (sender is None and os.getenv("DELEGATED_SEND_MODE", "OFF").strip().upper() != "ON"):
-                raise GateError("DELEGATED_SEND_DISABLED_BEFORE_SUBMIT", "STATE_CONFLICT")
-            handoff = run_delivery_transition(run_id, action="SUBMIT", authority=review_basis,
-                                              candidate_sha256=current.candidate_sha256)
-            if not handoff.get("allowed"):
-                raise GateError(handoff["reason"], "STATE_CONFLICT")
-            if sender is None:
-                submission = submit_frozen_candidate(
-                    current,
-                    plan,
-                    audit={**audit, "attempt_id": attempt_id},
-                    recipient_authority=recipient_authority,
-                )
-            else:
-                submission = sender(current, plan, audit={**audit, "attempt_id": attempt_id})
+            from publication_content_guard import publication_content_guard
+            with publication_content_guard(candidate.binding['mode'], candidate.binding['publication_date'],
+                                           run_id=run_id, action='delegated_customer_submit'):
+                # Reload at the final boundary; A->B changes require a new PASS.
+                current = loader.load(run_id, now=now)
+                current.assert_integrity()
+                if current.candidate_sha256 != candidate.candidate_sha256:
+                    raise GateError("CANDIDATE_CHANGED_BEFORE_SUBMIT", "STATE_CONFLICT")
+                plan = current.recipient_plan
+                recipient_authority.revalidate(plan, now=now)
+                from delegated_delivery_safety import reserve_publication_attempt, complete_publication_attempt
+                reservation = reserve_publication_attempt(plan, run_id=run_id, candidate_sha256=current.candidate_sha256,
+                                                          review_id=event_key, now=now, approval_source=review_basis)
+                if not reservation.get("allowed"):
+                    raise GateError(str(reservation.get("reason") or "PUBLICATION_RECONCILIATION_REQUIRED"), "STATE_CONFLICT")
+                attempt_id = reservation["attempt_id"]
+                # Recheck suppression and kill switch after acquiring durable claims.
+                # Explicit injected settings are trusted test/composition config; the
+                # production default rereads the environment immediately before SMTP.
+                recipient_authority.revalidate(plan, now=now)
+                if settings.mode != "ON" or (sender is None and os.getenv("DELEGATED_SEND_MODE", "OFF").strip().upper() != "ON"):
+                    raise GateError("DELEGATED_SEND_DISABLED_BEFORE_SUBMIT", "STATE_CONFLICT")
+                handoff = run_delivery_transition(run_id, action="SUBMIT", authority=review_basis,
+                                                  candidate_sha256=current.candidate_sha256)
+                if not handoff.get("allowed"):
+                    raise GateError(handoff["reason"], "STATE_CONFLICT")
+                if sender is None:
+                    submission = submit_frozen_candidate(
+                        current,
+                        plan,
+                        audit={**audit, "attempt_id": attempt_id},
+                        recipient_authority=recipient_authority,
+                    )
+                else:
+                    submission = sender(current, plan, audit={**audit, "attempt_id": attempt_id})
             status = str(submission.get("outcome") or "OUTCOME_UNKNOWN")
             provider_status = ("PROVIDER_ACCEPTED" if status == "ACCEPTED_ALL" else
                                "PROVIDER_REJECTED" if status in {"REFUSED_ALL", "NOT_SENT"} else
@@ -822,7 +827,10 @@ payload bytes. All durable claims survive failures and process restarts.
                     exc = GateError(latch["reason"], "STATE_CONFLICT")
             except Exception:
                 exc = GateError("ANOMALY_HOLD_STORE_UNAVAILABLE", "REVIEW_UNAVAILABLE")
-        code = exc.code if isinstance(exc, GateError) else "REVIEW_OR_DELIVERY_DEPENDENCY_UNAVAILABLE"
+        from publication_content_guard import ContentMutationBusy
+        code = exc.code if isinstance(exc, GateError) else (
+            "PUBLICATION_CONTENT_OPERATION_RUNNING_OR_UNKNOWN" if isinstance(exc, ContentMutationBusy)
+            else "REVIEW_OR_DELIVERY_DEPENDENCY_UNAVAILABLE")
         if exc.__class__.__name__ == "DeliverySafetyError" and re.fullmatch(r"[A-Z0-9_]{1,120}", str(exc)):
             code = str(exc)
         verdict = exc.verdict if isinstance(exc, GateError) else "REVIEW_UNAVAILABLE"
