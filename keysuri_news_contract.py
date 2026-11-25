@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from urllib.parse import urlsplit
 
 from genie_schedule_policy import is_scheduled_trigger_source
+from news_event_identity import same_event
 from keysuri_korea_signal_scoring import CATEGORY_KO_LABELS, KOREA_TECH_CATEGORIES
 from keysuri_source_gate import CONFIDENCE_LABELS, GateResult
 from sent_news_dedup_gate import (
@@ -1455,6 +1456,11 @@ def _claim_to_news_item(
         "confidence_label": str(claim.get("confidence_label") or "reported").strip(),
     }
     item.update(_resolve_claim_source(claim, smap or {}))
+    # Event identity needs document month/year even for Korea. Keep collection
+    # time separate: it must not manufacture a document or an event date.
+    published_at = _claim_published_at(claim, smap or {})
+    if published_at:
+        item["published_at"] = published_at
     # Date provenance travels with the item: which timestamp we hold, what it
     # means, and how the event relates to it. Downstream surfaces must be able
     # to tell a document date from an event date without re-deriving it.
@@ -1808,6 +1814,7 @@ def select_top_5_news(
     hard_rejected: List[Dict[str, Any]] = []
     soft_rejected: List[Dict[str, Any]] = []
     deduped_pool: List[Dict[str, Any]] = []
+    same_event_rejected: List[Dict[str, Any]] = []
     for item in hydrated:
         hard_reason = recent_log_duplicate_reason(item, hard_rows) if hard_rows else ""
         if hard_reason:
@@ -1816,6 +1823,9 @@ def select_top_5_news(
         soft_reason = recent_log_duplicate_reason(item, soft_rows) if soft_rows else ""
         if soft_reason:
             soft_rejected.append({**item, "rejected_reason": soft_reason})
+            continue
+        if any(same_event(item, selected) for selected in deduped_pool):
+            same_event_rejected.append({**item, "rejected_reason": "selected_same_event_duplicate"})
             continue
         deduped_pool.append(item)
 
@@ -1854,6 +1864,11 @@ def select_top_5_news(
                 break
             if not isinstance(claim, dict):
                 continue
+            if program_id == PROGRAM_KOREA_TECH and claim.get("korea_tech_scope_status") == "unknown":
+                continue
+            score = claim.get("selection_score_before_diversity", claim.get("selection_score"))
+            if isinstance(score, (int, float)) and score < TOP5_QUALITY_FLOOR_BASE_SCORE:
+                continue
             ok, _reason = _claim_is_qualified(claim, bsmap, program_id, pack_as_of)
             if not ok or not _is_non_empty_str(claim.get("business_implication")):
                 continue
@@ -1869,6 +1884,8 @@ def select_top_5_news(
             if hard_rows and recent_log_duplicate_reason(item, hard_rows):
                 continue
             if soft_rows and recent_log_duplicate_reason(item, soft_rows):
+                continue
+            if any(same_event(item, selected) for selected in deduped_pool):
                 continue
             deduped_pool.append(item)
             seen_ids.add(str(item.get("news_id") or ""))
@@ -1892,6 +1909,8 @@ def select_top_5_news(
             # it was exposed in an earlier owner-review email.
             if program_id == "keysuri_global_tech" and not _news_item_is_current_development(item, pack_as_of):
                 continue
+            if any(same_event(item, selected) for selected in deduped_pool):
+                continue
             deduped_pool.append(item)
             exposure_backfill_used_count += 1
         exposure_backfill_used = exposure_backfill_used_count > 0
@@ -1908,6 +1927,7 @@ def select_top_5_news(
         summary: Dict[str, Any] = {
             **source_pack_funnel,
             "candidate_count_before_dedup": candidate_count_before_dedup,
+            "same_event_removed_count": len(same_event_rejected),
             "sent_log_read_count": len(hard_rows),
             "exposure_log_read_count": len(soft_rows),
             "recent_combined_log_count": len(hard_rows) + len(soft_rows),
@@ -2020,6 +2040,7 @@ def select_top_5_news(
         "issues": [],
         "diversity_summary": diversity_summary,
         "diversity_rejected_items": diversity["rejected_items"],
+        "same_event_rejected_items": same_event_rejected,
         "candidate_funnel_summary": candidate_funnel_summary,
         "cross_day_dedup_removed_count": cross_day_dedup_removed_count,
         "cross_day_dedup_rejected_items": cross_day_rejected,

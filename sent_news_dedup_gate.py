@@ -6,6 +6,7 @@ import re
 from difflib import SequenceMatcher
 from typing import Any, Dict, Iterable, List
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from news_event_identity import event_identity
 
 TRACKING_QUERY_PREFIXES = ("utm_",)
 TRACKING_QUERY_KEYS = {
@@ -125,6 +126,7 @@ def normalize_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
     normalized["normalized_source"] = normalize_title(source)
     normalized["normalized_topic_key"] = normalize_topic_key(topic_key)
     normalized["summary_hash"] = str(item.get("summary_hash") or "") or _summary_hash(item)
+    normalized["event_identity"] = event_identity(item)
     return normalized
 
 
@@ -176,6 +178,12 @@ def _duplicate_reason(
     source = item["normalized_source"]
     topic_key = item["normalized_topic_key"]
     source_title = f"{source}|{title}" if source and title else ""
+
+    identity = item["event_identity"]
+    if identity and any(identity == event_identity(row) for row in sent_log):
+        return "recent_log_same_event_duplicate"
+    if identity and any(identity == event_identity(row) for row in selected):
+        return "selected_same_event_duplicate"
 
     if canonical_url and canonical_url in sent_idx["canonical_urls"]:
         return "recent_log_canonical_url_duplicate"
