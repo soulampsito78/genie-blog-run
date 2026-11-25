@@ -7,7 +7,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from original_copy_edit import (
-    CopyEditError, _digest, _eligible, editable_segments, prepare_copy_edit, apply_copy_edit,
+    CopyEditError, _digest, _eligible, editable_segments, prepare_copy_edit, apply_copy_edit, resume_copy_owner_review,
 )
 from publication_content_guard import ContentMutationBusy
 
@@ -23,6 +23,8 @@ def _error(admin, exc):
         "COPY_EDIT_PUBLICATION_ALREADY_ATTEMPTED": "이 회차는 발송 기록이 있어 원문을 변경하지 않습니다.",
         "COPY_EDIT_OWNER_STATE_CONFLICT": "현재 보류·승인 상태를 유지합니다. 이 화면에서 해제하지 않습니다.",
         "COPY_EDIT_OWNER_MAIL_RECONCILE": "원문은 저장됐습니다. 검수 메일의 발송 결과를 확인해야 하므로 다시 전송하지 마세요.",
+        "COPY_EDIT_EXISTING_IMAGES_UNAVAILABLE": "원문은 저장됐습니다. 기존 이미지를 확인한 뒤 같은 수정본의 검수 메일 준비를 이어갑니다. 아직 메일을 보내지 않았습니다.",
+        "COPY_EDIT_OWNER_MAIL_NOT_READY": "원문은 저장됐습니다. 기존 운영자 메일 연결을 복구한 뒤 같은 수정본에서 이어갑니다. 아직 메일을 보내지 않았습니다.",
         "PUBLICATION_CONTENT_OPERATION_RUNNING_OR_UNKNOWN": "같은 회차의 수정 또는 발송이 진행 중입니다. 현재 작업 결과를 먼저 확인합니다.",
     }
     message = messages.get(code, "수정 조건을 확인할 수 없습니다. 원문과 현재 운영 기록을 먼저 확인해 주세요.")
@@ -60,6 +62,13 @@ def copy_edit_page(request: Request, run_id: str):
       this.querySelector('[name=changes_json]').value=JSON.stringify(edits);
     });</script>"""
     inner = '<h1>문구만 수정</h1><p>선택한 문장만 고칩니다. 기사·이미지를 다시 생성하지 않습니다. 수정 전 원문과 검수 기록은 보존하며, 수정본은 새 검수를 거칩니다.</p>'
+    revision = meta.get("original_copy_revision") or {}
+    if revision and revision.get("owner_mail_state") != "SMTP_ACCEPTED":
+        inner += '<p>저장된 수정본이 있습니다. 검수 메일의 시도·결과를 대조하고, 아직 전송을 시작하지 않은 경우에만 이어갑니다.</p>'
+        inner += '<form method="post" action="/admin/runs/' + run_id + '/copy-edit/resume-owner-review">'
+        inner += admin._csrf_field(request, "copy-edit:" + run_id)
+        inner += '<input type="hidden" name="revision_id" value="' + html.escape(revision["revision_id"], quote=True) + '">'
+        inner += '<button type="submit">저장된 수정본 검수 메일 확인·계속</button></form>'
     inner += '<form id="copy-edit-form" method="post" action="/admin/runs/' + run_id + '/copy-edit">'
     inner += admin._csrf_field(request, "copy-edit:" + run_id)
     inner += '<input type="hidden" name="expected_html_sha256" value="' + sha256(original.encode()).hexdigest() + '">'
@@ -129,6 +138,23 @@ async def copy_edit_apply(request: Request, run_id: str, changes_json: str = For
         result = await run_in_threadpool(apply_copy_edit, run_id, changes,
                                          expected_html_sha256=expected_html_sha256,
                                          expected_meta_sha256=expected_meta_sha256, actual_actor=actual_actor)
+    except (CopyEditError, ContentMutationBusy) as exc:
+        return _error(admin, exc)
+    suffix = "saved" if result.get("owner_mail_state") == "SMTP_ACCEPTED" else "mail_reconcile"
+    return RedirectResponse(f"/admin/runs/{run_id}?copy_edit={suffix}", status_code=303)
+
+
+@router.post("/admin/runs/{run_id}/copy-edit/resume-owner-review")
+async def copy_edit_resume(request: Request, run_id: str, revision_id: str = Form(...), csrf_token: str = Form("")):
+    import admin_routes as admin
+    from starlette.concurrency import run_in_threadpool
+    need = admin._require_login(request)
+    if need is not None:
+        return need
+    if not admin._verify_csrf(request, "copy-edit:" + run_id, csrf_token):
+        return admin._csrf_rejected()
+    try:
+        result = await run_in_threadpool(resume_copy_owner_review, run_id, revision_id)
     except (CopyEditError, ContentMutationBusy) as exc:
         return _error(admin, exc)
     suffix = "saved" if result.get("owner_mail_state") == "SMTP_ACCEPTED" else "mail_reconcile"

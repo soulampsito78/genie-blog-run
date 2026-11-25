@@ -220,9 +220,11 @@ def _commit_pointer(prepared, revision):
     return changed
 
 
-def send_corrected_owner_review(saved_html, meta):
-    """Use the existing owner transport, never customer recipients or a model."""
-    from email_sender import send_genie_email, last_send_trace
+def prepare_corrected_owner_review(saved_html, meta):
+    """Resolve existing assets/config before recording any SMTP attempt."""
+    from email_sender import smtp_configured, _parse_to_addrs
+    if not smtp_configured() or not _parse_to_addrs():
+        raise CopyEditError("COPY_EDIT_OWNER_MAIL_NOT_READY")
     if meta["mode"] == "today_genie":
         from today_geenee_customer_delivery import resolve_today_genie_reusable_images, build_customer_final_subject
         parts = resolve_today_genie_reusable_images(meta).inline_parts
@@ -233,8 +235,15 @@ def send_corrected_owner_review(saved_html, meta):
         subject = meta.get("email_subject") or "키수리 문구 교정 검수본"
     if not parts:
         raise CopyEditError("COPY_EDIT_EXISTING_IMAGES_UNAVAILABLE")
-    ok = send_genie_email(saved_html, "[운영자 검토] " + subject,
-                         inline_jpeg_parts=list(parts), attachment_jpeg_parts=[], allow_rich_delivery=True)
+    return {"subject": "[운영자 검토] " + subject, "inline_jpeg_parts": list(parts)}
+
+
+def send_corrected_owner_review(saved_html, meta, *, prepared=None):
+    """Use the existing owner transport, never customer recipients or a model."""
+    from email_sender import send_genie_email, last_send_trace
+    prepared = prepared or prepare_corrected_owner_review(saved_html, meta)
+    ok = send_genie_email(saved_html, prepared["subject"],
+                         inline_jpeg_parts=prepared["inline_jpeg_parts"], attachment_jpeg_parts=[], allow_rich_delivery=True)
     trace = last_send_trace()
     if not ok or not trace.get("smtp_submission_completed") or trace.get("smtp_refused_recipient_count"):
         raise CopyEditError("COPY_EDIT_OWNER_MAIL_RECONCILE")
@@ -303,12 +312,13 @@ def _complete_owner_review(meta, *, already_applied, now):
             return {**result, "owner_mail_state": "RECONCILE"}
         _eligible(meta, now=now)
         saved_html = read_revision_html(meta)
+        prepared = prepare_corrected_owner_review(saved_html, meta)
         claim = {"run_id": run_id, "revision_id": identity, "html_sha256": revision["html_sha256"],
                  "attempted_at": datetime.now(ZoneInfo("Asia/Seoul")).isoformat(), "state": "OUTCOME_UNKNOWN"}
         if not safety._create_json_once(claim_key, claim):
             return {**result, "owner_mail_state": "RECONCILE"}
         try:
-            evidence = send_corrected_owner_review(saved_html, meta)
+            evidence = send_corrected_owner_review(saved_html, meta, prepared=prepared)
         except Exception as exc:
             raise CopyEditError("COPY_EDIT_OWNER_MAIL_RECONCILE") from exc
         accepted = {**claim, **evidence, "state": "SMTP_ACCEPTED",
@@ -329,3 +339,20 @@ def _complete_owner_review(meta, *, already_applied, now):
     safety._write_json(f"original_copy_edits/{identity}.json",
                        {**revision, "run_id": run_id, "state": "OWNER_MAIL_ACCEPTED"})
     return {**result, "owner_mail_state": "SMTP_ACCEPTED"}
+
+
+def resume_copy_owner_review(run_id, revision_id, *, now=None):
+    """Continue the existing correction without another edit or SMTP retry."""
+    import admin_store as store
+    from publication_content_guard import publication_content_guard
+    now = now or datetime.now(ZoneInfo("Asia/Seoul"))
+    meta = store.load_run_artifact(run_id, normalize=False)
+    if not meta:
+        raise CopyEditError("COPY_EDIT_RUN_NOT_FOUND")
+    with publication_content_guard(meta.get("mode"), meta.get("target_date"), run_id=run_id,
+                                   action="resume_original_copy_owner_review"):
+        meta = store.load_run_artifact(run_id, normalize=False)
+        _eligible(meta, now=now)
+        if (meta.get("original_copy_revision") or {}).get("revision_id") != revision_id:
+            raise CopyEditError("COPY_EDIT_BASE_CHANGED")
+        return _complete_owner_review(meta, already_applied=True, now=now)

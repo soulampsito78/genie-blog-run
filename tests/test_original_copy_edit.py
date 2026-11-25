@@ -37,6 +37,7 @@ def setup(tmp_path, monkeypatch):
     original = '<html><head><style>.test{color:red}</style></head><body><h1>뉴스</h1><p>트럼프 전 대통령 발언입니다.</p><p>다른 기사는 유지합니다.</p><img src="cid:top"><a href="https://example.test/article">출처</a><table><tr><td>4697.51</td></tr></table><p>운영자 검수 상태</p><p>검수 기록</p></body></html>'
     artifacts.save_run_artifact(meta, email_html=original)
     sender = Mock(return_value={"smtp_accepted": True, "smtp_accepted_recipient_count": 1})
+    monkeypatch.setattr(edit, "prepare_corrected_owner_review", Mock(return_value={"subject": "fixture", "inline_jpeg_parts": []}))
     monkeypatch.setattr(edit, "send_corrected_owner_review", sender)
     return run, original, sender
 
@@ -131,6 +132,24 @@ def test_unknown_mail_outcome_never_repeats_smtp_or_discards_copy(setup):
     assert edit.apply_copy_edit(run, changes, **basis)["owner_mail_state"] == "RECONCILE"
     sender.assert_called_once()
     assert artifacts.load_run_email_html(run) != original
+
+
+def test_asset_failure_before_smtp_is_recoverable_on_same_revision(setup, monkeypatch):
+    run, original, sender = setup
+    changes, basis = packet(run)
+    prepare = Mock(side_effect=edit.CopyEditError("COPY_EDIT_EXISTING_IMAGES_UNAVAILABLE"))
+    monkeypatch.setattr(edit, "prepare_corrected_owner_review", prepare)
+    with pytest.raises(edit.CopyEditError, match="IMAGES_UNAVAILABLE"):
+        edit.apply_copy_edit(run, changes, **basis)
+    meta = artifacts.load_run_artifact(run)
+    revision = meta["original_copy_revision"]["revision_id"]
+    assert not safety._read_json(f"original_copy_owner_mail_attempts/{revision}.json")
+    sender.assert_not_called()
+    assert artifacts.load_run_email_html(run) != original
+    prepare.side_effect = None; prepare.return_value = {"subject": "fixture", "inline_jpeg_parts": []}
+    result = edit.resume_copy_owner_review(run, revision)
+    assert result["revision_id"] == revision and result["owner_mail_state"] == "SMTP_ACCEPTED"
+    sender.assert_called_once()
 
 
 def test_old_review_projection_is_retained_as_history_and_removed_from_active_copy(setup):
