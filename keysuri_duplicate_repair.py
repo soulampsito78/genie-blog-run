@@ -76,6 +76,14 @@ def plan_duplicate_repair(parent, *, sent_rows):
         selected_claims.append(claim)
     pack["sources"] = [sources[sid] for sid in dict.fromkeys(sid for item in kept for sid in item["source_ids"])]
     pack["claims"] = selected_claims
+    if isinstance(pack.get("korea_top5_selection"), dict):
+        pack["targeted_repair_original_selection"] = copy.deepcopy(pack["korea_top5_selection"])
+    pack["korea_top5_selection"] = {
+        "policy": "keysuri_korea_targeted_event_repair_v1",
+        "selected_source_ids": [item["source_ids"][0] for item in kept],
+        "same_event_removed_ids": list(removed),
+        "replacement_news_ids": list(replacements),
+    }
     prompt["source_pack"] = pack
     prompt["selected_items"] = copy.deepcopy(kept)
     prompt["top_5_news"]["items"] = copy.deepcopy(kept)

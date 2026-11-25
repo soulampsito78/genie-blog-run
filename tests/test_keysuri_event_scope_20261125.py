@@ -83,6 +83,7 @@ def test_targeted_plan_preserves_four_and_merges_source_support_without_editing_
     assert working["selected_items"][2]["source_ids"] == ["s3", "s4"]
     assert fields["reissue_same_event_removed_ids"] == ["n4"]
     assert fields["reissue_targeted_replacement_ids"] == ["n6"]
+    assert working["regen_source_pack_snapshot"]["korea_top5_selection"]["selected_source_ids"] == ["s1", "s2", "s3", "s5", "s6"]
 
 
 @pytest.mark.parametrize("defect", ["below_floor", "unverified", "irrelevant", "already_sent", "no_backfill"])
