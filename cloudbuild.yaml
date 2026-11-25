@@ -84,6 +84,11 @@ steps:
       - tests/test_delegated_email_preview.py
       - tests/test_today_replay_incident_20261028.py
       - tests/test_today_bounded_correction_and_preview.py
+      - tests/test_original_copy_edit.py
+      - tests/test_source_claim_scope_20261125.py
+      - tests/test_today_claim_context_20261126.py
+      - tests/test_keysuri_temporal_scope_20261125.py
+      - tests/test_source_scope_review_policy.py
 
   - name: gcr.io/cloud-builders/docker
     id: Push

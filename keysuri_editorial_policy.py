@@ -16,6 +16,17 @@ from typing import Tuple
 
 #: Source-fidelity and locality. These are safety rules, not style.
 FIDELITY_RULES: Tuple[str, ...] = (
+    "Order value must retain the counterparty, project count, aggregation period and completion "
+    "status. A batch of completed or ongoing projects with one customer is not the company's "
+    "entire annual order book, recognized revenue or completed delivery. If the source metadata "
+    "is ambiguous, omit the amount or request original-source review instead of widening its scope.",
+    "A technology or IP purchase plus planned hiring is not an acquisition of the company. "
+    "Keep the transaction object, agreement versus closing, and reported versus officially disclosed "
+    "price identical in the title, lead, cards and deep dive. When RSS metadata cannot establish "
+    "the object or closing, attribute the limited report or omit the unsupported claim.",
+    "Repository coverage is not successful universal deployment. Dependency scanning and attempted "
+    "fixes returned as merge requests are not automatic approval/deployment or general code review. "
+    "RSS_METADATA_ONLY must never be expanded into undocumented workflow capabilities or outcomes.",
     "Start from this item's source-backed facts. Natural Korean is not permission to add "
     "anecdotes, quotations, metaphors, background events, or likely explanations.",
     "Preserve source-backed names, numbers, dates, direct quotations, attribution verbs, "

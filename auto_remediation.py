@@ -101,6 +101,13 @@ _INFRASTRUCTURE_CODES = frozenset(
 # Independent evidence cannot be created by regenerating the same source set.
 # Keep the product REVIEW and its dated-evidence dependency unchanged.
 _EVIDENCE_DEPENDENCY_CODES = frozenset({
+    "customer_surface_session_causality_unverified",
+    "customer_surface_person_scope_unverified",
+    "customer_surface_domestic_application_missing",
+    "customer_surface_consensus_scope_unverified",
+    "customer_surface_claim_scope_unverified",
+    "customer_surface_event_destination_unverified",
+    "customer_surface_temporal_scope_unverified",
     "customer_surface_current_office_context_unknown",
     # A factual role mismatch requires source-backed correction; regenerating
     # from the same inputs is not independent evidence and can repeat the error.

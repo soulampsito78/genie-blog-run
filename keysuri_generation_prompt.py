@@ -1585,6 +1585,8 @@ def build_keysuri_generation_prompt_contract(prompt_input: dict) -> dict:
     if not isinstance(top_5, dict):
         raise ValueError("prompt_input.top_5_news is required for generation prompt")
 
+    from source_claim_scope import selected_source_evidence
+
     return {
         "_contract_note": "Offline generation prompt contract — staged sample only, not live production.",
         "program_id": program_id,
@@ -1599,6 +1601,7 @@ def build_keysuri_generation_prompt_contract(prompt_input: dict) -> dict:
         "fixed_section_labels": prompt_input.get("fixed_section_labels"),
         "top_5_news": top_5,
         "source_pack_summary": _source_pack_summary(pack),
+        "selected_source_evidence": selected_source_evidence(prompt_input),
         "forbidden_outputs": prompt_input.get("forbidden_outputs"),
         "identity_rules": _identity_rules(),
         "scheduler_rules": {
@@ -1988,6 +1991,8 @@ def build_keysuri_generation_prompt(prompt_input: dict) -> str:
             "",
             "SOURCE PACK SUMMARY",
             json.dumps(contract.get("source_pack_summary"), ensure_ascii=False, indent=2),
+            "SELECTED SOURCE EVIDENCE (RSS_METADATA_ONLY is not article-body verification)",
+            json.dumps(contract.get("selected_source_evidence"), ensure_ascii=False, indent=2),
             "",
             "TOP_5_SELECTED (preserve rank and news_id sequence; includes selection metadata)",
             json.dumps(top_5_for_prompt, ensure_ascii=False, indent=2),
@@ -2108,6 +2113,8 @@ def build_keysuri_generation_prompt_compact(
         "",
         "SOURCE PACK SUMMARY (compact)",
         json.dumps(compact_source_pack, ensure_ascii=False),
+        "SELECTED SOURCE EVIDENCE (preserve scope/attribution even in recovery)",
+        json.dumps(contract.get("selected_source_evidence"), ensure_ascii=False),
         "",
         "TOP_5_SELECTED (compact — preserve rank/news_id)",
         json.dumps(top_5_for_prompt, ensure_ascii=False),

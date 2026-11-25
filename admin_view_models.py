@@ -196,6 +196,10 @@ def validation_is_failed(meta: Mapping[str, Any]) -> bool:
 
 def validation_projection(meta: Mapping[str, Any]) -> Dict[str, Any]:
     issues = issue_codes(meta)
+    if meta.get("copy_review_required") and str(meta.get("delegated_review_status") or "").lower() != "passed" and meta.get("customer_delivery_status") == "not_sent":
+        return {"label": "수정본 검수 필요", "tone": "warn",
+                "summary": "원문 문구를 수정했습니다. 수정 전 검수 기록을 보존하며 새 수신본으로 검수합니다.",
+                "checks": [{"label": "원문 직접 교정", "tone": "warn"}], "issues": issues}
     image_present = any(
         meta.get(key)
         for key in (
@@ -742,6 +746,8 @@ def latest_by_program(runs: Iterable[Mapping[str, Any]]) -> Dict[str, Mapping[st
 
 
 def needs_review(meta: Mapping[str, Any]) -> bool:
+    if meta.get("copy_review_required") and meta.get("customer_delivery_status") == "not_sent":
+        return meta.get("owner_review_status") not in {"held", "dismissed"}
     if not is_active_program(meta) or validation_is_failed(meta):
         return False
     delivery = delivery_projection(meta)

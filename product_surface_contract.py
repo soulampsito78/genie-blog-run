@@ -503,6 +503,25 @@ def _collect_surface_fields(mode: str, payload: Mapping[str, Any]) -> List[Surfa
         if value:
             fields.append(SurfaceField(key, value, role))
 
+    display = payload.get("briefing_display")
+    if mode.startswith("keysuri_") and isinstance(display, Mapping):
+        for key in ("opening_lead", "selected_title", "closing_message"):
+            value = _one_line(display.get(key))
+            if value:
+                fields.append(SurfaceField(f"briefing_display.{key}", value,
+                                           "title" if key == "selected_title" else "body"))
+    if mode.startswith("keysuri_"):
+        for parent_key in ("briefing_display", "closing_sources", "korea_evening_memo"):
+            parent = payload.get(parent_key)
+            if not isinstance(parent, Mapping):
+                continue
+            memo = parent if parent_key == "korea_evening_memo" else parent.get("evening_memo")
+            if not isinstance(memo, Mapping):
+                continue
+            for index, line in enumerate(memo.get("action_lines") or []):
+                if isinstance(line, str) and line.strip():
+                    fields.append(SurfaceField(f"{parent_key}.evening_memo.action_lines[{index}]", line, "body"))
+
     item_keys = (
         ("headline", "headline"),
         ("korean_title", "headline"),
@@ -590,6 +609,19 @@ def evaluate_product_surface(
     source_titles = _source_headlines(source_input) if mode != "today_genie" else []
     today_items = _surface_items(mode, structured_output) if mode == "today_genie" else []
     findings: List[ProductSurfaceFinding] = []
+
+    from source_claim_scope import inspect_source_scope
+    findings.extend(ProductSurfaceFinding(code, path, reason, (index,) if index > 0 else ())
+                    for code, path, reason, index in inspect_source_scope(
+                        fields, mode=mode, payload=structured_output, source_input=source_input))
+    from today_claim_context import inspect_today_claim_context
+    findings.extend(ProductSurfaceFinding(code, path, reason, (index,) if index > 0 else ())
+                    for code, path, reason, index in inspect_today_claim_context(
+                        fields, mode=mode, payload=structured_output, source_input=source_input))
+    from keysuri_temporal_scope import inspect_temporal_scope
+    findings.extend(ProductSurfaceFinding(code, path, reason, (index,) if index > 0 else ())
+                    for code, path, reason, index in inspect_temporal_scope(
+                        fields, mode=mode, payload=structured_output, source_input=source_input))
 
     if mode == "today_genie":
         from today_genie_replay_context import (

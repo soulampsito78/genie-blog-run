@@ -140,6 +140,19 @@ def run(candidate, *, event=None, authority=None, loader=None, sender=None, conf
         sender=sender or (lambda frozen, plan, audit: {"outcome": "ACCEPTED_ALL", "received": False}))
 
 
+def test_same_run_id_changed_body_cannot_reuse_the_previous_signed_review(setup_case):
+    old = setup_case(customer_claim="한국산 최대 15% 관세 제안")
+    review = event_for(old)
+    changed = setup_case(customer_claim="한국 적용 조건이 빠진 다른 문장")
+    assert old.binding["run_id"] == changed.binding["run_id"]
+    assert old.candidate_sha256 != changed.candidate_sha256
+    called = []
+    result = run(changed, event=review, sender=lambda *a: called.append(a))
+    assert result["reason_codes"] == ["CANDIDATE_CHANGED_REVIEW_REQUIRED"]
+    assert not called
+    assert not list(store._local_root().glob("publication_attempts/*.json"))
+
+
 def helper_event_for(candidate, *, verdict="PASS", source_status="PASS", source_attested=True,
                      source_evidence=True, anomalies=None, event_id="helper_review_00000001"):
     review_json = json.loads(json.dumps({

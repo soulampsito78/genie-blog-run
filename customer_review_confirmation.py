@@ -208,6 +208,9 @@ def today_delegated_warning_eligible(
     delegated second-pass review pipeline. It is NOT approval, NOT a QA pass, and
     NOT permission to send.
     """
+    from publication_review_policy import source_scope_manual_review_eligible
+    if meta.get("mode") == "today_genie" and source_scope_manual_review_eligible(dict(meta), now=now):
+        return True
     mode = str(meta.get("mode") or meta.get("program_id") or "")
     if mode != "today_genie":
         return False

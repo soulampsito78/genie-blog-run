@@ -496,6 +496,9 @@ def run_today_image_only_reissue(
     )
     meta.update(orchestrator_image_fields_for_artifact(image_result))
     meta.update(persist_today_genie_customer_images(child_run_id, image_result, upload_fn=upload_fn))
+    if send_owner_email and email_sent:
+        meta["owner_email_smtp_attempted"] = True
+        meta["owner_email_delivery_status"] = "smtp_accepted"
     if not send_owner_email:
         meta["verification_mode"] = "no_send_verification"
         meta["send_owner_email"] = False

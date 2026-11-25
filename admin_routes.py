@@ -2807,6 +2807,7 @@ def admin_run_detail(request: Request, run_id: str):
   <p>{_esc(validation['summary'])}</p><ul class="validation-list">{validation_items}</ul>
 </section>
 {graded_panel}
+{('<section class="surface"><h2>원문 문구 수정</h2><p>기존 문장만 직접 고치고 수정본을 검수합니다.</p><a href="/admin/runs/' + _esc(run_id) + '/copy-edit">문구만 수정</a></section>') if has_email and meta.get('customer_delivery_status') == 'not_sent' and meta.get('owner_review_status') in {'pending_review', 'reopened'} and not meta.get('last_reissue_child_run_id') else ''}
 {_admin_email_preview_for_run(run_id, meta=meta) if has_email else _ui_email_preview(None)}
 <section class="surface">
   <div class="section-heading" style="margin-top:0;"><div><p class="eyebrow">DELIVERY</p><h2>고객 이메일 발송 상태</h2></div>{_ui_badge(delivery['label'], delivery['tone'])}</div>
@@ -4608,3 +4609,7 @@ def admin_notice_detail(request: Request, notice_id: str):
 </div>
 """
     return HTMLResponse(_layout(f"Notice {notice_id}", inner))
+
+# Same authenticated admin, CSRF and normal owner-mail transport; no generator.
+from admin_copy_edit_routes import router as original_copy_edit_router
+router.include_router(original_copy_edit_router)

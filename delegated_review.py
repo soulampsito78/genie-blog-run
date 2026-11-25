@@ -71,6 +71,14 @@ def validate_candidate_preflight(
     if set(candidate["image_sha256"]) != EXPECTED_IMAGE_ROLES[candidate["mode"]]:
         raise CandidatePreflightError("REVIEW_INCOMPLETE", "EXPECTED_IMAGE_ROLES_MISSING_OR_UNEXPECTED")
     warning_eligible = False
+    source_scope_eligible = False
+    source_meta = candidate.get("artifact_metadata")
+    if isinstance(source_meta, Mapping) and candidate.get("artifact_sha256"):
+        canonical_meta = json.dumps(source_meta, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if hashlib.sha256(canonical_meta.encode()).hexdigest() != candidate["artifact_sha256"]:
+            raise CandidatePreflightError("HOLD", "ARTIFACT_METADATA_BINDING_MISMATCH")
+        from publication_review_policy import source_scope_manual_review_eligible
+        source_scope_eligible = source_scope_manual_review_eligible(dict(source_meta), now=now)
     if allow_today_warning and candidate.get("mode") == "today_genie":
         from customer_review_confirmation import today_delegated_warning_eligible
 
@@ -92,7 +100,7 @@ def validate_candidate_preflight(
             raise CandidatePreflightError("HOLD", "FIRST_PASS_NOT_PASS")
     allowed_artifact_statuses = (
         {"emailed", "validated", "reissued", "review_required"}
-        if warning_eligible
+        if warning_eligible or source_scope_eligible
         else {"emailed", "validated", "reissued"}
     )
     if candidate.get("artifact_status") not in allowed_artifact_statuses:
@@ -104,7 +112,7 @@ def validate_candidate_preflight(
     from product_surface_contract import CUSTOMER_SURFACE_PASS
 
     if candidate.get("customer_surface_status") != CUSTOMER_SURFACE_PASS:
-        if not warning_eligible:
+        if not warning_eligible and not source_scope_eligible:
             raise CandidatePreflightError("HOLD", "PRODUCT_SURFACE_NOT_READY")
     if candidate["mode"] in {"keysuri_global_tech", "keysuri_korea_tech"} and (
         candidate.get("safety_verdict") != "SAFE" or candidate.get("editorial_verdict") not in {"READY", "REVIEW"}
